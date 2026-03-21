@@ -63,10 +63,15 @@ fn osv_ecosystem(ecosystem: &str) -> &str {
     }
 }
 
+/// Strip semver prefixes like ^, ~, >= from a version string.
+fn strip_version_prefix(version: &str) -> String {
+    version.trim_start_matches(|c: char| c == '^' || c == '~' || c == '>' || c == '=' || c == '<' || c == ' ').to_string()
+}
+
 /// An OSV client that can be swapped out for testing.
 #[async_trait::async_trait]
 pub trait OsvClient: Send + Sync {
-    async fn query(&self, name: &str, ecosystem: &str) -> Result<Vec<String>>;
+    async fn query(&self, name: &str, ecosystem: &str, version: Option<&str>) -> Result<Vec<String>>;
 }
 
 /// Real OSV client that hits the API.
@@ -84,14 +89,21 @@ impl RealOsvClient {
 
 #[async_trait::async_trait]
 impl OsvClient for RealOsvClient {
-    async fn query(&self, name: &str, ecosystem: &str) -> Result<Vec<String>> {
+    async fn query(&self, name: &str, ecosystem: &str, version: Option<&str>) -> Result<Vec<String>> {
         let osv_eco = osv_ecosystem(ecosystem);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "package": {
                 "name": name,
                 "ecosystem": osv_eco
             }
         });
+        // Include version to filter to only vulnerabilities affecting this version
+        if let Some(ver) = version {
+            let base_ver = strip_version_prefix(ver);
+            if !base_ver.is_empty() {
+                body["version"] = serde_json::Value::String(base_ver);
+            }
+        }
         let resp = self.client
             .post("https://api.osv.dev/v1/query")
             .json(&body)
@@ -142,7 +154,8 @@ pub async fn check_malicious_with_cache(
     let mut issues = Vec::new();
 
     for dep in deps {
-        let cache_key = format!("{}:{}", dep.ecosystem, dep.name);
+        let version_suffix = dep.version.as_deref().map(|v| strip_version_prefix(v)).unwrap_or_default();
+        let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
 
         // Check in-memory/disk cache first
         let cached = {
@@ -153,7 +166,7 @@ pub async fn check_malicious_with_cache(
         let vuln_ids = if let Some(entry) = cached {
             entry.vuln_ids
         } else {
-            let ids = osv_client.query(&dep.name, &dep.ecosystem).await?;
+            let ids = osv_client.query(&dep.name, &dep.ecosystem, dep.version.as_deref()).await?;
             let entry = CacheEntry { vuln_ids: ids.clone() };
             cache.lock().unwrap().insert(cache_key, entry);
             ids
@@ -198,7 +211,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl OsvClient for MockOsvClient {
-        async fn query(&self, name: &str, _ecosystem: &str) -> Result<Vec<String>> {
+        async fn query(&self, name: &str, _ecosystem: &str, _version: Option<&str>) -> Result<Vec<String>> {
             Ok(self.responses.get(name).cloned().unwrap_or_default())
         }
     }
@@ -254,7 +267,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl OsvClient for CountingClient {
-            async fn query(&self, name: &str, _ecosystem: &str) -> Result<Vec<String>> {
+            async fn query(&self, name: &str, _ecosystem: &str, _version: Option<&str>) -> Result<Vec<String>> {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
                 Ok(self.responses.get(name).cloned().unwrap_or_default())
             }
