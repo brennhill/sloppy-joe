@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="bun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E8A849"/>
+      <stop offset="100%" stop-color="#C4822A"/>
+    </linearGradient>
+    <linearGradient id="sauce" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#B5422A"/>
+      <stop offset="100%" stop-color="#8B2E1A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Bottom bun (flat) -->
+  <path d="M55 245 L55 265 Q55 280 80 280 L320 280 Q345 280 345 265 L345 245 Z"
+        fill="url(#bun)" stroke="#A06820" stroke-width="2"/>
+
+  <!-- Main filling between buns — thick and messy -->
+  <path d="M48 180 Q45 210 48 245 L352 245 Q355 210 352 180 Z" fill="url(#sauce)"/>
+
+  <!-- Sauce oozing out sides at filling level -->
+  <path d="M48 190 Q32 200 28 220 Q26 240 40 235 Q45 225 48 210 Z" fill="url(#sauce)" opacity="0.8"/>
+  <path d="M352 190 Q368 200 372 220 Q374 240 360 235 Q355 225 352 210 Z" fill="url(#sauce)" opacity="0.8"/>
+  <ellipse cx="25" cy="242" rx="10" ry="7" fill="#B5422A" opacity="0.5"/>
+  <ellipse cx="375" cy="240" rx="9" ry="6" fill="#B5422A" opacity="0.5"/>
+
+  <!-- Drips falling from filling -->
+  <ellipse cx="130" cy="258" rx="4" ry="11" fill="#B5422A" opacity="0.45"/>
+  <ellipse cx="270" cy="262" rx="3" ry="9" fill="#B5422A" opacity="0.4"/>
+  <ellipse cx="200" cy="265" rx="5" ry="13" fill="#B5422A" opacity="0.5"/>
+
+  <!-- Package labels — positioned INSIDE the filling, partially sticking out edges -->
+  <!-- Row 1: near top of filling -->
+  <g transform="rotate(-6 200 190)">
+    <rect x="20" y="181" width="95" height="20" rx="3" fill="#1E3A5F" opacity="0.92"/>
+    <text x="67" y="195" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">requstes</text>
+  </g>
+
+  <g transform="rotate(4 280 188)">
+    <rect x="250" y="180" width="120" height="20" rx="3" fill="#1E3A5F" opacity="0.92"/>
+    <text x="310" y="194" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">fake-json-lib</text>
+  </g>
+
+  <!-- Row 2: middle of filling -->
+  <g transform="rotate(5 120 208)">
+    <rect x="30" y="200" width="105" height="20" rx="3" fill="#C9962A" opacity="0.92"/>
+    <text x="82" y="214" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#1E1E1E" font-weight="600">unter_score</text>
+  </g>
+
+  <g transform="rotate(-3 250 208)">
+    <rect x="165" y="200" width="80" height="20" rx="3" fill="#2BA99A" opacity="0.88"/>
+    <text x="205" y="214" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">moment</text>
+  </g>
+
+  <g transform="rotate(-5 340 208)">
+    <rect x="280" y="200" width="90" height="20" rx="3" fill="#C9962A" opacity="0.88"/>
+    <text x="325" y="214" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#1E1E1E" font-weight="600">ai-hallu</text>
+  </g>
+
+  <!-- Row 3: near bottom of filling -->
+  <g transform="rotate(-4 100 228)">
+    <rect x="15" y="220" width="85" height="20" rx="3" fill="#B5422A" opacity="0.85"/>
+    <text x="57" y="234" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">expres</text>
+  </g>
+
+  <g transform="rotate(3 200 228)">
+    <rect x="130" y="220" width="70" height="20" rx="3" fill="#1E3A5F" opacity="0.85"/>
+    <text x="165" y="234" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">got</text>
+  </g>
+
+  <g transform="rotate(6 310 228)">
+    <rect x="260" y="220" width="110" height="20" rx="3" fill="#2BA99A" opacity="0.85"/>
+    <text x="315" y="234" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">lodsah</text>
+  </g>
+
+  <!-- Top bun (domed) — on top of everything -->
+  <path d="M55 183 Q55 95 200 85 Q345 95 345 183 Z"
+        fill="url(#bun)" stroke="#A06820" stroke-width="2"/>
+  <!-- Sesame seeds -->
+  <ellipse cx="140" cy="130" rx="8" ry="5" fill="#F5E6C8" transform="rotate(-15 140 130)"/>
+  <ellipse cx="200" cy="112" rx="8" ry="5" fill="#F5E6C8" transform="rotate(10 200 112)"/>
+  <ellipse cx="260" cy="125" rx="8" ry="5" fill="#F5E6C8" transform="rotate(-5 260 125)"/>
+  <ellipse cx="170" cy="150" rx="7" ry="4" fill="#F5E6C8" transform="rotate(20 170 150)"/>
+  <ellipse cx="235" cy="143" rx="7" ry="4" fill="#F5E6C8" transform="rotate(-10 235 143)"/>
+
+  <!-- Title -->
+  <text x="200" y="370" text-anchor="middle"
+        font-family="'Helvetica Neue',Arial,sans-serif"
+        font-size="32" font-weight="900" fill="#1E1E1E" letter-spacing="-1">sloppy-joe</text>
+  <text x="200" y="392" text-anchor="middle"
+        font-family="'Helvetica Neue',Arial,sans-serif"
+        font-size="12" fill="#666" letter-spacing="0.5">catch what spills out of AI-generated code</text>
+</svg>

@@ -1,0 +1,20 @@
+[package]
+name = "sloppy-joe"
+version = "0.1.0"
+edition = "2024"
+description = "Detect hallucinated, typosquatted, and non-canonical dependencies"
+license = "Apache-2.0"
+
+[dependencies]
+typomania = "0.1.2"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strsim = "0.11"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+colored = "2"
+futures = "0.3"
+toml = "0.8"
+async-trait = "0.1"

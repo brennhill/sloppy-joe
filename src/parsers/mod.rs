@@ -1,0 +1,203 @@
+pub mod cargo_toml;
+pub mod composer_json;
+pub mod csproj;
+pub mod gemfile;
+pub mod go_mod;
+pub mod jvm;
+pub mod package_json;
+pub mod requirements;
+
+use crate::Dependency;
+use anyhow::{bail, Result};
+use std::path::Path;
+
+/// Auto-detect the project type and parse dependencies, or use the specified type.
+pub fn parse_dependencies(
+    project_dir: &Path,
+    project_type: Option<&str>,
+) -> Result<Vec<Dependency>> {
+    match project_type {
+        Some("npm") => package_json::parse(project_dir),
+        Some("pypi") => requirements::parse(project_dir),
+        Some("cargo") => cargo_toml::parse(project_dir),
+        Some("go") => go_mod::parse(project_dir),
+        Some("ruby") => gemfile::parse(project_dir),
+        Some("php") => composer_json::parse(project_dir),
+        Some("jvm") => jvm::parse(project_dir),
+        Some("dotnet") => csproj::parse(project_dir),
+        Some(other) => bail!("Unknown project type: {}", other),
+        None => auto_detect(project_dir),
+    }
+}
+
+fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
+    if project_dir.join("package.json").exists() {
+        return package_json::parse(project_dir);
+    }
+    if project_dir.join("requirements.txt").exists() {
+        return requirements::parse(project_dir);
+    }
+    if project_dir.join("Cargo.toml").exists() {
+        return cargo_toml::parse(project_dir);
+    }
+    if project_dir.join("go.mod").exists() {
+        return go_mod::parse(project_dir);
+    }
+    if project_dir.join("Gemfile").exists() {
+        return gemfile::parse(project_dir);
+    }
+    if project_dir.join("composer.json").exists() {
+        return composer_json::parse(project_dir);
+    }
+    if project_dir.join("build.gradle").exists() || project_dir.join("pom.xml").exists() {
+        return jvm::parse(project_dir);
+    }
+    if has_csproj(project_dir) {
+        return csproj::parse(project_dir);
+    }
+    bail!(
+        "Could not detect project type. Use --type to specify one of: \
+         npm, pypi, cargo, go, ruby, php, jvm, dotnet"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_dir() -> std::path::PathBuf {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("sj-parsers-{}-{}", std::process::id(), id));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn parse_dependencies_with_explicit_type() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "^18"}}"#,
+        )
+        .unwrap();
+        let deps = parse_dependencies(&dir, Some("npm")).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "react");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_dependencies_unknown_type_errors() {
+        let dir = unique_dir();
+        let result = parse_dependencies(&dir, Some("unknown_type"));
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_package_json() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"express": "^4"}}"#,
+        )
+        .unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "npm");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_requirements_txt() {
+        let dir = unique_dir();
+        std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "pypi");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_cargo_toml() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname=\"t\"\nversion=\"0.1.0\"\n\n[dependencies]\nserde = \"1\"",
+        )
+        .unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "cargo");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_go_mod() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("go.mod"),
+            "module example.com/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9\n)\n",
+        )
+        .unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "go");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_gemfile() {
+        let dir = unique_dir();
+        std::fs::write(dir.join("Gemfile"), "gem 'rails'\n").unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "ruby");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_composer_json() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{"require":{"laravel/framework":"^10"}}"#,
+        )
+        .unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "php");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_no_project_files_errors() {
+        let dir = unique_dir();
+        let result = parse_dependencies(&dir, None);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_csproj_finds_file() {
+        let dir = unique_dir();
+        std::fs::write(dir.join("app.csproj"), "<Project></Project>").unwrap();
+        assert!(has_csproj(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_csproj_no_file() {
+        let dir = unique_dir();
+        assert!(!has_csproj(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+fn has_csproj(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .ok()
+        .map(|entries| {
+            entries.filter_map(|e| e.ok()).any(|e| {
+                e.path().extension().map_or(false, |ext| ext == "csproj")
+            })
+        })
+        .unwrap_or(false)
+}
