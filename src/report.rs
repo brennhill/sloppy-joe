@@ -4,8 +4,6 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum Severity {
     Error,
-    Warning,
-    Info,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,76 +68,31 @@ impl ScanReport {
         }
 
         println!();
+        println!("{}", "ERRORS (build blocked):".red().bold());
+        println!();
 
-        let errors: Vec<_> = self.issues.iter().filter(|i| i.severity == Severity::Error).collect();
-        let warnings: Vec<_> = self.issues.iter().filter(|i| i.severity == Severity::Warning).collect();
-        let infos: Vec<_> = self.issues.iter().filter(|i| i.severity == Severity::Info).collect();
-
-        if !errors.is_empty() {
-            println!("{}", "ERRORS (build should fail):".red().bold());
-            println!();
-            for issue in &errors {
-                println!("  {} {} {}", "ERROR".red().bold(), issue.package.red().bold(), format!("[{}]", issue.check).dimmed());
-                println!("        {}", issue.message);
-                println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
-                if let Some(ref s) = issue.suggestion {
-                    println!("        Replace with: {}", s.green().bold());
-                }
-                if let Some(ref url) = issue.registry_url {
-                    println!("        Verify: {}", url.dimmed());
-                }
-                println!();
+        for issue in &self.issues {
+            println!("  {} {} {}", "ERROR".red().bold(), issue.package.red().bold(), format!("[{}]", issue.check).dimmed());
+            println!("        {}", issue.message);
+            println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
+            if let Some(ref s) = issue.suggestion {
+                println!("        Replace with: {}", s.green().bold());
             }
-        }
-
-        if !warnings.is_empty() {
-            println!("{}", "WARNINGS (review before merging):".yellow().bold());
-            println!();
-            for issue in &warnings {
-                println!("  {} {} {}", "WARN".yellow().bold(), issue.package.yellow().bold(), format!("[{}]", issue.check).dimmed());
-                println!("        {}", issue.message);
-                println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
-                if let Some(ref s) = issue.suggestion {
-                    println!("        Did you mean: {}", s.green().bold());
-                }
-                if let Some(ref url) = issue.registry_url {
-                    println!("        Verify: {}", url.dimmed());
-                }
-                println!();
+            if let Some(ref url) = issue.registry_url {
+                println!("        Verify: {}", url.dimmed());
             }
-        }
-
-        if !infos.is_empty() {
-            println!("{}", "INFO (non-canonical packages):".blue().bold());
             println!();
-            for issue in &infos {
-                println!("  {} {} {}", "INFO".blue().bold(), issue.package.blue().bold(), format!("[{}]", issue.check).dimmed());
-                println!("        {}", issue.message);
-                println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
-                if let Some(ref s) = issue.suggestion {
-                    println!("        Use instead: {}", s.green().bold());
-                }
-                println!();
-            }
         }
 
         println!("{}", "─".repeat(60));
-        let error_count = errors.len();
-        let warning_count = warnings.len();
-        let info_count = infos.len();
         println!(
-            "{}: {} packages checked | {} {} | {} {} | {} {}",
+            "{}: {} packages checked, {} {}",
             "Summary".bold(),
             self.packages_checked,
-            error_count, if error_count == 1 { "error" } else { "errors" },
-            warning_count, if warning_count == 1 { "warning" } else { "warnings" },
-            info_count, if info_count == 1 { "info" } else { "infos" },
+            self.issues.len(),
+            if self.issues.len() == 1 { "error" } else { "errors" },
         );
-        if error_count > 0 {
-            println!("\n{}  Remove or replace the packages above before merging.", "BLOCKED".red().bold());
-        } else if warning_count > 0 {
-            println!("\n{}  Review warnings above. No errors found.", "REVIEW".yellow().bold());
-        }
+        println!("\n{}  Remove or replace the packages above before merging.", "BLOCKED".red().bold());
     }
 }
 
@@ -194,7 +147,7 @@ mod tests {
     #[test]
     fn new_merges_all_issue_types() {
         let existence = vec![issue("a", "existence", Severity::Error)];
-        let similarity = vec![issue("b", "similarity", Severity::Warning)];
+        let similarity = vec![issue("b", "similarity", Severity::Error)];
         let canonical = vec![issue("c", "canonical", Severity::Error)];
         let report = ScanReport::new(5, existence, similarity, canonical);
         assert_eq!(report.packages_checked, 5);
@@ -213,7 +166,7 @@ mod tests {
         let report = ScanReport::new(
             3,
             vec![issue("a", "existence", Severity::Error)],
-            vec![issue("b", "similarity", Severity::Warning)],
+            vec![issue("b", "similarity", Severity::Error)],
             vec![issue("c", "canonical", Severity::Error)],
         );
         // Should not panic
@@ -245,21 +198,20 @@ mod tests {
     }
 
     #[test]
-    fn print_human_warnings_only() {
+    fn print_human_similarity_errors() {
         let report = ScanReport::new(
             2,
             vec![],
-            vec![issue("typo-pkg", "similarity", Severity::Warning)],
+            vec![issue("typo-pkg", "similarity", Severity::Error)],
             vec![],
         );
-        // Should show WARNINGS section and REVIEW verdict
         report.print_human();
         assert!(report.has_issues());
     }
 
     #[test]
-    fn print_human_infos_only() {
-        let mut i = issue("old-pkg", "canonical", Severity::Info);
+    fn print_human_canonical_errors() {
+        let mut i = issue("old-pkg", "canonical", Severity::Error);
         i.registry_url = None;
         let report = ScanReport::new(2, vec![], vec![], vec![i]);
         report.print_human();
@@ -270,10 +222,6 @@ mod tests {
     fn severity_serializes_correctly() {
         let json = serde_json::to_string(&Severity::Error).unwrap();
         assert_eq!(json, "\"Error\"");
-        let json = serde_json::to_string(&Severity::Warning).unwrap();
-        assert_eq!(json, "\"Warning\"");
-        let json = serde_json::to_string(&Severity::Info).unwrap();
-        assert_eq!(json, "\"Info\"");
     }
 
     #[test]

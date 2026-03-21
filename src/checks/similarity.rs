@@ -149,7 +149,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 issues.push(Issue {
                     package: dep.name.clone(),
                     check: "similarity".to_string(),
-                    severity: Severity::Warning,
+                    severity: Severity::Error,
                     message: format!(
                         "'{}' is only {} character{} away from the popular package '{}'. This could be a typosquat — a malicious package with a name designed to trick you into installing it instead of the real one.",
                         dep.name, distance, if distance == 1 { "" } else { "s" }, pop
@@ -194,7 +194,7 @@ mod tests {
         let issues = check_similarity(&deps, "npm");
         assert!(!issues.is_empty());
         assert_eq!(issues[0].suggestion, Some("react".to_string()));
-        assert_eq!(issues[0].severity, Severity::Warning);
+        assert_eq!(issues[0].severity, Severity::Error);
         assert!(!issues[0].fix.is_empty());
     }
 
