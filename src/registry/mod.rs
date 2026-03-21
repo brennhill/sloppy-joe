@@ -9,12 +9,29 @@ pub mod rubygems;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::Serialize;
+
+/// Metadata about a package from its registry.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackageMetadata {
+    /// When the package was first published (ISO 8601)
+    pub created: Option<String>,
+    /// When the latest version was published (ISO 8601)
+    pub latest_version_date: Option<String>,
+    /// Total downloads (lifetime or recent, registry-dependent)
+    pub downloads: Option<u64>,
+}
 
 #[async_trait]
 pub trait Registry: Send + Sync {
     /// Check if a package exists on this registry.
-    /// Returns Ok(true) if it exists, Ok(false) if it doesn't.
     async fn exists(&self, package_name: &str) -> Result<bool>;
+
+    /// Fetch metadata for a package. Returns None if not supported or not found.
+    async fn metadata(&self, package_name: &str) -> Result<Option<PackageMetadata>> {
+        let _ = package_name;
+        Ok(None)
+    }
 
     /// The ecosystem name (e.g. "npm", "pypi", "cargo").
     fn ecosystem(&self) -> &str;
