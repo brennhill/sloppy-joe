@@ -84,20 +84,67 @@ fn max_distance(name_len: usize) -> usize {
     }
 }
 
+/// Returns true if the registry treats package names as case-insensitive.
+/// Case-insensitive registries: npm, pypi, cargo, nuget, packagist.
+/// Case-sensitive registries: go, jvm (maven), ruby.
+fn is_case_insensitive(ecosystem: &str) -> bool {
+    matches!(ecosystem, "npm" | "pypi" | "cargo" | "dotnet" | "php")
+}
+
 /// Check each dependency name against popular packages for suspiciously similar names.
+///
+/// Two checks:
+/// 1. Levenshtein distance (catches typosquats like "requsets")
+/// 2. Case-variant detection (catches "newtonsoft.json" when "Newtonsoft.Json" is canonical)
+///
+/// On case-insensitive registries (npm, pypi, cargo, nuget, php), only exact
+/// case-insensitive match skips the check — the registry prevents case-variant attacks.
+///
+/// On case-sensitive registries (go, maven, ruby), only exact case-sensitive match
+/// skips the check. A case variant is flagged as a potential typosquat because
+/// someone could register the variant as a separate, malicious package.
 pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
     let popular = popular_packages(ecosystem);
+    let case_insensitive = is_case_insensitive(ecosystem);
     let mut issues = Vec::new();
 
     for dep in deps {
-        let dep_name = dep.name.to_lowercase();
-        let threshold = max_distance(dep_name.len());
         for &pop in popular {
-            let pop_lower = pop.to_lowercase();
-            if dep_name == pop_lower {
+            // Exact match (case-sensitive) — always safe, skip
+            if dep.name == pop {
                 continue;
             }
-            let distance = strsim::levenshtein(&dep_name, &pop_lower);
+
+            // Case-insensitive match on a case-insensitive registry — safe, skip
+            if case_insensitive && dep.name.to_lowercase() == pop.to_lowercase() {
+                continue;
+            }
+
+            // Case-sensitive registry: flag case variants as typosquats
+            if !case_insensitive && dep.name.to_lowercase() == pop.to_lowercase() {
+                issues.push(Issue {
+                    package: dep.name.clone(),
+                    check: "similarity".to_string(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "'{}' differs from '{}' only in letter casing. On case-sensitive registries ({}) these resolve to different packages. An attacker could register the case variant as a malicious package.",
+                        dep.name, pop, ecosystem
+                    ),
+                    fix: format!(
+                        "Use the exact casing '{}' in your manifest. Case variants on case-sensitive registries are a known attack vector.",
+                        pop
+                    ),
+                    suggestion: Some(pop.to_string()),
+                    registry_url: None,
+                });
+                break;
+            }
+
+            // Levenshtein distance check (case-insensitive comparison)
+            let dep_lower = dep.name.to_lowercase();
+            let pop_lower = pop.to_lowercase();
+            let threshold = max_distance(dep_lower.len());
+            let distance = strsim::levenshtein(&dep_lower, &pop_lower);
             if distance <= threshold {
                 issues.push(Issue {
                     package: dep.name.clone(),
@@ -209,5 +256,89 @@ mod tests {
         assert!(!popular_packages("jvm").is_empty());
         assert!(!popular_packages("dotnet").is_empty());
         assert!(popular_packages("unknown").is_empty());
+    }
+
+    // --- Case-sensitivity tests ---
+
+    fn dep_eco(name: &str, ecosystem: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: None,
+            ecosystem: ecosystem.to_string(),
+        }
+    }
+
+    #[test]
+    fn case_insensitive_registry_skips_case_variant() {
+        // npm is case-insensitive: "React" should match "react" and be skipped
+        let deps = vec![dep("React")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn case_insensitive_registry_dotnet_skips_exact() {
+        // "Newtonsoft.Json" exact match to popular list — no issue
+        let deps = vec![dep_eco("Newtonsoft.Json", "dotnet")];
+        let issues = check_similarity(&deps, "dotnet");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn case_insensitive_registry_dotnet_skips_case_variant() {
+        // dotnet is case-insensitive: "newtonsoft.json" resolves to same package
+        let deps = vec![dep_eco("newtonsoft.json", "dotnet")];
+        let issues = check_similarity(&deps, "dotnet");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn case_sensitive_registry_flags_case_variant_go() {
+        // Go is case-sensitive: "github.com/Gin-Gonic/Gin" is NOT the same as
+        // "github.com/gin-gonic/gin" — an attacker could register the variant
+        let deps = vec![dep_eco("github.com/Gin-Gonic/Gin", "go")];
+        let issues = check_similarity(&deps, "go");
+        assert!(!issues.is_empty());
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].message.contains("case-sensitive"));
+    }
+
+    #[test]
+    fn case_sensitive_registry_flags_case_variant_ruby() {
+        // Ruby is case-sensitive: "Rails" != "rails"
+        let deps = vec![dep_eco("Rails", "ruby")];
+        let issues = check_similarity(&deps, "ruby");
+        assert!(!issues.is_empty());
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert_eq!(issues[0].suggestion, Some("rails".to_string()));
+    }
+
+    #[test]
+    fn case_sensitive_registry_flags_case_variant_jvm() {
+        // Maven is case-sensitive: "Junit:Junit" != "junit:junit"
+        let deps = vec![dep_eco("Junit:Junit", "jvm")];
+        let issues = check_similarity(&deps, "jvm");
+        assert!(!issues.is_empty());
+        assert_eq!(issues[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn case_sensitive_registry_exact_match_no_issue() {
+        // Exact match on case-sensitive registry — no issue
+        let deps = vec![dep_eco("rails", "ruby")];
+        let issues = check_similarity(&deps, "ruby");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn is_case_insensitive_correct() {
+        assert!(is_case_insensitive("npm"));
+        assert!(is_case_insensitive("pypi"));
+        assert!(is_case_insensitive("cargo"));
+        assert!(is_case_insensitive("dotnet"));
+        assert!(is_case_insensitive("php"));
+        assert!(!is_case_insensitive("go"));
+        assert!(!is_case_insensitive("jvm"));
+        assert!(!is_case_insensitive("ruby"));
     }
 }
