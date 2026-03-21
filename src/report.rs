@@ -230,4 +230,74 @@ mod tests {
         );
         report.print_json();
     }
+
+    #[test]
+    fn print_human_errors_only() {
+        let report = ScanReport::new(
+            2,
+            vec![issue("bad-pkg", "existence", Severity::Error)],
+            vec![],
+            vec![],
+        );
+        // Should show ERRORS section and BLOCKED verdict
+        report.print_human();
+        assert!(report.has_issues());
+    }
+
+    #[test]
+    fn print_human_warnings_only() {
+        let report = ScanReport::new(
+            2,
+            vec![],
+            vec![issue("typo-pkg", "similarity", Severity::Warning)],
+            vec![],
+        );
+        // Should show WARNINGS section and REVIEW verdict
+        report.print_human();
+        assert!(report.has_issues());
+    }
+
+    #[test]
+    fn print_human_infos_only() {
+        let mut i = issue("old-pkg", "canonical", Severity::Info);
+        i.registry_url = None;
+        let report = ScanReport::new(2, vec![], vec![], vec![i]);
+        report.print_human();
+        assert!(report.has_issues());
+    }
+
+    #[test]
+    fn severity_serializes_correctly() {
+        let json = serde_json::to_string(&Severity::Error).unwrap();
+        assert_eq!(json, "\"Error\"");
+        let json = serde_json::to_string(&Severity::Warning).unwrap();
+        assert_eq!(json, "\"Warning\"");
+        let json = serde_json::to_string(&Severity::Info).unwrap();
+        assert_eq!(json, "\"Info\"");
+    }
+
+    #[test]
+    fn issue_json_includes_all_fields() {
+        let i = issue("pkg", "existence", Severity::Error);
+        let json = serde_json::to_string(&i).unwrap();
+        assert!(json.contains("\"severity\":\"Error\""));
+        assert!(json.contains("\"fix\""));
+        assert!(json.contains("\"registry_url\""));
+    }
+
+    #[test]
+    fn issue_json_skips_none_fields() {
+        let i = Issue {
+            package: "pkg".to_string(),
+            check: "existence".to_string(),
+            severity: Severity::Error,
+            message: "msg".to_string(),
+            fix: "fix".to_string(),
+            suggestion: None,
+            registry_url: None,
+        };
+        let json = serde_json::to_string(&i).unwrap();
+        assert!(!json.contains("suggestion"));
+        assert!(!json.contains("registry_url"));
+    }
 }
