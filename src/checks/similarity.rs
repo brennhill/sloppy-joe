@@ -132,6 +132,99 @@ fn normalize_homoglyphs(name: &str) -> (String, bool) {
     (result, replaced)
 }
 
+// ── Scope/namespace squatting detection ────────────────────────────
+
+/// Known-good scopes/namespaces per ecosystem.
+fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
+    match ecosystem {
+        "npm" => &[
+            "@types", "@babel", "@angular", "@vue", "@nuxt", "@nestjs",
+            "@react-native", "@emotion", "@mui", "@chakra-ui",
+            "@testing-library", "@storybook", "@typescript-eslint",
+            "@rollup", "@vitejs", "@svelte", "@tanstack",
+            "@aws-sdk", "@azure", "@google-cloud", "@firebase",
+            "@prisma", "@trpc", "@reduxjs", "@apollo",
+            "@eslint", "@prettier", "@jest", "@playwright",
+            "@vercel", "@netlify", "@cloudflare",
+            "@octokit", "@actions", "@github",
+            "@sentry", "@datadog",
+            "@grpc", "@protobuf",
+        ],
+        "php" => &[
+            "laravel", "symfony", "illuminate", "doctrine",
+            "league", "guzzlehttp", "phpunit", "monolog",
+            "spatie", "barryvdh", "filament", "livewire",
+            "intervention", "predis", "ramsey", "vlucas",
+            "phpstan", "mockery", "nikic", "twig",
+            "psr", "composer", "sebastian",
+        ],
+        "go" => &[
+            "github.com/gin-gonic", "github.com/labstack",
+            "github.com/gofiber", "github.com/spf13",
+            "github.com/stretchr", "github.com/gorilla",
+            "github.com/go-chi", "github.com/go-redis",
+            "github.com/sirupsen", "github.com/rs",
+            "github.com/valyala", "github.com/jackc",
+            "github.com/nats-io", "github.com/hashicorp",
+            "github.com/prometheus", "github.com/grpc",
+            "github.com/golang", "github.com/google",
+            "github.com/aws", "github.com/Azure",
+            "github.com/kubernetes", "github.com/docker",
+            "github.com/etcd-io", "github.com/cockroachdb",
+            "go.uber.org", "google.golang.org",
+            "golang.org", "cloud.google.com",
+        ],
+        "jvm" => &[
+            "com.google", "org.springframework", "org.apache",
+            "io.netty", "com.fasterxml", "org.jetbrains",
+            "com.squareup", "io.grpc", "org.slf4j",
+            "ch.qos", "org.mockito", "org.assertj",
+            "junit", "io.micrometer", "com.zaxxer",
+            "org.hibernate", "org.projectlombok",
+        ],
+        _ => &[],
+    }
+}
+
+/// Extract the scope/namespace from a package name for a given ecosystem.
+fn extract_scope(name: &str, ecosystem: &str) -> Option<String> {
+    match ecosystem {
+        "npm" => {
+            // @scope/package → @scope
+            if name.starts_with('@') {
+                name.split('/').next().map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+        "php" => {
+            // vendor/package → vendor
+            name.split('/').next().filter(|_| name.contains('/')).map(|s| s.to_string())
+        }
+        "go" => {
+            // github.com/org/repo → github.com/org
+            let parts: Vec<&str> = name.splitn(3, '/').collect();
+            if parts.len() >= 2 {
+                Some(format!("{}/{}", parts[0], parts[1]))
+            } else {
+                None
+            }
+        }
+        "jvm" => {
+            // com.google.guava:guava → com.google
+            name.split(':').next().and_then(|group| {
+                let parts: Vec<&str> = group.splitn(3, '.').collect();
+                if parts.len() >= 2 {
+                    Some(format!("{}.{}", parts[0], parts[1]))
+                } else {
+                    None
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
 // ── Generative checks ──────────────────────────────────────────────
 // Each function takes a dependency name and returns candidate names
 // that would match a known package if this is a typosquat.
@@ -319,6 +412,43 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
             ));
             flagged.insert(dep.name.clone());
             continue;
+        }
+
+        // ── Scope/namespace squatting check ──
+        if let Some(scope) = extract_scope(&dep.name, ecosystem) {
+            let scopes = known_scopes(ecosystem);
+            let scope_lower = scope.to_lowercase();
+            let mut scope_flagged = false;
+            for &known in scopes {
+                let known_lower = known.to_lowercase();
+                if scope_lower == known_lower {
+                    // Exact match to a known scope — safe, skip this check
+                    scope_flagged = false;
+                    break;
+                }
+                let distance = strsim::levenshtein(&scope_lower, &known_lower);
+                let threshold = max_distance(scope_lower.len());
+                if distance > 0 && distance <= threshold {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name,
+                            &dep.name, // no specific popular package to suggest
+                            "scope-squatting",
+                            &format!(
+                                "Scope '{}' is {} character{} away from the known scope '{}'.\n      Scope squatting is a known supply chain attack vector.",
+                                scope, distance, if distance == 1 { "" } else { "s" }, known
+                            ),
+                            &format!(
+                                "If you meant '{}', fix the scope in your manifest.",
+                                dep.name.replace(&scope, known)
+                            ),
+                        ));
+                    }
+                    scope_flagged = true;
+                    break;
+                }
+            }
+            if scope_flagged { continue; }
         }
 
         // ── Generative checks (specific, zero false positives) ──
@@ -875,5 +1005,103 @@ mod tests {
         let (normalized, replaced) = normalize_homoglyphs("requests");
         assert_eq!(normalized, "requests");
         assert!(!replaced);
+    }
+
+    // ── Scope/namespace squatting ──
+
+    #[test]
+    fn test_npm_scope_exact_match_no_flag() {
+        // @types/lodash — known scope, should not flag scope-squatting
+        let deps = vec![dep("@types/lodash")];
+        let issues = check_similarity(&deps, "npm");
+        let scope_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("scope-squatting")).collect();
+        assert!(scope_issues.is_empty());
+    }
+
+    #[test]
+    fn test_npm_scope_squatting_flagged() {
+        // @typos/lodash — scope '@typos' is distance 1 from '@types'
+        let deps = vec![dep("@typos/lodash")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("scope-squatting"));
+        assert!(issues[0].message.contains("@typos"));
+        assert!(issues[0].message.contains("@types"));
+    }
+
+    #[test]
+    fn test_npm_no_scope_no_flag() {
+        // lodash — unscoped, scope-squatting check should not apply
+        let deps = vec![dep("lodash")];
+        let issues = check_similarity(&deps, "npm");
+        let scope_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("scope-squatting")).collect();
+        assert!(scope_issues.is_empty());
+    }
+
+    #[test]
+    fn test_php_vendor_squatting_flagged() {
+        // larvael/framework — vendor 'larvael' is distance 2 from 'laravel'
+        let deps = vec![dep_eco("larvael/framework", "php")];
+        let issues = check_similarity(&deps, "php");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("scope-squatting"));
+        assert!(issues[0].message.contains("larvael"));
+        assert!(issues[0].message.contains("laravel"));
+    }
+
+    #[test]
+    fn test_go_org_squatting_flagged() {
+        // github.com/gooogle/protobuf — org 'github.com/gooogle' is distance 1 from 'github.com/google'
+        let deps = vec![dep_eco("github.com/gooogle/protobuf", "go")];
+        let issues = check_similarity(&deps, "go");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("scope-squatting"));
+        assert!(issues[0].message.contains("github.com/gooogle"));
+        assert!(issues[0].message.contains("github.com/google"));
+    }
+
+    #[test]
+    fn test_jvm_group_squatting_flagged() {
+        // com.gogle.guava:guava — group 'com.gogle' is distance 1 from 'com.google'
+        let deps = vec![dep_eco("com.gogle.guava:guava", "jvm")];
+        let issues = check_similarity(&deps, "jvm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("scope-squatting"));
+        assert!(issues[0].message.contains("com.gogle"));
+        assert!(issues[0].message.contains("com.google"));
+    }
+
+    #[test]
+    fn test_extract_scope_npm() {
+        assert_eq!(extract_scope("@types/lodash", "npm"), Some("@types".to_string()));
+        assert_eq!(extract_scope("lodash", "npm"), None);
+        assert_eq!(extract_scope("@babel/core", "npm"), Some("@babel".to_string()));
+    }
+
+    #[test]
+    fn test_extract_scope_php() {
+        assert_eq!(extract_scope("laravel/framework", "php"), Some("laravel".to_string()));
+        assert_eq!(extract_scope("monolog", "php"), None);
+    }
+
+    #[test]
+    fn test_extract_scope_go() {
+        assert_eq!(extract_scope("github.com/google/protobuf", "go"), Some("github.com/google".to_string()));
+        assert_eq!(extract_scope("go.uber.org/zap", "go"), Some("go.uber.org/zap".to_string()));
+    }
+
+    #[test]
+    fn test_extract_scope_jvm() {
+        assert_eq!(extract_scope("com.google.guava:guava", "jvm"), Some("com.google".to_string()));
+        // "junit" has no dot-separated group, so no scope extracted
+        assert_eq!(extract_scope("junit:junit", "jvm"), None);
+    }
+
+    #[test]
+    fn test_known_scopes_populated() {
+        for eco in &["npm", "php", "go", "jvm"] {
+            assert!(!known_scopes(eco).is_empty(), "known_scopes empty for {}", eco);
+        }
+        assert!(known_scopes("unknown").is_empty());
     }
 }
