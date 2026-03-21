@@ -28,8 +28,10 @@ pub trait Registry: Send + Sync {
     async fn exists(&self, package_name: &str) -> Result<bool>;
 
     /// Fetch metadata for a package. Returns None if not supported or not found.
-    async fn metadata(&self, package_name: &str) -> Result<Option<PackageMetadata>> {
+    /// If `version` is provided, look up that specific version's publish date.
+    async fn metadata(&self, package_name: &str, version: Option<&str>) -> Result<Option<PackageMetadata>> {
         let _ = package_name;
+        let _ = version;
         Ok(None)
     }
 

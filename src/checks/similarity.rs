@@ -90,6 +90,48 @@ fn confused_forms(ecosystem: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+// ── Homoglyph detection ───────────────────────────────────────────
+
+/// Map of common homoglyphs: (lookalike char, Latin equivalent).
+fn homoglyph_map() -> &'static [(char, char)] {
+    &[
+        ('\u{0430}', 'a'), // Cyrillic а → Latin a
+        ('\u{0435}', 'e'), // Cyrillic е → Latin e
+        ('\u{043E}', 'o'), // Cyrillic о → Latin o
+        ('\u{0440}', 'p'), // Cyrillic р → Latin p
+        ('\u{0441}', 'c'), // Cyrillic с → Latin c
+        ('\u{0443}', 'y'), // Cyrillic у → Latin y
+        ('\u{0445}', 'x'), // Cyrillic х → Latin x
+        ('\u{0455}', 's'), // Cyrillic ѕ → Latin s
+        ('\u{0456}', 'i'), // Cyrillic і → Latin i
+        ('\u{0458}', 'j'), // Cyrillic ј → Latin j
+        ('\u{0501}', 'd'), // Cyrillic ԁ → Latin d
+        ('\u{0261}', 'g'), // Latin ɡ → Latin g
+        ('\u{2113}', 'l'), // Script ℓ → Latin l
+        ('\u{FF10}', '0'), // Fullwidth 0
+        ('\u{FF11}', '1'), // Fullwidth 1
+        ('\u{2170}', 'i'), // Roman numeral ⅰ → Latin i
+        ('\u{217C}', 'l'), // Roman numeral ⅼ → Latin l
+    ]
+}
+
+/// Normalize a name by replacing homoglyphs with their Latin equivalents.
+/// Returns the normalized string and whether any replacements were made.
+fn normalize_homoglyphs(name: &str) -> (String, bool) {
+    let map = homoglyph_map();
+    let mut result = String::with_capacity(name.len());
+    let mut replaced = false;
+    for ch in name.chars() {
+        if let Some((_, latin)) = map.iter().find(|(lookalike, _)| *lookalike == ch) {
+            result.push(*latin);
+            replaced = true;
+        } else {
+            result.push(ch);
+        }
+    }
+    (result, replaced)
+}
+
 // ── Generative checks ──────────────────────────────────────────────
 // Each function takes a dependency name and returns candidate names
 // that would match a known package if this is a typosquat.
@@ -280,6 +322,28 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         }
 
         // ── Generative checks (specific, zero false positives) ──
+
+        // 0. Homoglyph detection (zero false positives)
+        let (normalized, had_homoglyphs) = normalize_homoglyphs(&dep.name);
+        if had_homoglyphs {
+            let norm_lower = normalized.to_lowercase();
+            for &pop in popular {
+                if norm_lower == pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "homoglyph",
+                            &format!(
+                                "'{}' contains non-Latin characters that look identical to letters in '{}'. This is a homoglyph attack — the package name uses lookalike Unicode characters to impersonate a popular package.",
+                                dep.name, pop
+                            ),
+                            &format!("Use the real package '{}' with standard Latin characters.", pop),
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
 
         // 1. Separator normalization
         let dep_normalized = normalize_separators(&dep_lower);
@@ -777,5 +841,39 @@ mod tests {
         let deps = vec![dep_eco("requests", "pypi")];
         let issues = check_similarity(&deps, "pypi");
         assert!(issues.is_empty());
+    }
+
+    // ── Homoglyph detection ──
+
+    #[test]
+    fn test_homoglyph_cyrillic_e() {
+        // "r\u{0435}quests" — Cyrillic е instead of Latin e — should match "requests"
+        let deps = vec![dep_eco("r\u{0435}quests", "pypi")];
+        let issues = check_similarity(&deps, "pypi");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("homoglyph"));
+        assert_eq!(issues[0].suggestion, Some("requests".to_string()));
+    }
+
+    #[test]
+    fn test_homoglyph_no_match() {
+        // Pure ASCII name that doesn't match anything — should not trigger homoglyph
+        let deps = vec![dep("my-safe-package")];
+        let issues = check_similarity(&deps, "npm");
+        let homoglyph_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("homoglyph")).collect();
+        assert!(homoglyph_issues.is_empty());
+    }
+
+    #[test]
+    fn test_homoglyph_normalize_works() {
+        // Verify normalization replaces Cyrillic chars with Latin equivalents
+        let (normalized, replaced) = normalize_homoglyphs("r\u{0435}qu\u{0435}sts");
+        assert_eq!(normalized, "requests");
+        assert!(replaced);
+
+        // Pure ASCII — no replacement
+        let (normalized, replaced) = normalize_homoglyphs("requests");
+        assert_eq!(normalized, "requests");
+        assert!(!replaced);
     }
 }

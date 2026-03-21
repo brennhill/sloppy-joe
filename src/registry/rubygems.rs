@@ -21,6 +21,25 @@ impl super::Registry for RubyGemsRegistry {
         Ok(resp.status().is_success())
     }
 
+    async fn metadata(&self, package_name: &str, _version: Option<&str>) -> Result<Option<super::PackageMetadata>> {
+        let url = format!("https://rubygems.org/api/v1/gems/{}.json", package_name);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let body: serde_json::Value = resp.json().await?;
+
+        let created = body["created_at"].as_str().map(|s| s.to_string());
+        let latest_version_date = body["version_created_at"].as_str().map(|s| s.to_string());
+        let downloads = body["downloads"].as_u64();
+
+        Ok(Some(super::PackageMetadata {
+            created,
+            latest_version_date,
+            downloads,
+        }))
+    }
+
     fn ecosystem(&self) -> &str {
         "ruby"
     }

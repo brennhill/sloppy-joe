@@ -78,9 +78,10 @@ pub async fn check_metadata(
     let results = stream::iter(deps)
         .map(|dep| {
             let name = dep.name.clone();
+            let version = dep.version.clone();
             async move {
-                let meta = registry.metadata(&name).await.unwrap_or(None);
-                (name, meta)
+                let meta = registry.metadata(&name, version.as_deref()).await.unwrap_or(None);
+                (name, version, meta)
             }
         })
         .buffer_unordered(10)
@@ -89,20 +90,25 @@ pub async fn check_metadata(
 
     let mut issues = Vec::new();
 
-    for (name, meta) in results {
+    for (name, version, meta) in results {
         let Some(meta) = meta else { continue };
 
         // Check version age
         if let Some(ref date) = meta.latest_version_date {
             if let Some(age_hours) = age_in_hours(date) {
                 if age_hours < min_age {
+                    let version_label = if let Some(ref v) = version {
+                        format!("Version '{}' of '{}'", v, name)
+                    } else {
+                        format!("The latest version of '{}'", name)
+                    };
                     issues.push(Issue {
                         package: name.clone(),
                         check: "metadata/version-age".to_string(),
                         severity: Severity::Error,
                         message: format!(
-                            "The latest version of '{}' was published {} hours ago (minimum: {} hours). New versions need time for the community and security scanners to review them.",
-                            name, age_hours, min_age
+                            "{} was published {} hours ago (minimum: {} hours). New versions need time for the community and security scanners to review them.",
+                            version_label, age_hours, min_age
                         ),
                         fix: format!(
                             "Wait until the version is at least {} hours old, or pin to an older version. If this is urgent, set min_version_age_hours to 0 in your config (not recommended).",
@@ -180,7 +186,7 @@ mod tests {
         async fn exists(&self, _name: &str) -> Result<bool> {
             Ok(true)
         }
-        async fn metadata(&self, _name: &str) -> Result<Option<PackageMetadata>> {
+        async fn metadata(&self, _name: &str, _version: Option<&str>) -> Result<Option<PackageMetadata>> {
             Ok(self.metadata_response.clone())
         }
         fn ecosystem(&self) -> &str {
