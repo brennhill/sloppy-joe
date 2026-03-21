@@ -1,5 +1,5 @@
 use crate::config::SloppyJoeConfig;
-use crate::report::Issue;
+use crate::report::{Issue, Severity};
 use crate::Dependency;
 
 /// Check dependencies against the canonical allowlist.
@@ -17,11 +17,17 @@ pub fn check_canonical(
             issues.push(Issue {
                 package: dep.name.clone(),
                 check: "canonical".to_string(),
+                severity: Severity::Error,
                 message: format!(
-                    "'{}' is not the canonical choice. Use '{}' instead.",
+                    "'{}' is not the approved package for this purpose. Your team uses '{}'. Using non-canonical packages creates inconsistency and increases maintenance cost.",
                     dep.name, canonical
                 ),
+                fix: format!(
+                    "Replace '{}' with '{}' in your manifest file. If your team has decided to switch to '{}', update the sloppy-joe config to reflect the new canonical choice.",
+                    dep.name, canonical, dep.name
+                ),
                 suggestion: Some(canonical.clone()),
+                registry_url: None,
             });
         }
     }
@@ -69,7 +75,8 @@ mod tests {
         let issues = check_canonical(&deps, &config, "npm");
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].package, "underscore");
-        assert_eq!(issues[0].check, "canonical");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(!issues[0].fix.is_empty());
     }
 
     #[test]

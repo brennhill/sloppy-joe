@@ -1,13 +1,24 @@
 use colored::Colorize;
 use serde::Serialize;
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Info,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Issue {
     pub package: String,
     pub check: String,
+    pub severity: Severity,
     pub message: String,
+    pub fix: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,60 +71,75 @@ impl ScanReport {
 
         println!();
 
-        let existence_issues: Vec<_> =
-            self.issues.iter().filter(|i| i.check == "existence").collect();
-        let similarity_issues: Vec<_> =
-            self.issues.iter().filter(|i| i.check == "similarity").collect();
-        let canonical_issues: Vec<_> =
-            self.issues.iter().filter(|i| i.check == "canonical").collect();
+        let errors: Vec<_> = self.issues.iter().filter(|i| i.severity == Severity::Error).collect();
+        let warnings: Vec<_> = self.issues.iter().filter(|i| i.severity == Severity::Warning).collect();
+        let infos: Vec<_> = self.issues.iter().filter(|i| i.severity == Severity::Info).collect();
 
-        if !existence_issues.is_empty() {
-            println!("{}", "Packages not found on registry:".red().bold());
-            for issue in &existence_issues {
-                println!("  {} {}", "x".red(), issue.package.red());
-                println!("    {}", issue.message);
-            }
+        if !errors.is_empty() {
+            println!("{}", "ERRORS (build should fail):".red().bold());
             println!();
-        }
-
-        if !similarity_issues.is_empty() {
-            println!(
-                "{}",
-                "Packages with suspiciously similar names:".yellow().bold()
-            );
-            for issue in &similarity_issues {
-                println!("  {} {}", "~".yellow(), issue.package.yellow());
-                println!("    {}", issue.message);
+            for issue in &errors {
+                println!("  {} {} {}", "ERROR".red().bold(), issue.package.red().bold(), format!("[{}]", issue.check).dimmed());
+                println!("        {}", issue.message);
+                println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
                 if let Some(ref s) = issue.suggestion {
-                    println!("    Did you mean: {}", s.bold());
+                    println!("        Replace with: {}", s.green().bold());
                 }
+                if let Some(ref url) = issue.registry_url {
+                    println!("        Verify: {}", url.dimmed());
+                }
+                println!();
             }
-            println!();
         }
 
-        if !canonical_issues.is_empty() {
-            println!(
-                "{}",
-                "Non-canonical packages (preferred alternatives exist):"
-                    .blue()
-                    .bold()
-            );
-            for issue in &canonical_issues {
-                println!("  {} {}", "i".blue(), issue.package.blue());
-                println!("    {}", issue.message);
+        if !warnings.is_empty() {
+            println!("{}", "WARNINGS (review before merging):".yellow().bold());
+            println!();
+            for issue in &warnings {
+                println!("  {} {} {}", "WARN".yellow().bold(), issue.package.yellow().bold(), format!("[{}]", issue.check).dimmed());
+                println!("        {}", issue.message);
+                println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
                 if let Some(ref s) = issue.suggestion {
-                    println!("    Suggested replacement: {}", s.bold());
+                    println!("        Did you mean: {}", s.green().bold());
                 }
+                if let Some(ref url) = issue.registry_url {
+                    println!("        Verify: {}", url.dimmed());
+                }
+                println!();
             }
-            println!();
         }
 
+        if !infos.is_empty() {
+            println!("{}", "INFO (non-canonical packages):".blue().bold());
+            println!();
+            for issue in &infos {
+                println!("  {} {} {}", "INFO".blue().bold(), issue.package.blue().bold(), format!("[{}]", issue.check).dimmed());
+                println!("        {}", issue.message);
+                println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
+                if let Some(ref s) = issue.suggestion {
+                    println!("        Use instead: {}", s.green().bold());
+                }
+                println!();
+            }
+        }
+
+        println!("{}", "─".repeat(60));
+        let error_count = errors.len();
+        let warning_count = warnings.len();
+        let info_count = infos.len();
         println!(
-            "{}: {} packages checked, {} issues found",
+            "{}: {} packages checked | {} {} | {} {} | {} {}",
             "Summary".bold(),
             self.packages_checked,
-            self.issues.len()
+            error_count, if error_count == 1 { "error" } else { "errors" },
+            warning_count, if warning_count == 1 { "warning" } else { "warnings" },
+            info_count, if info_count == 1 { "info" } else { "infos" },
         );
+        if error_count > 0 {
+            println!("\n{}  Remove or replace the packages above before merging.", "BLOCKED".red().bold());
+        } else if warning_count > 0 {
+            println!("\n{}  Review warnings above. No errors found.", "REVIEW".yellow().bold());
+        }
     }
 }
 
@@ -134,8 +160,11 @@ mod tests {
             vec![Issue {
                 package: "foo".to_string(),
                 check: "existence".to_string(),
+                severity: Severity::Error,
                 message: "not found".to_string(),
+                fix: "remove it".to_string(),
                 suggestion: None,
+                registry_url: None,
             }],
             vec![],
             vec![],
@@ -150,26 +179,23 @@ mod tests {
         assert!(report.issues.is_empty());
     }
 
+    fn issue(name: &str, check: &str, severity: Severity) -> Issue {
+        Issue {
+            package: name.to_string(),
+            check: check.to_string(),
+            severity,
+            message: "msg".to_string(),
+            fix: "fix it".to_string(),
+            suggestion: Some("replacement".to_string()),
+            registry_url: Some("https://example.com".to_string()),
+        }
+    }
+
     #[test]
     fn new_merges_all_issue_types() {
-        let existence = vec![Issue {
-            package: "a".to_string(),
-            check: "existence".to_string(),
-            message: "msg".to_string(),
-            suggestion: None,
-        }];
-        let similarity = vec![Issue {
-            package: "b".to_string(),
-            check: "similarity".to_string(),
-            message: "msg".to_string(),
-            suggestion: Some("c".to_string()),
-        }];
-        let canonical = vec![Issue {
-            package: "d".to_string(),
-            check: "canonical".to_string(),
-            message: "msg".to_string(),
-            suggestion: Some("e".to_string()),
-        }];
+        let existence = vec![issue("a", "existence", Severity::Error)];
+        let similarity = vec![issue("b", "similarity", Severity::Warning)];
+        let canonical = vec![issue("c", "canonical", Severity::Error)];
         let report = ScanReport::new(5, existence, similarity, canonical);
         assert_eq!(report.packages_checked, 5);
         assert_eq!(report.issues.len(), 3);
@@ -186,24 +212,9 @@ mod tests {
     fn print_human_with_all_issue_types() {
         let report = ScanReport::new(
             3,
-            vec![Issue {
-                package: "a".to_string(),
-                check: "existence".to_string(),
-                message: "not found".to_string(),
-                suggestion: None,
-            }],
-            vec![Issue {
-                package: "b".to_string(),
-                check: "similarity".to_string(),
-                message: "similar".to_string(),
-                suggestion: Some("bb".to_string()),
-            }],
-            vec![Issue {
-                package: "c".to_string(),
-                check: "canonical".to_string(),
-                message: "not canonical".to_string(),
-                suggestion: Some("cc".to_string()),
-            }],
+            vec![issue("a", "existence", Severity::Error)],
+            vec![issue("b", "similarity", Severity::Warning)],
+            vec![issue("c", "canonical", Severity::Error)],
         );
         // Should not panic
         report.print_human();
@@ -213,12 +224,7 @@ mod tests {
     fn print_json_does_not_panic() {
         let report = ScanReport::new(
             1,
-            vec![Issue {
-                package: "foo".to_string(),
-                check: "existence".to_string(),
-                message: "msg".to_string(),
-                suggestion: None,
-            }],
+            vec![issue("foo", "existence", Severity::Error)],
             vec![],
             vec![],
         );

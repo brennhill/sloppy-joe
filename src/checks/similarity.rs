@@ -1,8 +1,7 @@
-use crate::report::Issue;
+use crate::report::{Issue, Severity};
 use crate::Dependency;
 
 /// Placeholder popular package lists per ecosystem.
-/// In production these would be the top 500 packages; for now we use ~20 per ecosystem.
 fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
     match ecosystem {
         "npm" => &[
@@ -76,11 +75,7 @@ fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
     }
 }
 
-/// Max allowed edit distance, scaled by name length to avoid false positives
-/// on short names (e.g., "next" vs "jest" = distance 2, but they're unrelated).
-///   len <= 4: distance 1 only
-///   len 5-8:  distance <= 2
-///   len 9+:   distance <= 3
+/// Max allowed edit distance, scaled by name length.
 fn max_distance(name_len: usize) -> usize {
     match name_len {
         0..=4 => 1,
@@ -106,11 +101,17 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 issues.push(Issue {
                     package: dep.name.clone(),
                     check: "similarity".to_string(),
+                    severity: Severity::Warning,
                     message: format!(
-                        "Name '{}' is suspiciously similar to popular package '{}' (edit distance: {})",
-                        dep.name, pop, distance
+                        "'{}' is only {} character{} away from the popular package '{}'. This could be a typosquat — a malicious package with a name designed to trick you into installing it instead of the real one.",
+                        dep.name, distance, if distance == 1 { "" } else { "s" }, pop
+                    ),
+                    fix: format!(
+                        "If you meant '{}', fix the name in your manifest. If '{}' is intentional and legitimate, add it to the 'allowed' list in your sloppy-joe config.",
+                        pop, dep.name
                     ),
                     suggestion: Some(pop.to_string()),
+                    registry_url: None,
                 });
                 break;
             }
@@ -134,7 +135,6 @@ mod tests {
 
     #[test]
     fn exact_match_produces_no_issue() {
-        // "react" is in the popular list, exact match should be skipped
         let deps = vec![dep("react")];
         let issues = check_similarity(&deps, "npm");
         assert!(issues.is_empty());
@@ -142,22 +142,16 @@ mod tests {
 
     #[test]
     fn levenshtein_1_on_short_name_flags() {
-        // "reac" is len 4 (<=4), distance 1 from "react" -> should flag
         let deps = vec![dep("reac")];
         let issues = check_similarity(&deps, "npm");
         assert!(!issues.is_empty());
         assert_eq!(issues[0].suggestion, Some("react".to_string()));
+        assert_eq!(issues[0].severity, Severity::Warning);
+        assert!(!issues[0].fix.is_empty());
     }
 
     #[test]
     fn levenshtein_2_on_short_name_does_not_flag() {
-        // "raac" is len 4 (<=4), threshold is 1, distance from "react" is 2 -> should NOT flag
-        // We need a name that is distance 2 from everything in the popular list
-        // "vuee" -> distance 2 from "vue" (len 4, threshold 1) -> won't flag
-        // Actually let's check: "re" is len 2, threshold 1
-        // We need distance 2 from all popular. Let's use "zzzz" which is far from everything.
-        // Actually the test spec says: distance 2 on short name does NOT flag.
-        // "reaa" is distance 2 from "react" (len 4, threshold 1) but might be close to others
         let deps = vec![dep("zzzz")];
         let issues = check_similarity(&deps, "npm");
         assert!(issues.is_empty());
@@ -165,7 +159,6 @@ mod tests {
 
     #[test]
     fn levenshtein_2_on_medium_name_flags() {
-        // "expresz" is len 7 (5-8), threshold 2, distance 1 from "express" -> flags
         let deps = vec![dep("expresz")];
         let issues = check_similarity(&deps, "npm");
         assert!(!issues.is_empty());
@@ -174,7 +167,6 @@ mod tests {
 
     #[test]
     fn levenshtein_3_on_medium_name_does_not_flag() {
-        // Medium name (5-8), threshold is 2, distance 3 should not flag
         let deps = vec![dep("abcdefg")];
         let issues = check_similarity(&deps, "npm");
         assert!(issues.is_empty());

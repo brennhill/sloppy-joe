@@ -1,8 +1,29 @@
 use crate::registry::Registry;
-use crate::report::Issue;
+use crate::report::{Issue, Severity};
 use crate::Dependency;
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
+
+fn registry_url(ecosystem: &str, name: &str) -> String {
+    match ecosystem {
+        "npm" => format!("https://www.npmjs.com/package/{}", name),
+        "pypi" => format!("https://pypi.org/project/{}/", name),
+        "cargo" => format!("https://crates.io/crates/{}", name),
+        "go" => format!("https://pkg.go.dev/{}", name),
+        "ruby" => format!("https://rubygems.org/gems/{}", name),
+        "php" => format!("https://packagist.org/packages/{}", name),
+        "jvm" => {
+            let parts: Vec<&str> = name.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                format!("https://search.maven.org/artifact/{}/{}", parts[0], parts[1])
+            } else {
+                format!("https://search.maven.org/search?q={}", name)
+            }
+        }
+        "dotnet" => format!("https://www.nuget.org/packages/{}", name),
+        _ => String::new(),
+    }
+}
 
 /// Check whether each dependency actually exists on its registry.
 /// Uses a concurrency limit of 10 simultaneous requests.
@@ -10,6 +31,7 @@ pub async fn check_existence(
     registry: &dyn Registry,
     deps: &[Dependency],
 ) -> Result<Vec<Issue>> {
+    let ecosystem = registry.ecosystem().to_string();
     let results = stream::iter(deps)
         .map(|dep| {
             let name = dep.name.clone();
@@ -25,15 +47,21 @@ pub async fn check_existence(
     let mut issues = Vec::new();
     for (name, exists) in results {
         if !exists {
+            let url = registry_url(&ecosystem, &name);
             issues.push(Issue {
                 package: name.clone(),
                 check: "existence".to_string(),
+                severity: Severity::Error,
                 message: format!(
-                    "Package '{}' was not found on the {} registry. This may be hallucinated.",
-                    name,
-                    registry.ecosystem()
+                    "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
+                    name, ecosystem
+                ),
+                fix: format!(
+                    "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
+                    name
                 ),
                 suggestion: None,
+                registry_url: Some(url),
             });
         }
     }
@@ -89,6 +117,9 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].package, "nonexistent-pkg");
         assert_eq!(issues[0].check, "existence");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].registry_url.is_some());
+        assert!(!issues[0].fix.is_empty());
     }
 
     #[tokio::test]
