@@ -21,10 +21,15 @@ AI code generators hallucinate package names [~20% of the time](https://arxiv.or
 | **Existence check** | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: |
 | **Similarity / typosquat** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
 | **Homoglyph detection** | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Scope squatting** | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **Canonical enforcement** | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **Version age gate** | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Install script amplifier** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
+| **Dependency explosion** | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Maintainer change** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
+| **OSV vulnerability check** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
 | **Config security (out-of-repo)** | :white_check_mark: | N/A | :x: | :x: | :x: |
-| **Allowed + internal lists** | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Internal + allowed lists** | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **npm** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
 | **PyPI** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Cargo** | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :x: |
@@ -178,7 +183,28 @@ ERROR requests2 [similarity/version-suffix]
  Fix: Use 'requests' and specify the version in your manifest's version field.
 ```
 
-### 12. Non-canonical packages
+### 12. Scope squatting (npm, PHP, Go, JVM)
+
+**The attack:** An attacker registers `@typos/lodash` on npm — one character from `@types/lodash`. Or `larvael/framework` on Packagist — two characters from `laravel/framework`. Or `github.com/gooogle/protobuf` on Go — one extra `o`. The scope looks legitimate at a glance. The package resolves. The malware installs.
+
+This is rare but plausible — and "rare but plausible" is exactly what sloppy-joe exists for. The `ua-parser-js` incident in 2021 was scope-related. If it can happen to a package with millions of weekly downloads, it can happen to yours.
+
+**How sloppy-joe blocks it:** Extracts the scope/namespace from the dependency name and compares it against a list of known-good scopes using edit distance. Works on npm (`@scope`), PHP (`vendor/`), Go (`github.com/org`), and JVM (`com.group`).
+
+```
+ERROR @typos/lodash [similarity/scope-squatting]
+      Scope '@typos' is 1 character away from the known scope '@types'.
+      Scope squatting is a known supply chain attack vector.
+ Fix: If you meant '@types/lodash', fix the scope in your manifest.
+```
+
+```
+ERROR github.com/gooogle/protobuf [similarity/scope-squatting]
+      Scope 'github.com/gooogle' is 1 character away from 'github.com/google'.
+ Fix: If you meant 'github.com/google/protobuf', fix the org name.
+```
+
+### 13. Non-canonical packages (not an attack — a consistency gate)
 
 **The attack:** Not an attack — a consistency problem. AI picks `moment` because it was popular in training data, but your team uses `dayjs`. Different teams using different packages for the same job creates maintenance debt and dependency bloat.
 
@@ -191,7 +217,7 @@ ERROR moment [canonical]
  Fix: Replace 'moment' with 'dayjs' in your manifest file.
 ```
 
-### 13. Too-new versions (supply chain time bomb)
+### 14. Too-new versions (supply chain time bomb)
 
 **The attack:** An attacker compromises a package maintainer's account (or a maintainer goes rogue) and publishes a malicious patch version. It looks like a normal update. If your CI installs it immediately, you're compromised before anyone notices.
 
@@ -204,7 +230,7 @@ ERROR react [metadata/version-age]
  Fix: Wait until the version is at least 72 hours old, or pin to an older version.
 ```
 
-### 14. Brand-new packages
+### 15. Brand-new packages
 
 **The attack:** A package created yesterday with 3 downloads that has a name similar to a popular package. High probability of being a typosquat or a placeholder for a future attack.
 
@@ -217,7 +243,7 @@ ERROR sketchy-lib [metadata/new-package]
  Fix: Verify 'sketchy-lib' at its registry page and source repository.
 ```
 
-### 15. Low-download packages
+### 16. Low-download packages
 
 **The attack:** A package with 12 downloads that happens to be one character away from `requests`. Almost certainly a typosquat.
 
@@ -368,7 +394,8 @@ For each dependency:
   7. Omitted character insertion → check against corpus
   8. Ecosystem confused forms    → check against corpus
   9. Case-variant detection      → check against corpus
-  10. Levenshtein distance       → fallback for novel mutations
+  10. Scope squatting detection   → check scope against known-good scopes
+  11. Levenshtein distance       → fallback for novel mutations
 ```
 
 Generative checks fire only when a mutation produces an **exact match** to a known package — zero false positives. Levenshtein runs last as a safety net for mutations nobody anticipated.
@@ -380,7 +407,7 @@ Generative checks fire only when a mutation produces an **exact match** to a kno
 
 ## Tests
 
-139 tests. Covers all similarity checks, metadata signals, config parsing, all 8 parsers, and report formatting.
+163 tests. Covers all similarity checks (including scope squatting), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing, all 8 parsers, and report formatting.
 
 ```bash
 cargo test
