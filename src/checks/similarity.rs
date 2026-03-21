@@ -93,10 +93,11 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         let dep_name = dep.name.to_lowercase();
         let threshold = max_distance(dep_name.len());
         for &pop in popular {
-            if dep_name == pop {
+            let pop_lower = pop.to_lowercase();
+            if dep_name == pop_lower {
                 continue;
             }
-            let distance = strsim::levenshtein(&dep_name, pop);
+            let distance = strsim::levenshtein(&dep_name, &pop_lower);
             if distance <= threshold {
                 issues.push(Issue {
                     package: dep.name.clone(),

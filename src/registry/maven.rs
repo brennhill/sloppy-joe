@@ -8,7 +8,10 @@ pub struct MavenRegistry {
 impl MavenRegistry {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
+                .build()
+                .expect("failed to build HTTP client"),
         }
     }
 }
@@ -21,8 +24,9 @@ impl super::Registry for MavenRegistry {
             return Ok(false);
         }
         let (group, artifact) = (parts[0], parts[1]);
+        // Use quoted values in the Solr query for exact matching
         let url = format!(
-            "https://search.maven.org/solrsearch/select?q=g:{}+AND+a:{}&rows=1",
+            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22&rows=1&wt=json",
             group, artifact
         );
         let resp = self.client.get(&url).send().await?;
