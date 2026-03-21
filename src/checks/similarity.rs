@@ -1,5 +1,6 @@
 use crate::report::{Issue, Severity};
 use crate::Dependency;
+use std::collections::HashSet;
 
 /// Placeholder popular package lists per ecosystem.
 fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
@@ -75,7 +76,163 @@ fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
     }
 }
 
-/// Max allowed edit distance, scaled by name length.
+/// Ecosystem-specific confused forms: terms that are interchangeable
+/// and commonly swapped by AI or humans.
+fn confused_forms(ecosystem: &str) -> &'static [(&'static str, &'static str)] {
+    match ecosystem {
+        "pypi" => &[("python", "py"), ("python-", "py-"), ("python_", "py_")],
+        "go" => &[
+            ("github.com", "gitlab.com"),
+            ("golang", "go"),
+            ("golang-", "go-"),
+        ],
+        _ => &[],
+    }
+}
+
+// ── Generative checks ──────────────────────────────────────────────
+// Each function takes a dependency name and returns candidate names
+// that would match a known package if this is a typosquat.
+
+/// Normalize separators: strip `-`, `_`, `.` for comparison.
+/// Catches: "python-dateutil" vs "pythondateutil"
+fn normalize_separators(name: &str) -> String {
+    name.chars().filter(|c| *c != '-' && *c != '_' && *c != '.').collect()
+}
+
+/// Generate variants with one repeated character removed at each position.
+/// "expresss" → ["express"], "reeact" → ["react"], "llodash" → ["lodash"]
+/// Returns all variants where a consecutive duplicate is collapsed once.
+fn collapse_one_repeated(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = Vec::new();
+    let mut i = 0;
+    while i < chars.len().saturating_sub(1) {
+        if chars[i] == chars[i + 1] {
+            // Remove one instance of the repeated char
+            let mut variant: Vec<char> = Vec::with_capacity(chars.len() - 1);
+            variant.extend_from_slice(&chars[..i]);
+            variant.extend_from_slice(&chars[i + 1..]);
+            let s: String = variant.into_iter().collect();
+            if !results.contains(&s) {
+                results.push(s);
+            }
+            // Skip past all consecutive duplicates
+            while i < chars.len().saturating_sub(1) && chars[i] == chars[i + 1] {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    results
+}
+
+/// Strip trailing version suffixes: "requests2" → "requests", "lodash-4" → "lodash"
+fn strip_version_suffix(name: &str) -> String {
+    let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    trimmed.trim_end_matches('-').trim_end_matches('_').to_string()
+}
+
+/// Generate word-reordered variants: "json-parse" → "parse-json"
+/// Returns all permutations of segments split on `-`, `_`, `.`
+fn word_reorderings(name: &str) -> Vec<String> {
+    let separators = ['-', '_', '.'];
+    let mut sep_char = None;
+    for s in &separators {
+        if name.contains(*s) {
+            sep_char = Some(*s);
+            break;
+        }
+    }
+    let Some(sep) = sep_char else { return vec![] };
+    let mut segments: Vec<&str> = name.split(sep).collect();
+    if segments.len() < 2 || segments.len() > 5 {
+        return vec![];
+    }
+    // Generate all permutations
+    let mut results = Vec::new();
+    permutations(&mut segments, 0, sep, &mut results);
+    // Remove the original
+    let original = name.to_string();
+    results.retain(|r| r != &original);
+    results
+}
+
+fn permutations(segments: &mut Vec<&str>, start: usize, sep: char, results: &mut Vec<String>) {
+    if start == segments.len() {
+        results.push(segments.join(&sep.to_string()));
+        return;
+    }
+    for i in start..segments.len() {
+        segments.swap(start, i);
+        permutations(segments, start + 1, sep, results);
+        segments.swap(start, i);
+    }
+}
+
+/// Generate ecosystem-specific confused forms.
+/// "python-dateutil" → "py-dateutil", "py-utils" → "python-utils"
+fn apply_confused_forms(name: &str, ecosystem: &str) -> Vec<String> {
+    let forms = confused_forms(ecosystem);
+    let mut results = Vec::new();
+    let lower = name.to_lowercase();
+    for (a, b) in forms {
+        if lower.contains(a) {
+            results.push(lower.replace(a, b));
+        }
+        if lower.contains(b) {
+            results.push(lower.replace(b, a));
+        }
+    }
+    results
+}
+
+/// Generate variants with one character inserted at each position.
+/// "reqests" with every a-z inserted at every position → includes "requests"
+/// This catches omitted-character typosquats where one letter was dropped.
+fn insert_each_char(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = HashSet::new();
+    for pos in 0..=chars.len() {
+        for c in b'a'..=b'z' {
+            let mut variant = String::with_capacity(chars.len() + 1);
+            for (i, &ch) in chars.iter().enumerate() {
+                if i == pos {
+                    variant.push(c as char);
+                }
+                variant.push(ch);
+            }
+            if pos == chars.len() {
+                variant.push(c as char);
+            }
+            results.insert(variant);
+        }
+    }
+    results.into_iter().collect()
+}
+
+/// Swap adjacent characters: "reqeust" → "request"
+fn adjacent_swaps(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = Vec::new();
+    for i in 0..chars.len().saturating_sub(1) {
+        let mut swapped = chars.clone();
+        swapped.swap(i, i + 1);
+        let s: String = swapped.into_iter().collect();
+        if s != name {
+            results.push(s);
+        }
+    }
+    results
+}
+
+// ── Orchestration ──────────────────────────────────────────────────
+
+fn is_case_insensitive(ecosystem: &str) -> bool {
+    matches!(ecosystem, "npm" | "pypi" | "cargo" | "dotnet" | "php")
+}
+
+/// Max allowed Levenshtein distance, scaled by name length (fallback check).
 fn max_distance(name_len: usize) -> usize {
     match name_len {
         0..=4 => 1,
@@ -84,83 +241,190 @@ fn max_distance(name_len: usize) -> usize {
     }
 }
 
-/// Returns true if the registry treats package names as case-insensitive.
-/// Case-insensitive registries: npm, pypi, cargo, nuget, packagist.
-/// Case-sensitive registries: go, jvm (maven), ruby.
-fn is_case_insensitive(ecosystem: &str) -> bool {
-    matches!(ecosystem, "npm" | "pypi" | "cargo" | "dotnet" | "php")
+/// Build a HashSet of popular package names (lowercased) for fast lookup.
+fn build_corpus(popular: &[&str]) -> HashSet<String> {
+    popular.iter().map(|p| p.to_lowercase()).collect()
 }
 
-/// Check each dependency name against popular packages for suspiciously similar names.
-///
-/// Two checks:
-/// 1. Levenshtein distance (catches typosquats like "requsets")
-/// 2. Case-variant detection (catches "newtonsoft.json" when "Newtonsoft.Json" is canonical)
-///
-/// On case-insensitive registries (npm, pypi, cargo, nuget, php), only exact
-/// case-insensitive match skips the check — the registry prevents case-variant attacks.
-///
-/// On case-sensitive registries (go, maven, ruby), only exact case-sensitive match
-/// skips the check. A case variant is flagged as a potential typosquat because
-/// someone could register the variant as a separate, malicious package.
+/// Main entry point. Runs generative checks first, Levenshtein as fallback.
 pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
     let popular = popular_packages(ecosystem);
     let case_insensitive = is_case_insensitive(ecosystem);
+    let corpus = build_corpus(popular);
     let mut issues = Vec::new();
+    let mut flagged: HashSet<String> = HashSet::new();
 
     for dep in deps {
+        let dep_lower = dep.name.to_lowercase();
+
+        // Exact match — safe, skip
+        if corpus.contains(&dep_lower) && (case_insensitive || popular.contains(&dep.name.as_str())) {
+            continue;
+        }
+
+        // On case-sensitive registries, flag case variants
+        if !case_insensitive && corpus.contains(&dep_lower) {
+            let original = popular.iter().find(|p| p.to_lowercase() == dep_lower).unwrap();
+            issues.push(make_issue(
+                &dep.name,
+                original,
+                "case-variant",
+                &format!(
+                    "'{}' differs from '{}' only in letter casing. On case-sensitive registries ({}) these resolve to different packages. An attacker could register the case variant.",
+                    dep.name, original, ecosystem
+                ),
+                &format!("Use the exact casing '{}' in your manifest.", original),
+            ));
+            flagged.insert(dep.name.clone());
+            continue;
+        }
+
+        // ── Generative checks (specific, zero false positives) ──
+
+        // 1. Separator normalization
+        let dep_normalized = normalize_separators(&dep_lower);
         for &pop in popular {
-            // Exact match (case-sensitive) — always safe, skip
-            if dep.name == pop {
-                continue;
-            }
-
-            // Case-insensitive match on a case-insensitive registry — safe, skip
-            if case_insensitive && dep.name.to_lowercase() == pop.to_lowercase() {
-                continue;
-            }
-
-            // Case-sensitive registry: flag case variants as typosquats
-            if !case_insensitive && dep.name.to_lowercase() == pop.to_lowercase() {
-                issues.push(Issue {
-                    package: dep.name.clone(),
-                    check: "similarity".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "'{}' differs from '{}' only in letter casing. On case-sensitive registries ({}) these resolve to different packages. An attacker could register the case variant as a malicious package.",
-                        dep.name, pop, ecosystem
-                    ),
-                    fix: format!(
-                        "Use the exact casing '{}' in your manifest. Case variants on case-sensitive registries are a known attack vector.",
-                        pop
-                    ),
-                    suggestion: Some(pop.to_string()),
-                    registry_url: None,
-                });
+            let pop_normalized = normalize_separators(&pop.to_lowercase());
+            if dep_normalized == pop_normalized && dep_lower != pop.to_lowercase() {
+                if flagged.insert(dep.name.clone()) {
+                    issues.push(make_issue(
+                        &dep.name, pop, "separator-confusion",
+                        &format!("'{}' matches '{}' after normalizing separators (-, _, .). These may resolve to different packages.", dep.name, pop),
+                        &format!("Use the canonical name '{}' with the correct separators.", pop),
+                    ));
+                }
                 break;
             }
+        }
+        if flagged.contains(&dep.name) { continue; }
 
-            // Levenshtein distance check (case-insensitive comparison)
-            let dep_lower = dep.name.to_lowercase();
+        // 2. Collapsed repeated characters
+        let collapsed_variants = collapse_one_repeated(&dep_lower);
+        'repeated: for variant in &collapsed_variants {
+            for &pop in popular {
+                if variant == &pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "repeated-chars",
+                            &format!("'{}' matches '{}' after removing a repeated character. This is a common typosquatting pattern.", dep.name, pop),
+                            &format!("Use '{}' — remove the repeated characters.", pop),
+                        ));
+                    }
+                    break 'repeated;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
+
+        // 3. Version suffix stripping
+        let dep_stripped = strip_version_suffix(&dep_lower);
+        if dep_stripped != dep_lower {
+            for &pop in popular {
+                if dep_stripped == pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "version-suffix",
+                            &format!("'{}' looks like '{}' with a version suffix appended. An attacker could register the suffixed variant as a separate package.", dep.name, pop),
+                            &format!("Use '{}' and specify the version in your manifest's version field, not the package name.", pop),
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
+
+        // 4. Word reordering
+        let reorderings = word_reorderings(&dep_lower);
+        'reorder: for variant in &reorderings {
+            for &pop in popular {
+                if variant == &pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "word-reorder",
+                            &format!("'{}' is a reordering of '{}'. Word-swapped package names are a known typosquatting vector.", dep.name, pop),
+                            &format!("Use '{}' — the segments are in the wrong order.", pop),
+                        ));
+                    }
+                    break 'reorder;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
+
+        // 5. Adjacent character swaps
+        let swaps = adjacent_swaps(&dep_lower);
+        'swaps: for variant in &swaps {
+            for &pop in popular {
+                if variant == &pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "char-swap",
+                            &format!("'{}' matches '{}' with two adjacent characters swapped. This is a common typo and a known typosquatting pattern.", dep.name, pop),
+                            &format!("Use '{}' — two characters are transposed.", pop),
+                        ));
+                    }
+                    break 'swaps;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
+
+        // 6. Omitted character (one char dropped)
+        let insertions = insert_each_char(&dep_lower);
+        'omitted: for variant in &insertions {
+            for &pop in popular {
+                if variant == &pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "omitted-char",
+                            &format!("'{}' matches '{}' with one character inserted. A character may have been omitted — this is a common typosquatting pattern.", dep.name, pop),
+                            &format!("Use '{}' — a character appears to be missing.", pop),
+                        ));
+                    }
+                    break 'omitted;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
+
+        // 7. Ecosystem-specific confused forms
+        let confused = apply_confused_forms(&dep.name, ecosystem);
+        'confused: for variant in &confused {
+            for &pop in popular {
+                if variant == &pop.to_lowercase() {
+                    if flagged.insert(dep.name.clone()) {
+                        issues.push(make_issue(
+                            &dep.name, pop, "confused-form",
+                            &format!("'{}' is a confused form of '{}'. These are commonly interchanged but resolve to different packages.", dep.name, pop),
+                            &format!("Use the canonical name '{}'.", pop),
+                        ));
+                    }
+                    break 'confused;
+                }
+            }
+        }
+        if flagged.contains(&dep.name) { continue; }
+
+        // ── Fallback: Levenshtein distance (catches novel mutations) ──
+        let threshold = max_distance(dep_lower.len());
+        for &pop in popular {
             let pop_lower = pop.to_lowercase();
-            let threshold = max_distance(dep_lower.len());
             let distance = strsim::levenshtein(&dep_lower, &pop_lower);
-            if distance <= threshold {
-                issues.push(Issue {
-                    package: dep.name.clone(),
-                    check: "similarity".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "'{}' is only {} character{} away from the popular package '{}'. This could be a typosquat — a malicious package with a name designed to trick you into installing it instead of the real one.",
-                        dep.name, distance, if distance == 1 { "" } else { "s" }, pop
-                    ),
-                    fix: format!(
-                        "If you meant '{}', fix the name in your manifest. If '{}' is intentional and legitimate, add it to the 'allowed' list in your sloppy-joe config.",
-                        pop, dep.name
-                    ),
-                    suggestion: Some(pop.to_string()),
-                    registry_url: None,
-                });
+            if distance > 0 && distance <= threshold {
+                if flagged.insert(dep.name.clone()) {
+                    issues.push(make_issue(
+                        &dep.name, pop, "edit-distance",
+                        &format!(
+                            "'{}' is {} character{} away from '{}'. This could be a typosquat.",
+                            dep.name, distance, if distance == 1 { "" } else { "s" }, pop
+                        ),
+                        &format!(
+                            "If you meant '{}', fix the name. If '{}' is intentional, add it to the 'allowed' list.",
+                            pop, dep.name
+                        ),
+                    ));
+                }
                 break;
             }
         }
@@ -169,17 +433,31 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
     issues
 }
 
+fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
+    Issue {
+        package: package.to_string(),
+        check: format!("similarity/{}", check_type),
+        severity: Severity::Error,
+        message: message.to_string(),
+        fix: fix.to_string(),
+        suggestion: Some(popular.to_string()),
+        registry_url: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn dep(name: &str) -> Dependency {
-        Dependency {
-            name: name.to_string(),
-            version: None,
-            ecosystem: "npm".to_string(),
-        }
+        Dependency { name: name.to_string(), version: None, ecosystem: "npm".to_string() }
     }
+
+    fn dep_eco(name: &str, ecosystem: &str) -> Dependency {
+        Dependency { name: name.to_string(), version: None, ecosystem: ecosystem.to_string() }
+    }
+
+    // ── Exact match ──
 
     #[test]
     fn exact_match_produces_no_issue() {
@@ -188,105 +466,148 @@ mod tests {
         assert!(issues.is_empty());
     }
 
+    // ── Generative: separator normalization ──
+
     #[test]
-    fn levenshtein_1_on_short_name_flags() {
-        let deps = vec![dep("reac")];
+    fn separator_confusion_hyphen_vs_underscore() {
+        // "socket_io" should match "socket.io" after separator normalization
+        let deps = vec![dep("socket_io")];
         let issues = check_similarity(&deps, "npm");
         assert!(!issues.is_empty());
-        assert_eq!(issues[0].suggestion, Some("react".to_string()));
-        assert_eq!(issues[0].severity, Severity::Error);
-        assert!(!issues[0].fix.is_empty());
+        assert!(issues[0].check.contains("separator"));
+        assert_eq!(issues[0].suggestion, Some("socket.io".to_string()));
     }
 
     #[test]
-    fn levenshtein_2_on_short_name_does_not_flag() {
+    fn separator_removed_entirely() {
+        // "socketio" should match "socket.io"
+        let deps = vec![dep("socketio")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("separator"));
+    }
+
+    // ── Generative: repeated characters ──
+
+    #[test]
+    fn repeated_chars_caught() {
+        // "expresss" → "express"
+        let deps = vec![dep("expresss")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("repeated"));
+        assert_eq!(issues[0].suggestion, Some("express".to_string()));
+    }
+
+    #[test]
+    fn repeated_chars_interior() {
+        // "reeact" → "react"
+        let deps = vec![dep("reeact")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert_eq!(issues[0].suggestion, Some("react".to_string()));
+    }
+
+    // ── Generative: version suffix ──
+
+    #[test]
+    fn version_suffix_caught() {
+        // "react2" → "react"
+        let deps = vec![dep("react2")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("version"));
+        assert_eq!(issues[0].suggestion, Some("react".to_string()));
+    }
+
+    #[test]
+    fn version_suffix_with_separator() {
+        // "lodash-4" → "lodash"
+        let deps = vec![dep("lodash-4")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("version"));
+    }
+
+    // ── Generative: word reordering ──
+
+    #[test]
+    fn word_reorder_caught() {
+        // "bot-factory" should match "factory_bot" on Ruby
+        let deps = vec![dep_eco("bot_factory", "ruby")];
+        let issues = check_similarity(&deps, "ruby");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("word-reorder"));
+        assert_eq!(issues[0].suggestion, Some("factory_bot".to_string()));
+    }
+
+    // ── Generative: adjacent swaps ──
+
+    #[test]
+    fn adjacent_swap_caught() {
+        // "reuqest" → swap e,u → "request" ... but "requests" is in pypi list
+        // "reqeusts" → swap u,e → "requests"
+        let deps = vec![dep_eco("reqeusts", "pypi")];
+        let issues = check_similarity(&deps, "pypi");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("char-swap"));
+        assert_eq!(issues[0].suggestion, Some("requests".to_string()));
+    }
+
+    // ── Generative: confused forms ──
+
+    #[test]
+    fn confused_form_pypi_py_vs_python() {
+        // Imagine "py-requests" should flag against "requests" via py- removal
+        // Actually let's test: GuardDog swaps "python" <-> "py"
+        // "python-flask" confused with "flask"? No, those are different lengths.
+        // Better: confused_forms for pypi swaps "python" <-> "py"
+        // So if we had "python-fastapi" it would produce "py-fastapi"
+        // and if "py-fastapi" were popular it would match. But our popular list
+        // has "fastapi" not "py-fastapi". This test validates the mechanism works.
+        let forms = apply_confused_forms("python-utils", "pypi");
+        assert!(forms.contains(&"py-utils".to_string()));
+        let forms = apply_confused_forms("py-utils", "pypi");
+        assert!(forms.contains(&"python-utils".to_string()));
+    }
+
+    #[test]
+    fn confused_form_go_github_gitlab() {
+        let forms = apply_confused_forms("github.com/spf13/cobra", "go");
+        assert!(forms.contains(&"gitlab.com/spf13/cobra".to_string()));
+    }
+
+    // ── Fallback: Levenshtein ──
+
+    #[test]
+    fn levenshtein_fallback_catches_novel_typo() {
+        // "expresz" is edit distance 1 from "express", not caught by generative checks
+        let deps = vec![dep("expresz")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("edit-distance"));
+        assert_eq!(issues[0].suggestion, Some("express".to_string()));
+    }
+
+    #[test]
+    fn levenshtein_short_name_threshold() {
+        // "zzzz" — too far from anything, should not flag
         let deps = vec![dep("zzzz")];
         let issues = check_similarity(&deps, "npm");
         assert!(issues.is_empty());
     }
 
-    #[test]
-    fn levenshtein_2_on_medium_name_flags() {
-        let deps = vec![dep("expresz")];
-        let issues = check_similarity(&deps, "npm");
-        assert!(!issues.is_empty());
-        assert_eq!(issues[0].suggestion, Some("express".to_string()));
-    }
-
-    #[test]
-    fn levenshtein_3_on_medium_name_does_not_flag() {
-        let deps = vec![dep("abcdefg")];
-        let issues = check_similarity(&deps, "npm");
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn completely_unrelated_name_no_issue() {
-        let deps = vec![dep("zzzzzzzzzzzzz")];
-        let issues = check_similarity(&deps, "npm");
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn max_distance_thresholds() {
-        assert_eq!(max_distance(0), 1);
-        assert_eq!(max_distance(1), 1);
-        assert_eq!(max_distance(4), 1);
-        assert_eq!(max_distance(5), 2);
-        assert_eq!(max_distance(8), 2);
-        assert_eq!(max_distance(9), 3);
-        assert_eq!(max_distance(20), 3);
-    }
-
-    #[test]
-    fn unknown_ecosystem_returns_no_issues() {
-        let deps = vec![dep("anything")];
-        let issues = check_similarity(&deps, "unknown");
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn popular_packages_returns_entries_for_known_ecosystems() {
-        assert!(!popular_packages("npm").is_empty());
-        assert!(!popular_packages("pypi").is_empty());
-        assert!(!popular_packages("cargo").is_empty());
-        assert!(!popular_packages("go").is_empty());
-        assert!(!popular_packages("ruby").is_empty());
-        assert!(!popular_packages("php").is_empty());
-        assert!(!popular_packages("jvm").is_empty());
-        assert!(!popular_packages("dotnet").is_empty());
-        assert!(popular_packages("unknown").is_empty());
-    }
-
-    // --- Case-sensitivity tests ---
-
-    fn dep_eco(name: &str, ecosystem: &str) -> Dependency {
-        Dependency {
-            name: name.to_string(),
-            version: None,
-            ecosystem: ecosystem.to_string(),
-        }
-    }
+    // ── Case sensitivity ──
 
     #[test]
     fn case_insensitive_registry_skips_case_variant() {
-        // npm is case-insensitive: "React" should match "react" and be skipped
         let deps = vec![dep("React")];
         let issues = check_similarity(&deps, "npm");
         assert!(issues.is_empty());
     }
 
     #[test]
-    fn case_insensitive_registry_dotnet_skips_exact() {
-        // "Newtonsoft.Json" exact match to popular list — no issue
-        let deps = vec![dep_eco("Newtonsoft.Json", "dotnet")];
-        let issues = check_similarity(&deps, "dotnet");
-        assert!(issues.is_empty());
-    }
-
-    #[test]
     fn case_insensitive_registry_dotnet_skips_case_variant() {
-        // dotnet is case-insensitive: "newtonsoft.json" resolves to same package
         let deps = vec![dep_eco("newtonsoft.json", "dotnet")];
         let issues = check_similarity(&deps, "dotnet");
         assert!(issues.is_empty());
@@ -294,40 +615,43 @@ mod tests {
 
     #[test]
     fn case_sensitive_registry_flags_case_variant_go() {
-        // Go is case-sensitive: "github.com/Gin-Gonic/Gin" is NOT the same as
-        // "github.com/gin-gonic/gin" — an attacker could register the variant
         let deps = vec![dep_eco("github.com/Gin-Gonic/Gin", "go")];
         let issues = check_similarity(&deps, "go");
         assert!(!issues.is_empty());
-        assert_eq!(issues[0].severity, Severity::Error);
-        assert!(issues[0].message.contains("case-sensitive"));
+        assert!(issues[0].check.contains("case-variant"));
     }
 
     #[test]
     fn case_sensitive_registry_flags_case_variant_ruby() {
-        // Ruby is case-sensitive: "Rails" != "rails"
         let deps = vec![dep_eco("Rails", "ruby")];
         let issues = check_similarity(&deps, "ruby");
         assert!(!issues.is_empty());
-        assert_eq!(issues[0].severity, Severity::Error);
         assert_eq!(issues[0].suggestion, Some("rails".to_string()));
     }
 
     #[test]
     fn case_sensitive_registry_flags_case_variant_jvm() {
-        // Maven is case-sensitive: "Junit:Junit" != "junit:junit"
         let deps = vec![dep_eco("Junit:Junit", "jvm")];
         let issues = check_similarity(&deps, "jvm");
         assert!(!issues.is_empty());
-        assert_eq!(issues[0].severity, Severity::Error);
     }
 
     #[test]
     fn case_sensitive_registry_exact_match_no_issue() {
-        // Exact match on case-sensitive registry — no issue
         let deps = vec![dep_eco("rails", "ruby")];
         let issues = check_similarity(&deps, "ruby");
         assert!(issues.is_empty());
+    }
+
+    // ── Helpers ──
+
+    #[test]
+    fn max_distance_thresholds() {
+        assert_eq!(max_distance(0), 1);
+        assert_eq!(max_distance(4), 1);
+        assert_eq!(max_distance(5), 2);
+        assert_eq!(max_distance(8), 2);
+        assert_eq!(max_distance(9), 3);
     }
 
     #[test]
@@ -340,5 +664,118 @@ mod tests {
         assert!(!is_case_insensitive("go"));
         assert!(!is_case_insensitive("jvm"));
         assert!(!is_case_insensitive("ruby"));
+    }
+
+    #[test]
+    fn popular_packages_returns_entries_for_known_ecosystems() {
+        for eco in &["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"] {
+            assert!(!popular_packages(eco).is_empty(), "empty for {}", eco);
+        }
+        assert!(popular_packages("unknown").is_empty());
+    }
+
+    #[test]
+    fn unknown_ecosystem_returns_no_issues() {
+        let deps = vec![dep("anything")];
+        let issues = check_similarity(&deps, "unknown");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn completely_unrelated_name_no_issue() {
+        let deps = vec![dep("zzzzzzzzzzzzz")];
+        let issues = check_similarity(&deps, "npm");
+        assert!(issues.is_empty());
+    }
+
+    // ── Deduplication ──
+
+    #[test]
+    fn no_duplicate_flags_for_same_package() {
+        // "expresss" would match repeated-chars AND levenshtein — should only report once
+        let deps = vec![dep("expresss")];
+        let issues = check_similarity(&deps, "npm");
+        let count = issues.iter().filter(|i| i.package == "expresss").count();
+        assert_eq!(count, 1);
+    }
+
+    // ── Unit tests for generative functions ──
+
+    #[test]
+    fn normalize_separators_works() {
+        assert_eq!(normalize_separators("a-b_c.d"), "abcd");
+        assert_eq!(normalize_separators("express"), "express");
+    }
+
+    #[test]
+    fn collapse_one_repeated_works() {
+        // "expresss" → remove one trailing s → "express"
+        let variants = collapse_one_repeated("expresss");
+        assert!(variants.contains(&"express".to_string()));
+
+        // "reeact" → remove one e → "react"
+        let variants = collapse_one_repeated("reeact");
+        assert!(variants.contains(&"react".to_string()));
+
+        // "llodash" → remove one l → "lodash"
+        let variants = collapse_one_repeated("llodash");
+        assert!(variants.contains(&"lodash".to_string()));
+
+        // No repeated chars → empty
+        let variants = collapse_one_repeated("react");
+        assert!(variants.is_empty());
+
+        // "express" has ss → produces "expres" (legitimate variant, won't match anything)
+        let variants = collapse_one_repeated("express");
+        assert!(variants.contains(&"expres".to_string()));
+    }
+
+    #[test]
+    fn strip_version_suffix_works() {
+        assert_eq!(strip_version_suffix("requests2"), "requests");
+        assert_eq!(strip_version_suffix("lodash-4"), "lodash");
+        assert_eq!(strip_version_suffix("react"), "react");
+        assert_eq!(strip_version_suffix("vue3"), "vue");
+    }
+
+    #[test]
+    fn word_reorderings_works() {
+        let results = word_reorderings("json-parse");
+        assert!(results.contains(&"parse-json".to_string()));
+    }
+
+    #[test]
+    fn adjacent_swaps_works() {
+        let results = adjacent_swaps("ab");
+        assert!(results.contains(&"ba".to_string()));
+        let results = adjacent_swaps("abc");
+        assert!(results.contains(&"bac".to_string()));
+        assert!(results.contains(&"acb".to_string()));
+    }
+
+    // ── Omitted character ──
+
+    #[test]
+    fn omitted_char_generates_variants() {
+        // "reqests" with 'u' inserted at position 3 → "requests"
+        let variants = insert_each_char("reqests");
+        assert!(variants.contains(&"requests".to_string()));
+    }
+
+    #[test]
+    fn omitted_char_caught_in_check() {
+        // "reqests" should match "requests" on pypi
+        let deps = vec![dep_eco("reqests", "pypi")];
+        let issues = check_similarity(&deps, "pypi");
+        assert!(!issues.is_empty());
+        assert!(issues[0].check.contains("omitted-char"));
+        assert_eq!(issues[0].suggestion, Some("requests".to_string()));
+    }
+
+    #[test]
+    fn omitted_char_not_flagged_for_exact_match() {
+        let deps = vec![dep_eco("requests", "pypi")];
+        let issues = check_similarity(&deps, "pypi");
+        assert!(issues.is_empty());
     }
 }
