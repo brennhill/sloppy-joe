@@ -61,11 +61,13 @@ ERROR ai-json-helper [existence]
  Fix: Remove 'ai-json-helper' from your dependencies.
 ```
 
-### 2. Typosquatting (edit distance)
+### 2. Typosquatting (generative checks + edit distance fallback)
 
 **The attack:** An attacker registers `expresz` on npm — one character from `express`. AI generates it, or a developer fat-fingers it. The package exists, passes the existence check, and installs malware.
 
-**How sloppy-joe blocks it:** The Levenshtein distance check finds `expresz` is 1 character from `express`. Build blocked.
+**How sloppy-joe blocks it:** sloppy-joe runs 10 generative checks before falling back to edit distance. Each generative check produces a specific mutation of the dependency name (swap characters, collapse repeats, strip suffixes, reorder words, normalize separators, replace homoglyphs, check scopes) and tests for an exact match against known popular packages. This approach, inspired by the [Rust Foundation's Typomania](https://github.com/rustfoundation/typomania) library, has near-zero false positives because it only fires on exact matches after mutation.
+
+Levenshtein edit distance runs last as a safety net for novel mutations that no specific check anticipated. Together, they cover both known attack patterns (precisely) and unknown ones (broadly).
 
 ```
 ERROR expresz [similarity/edit-distance]
