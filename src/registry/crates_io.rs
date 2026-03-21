@@ -49,10 +49,28 @@ impl super::Registry for CratesIoRegistry {
             body["crate"]["updated_at"].as_str().map(|s| s.to_string())
         };
 
+        // Publisher info from versions array (index 0 = latest, index 1 = previous)
+        let versions_arr = body["versions"].as_array();
+
+        let current_publisher = versions_arr
+            .and_then(|v| v.first())
+            .and_then(|v| v["published_by"]["login"].as_str())
+            .map(|s| s.to_string());
+
+        let previous_publisher = versions_arr
+            .and_then(|v| v.get(1))
+            .and_then(|v| v["published_by"]["login"].as_str())
+            .map(|s| s.to_string());
+
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
             downloads,
+            has_install_scripts: false, // crates.io doesn't have install scripts
+            dependency_count: None,     // Not easily available from crates.io API
+            previous_dependency_count: None,
+            current_publisher,
+            previous_publisher,
         }))
     }
 

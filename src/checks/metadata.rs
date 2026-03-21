@@ -4,6 +4,7 @@ use crate::report::{Issue, Severity};
 use crate::Dependency;
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
+use std::collections::HashSet;
 
 /// Parse an ISO 8601 date string and return the age in hours.
 fn age_in_hours(date_str: &str) -> Option<u64> {
@@ -61,12 +62,17 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64) -> i64 {
     days * 86400 + hour * 3600 + min * 60
 }
 
-/// Check metadata signals: version age, package age, download count.
+/// Check metadata signals: version age, package age, download count,
+/// install script amplifier, dependency explosion, and maintainer change.
 /// Only runs on non-internal packages. Allowed packages ARE subject to age gating.
+///
+/// `similarity_flagged` is the set of package names that triggered a similarity check.
+/// This is used for the install script signal amplifier.
 pub async fn check_metadata(
     registry: &dyn Registry,
     deps: &[Dependency],
     config: &SloppyJoeConfig,
+    similarity_flagged: &HashSet<String>,
 ) -> Result<Vec<Issue>> {
     let min_age = config.min_version_age_hours;
     if min_age == 0 {
@@ -92,6 +98,9 @@ pub async fn check_metadata(
 
     for (name, version, meta) in results {
         let Some(meta) = meta else { continue };
+
+        let mut is_new_package = false;
+        let mut is_low_downloads = false;
 
         // Check version age
         if let Some(ref date) = meta.latest_version_date {
@@ -126,6 +135,7 @@ pub async fn check_metadata(
             if let Some(age_hours) = age_in_hours(date) {
                 if age_hours < 720 {
                     // Less than 30 days old
+                    is_new_package = true;
                     let age_days = age_hours / 24;
                     issues.push(Issue {
                         package: name.clone(),
@@ -149,6 +159,7 @@ pub async fn check_metadata(
         // Check download count (if available)
         if let Some(downloads) = meta.downloads {
             if downloads < 100 {
+                is_low_downloads = true;
                 issues.push(Issue {
                     package: name.clone(),
                     check: "metadata/low-downloads".to_string(),
@@ -161,6 +172,84 @@ pub async fn check_metadata(
                         "Verify '{}' is the package you intend to use. If it's legitimate, add it to the 'allowed' list.",
                         name
                     ),
+                    suggestion: None,
+                    registry_url: None,
+                });
+            }
+        }
+
+        // Feature 1: Install script signal amplifier
+        // Flag if has install scripts AND (new package OR low downloads OR similarity-flagged)
+        if meta.has_install_scripts {
+            let has_similarity = similarity_flagged.contains(&name);
+            let has_low_downloads = meta.downloads.map_or(false, |d| d < 1000);
+
+            if is_new_package || is_low_downloads || has_low_downloads || has_similarity {
+                let mut reasons = Vec::new();
+                if is_new_package {
+                    if let Some(ref date) = meta.created {
+                        if let Some(age_hours) = age_in_hours(date) {
+                            let age_days = age_hours / 24;
+                            reasons.push(format!("was published {} days ago", age_days));
+                        }
+                    }
+                }
+                if let Some(downloads) = meta.downloads {
+                    if downloads < 1000 {
+                        reasons.push(format!("with {} downloads", downloads));
+                    }
+                }
+                if has_similarity {
+                    reasons.push("was flagged for name similarity to a popular package".to_string());
+                }
+                let reason_str = reasons.join(" and ");
+
+                issues.push(Issue {
+                    package: name.clone(),
+                    check: "metadata/install-script-risk".to_string(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "'{}' has install scripts AND {}. Install scripts on new, low-download packages are the #1 malware delivery vector.",
+                        name, reason_str
+                    ),
+                    fix: "Do not install this package. Verify it is legitimate before proceeding.".to_string(),
+                    suggestion: None,
+                    registry_url: None,
+                });
+            }
+        }
+
+        // Feature 2: Dependency explosion detection
+        if let (Some(current), Some(previous)) = (meta.dependency_count, meta.previous_dependency_count) {
+            if current >= previous + 10 {
+                let added = current - previous;
+                issues.push(Issue {
+                    package: name.clone(),
+                    check: "metadata/dependency-explosion".to_string(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "'{}' added {} new dependencies in its latest version (was {}, now {}). Sudden dependency additions in patch versions are a known supply chain attack vector.",
+                        name, added, previous, current
+                    ),
+                    fix: "Review the new dependencies manually before installing.".to_string(),
+                    suggestion: None,
+                    registry_url: None,
+                });
+            }
+        }
+
+        // Feature 4: Maintainer change detection
+        if let (Some(ref current_pub), Some(ref previous_pub)) = (meta.current_publisher, meta.previous_publisher) {
+            if current_pub != previous_pub {
+                issues.push(Issue {
+                    package: name.clone(),
+                    check: "metadata/maintainer-change".to_string(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "The publisher of '{}' changed from '{}' to '{}' between versions. Maintainer takeovers are a known supply chain attack vector.",
+                        name, previous_pub, current_pub
+                    ),
+                    fix: "Verify the maintainer change is legitimate before installing.".to_string(),
                     suggestion: None,
                     registry_url: None,
                 });
@@ -205,6 +294,23 @@ mod tests {
         }
     }
 
+    fn default_meta() -> PackageMetadata {
+        PackageMetadata {
+            created: Some("2020-01-01T00:00:00Z".to_string()),
+            latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
+            downloads: Some(50000),
+            has_install_scripts: false,
+            dependency_count: None,
+            previous_dependency_count: None,
+            current_publisher: None,
+            previous_publisher: None,
+        }
+    }
+
+    fn empty_similarity() -> HashSet<String> {
+        HashSet::new()
+    }
+
     #[test]
     fn age_in_hours_parses_iso8601() {
         // A date far in the past should return a large number
@@ -225,14 +331,13 @@ mod tests {
         let now = chrono_free_now();
         let registry = FakeRegistry {
             metadata_response: Some(PackageMetadata {
-                created: Some("2020-01-01T00:00:00Z".to_string()),
                 latest_version_date: Some(now),
-                downloads: Some(50000),
+                ..default_meta()
             }),
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         let age_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("version-age")).collect();
         assert!(!age_issues.is_empty());
     }
@@ -240,15 +345,11 @@ mod tests {
     #[tokio::test]
     async fn old_version_passes() {
         let registry = FakeRegistry {
-            metadata_response: Some(PackageMetadata {
-                created: Some("2020-01-01T00:00:00Z".to_string()),
-                latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
-                downloads: Some(50000),
-            }),
+            metadata_response: Some(default_meta()),
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         let age_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("version-age")).collect();
         assert!(age_issues.is_empty());
     }
@@ -260,12 +361,12 @@ mod tests {
             metadata_response: Some(PackageMetadata {
                 created: Some(now.clone()),
                 latest_version_date: Some(now),
-                downloads: Some(50000),
+                ..default_meta()
             }),
         };
         let deps = vec![dep("brand-new-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         let new_pkg: Vec<_> = issues.iter().filter(|i| i.check.contains("new-package")).collect();
         assert!(!new_pkg.is_empty());
     }
@@ -274,14 +375,13 @@ mod tests {
     async fn low_downloads_flagged() {
         let registry = FakeRegistry {
             metadata_response: Some(PackageMetadata {
-                created: Some("2020-01-01T00:00:00Z".to_string()),
-                latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
                 downloads: Some(5),
+                ..default_meta()
             }),
         };
         let deps = vec![dep("obscure-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         let dl_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("low-downloads")).collect();
         assert!(!dl_issues.is_empty());
     }
@@ -290,14 +390,13 @@ mod tests {
     async fn high_downloads_not_flagged() {
         let registry = FakeRegistry {
             metadata_response: Some(PackageMetadata {
-                created: Some("2020-01-01T00:00:00Z".to_string()),
-                latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
                 downloads: Some(1000000),
+                ..default_meta()
             }),
         };
         let deps = vec![dep("popular-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         assert!(issues.is_empty());
     }
 
@@ -309,11 +408,12 @@ mod tests {
                 created: Some(now.clone()),
                 latest_version_date: Some(now),
                 downloads: Some(5),
+                ..default_meta()
             }),
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(0);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         assert!(issues.is_empty());
     }
 
@@ -324,8 +424,178 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
         assert!(issues.is_empty());
+    }
+
+    // ── Feature 1: Install script signal amplifier ──
+
+    #[tokio::test]
+    async fn install_script_with_low_downloads_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                downloads: Some(12),
+                has_install_scripts: true,
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("expresz")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        assert!(!script_issues.is_empty());
+        assert!(script_issues[0].message.contains("install scripts"));
+    }
+
+    #[tokio::test]
+    async fn install_script_with_new_package_flagged() {
+        let now = chrono_free_now();
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                created: Some(now.clone()),
+                latest_version_date: Some(now),
+                downloads: Some(50000),
+                has_install_scripts: true,
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("new-pkg-with-scripts")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        assert!(!script_issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_script_with_high_downloads_old_package_not_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                downloads: Some(100000),
+                has_install_scripts: true,
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("well-known-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        assert!(script_issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_install_script_not_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                downloads: Some(12),
+                has_install_scripts: false,
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("low-dl-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        assert!(script_issues.is_empty());
+    }
+
+    // ── Feature 2: Dependency explosion ──
+
+    #[tokio::test]
+    async fn dependency_explosion_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                dependency_count: Some(18),
+                previous_dependency_count: Some(3),
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let explosion: Vec<_> = issues.iter().filter(|i| i.check == "metadata/dependency-explosion").collect();
+        assert!(!explosion.is_empty());
+        assert!(explosion[0].message.contains("added 15 new dependencies"));
+        assert!(explosion[0].message.contains("was 3, now 18"));
+    }
+
+    #[tokio::test]
+    async fn small_increase_not_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                dependency_count: Some(5),
+                previous_dependency_count: Some(3),
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let explosion: Vec<_> = issues.iter().filter(|i| i.check == "metadata/dependency-explosion").collect();
+        assert!(explosion.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_previous_version_not_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                dependency_count: Some(18),
+                previous_dependency_count: None,
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let explosion: Vec<_> = issues.iter().filter(|i| i.check == "metadata/dependency-explosion").collect();
+        assert!(explosion.is_empty());
+    }
+
+    // ── Feature 4: Maintainer change ──
+
+    #[tokio::test]
+    async fn maintainer_changed_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                current_publisher: Some("new-person".to_string()),
+                previous_publisher: Some("original-author".to_string()),
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let mc: Vec<_> = issues.iter().filter(|i| i.check == "metadata/maintainer-change").collect();
+        assert!(!mc.is_empty());
+        assert!(mc[0].message.contains("original-author"));
+        assert!(mc[0].message.contains("new-person"));
+    }
+
+    #[tokio::test]
+    async fn same_maintainer_not_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                current_publisher: Some("same-person".to_string()),
+                previous_publisher: Some("same-person".to_string()),
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let mc: Vec<_> = issues.iter().filter(|i| i.check == "metadata/maintainer-change").collect();
+        assert!(mc.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_publisher_info_not_flagged() {
+        let registry = FakeRegistry {
+            metadata_response: Some(default_meta()),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let mc: Vec<_> = issues.iter().filter(|i| i.check == "metadata/maintainer-change").collect();
+        assert!(mc.is_empty());
     }
 
     /// Generate a "now" timestamp without chrono dependency.

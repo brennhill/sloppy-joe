@@ -6,6 +6,7 @@ pub mod report;
 
 use anyhow::Result;
 use report::ScanReport;
+use std::collections::HashSet;
 
 /// Run all checks on the detected or specified project type.
 ///
@@ -56,6 +57,12 @@ pub async fn scan(
     let existence_results = checks::existence::check_existence(&*registry, &checkable_owned).await?;
     let similarity_results = checks::similarity::check_similarity(&checkable_owned, &ecosystem);
 
+    // Build set of similarity-flagged package names for signal amplifier
+    let similarity_flagged: HashSet<String> = similarity_results
+        .iter()
+        .map(|issue| issue.package.clone())
+        .collect();
+
     // Canonical check runs on all non-internal deps (allowed + checkable)
     let non_internal: Vec<Dependency> = deps
         .iter()
@@ -65,7 +72,12 @@ pub async fn scan(
     let canonical_results = checks::canonical::check_canonical(&non_internal, &config, &ecosystem);
 
     // Metadata/age check runs on all non-internal deps (allowed ARE subject to age gate)
-    let metadata_results = checks::metadata::check_metadata(&*registry, &non_internal, &config).await?;
+    // Pass similarity_flagged for install script signal amplifier
+    let metadata_results = checks::metadata::check_metadata(&*registry, &non_internal, &config, &similarity_flagged).await?;
+
+    // Malicious/vulnerability check runs on all non-internal deps
+    let osv_client = checks::malicious::RealOsvClient::new();
+    let malicious_results = checks::malicious::check_malicious(&osv_client, &non_internal).await?;
 
     Ok(ScanReport::new(
         deps.len(),
@@ -73,6 +85,7 @@ pub async fn scan(
         similarity_results,
         canonical_results,
         metadata_results,
+        malicious_results,
     ))
 }
 

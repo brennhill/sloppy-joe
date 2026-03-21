@@ -18,6 +18,21 @@ impl NpmRegistry {
     }
 }
 
+/// Get ordered version list from the `time` object, excluding "created" and "modified" meta-keys.
+/// Returns versions in chronological order.
+fn ordered_versions(time: &serde_json::Value) -> Vec<String> {
+    let Some(obj) = time.as_object() else {
+        return vec![];
+    };
+    let mut versions: Vec<(String, String)> = obj
+        .iter()
+        .filter(|(k, _)| k.as_str() != "created" && k.as_str() != "modified")
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .collect();
+    versions.sort_by(|a, b| a.1.cmp(&b.1));
+    versions.into_iter().map(|(k, _)| k).collect()
+}
+
 #[async_trait]
 impl super::Registry for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
@@ -48,10 +63,67 @@ impl super::Registry for NpmRegistry {
         };
 
         let downloads = None; // npm requires a separate API call for downloads
+
+        // Determine the latest and previous versions from the time object
+        let version_list = ordered_versions(time);
+        let latest_ver = body["dist-tags"]["latest"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| version_list.last().cloned());
+
+        let previous_ver = if let Some(ref lv) = latest_ver {
+            let pos = version_list.iter().position(|v| v == lv);
+            pos.and_then(|p| if p > 0 { Some(version_list[p - 1].clone()) } else { None })
+        } else {
+            None
+        };
+
+        // Check for install scripts in the latest version
+        let has_install_scripts = if let Some(ref lv) = latest_ver {
+            let scripts = &body["versions"][lv.as_str()]["scripts"];
+            scripts["preinstall"].is_string()
+                || scripts["postinstall"].is_string()
+                || scripts["install"].is_string()
+                || scripts["prepare"].is_string()
+        } else {
+            false
+        };
+
+        // Count dependencies in current and previous versions
+        let dependency_count = latest_ver.as_ref().and_then(|lv| {
+            body["versions"][lv.as_str()]["dependencies"]
+                .as_object()
+                .map(|obj| obj.len() as u64)
+        });
+
+        let previous_dependency_count = previous_ver.as_ref().and_then(|pv| {
+            body["versions"][pv.as_str()]["dependencies"]
+                .as_object()
+                .map(|obj| obj.len() as u64)
+        });
+
+        // Publisher info
+        let current_publisher = latest_ver.as_ref().and_then(|lv| {
+            body["versions"][lv.as_str()]["_npmUser"]["name"]
+                .as_str()
+                .map(|s| s.to_string())
+        });
+
+        let previous_publisher = previous_ver.as_ref().and_then(|pv| {
+            body["versions"][pv.as_str()]["_npmUser"]["name"]
+                .as_str()
+                .map(|s| s.to_string())
+        });
+
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
             downloads,
+            has_install_scripts,
+            dependency_count,
+            previous_dependency_count,
+            current_publisher,
+            previous_publisher,
         }))
     }
 

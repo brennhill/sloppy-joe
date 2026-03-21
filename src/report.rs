@@ -39,12 +39,14 @@ impl ScanReport {
         similarity: Vec<Issue>,
         canonical: Vec<Issue>,
         metadata: Vec<Issue>,
+        malicious: Vec<Issue>,
     ) -> Self {
         let mut issues = Vec::new();
         issues.extend(existence);
         issues.extend(similarity);
         issues.extend(canonical);
         issues.extend(metadata);
+        issues.extend(malicious);
         ScanReport {
             packages_checked,
             issues,
@@ -124,6 +126,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
         );
         assert!(report.has_issues());
     }
@@ -152,7 +155,7 @@ mod tests {
         let existence = vec![issue("a", "existence", Severity::Error)];
         let similarity = vec![issue("b", "similarity", Severity::Error)];
         let canonical = vec![issue("c", "canonical", Severity::Error)];
-        let report = ScanReport::new(5, existence, similarity, canonical, vec![]);
+        let report = ScanReport::new(5, existence, similarity, canonical, vec![], vec![]);
         assert_eq!(report.packages_checked, 5);
         assert_eq!(report.issues.len(), 3);
     }
@@ -172,6 +175,7 @@ mod tests {
             vec![issue("b", "similarity", Severity::Error)],
             vec![issue("c", "canonical", Severity::Error)],
             vec![],
+            vec![],
         );
         // Should not panic
         report.print_human();
@@ -185,6 +189,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
         );
         report.print_json();
     }
@@ -194,6 +199,7 @@ mod tests {
         let report = ScanReport::new(
             2,
             vec![issue("bad-pkg", "existence", Severity::Error)],
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -210,6 +216,7 @@ mod tests {
             vec![issue("typo-pkg", "similarity", Severity::Error)],
             vec![],
             vec![],
+            vec![],
         );
         report.print_human();
         assert!(report.has_issues());
@@ -219,7 +226,7 @@ mod tests {
     fn print_human_canonical_errors() {
         let mut i = issue("old-pkg", "canonical", Severity::Error);
         i.registry_url = None;
-        let report = ScanReport::new(2, vec![], vec![], vec![i], vec![]);
+        let report = ScanReport::new(2, vec![], vec![], vec![i], vec![], vec![]);
         report.print_human();
         assert!(report.has_issues());
     }

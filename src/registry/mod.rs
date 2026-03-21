@@ -20,6 +20,16 @@ pub struct PackageMetadata {
     pub latest_version_date: Option<String>,
     /// Total downloads (lifetime or recent, registry-dependent)
     pub downloads: Option<u64>,
+    /// Whether the package has install scripts (preinstall, postinstall, install, prepare)
+    pub has_install_scripts: bool,
+    /// Number of dependencies in the current version
+    pub dependency_count: Option<u64>,
+    /// Number of dependencies in the previous version
+    pub previous_dependency_count: Option<u64>,
+    /// Publisher of the current version
+    pub current_publisher: Option<String>,
+    /// Publisher of the previous version
+    pub previous_publisher: Option<String>,
 }
 
 #[async_trait]

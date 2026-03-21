@@ -48,6 +48,11 @@ impl super::Registry for PypiRegistry {
             created,
             latest_version_date,
             downloads: None,
+            has_install_scripts: false,
+            dependency_count: None,
+            previous_dependency_count: None,
+            current_publisher: None,
+            previous_publisher: None,
         }))
     }
 

@@ -37,6 +37,11 @@ impl super::Registry for RubyGemsRegistry {
             created,
             latest_version_date,
             downloads,
+            has_install_scripts: false,
+            dependency_count: None,
+            previous_dependency_count: None,
+            current_publisher: None,
+            previous_publisher: None,
         }))
     }
 
