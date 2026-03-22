@@ -4,10 +4,8 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("Cargo.toml");
-    let content =
-        std::fs::read_to_string(&path).context("Failed to read Cargo.toml")?;
-    let parsed: toml::Value =
-        toml::from_str(&content).context("Failed to parse Cargo.toml")?;
+    let content = std::fs::read_to_string(&path).context("Failed to read Cargo.toml")?;
+    let parsed: toml::Value = toml::from_str(&content).context("Failed to parse Cargo.toml")?;
 
     let mut deps = Vec::new();
 
@@ -54,7 +52,8 @@ mod tests {
 
     #[test]
     fn parse_string_style_deps() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 [package]
 name = "test"
 version = "0.1.0"
@@ -62,7 +61,8 @@ version = "0.1.0"
 [dependencies]
 serde = "1.0"
 anyhow = "1"
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
@@ -74,14 +74,16 @@ anyhow = "1"
 
     #[test]
     fn parse_table_style_deps() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 [package]
 name = "test"
 version = "0.1.0"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "serde");
@@ -91,11 +93,13 @@ serde = { version = "1.0", features = ["derive"] }
 
     #[test]
     fn handle_missing_dependencies_section() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 [package]
 name = "test"
 version = "0.1.0"
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert!(deps.is_empty());
         cleanup(&dir);
@@ -103,14 +107,16 @@ version = "0.1.0"
 
     #[test]
     fn parse_dev_dependencies() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 [package]
 name = "test"
 version = "0.1.0"
 
 [dev-dependencies]
 tokio-test = "0.4"
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "tokio-test");

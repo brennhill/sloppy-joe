@@ -8,8 +8,14 @@ pub struct RubyGemsRegistry {
 impl RubyGemsRegistry {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: super::http_client(),
         }
+    }
+}
+
+impl Default for RubyGemsRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -18,14 +24,35 @@ impl super::Registry for RubyGemsRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         let url = format!("https://rubygems.org/api/v1/gems/{}.json", package_name);
         let resp = self.client.get(&url).send().await?;
-        Ok(resp.status().is_success())
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "RubyGems lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
+        }
+        Ok(true)
     }
 
-    async fn metadata(&self, package_name: &str, _version: Option<&str>) -> Result<Option<super::PackageMetadata>> {
+    async fn metadata(
+        &self,
+        package_name: &str,
+        _version: Option<&str>,
+    ) -> Result<Option<super::PackageMetadata>> {
         let url = format!("https://rubygems.org/api/v1/gems/{}.json", package_name);
         let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "RubyGems metadata lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
         }
         let body: serde_json::Value = resp.json().await?;
 

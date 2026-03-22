@@ -1,11 +1,9 @@
-use crate::report::{Issue, Severity};
 use crate::Dependency;
+use crate::report::{Issue, Severity};
 use anyhow::Result;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
-
-const DEFAULT_CACHE_FILE: &str = "/tmp/sloppy-joe-osv-cache.json";
 const CACHE_TTL_SECS: u64 = 6 * 3600; // 6 hours
 
 /// Cached OSV query result: list of vulnerability IDs (empty = clean).
@@ -27,25 +25,70 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
-fn load_disk_cache(path: &Path) -> Option<DiskCache> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let cache: DiskCache = serde_json::from_str(&content).ok()?;
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn default_cache_file() -> std::path::PathBuf {
+    std::env::temp_dir()
+        .join("sloppy-joe")
+        .join("osv-cache.json")
+}
+
+fn ensure_safe_cache_path(path: &Path) -> Result<()> {
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && metadata.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "refusing to use symlinked OSV cache file: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn load_disk_cache(path: &Path) -> Result<Option<DiskCache>> {
+    ensure_safe_cache_path(path)?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+    let cache: DiskCache = match serde_json::from_str(&content) {
+        Ok(cache) => cache,
+        Err(_) => return Ok(None),
+    };
     let age = now_epoch().saturating_sub(cache.timestamp);
     if age < CACHE_TTL_SECS {
-        Some(cache)
+        Ok(Some(cache))
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn save_disk_cache(path: &Path, entries: &HashMap<String, CacheEntry>) {
+fn save_disk_cache(path: &Path, entries: &HashMap<String, CacheEntry>) -> Result<()> {
+    ensure_safe_cache_path(path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let cache = DiskCache {
         timestamp: now_epoch(),
         entries: entries.clone(),
     };
-    if let Ok(json) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(path, json);
+    let json = serde_json::to_string(&cache)?;
+    let tmp_path = path.with_extension(format!("tmp-{}-{}", std::process::id(), now_nanos()));
+    std::fs::write(&tmp_path, json)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&tmp_path)?.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&tmp_path, perms)?;
     }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 /// Map ecosystem strings to OSV ecosystem names.
@@ -63,15 +106,15 @@ fn osv_ecosystem(ecosystem: &str) -> &str {
     }
 }
 
-/// Strip semver prefixes like ^, ~, >= from a version string.
-fn strip_version_prefix(version: &str) -> String {
-    version.trim_start_matches(|c: char| c == '^' || c == '~' || c == '>' || c == '=' || c == '<' || c == ' ').to_string()
-}
-
 /// An OSV client that can be swapped out for testing.
 #[async_trait::async_trait]
 pub trait OsvClient: Send + Sync {
-    async fn query(&self, name: &str, ecosystem: &str, version: Option<&str>) -> Result<Vec<String>>;
+    async fn query(
+        &self,
+        name: &str,
+        ecosystem: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<String>>;
 }
 
 /// Real OSV client that hits the API.
@@ -82,14 +125,25 @@ pub struct RealOsvClient {
 impl RealOsvClient {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::registry::http_client(),
         }
+    }
+}
+
+impl Default for RealOsvClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait::async_trait]
 impl OsvClient for RealOsvClient {
-    async fn query(&self, name: &str, ecosystem: &str, version: Option<&str>) -> Result<Vec<String>> {
+    async fn query(
+        &self,
+        name: &str,
+        ecosystem: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<String>> {
         let osv_eco = osv_ecosystem(ecosystem);
         let mut body = serde_json::json!({
             "package": {
@@ -99,19 +153,17 @@ impl OsvClient for RealOsvClient {
         });
         // Include version to filter to only vulnerabilities affecting this version
         if let Some(ver) = version {
-            let base_ver = strip_version_prefix(ver);
-            if !base_ver.is_empty() {
-                body["version"] = serde_json::Value::String(base_ver);
-            }
+            body["version"] = serde_json::Value::String(ver.to_string());
         }
-        let resp = self.client
+        let resp = self
+            .client
             .post("https://api.osv.dev/v1/query")
             .json(&body)
             .send()
             .await?;
 
         if !resp.status().is_success() {
-            return Ok(vec![]);
+            anyhow::bail!("OSV query for '{}' returned HTTP {}", name, resp.status());
         }
 
         let json: serde_json::Value = resp.json().await?;
@@ -134,7 +186,8 @@ pub async fn check_malicious(
     osv_client: &dyn OsvClient,
     deps: &[Dependency],
 ) -> Result<Vec<Issue>> {
-    check_malicious_with_cache(osv_client, deps, Some(Path::new(DEFAULT_CACHE_FILE))).await
+    let cache_path = default_cache_file();
+    check_malicious_with_cache(osv_client, deps, Some(cache_path.as_path())).await
 }
 
 /// Check all dependencies against the OSV vulnerability database.
@@ -146,31 +199,70 @@ pub async fn check_malicious_with_cache(
 ) -> Result<Vec<Issue>> {
     // Load disk cache if fresh
     let initial_entries = cache_path
-        .and_then(|p| load_disk_cache(p))
+        .map(load_disk_cache)
+        .transpose()?
+        .flatten()
         .map(|c| c.entries)
         .unwrap_or_default();
-    let cache: Mutex<HashMap<String, CacheEntry>> = Mutex::new(initial_entries);
+    let mut cache = initial_entries;
 
     let mut issues = Vec::new();
+    let mut pending = HashMap::new();
 
     for dep in deps {
-        let version_suffix = dep.version.as_deref().map(|v| strip_version_prefix(v)).unwrap_or_default();
+        if dep.has_unresolved_version() {
+            issues.push(Issue {
+                package: dep.name.clone(),
+                check: "malicious/unresolved-version".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "'{}' uses the non-exact version requirement '{}'. OSV results would be inaccurate without a resolved lockfile version.",
+                    dep.name,
+                    dep.version.as_deref().unwrap_or("")
+                ),
+                fix: "Pin an exact version or add lockfile-aware resolution before enforcing OSV checks.".to_string(),
+                suggestion: None,
+                registry_url: None,
+            });
+            continue;
+        }
+
+        let exact_version = dep.exact_version();
+        let version_suffix = exact_version.clone().unwrap_or_default();
         let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
+        if !cache.contains_key(&cache_key) {
+            pending
+                .entry(cache_key)
+                .or_insert_with(|| (dep.name.clone(), dep.ecosystem.clone(), exact_version));
+        }
+    }
 
-        // Check in-memory/disk cache first
-        let cached = {
-            let c = cache.lock().unwrap();
-            c.get(&cache_key).cloned()
-        };
+    let fetched = stream::iter(pending.into_iter())
+        .map(|(cache_key, (name, ecosystem, version))| async move {
+            let ids = osv_client
+                .query(&name, &ecosystem, version.as_deref())
+                .await?;
+            Ok::<_, anyhow::Error>((cache_key, CacheEntry { vuln_ids: ids }))
+        })
+        .buffer_unordered(10)
+        .try_collect::<Vec<_>>()
+        .await?;
 
-        let vuln_ids = if let Some(entry) = cached {
-            entry.vuln_ids
-        } else {
-            let ids = osv_client.query(&dep.name, &dep.ecosystem, dep.version.as_deref()).await?;
-            let entry = CacheEntry { vuln_ids: ids.clone() };
-            cache.lock().unwrap().insert(cache_key, entry);
-            ids
-        };
+    for (cache_key, entry) in fetched {
+        cache.insert(cache_key, entry);
+    }
+
+    for dep in deps {
+        if dep.has_unresolved_version() {
+            continue;
+        }
+
+        let version_suffix = dep.exact_version().unwrap_or_default();
+        let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
+        let vuln_ids = cache
+            .get(&cache_key)
+            .map(|entry| entry.vuln_ids.clone())
+            .unwrap_or_default();
 
         if !vuln_ids.is_empty() {
             issues.push(Issue {
@@ -194,8 +286,7 @@ pub async fn check_malicious_with_cache(
 
     // Save cache to disk
     if let Some(path) = cache_path {
-        let c = cache.lock().unwrap();
-        save_disk_cache(path, &c);
+        save_disk_cache(path, &cache)?;
     }
 
     Ok(issues)
@@ -211,7 +302,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl OsvClient for MockOsvClient {
-        async fn query(&self, name: &str, _ecosystem: &str, _version: Option<&str>) -> Result<Vec<String>> {
+        async fn query(
+            &self,
+            name: &str,
+            _ecosystem: &str,
+            _version: Option<&str>,
+        ) -> Result<Vec<String>> {
             Ok(self.responses.get(name).cloned().unwrap_or_default())
         }
     }
@@ -220,6 +316,14 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: None,
+            ecosystem: "npm".to_string(),
+        }
+    }
+
+    fn dep_with_version(name: &str, version: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: Some(version.to_string()),
             ecosystem: "npm".to_string(),
         }
     }
@@ -234,7 +338,9 @@ mod tests {
         let client = MockOsvClient { responses };
 
         let deps = vec![dep("event-stream")];
-        let issues = check_malicious_with_cache(&client, &deps, None).await.unwrap();
+        let issues = check_malicious_with_cache(&client, &deps, None)
+            .await
+            .unwrap();
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].package, "event-stream");
@@ -250,15 +356,17 @@ mod tests {
         };
 
         let deps = vec![dep("react")];
-        let issues = check_malicious_with_cache(&client, &deps, None).await.unwrap();
+        let issues = check_malicious_with_cache(&client, &deps, None)
+            .await
+            .unwrap();
 
         assert!(issues.is_empty());
     }
 
     #[tokio::test]
     async fn cache_used_when_fresh() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         struct CountingClient {
             call_count: Arc<AtomicU32>,
@@ -267,7 +375,12 @@ mod tests {
 
         #[async_trait::async_trait]
         impl OsvClient for CountingClient {
-            async fn query(&self, name: &str, _ecosystem: &str, _version: Option<&str>) -> Result<Vec<String>> {
+            async fn query(
+                &self,
+                name: &str,
+                _ecosystem: &str,
+                _version: Option<&str>,
+            ) -> Result<Vec<String>> {
                 self.call_count.fetch_add(1, Ordering::SeqCst);
                 Ok(self.responses.get(name).cloned().unwrap_or_default())
             }
@@ -284,10 +397,68 @@ mod tests {
 
         // Two identical deps — second should use in-memory cache
         let deps = vec![dep("some-pkg"), dep("some-pkg")];
-        let issues = check_malicious_with_cache(&client, &deps, None).await.unwrap();
+        let issues = check_malicious_with_cache(&client, &deps, None)
+            .await
+            .unwrap();
 
         // Should have 2 issues (one per dep occurrence) but only 1 API call
         assert_eq!(issues.len(), 2);
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn non_exact_versions_are_flagged_for_precision() {
+        let client = MockOsvClient {
+            responses: HashMap::new(),
+        };
+
+        let deps = vec![dep_with_version("react", "^18.0.0")];
+        let issues = check_malicious_with_cache(&client, &deps, None)
+            .await
+            .unwrap();
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].check, "malicious/unresolved-version");
+    }
+
+    #[tokio::test]
+    async fn distinct_queries_run_in_parallel() {
+        use std::time::{Duration, Instant};
+
+        struct SlowClient;
+
+        #[async_trait::async_trait]
+        impl OsvClient for SlowClient {
+            async fn query(
+                &self,
+                _name: &str,
+                _ecosystem: &str,
+                _version: Option<&str>,
+            ) -> Result<Vec<String>> {
+                tokio::time::sleep(Duration::from_millis(75)).await;
+                Ok(vec![])
+            }
+        }
+
+        let deps = vec![dep("a"), dep("b"), dep("c"), dep("d")];
+        let start = Instant::now();
+        let issues = check_malicious_with_cache(&SlowClient, &deps, None)
+            .await
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(issues.is_empty());
+        assert!(
+            elapsed < Duration::from_millis(220),
+            "expected bounded parallelism, took {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn default_cache_path_uses_user_cache_directory() {
+        let path = default_cache_file();
+        assert!(path.ends_with("sloppy-joe/osv-cache.json"));
+        assert!(!path.starts_with("/tmp/sloppy-joe-osv-cache.json"));
     }
 }

@@ -4,8 +4,7 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("go.mod");
-    let content =
-        std::fs::read_to_string(&path).context("Failed to read go.mod")?;
+    let content = std::fs::read_to_string(&path).context("Failed to read go.mod")?;
 
     let mut deps = Vec::new();
     let mut in_require = false;
@@ -22,15 +21,29 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             continue;
         }
 
-        if in_require && !line.is_empty() && !line.starts_with("//") {
-            if let Some(name) = line.split_whitespace().next() {
-                let version = line.split_whitespace().nth(1).map(String::from);
+        if let Some(rest) = line.strip_prefix("require ") {
+            if let Some(name) = rest.split_whitespace().next() {
+                let version = rest.split_whitespace().nth(1).map(String::from);
                 deps.push(Dependency {
                     name: name.to_string(),
                     version,
                     ecosystem: "go".to_string(),
                 });
             }
+            continue;
+        }
+
+        if in_require
+            && !line.is_empty()
+            && !line.starts_with("//")
+            && let Some(name) = line.split_whitespace().next()
+        {
+            let version = line.split_whitespace().nth(1).map(String::from);
+            deps.push(Dependency {
+                name: name.to_string(),
+                version,
+                ecosystem: "go".to_string(),
+            });
         }
     }
 
@@ -58,7 +71,8 @@ mod tests {
 
     #[test]
     fn parse_require_block() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 module example.com/myapp
 
 go 1.21
@@ -67,7 +81,8 @@ require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/spf13/cobra v1.7.0
 )
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "github.com/gin-gonic/gin");
@@ -79,7 +94,8 @@ require (
 
     #[test]
     fn skip_module_and_go_version() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 module example.com/myapp
 
 go 1.21
@@ -87,7 +103,8 @@ go 1.21
 require (
 	github.com/gin-gonic/gin v1.9.1
 )
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         // module and go lines should not appear as deps
@@ -97,14 +114,16 @@ require (
 
     #[test]
     fn handle_empty_require_block() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 module example.com/myapp
 
 go 1.21
 
 require (
 )
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert!(deps.is_empty());
         cleanup(&dir);
@@ -112,7 +131,8 @@ require (
 
     #[test]
     fn skip_comments_in_require_block() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 module example.com/myapp
 
 go 1.21
@@ -121,9 +141,28 @@ require (
 	// indirect dependency
 	github.com/gin-gonic/gin v1.9.1
 )
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_single_line_require() {
+        let dir = setup_dir(
+            r#"
+module example.com/myapp
+
+go 1.21
+
+require github.com/gin-gonic/gin v1.9.1
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "github.com/gin-gonic/gin");
+        assert_eq!(deps[0].version, Some("v1.9.1".to_string()));
         cleanup(&dir);
     }
 }

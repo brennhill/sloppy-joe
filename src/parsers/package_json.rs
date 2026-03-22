@@ -4,8 +4,7 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("package.json");
-    let content =
-        std::fs::read_to_string(&path).context("Failed to read package.json")?;
+    let content = std::fs::read_to_string(&path).context("Failed to read package.json")?;
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse package.json")?;
 
@@ -47,10 +46,12 @@ mod tests {
 
     #[test]
     fn parse_dependencies_and_dev_dependencies() {
-        let dir = setup_dir(r#"{
+        let dir = setup_dir(
+            r#"{
             "dependencies": {"react": "^18.0", "express": "^4.0"},
             "devDependencies": {"jest": "^29.0"}
-        }"#);
+        }"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 3);
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
@@ -63,10 +64,12 @@ mod tests {
 
     #[test]
     fn skip_empty_sections() {
-        let dir = setup_dir(r#"{
+        let dir = setup_dir(
+            r#"{
             "dependencies": {},
             "devDependencies": {}
-        }"#);
+        }"#,
+        );
         let deps = parse(&dir).unwrap();
         assert!(deps.is_empty());
         cleanup(&dir);

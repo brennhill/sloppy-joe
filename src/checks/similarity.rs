@@ -1,76 +1,185 @@
-use crate::report::{Issue, Severity};
 use crate::Dependency;
+use crate::report::{Issue, Severity};
 use std::collections::HashSet;
 
 /// Placeholder popular package lists per ecosystem.
 fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
     match ecosystem {
         "npm" => &[
-            "react", "express", "lodash", "axios", "webpack", "typescript",
-            "next", "vue", "angular", "moment", "chalk", "commander",
-            "debug", "uuid", "dotenv", "cors", "jsonwebtoken", "mongoose",
-            "socket.io", "jest",
+            "react",
+            "express",
+            "lodash",
+            "axios",
+            "webpack",
+            "typescript",
+            "next",
+            "vue",
+            "angular",
+            "moment",
+            "chalk",
+            "commander",
+            "debug",
+            "uuid",
+            "dotenv",
+            "cors",
+            "jsonwebtoken",
+            "mongoose",
+            "socket.io",
+            "jest",
         ],
         "pypi" => &[
-            "requests", "numpy", "pandas", "flask", "django", "pytest",
-            "scipy", "matplotlib", "pillow", "sqlalchemy", "celery",
-            "fastapi", "pydantic", "httpx", "uvicorn", "gunicorn",
-            "boto3", "selenium", "scrapy", "beautifulsoup4",
+            "requests",
+            "numpy",
+            "pandas",
+            "flask",
+            "django",
+            "pytest",
+            "scipy",
+            "matplotlib",
+            "pillow",
+            "sqlalchemy",
+            "celery",
+            "fastapi",
+            "pydantic",
+            "httpx",
+            "uvicorn",
+            "gunicorn",
+            "boto3",
+            "selenium",
+            "scrapy",
+            "beautifulsoup4",
         ],
         "cargo" => &[
-            "serde", "tokio", "clap", "reqwest", "anyhow", "thiserror",
-            "rand", "regex", "chrono", "hyper", "actix-web", "axum",
-            "tracing", "log", "futures", "syn", "quote", "proc-macro2",
-            "bytes", "tower",
+            "serde",
+            "tokio",
+            "clap",
+            "reqwest",
+            "anyhow",
+            "thiserror",
+            "rand",
+            "regex",
+            "chrono",
+            "hyper",
+            "actix-web",
+            "axum",
+            "tracing",
+            "log",
+            "futures",
+            "syn",
+            "quote",
+            "proc-macro2",
+            "bytes",
+            "tower",
         ],
         "go" => &[
-            "github.com/gin-gonic/gin", "github.com/labstack/echo",
-            "github.com/gofiber/fiber", "github.com/spf13/cobra",
-            "github.com/spf13/viper", "go.uber.org/zap",
-            "github.com/sirupsen/logrus", "gorm.io/gorm",
-            "github.com/go-chi/chi", "github.com/gorilla/mux",
-            "github.com/stretchr/testify", "github.com/go-redis/redis",
-            "google.golang.org/grpc", "github.com/golang-jwt/jwt",
-            "github.com/jackc/pgx", "github.com/nats-io/nats.go",
-            "github.com/rs/zerolog", "github.com/valyala/fasthttp",
-            "github.com/prometheus/client_golang", "github.com/hashicorp/consul",
+            "github.com/gin-gonic/gin",
+            "github.com/labstack/echo",
+            "github.com/gofiber/fiber",
+            "github.com/spf13/cobra",
+            "github.com/spf13/viper",
+            "go.uber.org/zap",
+            "github.com/sirupsen/logrus",
+            "gorm.io/gorm",
+            "github.com/go-chi/chi",
+            "github.com/gorilla/mux",
+            "github.com/stretchr/testify",
+            "github.com/go-redis/redis",
+            "google.golang.org/grpc",
+            "github.com/golang-jwt/jwt",
+            "github.com/jackc/pgx",
+            "github.com/nats-io/nats.go",
+            "github.com/rs/zerolog",
+            "github.com/valyala/fasthttp",
+            "github.com/prometheus/client_golang",
+            "github.com/hashicorp/consul",
         ],
         "ruby" => &[
-            "rails", "puma", "sidekiq", "devise", "rspec", "rubocop",
-            "faker", "nokogiri", "pg", "redis", "rack", "sinatra",
-            "capybara", "bcrypt", "aws-sdk", "activerecord", "bundler",
-            "rspec-rails", "factory_bot", "webpacker",
+            "rails",
+            "puma",
+            "sidekiq",
+            "devise",
+            "rspec",
+            "rubocop",
+            "faker",
+            "nokogiri",
+            "pg",
+            "redis",
+            "rack",
+            "sinatra",
+            "capybara",
+            "bcrypt",
+            "aws-sdk",
+            "activerecord",
+            "bundler",
+            "rspec-rails",
+            "factory_bot",
+            "webpacker",
         ],
         "php" => &[
-            "laravel/framework", "symfony/console", "guzzlehttp/guzzle",
-            "phpunit/phpunit", "monolog/monolog", "doctrine/orm",
-            "league/flysystem", "vlucas/phpdotenv", "predis/predis",
-            "phpstan/phpstan", "symfony/http-foundation", "nikic/fast-route",
-            "ramsey/uuid", "twig/twig", "carbon/carbon",
-            "intervention/image", "spatie/laravel-permission",
-            "filp/whoops", "mockery/mockery", "barryvdh/laravel-debugbar",
+            "laravel/framework",
+            "symfony/console",
+            "guzzlehttp/guzzle",
+            "phpunit/phpunit",
+            "monolog/monolog",
+            "doctrine/orm",
+            "league/flysystem",
+            "vlucas/phpdotenv",
+            "predis/predis",
+            "phpstan/phpstan",
+            "symfony/http-foundation",
+            "nikic/fast-route",
+            "ramsey/uuid",
+            "twig/twig",
+            "carbon/carbon",
+            "intervention/image",
+            "spatie/laravel-permission",
+            "filp/whoops",
+            "mockery/mockery",
+            "barryvdh/laravel-debugbar",
         ],
         "jvm" => &[
-            "com.google.guava:guava", "org.springframework:spring-core",
-            "junit:junit", "org.apache.commons:commons-lang3",
-            "org.slf4j:slf4j-api", "ch.qos.logback:logback-classic",
+            "com.google.guava:guava",
+            "org.springframework:spring-core",
+            "junit:junit",
+            "org.apache.commons:commons-lang3",
+            "org.slf4j:slf4j-api",
+            "ch.qos.logback:logback-classic",
             "com.fasterxml.jackson.core:jackson-databind",
-            "org.projectlombok:lombok", "org.mockito:mockito-core",
-            "io.netty:netty-all", "org.jetbrains.kotlin:kotlin-stdlib",
-            "com.squareup.okhttp3:okhttp", "io.grpc:grpc-core",
-            "org.apache.kafka:kafka-clients", "com.google.code.gson:gson",
-            "org.hibernate:hibernate-core", "org.assertj:assertj-core",
-            "io.micrometer:micrometer-core", "com.zaxxer:HikariCP",
+            "org.projectlombok:lombok",
+            "org.mockito:mockito-core",
+            "io.netty:netty-all",
+            "org.jetbrains.kotlin:kotlin-stdlib",
+            "com.squareup.okhttp3:okhttp",
+            "io.grpc:grpc-core",
+            "org.apache.kafka:kafka-clients",
+            "com.google.code.gson:gson",
+            "org.hibernate:hibernate-core",
+            "org.assertj:assertj-core",
+            "io.micrometer:micrometer-core",
+            "com.zaxxer:HikariCP",
             "org.apache.httpcomponents:httpclient",
         ],
         "dotnet" => &[
-            "Newtonsoft.Json", "Microsoft.Extensions.DependencyInjection",
-            "xunit", "Serilog", "AutoMapper", "MediatR",
-            "FluentValidation", "Dapper", "Polly", "Moq",
-            "Swashbuckle.AspNetCore", "StackExchange.Redis",
-            "Microsoft.EntityFrameworkCore", "NUnit", "FluentAssertions",
-            "Bogus", "Hangfire", "MassTransit",
-            "Microsoft.Extensions.Logging", "Npgsql",
+            "Newtonsoft.Json",
+            "Microsoft.Extensions.DependencyInjection",
+            "xunit",
+            "Serilog",
+            "AutoMapper",
+            "MediatR",
+            "FluentValidation",
+            "Dapper",
+            "Polly",
+            "Moq",
+            "Swashbuckle.AspNetCore",
+            "StackExchange.Redis",
+            "Microsoft.EntityFrameworkCore",
+            "NUnit",
+            "FluentAssertions",
+            "Bogus",
+            "Hangfire",
+            "MassTransit",
+            "Microsoft.Extensions.Logging",
+            "Npgsql",
         ],
         _ => &[],
     }
@@ -138,49 +247,119 @@ fn normalize_homoglyphs(name: &str) -> (String, bool) {
 fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
     match ecosystem {
         "npm" => &[
-            "@types", "@babel", "@angular", "@vue", "@nuxt", "@nestjs",
-            "@react-native", "@emotion", "@mui", "@chakra-ui",
-            "@testing-library", "@storybook", "@typescript-eslint",
-            "@rollup", "@vitejs", "@svelte", "@tanstack",
-            "@aws-sdk", "@azure", "@google-cloud", "@firebase",
-            "@prisma", "@trpc", "@reduxjs", "@apollo",
-            "@eslint", "@prettier", "@jest", "@playwright",
-            "@vercel", "@netlify", "@cloudflare",
-            "@octokit", "@actions", "@github",
-            "@sentry", "@datadog",
-            "@grpc", "@protobuf",
+            "@types",
+            "@babel",
+            "@angular",
+            "@vue",
+            "@nuxt",
+            "@nestjs",
+            "@react-native",
+            "@emotion",
+            "@mui",
+            "@chakra-ui",
+            "@testing-library",
+            "@storybook",
+            "@typescript-eslint",
+            "@rollup",
+            "@vitejs",
+            "@svelte",
+            "@tanstack",
+            "@aws-sdk",
+            "@azure",
+            "@google-cloud",
+            "@firebase",
+            "@prisma",
+            "@trpc",
+            "@reduxjs",
+            "@apollo",
+            "@eslint",
+            "@prettier",
+            "@jest",
+            "@playwright",
+            "@vercel",
+            "@netlify",
+            "@cloudflare",
+            "@octokit",
+            "@actions",
+            "@github",
+            "@sentry",
+            "@datadog",
+            "@grpc",
+            "@protobuf",
         ],
         "php" => &[
-            "laravel", "symfony", "illuminate", "doctrine",
-            "league", "guzzlehttp", "phpunit", "monolog",
-            "spatie", "barryvdh", "filament", "livewire",
-            "intervention", "predis", "ramsey", "vlucas",
-            "phpstan", "mockery", "nikic", "twig",
-            "psr", "composer", "sebastian",
+            "laravel",
+            "symfony",
+            "illuminate",
+            "doctrine",
+            "league",
+            "guzzlehttp",
+            "phpunit",
+            "monolog",
+            "spatie",
+            "barryvdh",
+            "filament",
+            "livewire",
+            "intervention",
+            "predis",
+            "ramsey",
+            "vlucas",
+            "phpstan",
+            "mockery",
+            "nikic",
+            "twig",
+            "psr",
+            "composer",
+            "sebastian",
         ],
         "go" => &[
-            "github.com/gin-gonic", "github.com/labstack",
-            "github.com/gofiber", "github.com/spf13",
-            "github.com/stretchr", "github.com/gorilla",
-            "github.com/go-chi", "github.com/go-redis",
-            "github.com/sirupsen", "github.com/rs",
-            "github.com/valyala", "github.com/jackc",
-            "github.com/nats-io", "github.com/hashicorp",
-            "github.com/prometheus", "github.com/grpc",
-            "github.com/golang", "github.com/google",
-            "github.com/aws", "github.com/Azure",
-            "github.com/kubernetes", "github.com/docker",
-            "github.com/etcd-io", "github.com/cockroachdb",
-            "go.uber.org", "google.golang.org",
-            "golang.org", "cloud.google.com",
+            "github.com/gin-gonic",
+            "github.com/labstack",
+            "github.com/gofiber",
+            "github.com/spf13",
+            "github.com/stretchr",
+            "github.com/gorilla",
+            "github.com/go-chi",
+            "github.com/go-redis",
+            "github.com/sirupsen",
+            "github.com/rs",
+            "github.com/valyala",
+            "github.com/jackc",
+            "github.com/nats-io",
+            "github.com/hashicorp",
+            "github.com/prometheus",
+            "github.com/grpc",
+            "github.com/golang",
+            "github.com/google",
+            "github.com/aws",
+            "github.com/Azure",
+            "github.com/kubernetes",
+            "github.com/docker",
+            "github.com/etcd-io",
+            "github.com/cockroachdb",
+            "go.uber.org",
+            "google.golang.org",
+            "golang.org",
+            "cloud.google.com",
         ],
         "jvm" => &[
-            "com.google", "org.springframework", "org.apache",
-            "io.netty", "com.fasterxml", "org.jetbrains",
-            "com.squareup", "io.grpc", "org.slf4j",
-            "ch.qos", "org.mockito", "org.assertj",
-            "junit", "io.micrometer", "com.zaxxer",
-            "org.hibernate", "org.projectlombok",
+            "com.google",
+            "org.springframework",
+            "org.apache",
+            "io.netty",
+            "com.fasterxml",
+            "org.jetbrains",
+            "com.squareup",
+            "io.grpc",
+            "org.slf4j",
+            "ch.qos",
+            "org.mockito",
+            "org.assertj",
+            "junit",
+            "io.micrometer",
+            "com.zaxxer",
+            "org.hibernate",
+            "org.projectlombok",
         ],
         _ => &[],
     }
@@ -199,7 +378,10 @@ fn extract_scope(name: &str, ecosystem: &str) -> Option<String> {
         }
         "php" => {
             // vendor/package → vendor
-            name.split('/').next().filter(|_| name.contains('/')).map(|s| s.to_string())
+            name.split('/')
+                .next()
+                .filter(|_| name.contains('/'))
+                .map(|s| s.to_string())
         }
         "go" => {
             // github.com/org/repo → github.com/org
@@ -232,7 +414,9 @@ fn extract_scope(name: &str, ecosystem: &str) -> Option<String> {
 /// Normalize separators: strip `-`, `_`, `.` for comparison.
 /// Catches: "python-dateutil" vs "pythondateutil"
 fn normalize_separators(name: &str) -> String {
-    name.chars().filter(|c| *c != '-' && *c != '_' && *c != '.').collect()
+    name.chars()
+        .filter(|c| *c != '-' && *c != '_' && *c != '.')
+        .collect()
 }
 
 /// Generate variants with one repeated character removed at each position.
@@ -265,7 +449,10 @@ fn collapse_one_repeated(name: &str) -> Vec<String> {
 /// Strip trailing version suffixes: "requests2" → "requests", "lodash-4" → "lodash"
 fn strip_version_suffix(name: &str) -> String {
     let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
-    trimmed.trim_end_matches('-').trim_end_matches('_').to_string()
+    trimmed
+        .trim_end_matches('-')
+        .trim_end_matches('_')
+        .to_string()
 }
 
 /// Generate word-reordered variants: "json-parse" → "parse-json"
@@ -393,13 +580,17 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         let dep_lower = dep.name.to_lowercase();
 
         // Exact match — safe, skip
-        if corpus.contains(&dep_lower) && (case_insensitive || popular.contains(&dep.name.as_str())) {
+        if corpus.contains(&dep_lower) && (case_insensitive || popular.contains(&dep.name.as_str()))
+        {
             continue;
         }
 
         // On case-sensitive registries, flag case variants
         if !case_insensitive && corpus.contains(&dep_lower) {
-            let original = popular.iter().find(|p| p.to_lowercase() == dep_lower).unwrap();
+            let original = popular
+                .iter()
+                .find(|p| p.to_lowercase() == dep_lower)
+                .unwrap();
             issues.push(make_issue(
                 &dep.name,
                 original,
@@ -448,7 +639,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                     break;
                 }
             }
-            if scope_flagged { continue; }
+            if scope_flagged {
+                continue;
+            }
         }
 
         // ── Generative checks (specific, zero false positives) ──
@@ -473,7 +666,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 1. Separator normalization
         let dep_normalized = normalize_separators(&dep_lower);
@@ -490,7 +685,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 break;
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 2. Collapsed repeated characters
         let collapsed_variants = collapse_one_repeated(&dep_lower);
@@ -508,7 +705,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 3. Version suffix stripping
         let dep_stripped = strip_version_suffix(&dep_lower);
@@ -526,7 +725,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 4. Word reordering
         let reorderings = word_reorderings(&dep_lower);
@@ -544,7 +745,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 5. Adjacent character swaps
         let swaps = adjacent_swaps(&dep_lower);
@@ -562,7 +765,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 6. Omitted character (one char dropped)
         let insertions = insert_each_char(&dep_lower);
@@ -580,7 +785,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // 7. Ecosystem-specific confused forms
         let confused = apply_confused_forms(&dep.name, ecosystem);
@@ -598,7 +805,9 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
                 }
             }
         }
-        if flagged.contains(&dep.name) { continue; }
+        if flagged.contains(&dep.name) {
+            continue;
+        }
 
         // ── Fallback: Levenshtein distance (catches novel mutations) ──
         let threshold = max_distance(dep_lower.len());
@@ -644,11 +853,19 @@ mod tests {
     use super::*;
 
     fn dep(name: &str) -> Dependency {
-        Dependency { name: name.to_string(), version: None, ecosystem: "npm".to_string() }
+        Dependency {
+            name: name.to_string(),
+            version: None,
+            ecosystem: "npm".to_string(),
+        }
     }
 
     fn dep_eco(name: &str, ecosystem: &str) -> Dependency {
-        Dependency { name: name.to_string(), version: None, ecosystem: ecosystem.to_string() }
+        Dependency {
+            name: name.to_string(),
+            version: None,
+            ecosystem: ecosystem.to_string(),
+        }
     }
 
     // ── Exact match ──
@@ -990,7 +1207,10 @@ mod tests {
         // Pure ASCII name that doesn't match anything — should not trigger homoglyph
         let deps = vec![dep("my-safe-package")];
         let issues = check_similarity(&deps, "npm");
-        let homoglyph_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("homoglyph")).collect();
+        let homoglyph_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("homoglyph"))
+            .collect();
         assert!(homoglyph_issues.is_empty());
     }
 
@@ -1014,7 +1234,10 @@ mod tests {
         // @types/lodash — known scope, should not flag scope-squatting
         let deps = vec![dep("@types/lodash")];
         let issues = check_similarity(&deps, "npm");
-        let scope_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("scope-squatting")).collect();
+        let scope_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("scope-squatting"))
+            .collect();
         assert!(scope_issues.is_empty());
     }
 
@@ -1034,7 +1257,10 @@ mod tests {
         // lodash — unscoped, scope-squatting check should not apply
         let deps = vec![dep("lodash")];
         let issues = check_similarity(&deps, "npm");
-        let scope_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("scope-squatting")).collect();
+        let scope_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("scope-squatting"))
+            .collect();
         assert!(scope_issues.is_empty());
     }
 
@@ -1073,26 +1299,44 @@ mod tests {
 
     #[test]
     fn test_extract_scope_npm() {
-        assert_eq!(extract_scope("@types/lodash", "npm"), Some("@types".to_string()));
+        assert_eq!(
+            extract_scope("@types/lodash", "npm"),
+            Some("@types".to_string())
+        );
         assert_eq!(extract_scope("lodash", "npm"), None);
-        assert_eq!(extract_scope("@babel/core", "npm"), Some("@babel".to_string()));
+        assert_eq!(
+            extract_scope("@babel/core", "npm"),
+            Some("@babel".to_string())
+        );
     }
 
     #[test]
     fn test_extract_scope_php() {
-        assert_eq!(extract_scope("laravel/framework", "php"), Some("laravel".to_string()));
+        assert_eq!(
+            extract_scope("laravel/framework", "php"),
+            Some("laravel".to_string())
+        );
         assert_eq!(extract_scope("monolog", "php"), None);
     }
 
     #[test]
     fn test_extract_scope_go() {
-        assert_eq!(extract_scope("github.com/google/protobuf", "go"), Some("github.com/google".to_string()));
-        assert_eq!(extract_scope("go.uber.org/zap", "go"), Some("go.uber.org/zap".to_string()));
+        assert_eq!(
+            extract_scope("github.com/google/protobuf", "go"),
+            Some("github.com/google".to_string())
+        );
+        assert_eq!(
+            extract_scope("go.uber.org/zap", "go"),
+            Some("go.uber.org/zap".to_string())
+        );
     }
 
     #[test]
     fn test_extract_scope_jvm() {
-        assert_eq!(extract_scope("com.google.guava:guava", "jvm"), Some("com.google".to_string()));
+        assert_eq!(
+            extract_scope("com.google.guava:guava", "jvm"),
+            Some("com.google".to_string())
+        );
         // "junit" has no dot-separated group, so no scope extracted
         assert_eq!(extract_scope("junit:junit", "jvm"), None);
     }
@@ -1100,7 +1344,11 @@ mod tests {
     #[test]
     fn test_known_scopes_populated() {
         for eco in &["npm", "php", "go", "jvm"] {
-            assert!(!known_scopes(eco).is_empty(), "known_scopes empty for {}", eco);
+            assert!(
+                !known_scopes(eco).is_empty(),
+                "known_scopes empty for {}",
+                eco
+            );
         }
         assert!(known_scopes("unknown").is_empty());
     }

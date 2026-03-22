@@ -10,6 +10,7 @@ pub mod rubygems;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
+use std::time::Duration;
 
 /// Metadata about a package from its registry.
 #[derive(Debug, Clone, Serialize)]
@@ -39,7 +40,11 @@ pub trait Registry: Send + Sync {
 
     /// Fetch metadata for a package. Returns None if not supported or not found.
     /// If `version` is provided, look up that specific version's publish date.
-    async fn metadata(&self, package_name: &str, version: Option<&str>) -> Result<Option<PackageMetadata>> {
+    async fn metadata(
+        &self,
+        package_name: &str,
+        version: Option<&str>,
+    ) -> Result<Option<PackageMetadata>> {
         let _ = package_name;
         let _ = version;
         Ok(None)
@@ -61,6 +66,15 @@ pub fn registry_for(ecosystem: &str) -> Box<dyn Registry> {
         "dotnet" => Box::new(nuget::NugetRegistry::new()),
         _ => Box::new(npm::NpmRegistry::new()),
     }
+}
+
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("failed to build HTTP client")
 }
 
 #[cfg(test)]

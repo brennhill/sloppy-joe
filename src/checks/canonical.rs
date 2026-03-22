@@ -1,6 +1,6 @@
+use crate::Dependency;
 use crate::config::SloppyJoeConfig;
 use crate::report::{Issue, Severity};
-use crate::Dependency;
 
 /// Check dependencies against the canonical allowlist.
 /// If a dependency is listed as an alternative to a canonical package, flag it.
@@ -98,9 +98,10 @@ mod tests {
         let config = SloppyJoeConfig {
             canonical: HashMap::from([(
                 "npm".to_string(),
-                HashMap::from([
-                    ("lodash".to_string(), vec!["underscore".to_string(), "ramda".to_string()]),
-                ]),
+                HashMap::from([(
+                    "lodash".to_string(),
+                    vec!["underscore".to_string(), "ramda".to_string()],
+                )]),
             )]),
             ..Default::default()
         };

@@ -3,7 +3,9 @@ use async_trait::async_trait;
 
 /// Strip semver prefixes like ^, ~, >= from a version string.
 fn strip_version_prefix(version: &str) -> String {
-    version.trim_start_matches(|c: char| c == '^' || c == '~' || c == '>' || c == '=' || c == '<' || c == ' ').to_string()
+    version
+        .trim_start_matches(['^', '~', '>', '=', '<', ' '])
+        .to_string()
 }
 
 pub struct NpmRegistry {
@@ -13,8 +15,14 @@ pub struct NpmRegistry {
 impl NpmRegistry {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: super::http_client(),
         }
+    }
+}
+
+impl Default for NpmRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -38,14 +46,35 @@ impl super::Registry for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         let url = format!("https://registry.npmjs.org/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        Ok(resp.status().is_success())
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "npm registry lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
+        }
+        Ok(true)
     }
 
-    async fn metadata(&self, package_name: &str, version: Option<&str>) -> Result<Option<super::PackageMetadata>> {
+    async fn metadata(
+        &self,
+        package_name: &str,
+        version: Option<&str>,
+    ) -> Result<Option<super::PackageMetadata>> {
         let url = format!("https://registry.npmjs.org/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "npm registry metadata lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
         }
         let body: serde_json::Value = resp.json().await?;
         let time = &body["time"];
@@ -73,7 +102,13 @@ impl super::Registry for NpmRegistry {
 
         let previous_ver = if let Some(ref lv) = latest_ver {
             let pos = version_list.iter().position(|v| v == lv);
-            pos.and_then(|p| if p > 0 { Some(version_list[p - 1].clone()) } else { None })
+            pos.and_then(|p| {
+                if p > 0 {
+                    Some(version_list[p - 1].clone())
+                } else {
+                    None
+                }
+            })
         } else {
             None
         };

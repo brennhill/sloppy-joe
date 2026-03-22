@@ -7,6 +7,10 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     if gradle.exists() {
         return parse_gradle(&gradle);
     }
+    let gradle_kts = project_dir.join("build.gradle.kts");
+    if gradle_kts.exists() {
+        return parse_gradle(&gradle_kts);
+    }
     let pom = project_dir.join("pom.xml");
     parse_pom(&pom)
 }
@@ -15,16 +19,20 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
     let content = std::fs::read_to_string(path).context("Failed to read build.gradle")?;
     let mut deps = Vec::new();
     let configs = [
-        "implementation", "api", "compileOnly", "runtimeOnly", "testImplementation",
+        "implementation",
+        "api",
+        "compileOnly",
+        "runtimeOnly",
+        "testImplementation",
     ];
 
     for line in content.lines() {
         let line = line.trim();
         for cfg in &configs {
-            if line.starts_with(cfg) {
-                if let Some(dep) = extract_gradle_dep(line) {
-                    deps.push(dep);
-                }
+            if line.starts_with(cfg)
+                && let Some(dep) = extract_gradle_dep(line)
+            {
+                deps.push(dep);
             }
         }
     }
@@ -32,7 +40,7 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn extract_gradle_dep(line: &str) -> Option<Dependency> {
-    let quote = line.find(|c| c == '\'' || c == '"')?;
+    let quote = line.find(['\'', '"'])?;
     let ch = line.as_bytes()[quote] as char;
     let rest = &line[quote + 1..];
     let end = rest.find(ch)?;
@@ -41,7 +49,11 @@ fn extract_gradle_dep(line: &str) -> Option<Dependency> {
     if parts.len() >= 2 {
         let name = format!("{}:{}", parts[0], parts[1]);
         let version = parts.get(2).map(|v| v.to_string());
-        return Some(Dependency { name, version, ecosystem: "jvm".to_string() });
+        return Some(Dependency {
+            name,
+            version,
+            ecosystem: "jvm".to_string(),
+        });
     }
     None
 }
@@ -70,20 +82,41 @@ fn parse_pom_dep(lines: &[&str], start: usize) -> (Option<Dependency>, usize) {
     let mut artifact = None;
     let mut version = None;
 
-    for i in (start + 1)..lines.len() {
-        let line = lines[i].trim();
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        let line = line.trim();
         if line.contains("</dependency>") {
             if let (Some(g), Some(a)) = (group, artifact) {
                 let name = format!("{}:{}", g, a);
-                return (Some(Dependency { name, version, ecosystem: "jvm".to_string() }), i);
+                return (
+                    Some(Dependency {
+                        name,
+                        version,
+                        ecosystem: "jvm".to_string(),
+                    }),
+                    i,
+                );
             }
             return (None, i);
         }
-        if let Some(v) = extract_xml_value(line, "groupId") { group = Some(v); }
-        if let Some(v) = extract_xml_value(line, "artifactId") { artifact = Some(v); }
-        if let Some(v) = extract_xml_value(line, "version") { version = Some(v); }
+        if let Some(v) = extract_xml_value(line, "groupId") {
+            group = Some(v);
+        }
+        if let Some(v) = extract_xml_value(line, "artifactId") {
+            artifact = Some(v);
+        }
+        if let Some(v) = extract_xml_value(line, "version") {
+            version = Some(v);
+        }
     }
     (None, lines.len())
+}
+
+fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = line.find(&open)? + open.len();
+    let end = line.find(&close)?;
+    Some(line[start..end].to_string())
 }
 
 #[cfg(test)]
@@ -145,7 +178,8 @@ mod tests {
 
     #[test]
     fn parse_pom_xml_dependency() {
-        let dir = setup_pom(r#"
+        let dir = setup_pom(
+            r#"
 <project>
   <dependencies>
     <dependency>
@@ -155,7 +189,8 @@ mod tests {
     </dependency>
   </dependencies>
 </project>
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "com.google.guava:guava");
@@ -165,7 +200,8 @@ mod tests {
 
     #[test]
     fn parse_pom_multiple_dependencies() {
-        let dir = setup_pom(r#"
+        let dir = setup_pom(
+            r#"
 <project>
   <dependencies>
     <dependency>
@@ -180,7 +216,8 @@ mod tests {
     </dependency>
   </dependencies>
 </project>
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);
         cleanup(&dir);
@@ -210,12 +247,21 @@ mod tests {
         assert_eq!(dep.name, "com.example:lib");
         assert_eq!(dep.version, None);
     }
-}
 
-fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = line.find(&open)? + open.len();
-    let end = line.find(&close)?;
-    Some(line[start..end].to_string())
+    #[test]
+    fn parse_gradle_kts() {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("sj-jvm-{}-{}", std::process::id(), id));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("build.gradle.kts"),
+            "implementation(\"com.google.guava:guava:31.1-jre\")",
+        )
+        .unwrap();
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "com.google.guava:guava");
+        assert_eq!(deps[0].version, Some("31.1-jre".to_string()));
+        cleanup(&dir);
+    }
 }

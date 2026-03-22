@@ -116,9 +116,18 @@ pub fn resolve_config_source(cli_config: Option<&str>) -> Option<String> {
 /// Load config from a resolved path. Fails hard on malformed config —
 /// a broken config should never silently fall back to no protection.
 pub fn load_config(config_path: Option<&Path>) -> Result<SloppyJoeConfig, String> {
+    load_config_with_project(config_path, None)
+}
+
+pub fn load_config_with_project(
+    config_path: Option<&Path>,
+    project_dir: Option<&Path>,
+) -> Result<SloppyJoeConfig, String> {
     let Some(path) = config_path else {
         return Ok(SloppyJoeConfig::default());
     };
+
+    ensure_config_outside_project(path, project_dir)?;
 
     let content = std::fs::read_to_string(path).map_err(|e| {
         format!(
@@ -133,21 +142,29 @@ pub fn load_config(config_path: Option<&Path>) -> Result<SloppyJoeConfig, String
 /// Load config from a string source — either a file path or a URL.
 /// Fails hard on errors — a misconfigured CI pipeline should not
 /// silently run without protection.
-pub async fn load_config_from_source(source: Option<&str>) -> Result<SloppyJoeConfig, String> {
+pub async fn load_config_from_source(
+    source: Option<&str>,
+    project_dir: Option<&Path>,
+) -> Result<SloppyJoeConfig, String> {
     let Some(source) = source else {
         return Ok(SloppyJoeConfig::default());
     };
 
-    if source.starts_with("http://") || source.starts_with("https://") {
+    if source.starts_with("http://") {
+        Err(format!(
+            "Config URL must use HTTPS.\n  URL: {}\n  Fix: Use an https:// URL or a local path outside the project directory.",
+            source
+        ))
+    } else if source.starts_with("https://") {
         fetch_config_from_url(source).await
     } else {
-        load_config(Some(Path::new(source)))
+        load_config_with_project(Some(Path::new(source)), project_dir)
     }
 }
 
 /// Fetch config JSON from a URL.
 async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
-    let response = reqwest::get(url).await.map_err(|e| {
+    let response = crate::registry::http_client().get(url).send().await.map_err(|e| {
         format!(
             "Could not fetch config from URL: {}\n  URL: {}\n  Fix: Check that the URL is reachable and returns valid JSON.\n       For private repos, ensure your CI token has read access.",
             e, url
@@ -157,13 +174,15 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     if !response.status().is_success() {
         return Err(format!(
             "Config URL returned HTTP {}\n  URL: {}\n  Fix: Check that the URL points to a valid JSON file.\n       For GitHub raw URLs, use: https://raw.githubusercontent.com/org/repo/main/sloppy-joe.json",
-            response.status(), url
+            response.status(),
+            url
         ));
     }
 
-    let content = response.text().await.map_err(|e| {
-        format!("Could not read response body from {}: {}", url, e)
-    })?;
+    let content = response
+        .text()
+        .await
+        .map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
 
     parse_config_content(&content, url)
 }
@@ -199,6 +218,26 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
     })
 }
 
+fn ensure_config_outside_project(path: &Path, project_dir: Option<&Path>) -> Result<(), String> {
+    let Some(project_dir) = project_dir else {
+        return Ok(());
+    };
+
+    let project_dir =
+        std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    if path.starts_with(&project_dir) {
+        return Err(format!(
+            "Config file must live outside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Move the config file outside the repo or use an https:// URL.",
+            path.display(),
+            project_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Print a template config to stdout.
 pub fn print_template() {
     let config = SloppyJoeConfig {
@@ -207,16 +246,36 @@ pub fn print_template() {
             m.insert(
                 "npm".to_string(),
                 HashMap::from([
-                    ("lodash".to_string(), vec!["underscore".to_string(), "ramda".to_string()]),
-                    ("dayjs".to_string(), vec!["moment".to_string(), "luxon".to_string()]),
-                    ("axios".to_string(), vec!["request".to_string(), "got".to_string(), "node-fetch".to_string(), "superagent".to_string()]),
+                    (
+                        "lodash".to_string(),
+                        vec!["underscore".to_string(), "ramda".to_string()],
+                    ),
+                    (
+                        "dayjs".to_string(),
+                        vec!["moment".to_string(), "luxon".to_string()],
+                    ),
+                    (
+                        "axios".to_string(),
+                        vec![
+                            "request".to_string(),
+                            "got".to_string(),
+                            "node-fetch".to_string(),
+                            "superagent".to_string(),
+                        ],
+                    ),
                 ]),
             );
             m.insert(
                 "pypi".to_string(),
                 HashMap::from([
-                    ("httpx".to_string(), vec!["urllib3".to_string(), "requests".to_string()]),
-                    ("ruff".to_string(), vec!["flake8".to_string(), "pylint".to_string()]),
+                    (
+                        "httpx".to_string(),
+                        vec!["urllib3".to_string(), "requests".to_string()],
+                    ),
+                    (
+                        "ruff".to_string(),
+                        vec!["flake8".to_string(), "pylint".to_string()],
+                    ),
                 ]),
             );
             m.insert("cargo".to_string(), HashMap::new());
@@ -231,9 +290,10 @@ pub fn print_template() {
             ("go".to_string(), vec!["github.com/yourorg/*".to_string()]),
             ("npm".to_string(), vec!["@yourorg/*".to_string()]),
         ]),
-        allowed: HashMap::from([
-            ("npm".to_string(), vec!["some-vetted-external-pkg".to_string()]),
-        ]),
+        allowed: HashMap::from([(
+            "npm".to_string(),
+            vec!["some-vetted-external-pkg".to_string()],
+        )]),
         min_version_age_hours: 72,
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
@@ -317,7 +377,10 @@ mod tests {
             canonical: HashMap::from([(
                 "npm".to_string(),
                 HashMap::from([
-                    ("lodash".to_string(), vec!["underscore".to_string(), "ramda".to_string()]),
+                    (
+                        "lodash".to_string(),
+                        vec!["underscore".to_string(), "ramda".to_string()],
+                    ),
                     ("dayjs".to_string(), vec!["moment".to_string()]),
                 ]),
             )]),
@@ -369,6 +432,17 @@ mod tests {
         assert!(config.internal.contains_key("npm"));
         assert!(config.allowed.contains_key("npm"));
         assert_eq!(config.min_version_age_hours, 48);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_rejects_project_local_path() {
+        let dir = std::env::temp_dir().join("sloppy-joe-test-project-boundary");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"canonical":{},"internal":{},"allowed":{}}"#).unwrap();
+        let err = load_config_with_project(Some(&path), Some(&dir)).unwrap_err();
+        assert!(err.contains("outside the project directory"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -429,5 +503,13 @@ mod tests {
     #[test]
     fn print_template_does_not_panic() {
         print_template();
+    }
+
+    #[tokio::test]
+    async fn load_config_from_source_rejects_http_url() {
+        let err = load_config_from_source(Some("http://example.invalid/sloppy-joe.json"), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("must use HTTPS"));
     }
 }

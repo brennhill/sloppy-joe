@@ -1,22 +1,42 @@
 use crate::Dependency;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let csproj = find_csproj(project_dir)?;
-    let content =
-        std::fs::read_to_string(&csproj).context_msg(&csproj)?;
+    let content = std::fs::read_to_string(&csproj).context_msg(&csproj)?;
 
     let mut deps = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_version: Option<String> = None;
 
     for line in content.lines() {
         let line = line.trim();
         if line.contains("<PackageReference") {
             if let Some(name) = extract_include(line) {
                 let version = extract_attr(line, "Version");
+                if line.contains("/>") || version.is_some() {
+                    deps.push(Dependency {
+                        name,
+                        version,
+                        ecosystem: "dotnet".to_string(),
+                    });
+                } else {
+                    current_name = Some(name);
+                    current_version = None;
+                }
+            }
+            continue;
+        }
+
+        if current_name.is_some() {
+            if let Some(version) = extract_xml_value(line, "Version") {
+                current_version = Some(version);
+            }
+            if line.contains("</PackageReference>") {
                 deps.push(Dependency {
-                    name,
-                    version,
+                    name: current_name.take().unwrap(),
+                    version: current_version.take(),
                     ecosystem: "dotnet".to_string(),
                 });
             }
@@ -31,10 +51,10 @@ fn find_csproj(dir: &Path) -> Result<std::path::PathBuf> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if let Some(ext) = path.extension() {
-            if ext == "csproj" {
-                return Ok(path);
-            }
+        if let Some(ext) = path.extension()
+            && ext == "csproj"
+        {
+            return Ok(path);
         }
     }
     bail!("No .csproj file found in {}", dir.display())
@@ -50,6 +70,24 @@ fn extract_attr(line: &str, attr: &str) -> Option<String> {
     let rest = &line[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = line.find(&open)? + open.len();
+    let end = line.find(&close)?;
+    Some(line[start..end].to_string())
+}
+
+trait ContextMsg {
+    fn context_msg(self, path: &Path) -> Result<String>;
+}
+
+impl ContextMsg for std::io::Result<String> {
+    fn context_msg(self, path: &Path) -> Result<String> {
+        self.map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
+    }
 }
 
 #[cfg(test)]
@@ -73,13 +111,15 @@ mod tests {
 
     #[test]
     fn parse_self_closing_package_reference() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
 </Project>
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "Newtonsoft.Json");
@@ -90,7 +130,8 @@ mod tests {
 
     #[test]
     fn parse_multiple_package_references() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
@@ -98,7 +139,8 @@ mod tests {
     <PackageReference Include="xunit" Version="2.5.0" />
   </ItemGroup>
 </Project>
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 3);
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
@@ -128,27 +170,39 @@ mod tests {
 
     #[test]
     fn parse_package_reference_without_version() {
-        let dir = setup_dir(r#"
+        let dir = setup_dir(
+            r#"
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="SomePackage" />
   </ItemGroup>
 </Project>
-"#);
+"#,
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "SomePackage");
         assert_eq!(deps[0].version, None);
         cleanup(&dir);
     }
-}
 
-trait ContextMsg {
-    fn context_msg(self, path: &Path) -> Result<String>;
-}
-
-impl ContextMsg for std::io::Result<String> {
-    fn context_msg(self, path: &Path) -> Result<String> {
-        self.map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
+    #[test]
+    fn parse_nested_version_element() {
+        let dir = setup_dir(
+            r#"
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="SomePackage">
+      <Version>1.2.3</Version>
+    </PackageReference>
+  </ItemGroup>
+</Project>
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "SomePackage");
+        assert_eq!(deps[0].version, Some("1.2.3".to_string()));
+        cleanup(&dir);
     }
 }

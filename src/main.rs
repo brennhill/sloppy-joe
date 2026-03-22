@@ -2,12 +2,14 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
 
-
 #[derive(Parser)]
 #[command(name = "sloppy-joe")]
 #[command(version)]
-#[command(about = "Catch hallucinated, typosquatted, and non-canonical dependencies before they reach production.")]
-#[command(long_about = "Catch hallucinated, typosquatted, and non-canonical dependencies before they reach production.
+#[command(
+    about = "Catch hallucinated, typosquatted, and non-canonical dependencies before they reach production."
+)]
+#[command(
+    long_about = "Catch hallucinated, typosquatted, and non-canonical dependencies before they reach production.
 
 Three layers of protection:
   1. Existence  — verifies every dependency exists on its registry
@@ -33,7 +35,8 @@ Config security:
   Config is NEVER read from the project directory. An AI agent with
   shell access could rewrite an in-repo config to allowlist its own
   hallucinated dependencies. Use --config or SLOPPY_JOE_CONFIG env var
-  to point to a file outside the agent's write boundary.")]
+  to point to a file outside the agent's write boundary."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -85,7 +88,9 @@ async fn main() {
             config,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            match sloppy_joe::scan_with_source(&dir, project_type.as_deref(), config.as_deref()).await {
+            match sloppy_joe::scan_with_source(&dir, project_type.as_deref(), config.as_deref())
+                .await
+            {
                 Ok(report) => {
                     if json {
                         report.print_json();

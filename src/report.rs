@@ -76,7 +76,12 @@ impl ScanReport {
         println!();
 
         for issue in &self.issues {
-            println!("  {} {} {}", "ERROR".red().bold(), issue.package.red().bold(), format!("[{}]", issue.check).dimmed());
+            println!(
+                "  {} {} {}",
+                "ERROR".red().bold(),
+                issue.package.red().bold(),
+                format!("[{}]", issue.check).dimmed()
+            );
             println!("        {}", issue.message);
             println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
             if let Some(ref s) = issue.suggestion {
@@ -94,9 +99,16 @@ impl ScanReport {
             "Summary".bold(),
             self.packages_checked,
             self.issues.len(),
-            if self.issues.len() == 1 { "error" } else { "errors" },
+            if self.issues.len() == 1 {
+                "error"
+            } else {
+                "errors"
+            },
         );
-        println!("\n{}  Remove or replace the packages above before merging.", "BLOCKED".red().bold());
+        println!(
+            "\n{}  Remove or replace the packages above before merging.",
+            "BLOCKED".red().bold()
+        );
     }
 }
 

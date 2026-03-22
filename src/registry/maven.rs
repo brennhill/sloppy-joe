@@ -8,11 +8,14 @@ pub struct MavenRegistry {
 impl MavenRegistry {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
-                .build()
-                .expect("failed to build HTTP client"),
+            client: super::http_client(),
         }
+    }
+}
+
+impl Default for MavenRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -30,15 +33,26 @@ impl super::Registry for MavenRegistry {
             group, artifact
         );
         let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "Maven lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
         }
         let body: serde_json::Value = resp.json().await?;
         let found = body["response"]["numFound"].as_i64().unwrap_or(0);
         Ok(found > 0)
     }
 
-    async fn metadata(&self, package_name: &str, _version: Option<&str>) -> Result<Option<super::PackageMetadata>> {
+    async fn metadata(
+        &self,
+        package_name: &str,
+        _version: Option<&str>,
+    ) -> Result<Option<super::PackageMetadata>> {
         let parts: Vec<&str> = package_name.splitn(2, ':').collect();
         if parts.len() != 2 {
             return Ok(None);
@@ -49,8 +63,15 @@ impl super::Registry for MavenRegistry {
             group, artifact
         );
         let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "Maven metadata lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
         }
         let body: serde_json::Value = resp.json().await?;
         let doc = &body["response"]["docs"][0];
@@ -70,14 +91,35 @@ impl super::Registry for MavenRegistry {
             let mut year = 1970i64;
             let mut rem_days = days;
             loop {
-                let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+                let days_in_year = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                    366
+                } else {
+                    365
+                };
                 if rem_days < days_in_year {
                     break;
                 }
                 rem_days -= days_in_year;
                 year += 1;
             }
-            let days_per_month = [31, if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+            let days_per_month = [
+                31,
+                if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                    29
+                } else {
+                    28
+                },
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
             let mut month = 1i64;
             for &dm in &days_per_month {
                 if rem_days < dm {
@@ -87,7 +129,10 @@ impl super::Registry for MavenRegistry {
                 month += 1;
             }
             let day = rem_days + 1;
-            format!("{:04}-{:02}-{:02}T{:02}:{:02}:00Z", year, month, day, hour, min)
+            format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:00Z",
+                year, month, day, hour, min
+            )
         });
 
         Ok(Some(super::PackageMetadata {

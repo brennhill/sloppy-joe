@@ -8,7 +8,7 @@ pub mod package_json;
 pub mod requirements;
 
 use crate::Dependency;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 /// Auto-detect the project type and parse dependencies, or use the specified type.
@@ -59,6 +59,17 @@ fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
         "Could not detect project type. Use --type to specify one of: \
          npm, pypi, cargo, go, ruby, php, jvm, dotnet"
     );
+}
+
+fn has_csproj(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .any(|e| e.path().extension().is_some_and(|ext| ext == "csproj"))
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -189,15 +200,4 @@ mod tests {
         assert!(!has_csproj(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-fn has_csproj(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .ok()
-        .map(|entries| {
-            entries.filter_map(|e| e.ok()).any(|e| {
-                e.path().extension().map_or(false, |ext| ext == "csproj")
-            })
-        })
-        .unwrap_or(false)
 }

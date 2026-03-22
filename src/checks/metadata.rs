@@ -1,9 +1,9 @@
-use crate::config::SloppyJoeConfig;
-use crate::registry::Registry;
-use crate::report::{Issue, Severity};
 use crate::Dependency;
+use crate::config::SloppyJoeConfig;
+use crate::registry::{PackageMetadata, Registry};
+use crate::report::{Issue, Severity};
 use anyhow::Result;
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashSet;
 
 /// Parse an ISO 8601 date string and return the age in hours.
@@ -48,7 +48,11 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64) -> i64 {
     let mut days: i64 = 0;
     // Years since 1970
     for y in 1970..year {
-        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
     }
     // Months
     for m in 0..((month - 1) as usize) {
@@ -62,145 +66,169 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64) -> i64 {
     days * 86400 + hour * 3600 + min * 60
 }
 
-/// Check metadata signals: version age, package age, download count,
-/// install script amplifier, dependency explosion, and maintainer change.
-/// Only runs on non-internal packages. Allowed packages ARE subject to age gating.
-///
-/// `similarity_flagged` is the set of package names that triggered a similarity check.
-/// This is used for the install script signal amplifier.
-pub async fn check_metadata(
+#[derive(Debug, Clone)]
+pub(crate) struct MetadataLookup {
+    pub package: String,
+    pub version: Option<String>,
+    pub unresolved_version: bool,
+    pub metadata: Option<PackageMetadata>,
+}
+
+pub(crate) async fn fetch_metadata(
     registry: &dyn Registry,
     deps: &[Dependency],
-    config: &SloppyJoeConfig,
-    similarity_flagged: &HashSet<String>,
-) -> Result<Vec<Issue>> {
-    let min_age = config.min_version_age_hours;
-    if min_age == 0 {
-        return Ok(vec![]); // Age gate disabled
-    }
-
-    let _ecosystem = registry.ecosystem();
-
-    let results = stream::iter(deps)
+) -> Result<Vec<MetadataLookup>> {
+    stream::iter(deps)
         .map(|dep| {
-            let name = dep.name.clone();
+            let package = dep.name.clone();
             let version = dep.version.clone();
+            let exact_version = dep.exact_version();
+            let unresolved_version = dep.has_unresolved_version();
             async move {
-                let meta = registry.metadata(&name, version.as_deref()).await.unwrap_or(None);
-                (name, version, meta)
+                let metadata = registry
+                    .metadata(&package, exact_version.as_deref())
+                    .await?;
+                Ok::<_, anyhow::Error>(MetadataLookup {
+                    package,
+                    version,
+                    unresolved_version,
+                    metadata,
+                })
             }
         })
         .buffer_unordered(10)
-        .collect::<Vec<_>>()
-        .await;
+        .try_collect::<Vec<_>>()
+        .await
+}
 
+pub(crate) fn issues_from_lookups(
+    lookups: &[MetadataLookup],
+    config: &SloppyJoeConfig,
+    similarity_flagged: &HashSet<String>,
+) -> Vec<Issue> {
+    let min_age = config.min_version_age_hours;
     let mut issues = Vec::new();
 
-    for (name, version, meta) in results {
-        let Some(meta) = meta else { continue };
+    for lookup in lookups {
+        let name = &lookup.package;
+        let version = &lookup.version;
+        let unresolved_version = lookup.unresolved_version;
+
+        if unresolved_version {
+            issues.push(Issue {
+                package: name.clone(),
+                check: "metadata/unresolved-version".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "'{}' uses the non-exact version requirement '{}'. Version-age checks are skipped because manifest ranges are not precise enough for an accurate result.",
+                    name,
+                    version.as_deref().unwrap_or("")
+                ),
+                fix: "Pin an exact version or add lockfile-aware resolution before enforcing version-age policy.".to_string(),
+                suggestion: None,
+                registry_url: None,
+            });
+        }
+
+        let Some(meta) = lookup.metadata.as_ref() else {
+            continue;
+        };
 
         let mut is_new_package = false;
         let mut is_low_downloads = false;
 
-        // Check version age
-        if let Some(ref date) = meta.latest_version_date {
-            if let Some(age_hours) = age_in_hours(date) {
-                if age_hours < min_age {
-                    let version_label = if let Some(ref v) = version {
-                        format!("Version '{}' of '{}'", v, name)
-                    } else {
-                        format!("The latest version of '{}'", name)
-                    };
-                    issues.push(Issue {
-                        package: name.clone(),
-                        check: "metadata/version-age".to_string(),
-                        severity: Severity::Error,
-                        message: format!(
-                            "{} was published {} hours ago (minimum: {} hours). New versions need time for the community and security scanners to review them.",
-                            version_label, age_hours, min_age
-                        ),
-                        fix: format!(
-                            "Wait until the version is at least {} hours old, or pin to an older version. If this is urgent, set min_version_age_hours to 0 in your config (not recommended).",
-                            min_age
-                        ),
-                        suggestion: None,
-                        registry_url: None,
-                    });
-                }
-            }
+        if !unresolved_version
+            && let Some(ref date) = meta.latest_version_date
+            && let Some(age_hours) = age_in_hours(date)
+            && age_hours < min_age
+        {
+            let version_label = if let Some(v) = version {
+                format!("Version '{}' of '{}'", v, name)
+            } else {
+                format!("The latest version of '{}'", name)
+            };
+            issues.push(Issue {
+                package: name.clone(),
+                check: "metadata/version-age".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "{} was published {} hours ago (minimum: {} hours). New versions need time for the community and security scanners to review them.",
+                    version_label, age_hours, min_age
+                ),
+                fix: format!(
+                    "Wait until the version is at least {} hours old, or pin to an older version. If this is urgent, set min_version_age_hours to 0 in your config (not recommended).",
+                    min_age
+                ),
+                suggestion: None,
+                registry_url: None,
+            });
         }
 
-        // Check package age (new package warning)
-        if let Some(ref date) = meta.created {
-            if let Some(age_hours) = age_in_hours(date) {
-                if age_hours < 720 {
-                    // Less than 30 days old
-                    is_new_package = true;
-                    let age_days = age_hours / 24;
-                    issues.push(Issue {
-                        package: name.clone(),
-                        check: "metadata/new-package".to_string(),
-                        severity: Severity::Error,
-                        message: format!(
-                            "'{}' was first published {} day{} ago. New packages are higher risk — verify this is a legitimate, maintained project before depending on it.",
-                            name, age_days, if age_days == 1 { "" } else { "s" }
-                        ),
-                        fix: format!(
-                            "Verify '{}' at its registry page and source repository. If it's legitimate, add it to the 'allowed' list in your config.",
-                            name
-                        ),
-                        suggestion: None,
-                        registry_url: Some(format!("https://www.npmjs.com/package/{}", name)),
-                    });
-                }
-            }
+        if let Some(ref date) = meta.created
+            && let Some(age_hours) = age_in_hours(date)
+            && age_hours < 720
+        {
+            is_new_package = true;
+            let age_days = age_hours / 24;
+            issues.push(Issue {
+                package: name.clone(),
+                check: "metadata/new-package".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "'{}' was first published {} day{} ago. New packages are higher risk — verify this is a legitimate, maintained project before depending on it.",
+                    name, age_days, if age_days == 1 { "" } else { "s" }
+                ),
+                fix: format!(
+                    "Verify '{}' at its registry page and source repository. If it's legitimate, add it to the 'allowed' list in your config.",
+                    name
+                ),
+                suggestion: None,
+                registry_url: Some(format!("https://www.npmjs.com/package/{}", name)),
+            });
         }
 
-        // Check download count (if available)
-        if let Some(downloads) = meta.downloads {
-            if downloads < 100 {
-                is_low_downloads = true;
-                issues.push(Issue {
-                    package: name.clone(),
-                    check: "metadata/low-downloads".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "'{}' has only {} downloads. Low-download packages are more likely to be typosquats, placeholders, or abandoned projects.",
-                        name, downloads
-                    ),
-                    fix: format!(
-                        "Verify '{}' is the package you intend to use. If it's legitimate, add it to the 'allowed' list.",
-                        name
-                    ),
-                    suggestion: None,
-                    registry_url: None,
-                });
-            }
+        if let Some(downloads) = meta.downloads
+            && downloads < 100
+        {
+            is_low_downloads = true;
+            issues.push(Issue {
+                package: name.clone(),
+                check: "metadata/low-downloads".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "'{}' has only {} downloads. Low-download packages are more likely to be typosquats, placeholders, or abandoned projects.",
+                    name, downloads
+                ),
+                fix: format!(
+                    "Verify '{}' is the package you intend to use. If it's legitimate, add it to the 'allowed' list.",
+                    name
+                ),
+                suggestion: None,
+                registry_url: None,
+            });
         }
 
-        // Feature 1: Install script signal amplifier
-        // Flag if has install scripts AND (new package OR low downloads OR similarity-flagged)
-        if meta.has_install_scripts {
-            let has_similarity = similarity_flagged.contains(&name);
-            let has_low_downloads = meta.downloads.map_or(false, |d| d < 1000);
+        if !unresolved_version && meta.has_install_scripts {
+            let has_similarity = similarity_flagged.contains(name);
+            let has_low_downloads = meta.downloads.is_some_and(|d| d < 1000);
 
             if is_new_package || is_low_downloads || has_low_downloads || has_similarity {
                 let mut reasons = Vec::new();
-                if is_new_package {
-                    if let Some(ref date) = meta.created {
-                        if let Some(age_hours) = age_in_hours(date) {
-                            let age_days = age_hours / 24;
-                            reasons.push(format!("was published {} days ago", age_days));
-                        }
-                    }
+                if is_new_package
+                    && let Some(ref date) = meta.created
+                    && let Some(age_hours) = age_in_hours(date)
+                {
+                    let age_days = age_hours / 24;
+                    reasons.push(format!("was published {} days ago", age_days));
                 }
-                if let Some(downloads) = meta.downloads {
-                    if downloads < 1000 {
-                        reasons.push(format!("with {} downloads", downloads));
-                    }
+                if let Some(downloads) = meta.downloads
+                    && downloads < 1000
+                {
+                    reasons.push(format!("with {} downloads", downloads));
                 }
                 if has_similarity {
-                    reasons.push("was flagged for name similarity to a popular package".to_string());
+                    reasons
+                        .push("was flagged for name similarity to a popular package".to_string());
                 }
                 let reason_str = reasons.join(" and ");
 
@@ -219,51 +247,72 @@ pub async fn check_metadata(
             }
         }
 
-        // Feature 2: Dependency explosion detection
-        if let (Some(current), Some(previous)) = (meta.dependency_count, meta.previous_dependency_count) {
-            if current >= previous + 10 {
-                let added = current - previous;
-                issues.push(Issue {
-                    package: name.clone(),
-                    check: "metadata/dependency-explosion".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "'{}' added {} new dependencies in its latest version (was {}, now {}). Sudden dependency additions in patch versions are a known supply chain attack vector.",
-                        name, added, previous, current
-                    ),
-                    fix: "Review the new dependencies manually before installing.".to_string(),
-                    suggestion: None,
-                    registry_url: None,
-                });
-            }
+        if !unresolved_version
+            && let (Some(current), Some(previous)) =
+                (meta.dependency_count, meta.previous_dependency_count)
+            && current >= previous + 10
+        {
+            let added = current - previous;
+            issues.push(Issue {
+                package: name.clone(),
+                check: "metadata/dependency-explosion".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "'{}' added {} new dependencies in its latest version (was {}, now {}). Sudden dependency additions in patch versions are a known supply chain attack vector.",
+                    name, added, previous, current
+                ),
+                fix: "Review the new dependencies manually before installing.".to_string(),
+                suggestion: None,
+                registry_url: None,
+            });
         }
 
-        // Feature 4: Maintainer change detection
-        if let (Some(ref current_pub), Some(ref previous_pub)) = (meta.current_publisher, meta.previous_publisher) {
-            if current_pub != previous_pub {
-                issues.push(Issue {
-                    package: name.clone(),
-                    check: "metadata/maintainer-change".to_string(),
-                    severity: Severity::Error,
-                    message: format!(
-                        "The publisher of '{}' changed from '{}' to '{}' between versions. Maintainer takeovers are a known supply chain attack vector.",
-                        name, previous_pub, current_pub
-                    ),
-                    fix: "Verify the maintainer change is legitimate before installing.".to_string(),
-                    suggestion: None,
-                    registry_url: None,
-                });
-            }
+        if !unresolved_version
+            && let (Some(current_pub), Some(previous_pub)) =
+                (&meta.current_publisher, &meta.previous_publisher)
+            && current_pub != previous_pub
+        {
+            issues.push(Issue {
+                package: name.clone(),
+                check: "metadata/maintainer-change".to_string(),
+                severity: Severity::Error,
+                message: format!(
+                    "The publisher of '{}' changed from '{}' to '{}' between versions. Maintainer takeovers are a known supply chain attack vector.",
+                    name, previous_pub, current_pub
+                ),
+                fix: "Verify the maintainer change is legitimate before installing.".to_string(),
+                suggestion: None,
+                registry_url: None,
+            });
         }
     }
 
-    Ok(issues)
+    issues
+}
+
+/// Check metadata signals: version age, package age, download count,
+/// install script amplifier, dependency explosion, and maintainer change.
+/// Only runs on non-internal packages. Allowed packages ARE subject to age gating.
+///
+/// `similarity_flagged` is the set of package names that triggered a similarity check.
+/// This is used for the install script signal amplifier.
+pub async fn check_metadata(
+    registry: &dyn Registry,
+    deps: &[Dependency],
+    config: &SloppyJoeConfig,
+    similarity_flagged: &HashSet<String>,
+) -> Result<Vec<Issue>> {
+    let min_age = config.min_version_age_hours;
+    if min_age == 0 {
+        return Ok(vec![]); // Age gate disabled
+    }
+    let lookups = fetch_metadata(registry, deps).await?;
+    Ok(issues_from_lookups(&lookups, config, similarity_flagged))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::PackageMetadata;
     use async_trait::async_trait;
 
     struct FakeRegistry {
@@ -275,7 +324,11 @@ mod tests {
         async fn exists(&self, _name: &str) -> Result<bool> {
             Ok(true)
         }
-        async fn metadata(&self, _name: &str, _version: Option<&str>) -> Result<Option<PackageMetadata>> {
+        async fn metadata(
+            &self,
+            _name: &str,
+            _version: Option<&str>,
+        ) -> Result<Option<PackageMetadata>> {
             Ok(self.metadata_response.clone())
         }
         fn ecosystem(&self) -> &str {
@@ -284,7 +337,19 @@ mod tests {
     }
 
     fn dep(name: &str) -> Dependency {
-        Dependency { name: name.to_string(), version: None, ecosystem: "npm".to_string() }
+        Dependency {
+            name: name.to_string(),
+            version: None,
+            ecosystem: "npm".to_string(),
+        }
+    }
+
+    fn dep_with_version(name: &str, version: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: Some(version.to_string()),
+            ecosystem: "npm".to_string(),
+        }
     }
 
     fn config_with_age(hours: u64) -> SloppyJoeConfig {
@@ -337,8 +402,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let age_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("version-age")).collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let age_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("version-age"))
+            .collect();
         assert!(!age_issues.is_empty());
     }
 
@@ -349,8 +419,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let age_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("version-age")).collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let age_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("version-age"))
+            .collect();
         assert!(age_issues.is_empty());
     }
 
@@ -366,8 +441,13 @@ mod tests {
         };
         let deps = vec![dep("brand-new-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let new_pkg: Vec<_> = issues.iter().filter(|i| i.check.contains("new-package")).collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let new_pkg: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("new-package"))
+            .collect();
         assert!(!new_pkg.is_empty());
     }
 
@@ -381,8 +461,13 @@ mod tests {
         };
         let deps = vec![dep("obscure-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let dl_issues: Vec<_> = issues.iter().filter(|i| i.check.contains("low-downloads")).collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let dl_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check.contains("low-downloads"))
+            .collect();
         assert!(!dl_issues.is_empty());
     }
 
@@ -396,7 +481,9 @@ mod tests {
         };
         let deps = vec![dep("popular-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
         assert!(issues.is_empty());
     }
 
@@ -413,7 +500,9 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(0);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
         assert!(issues.is_empty());
     }
 
@@ -424,8 +513,63 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
         assert!(issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registry_errors_fail_the_check() {
+        struct ErrorRegistry;
+
+        #[async_trait]
+        impl Registry for ErrorRegistry {
+            async fn exists(&self, _name: &str) -> Result<bool> {
+                Ok(true)
+            }
+
+            async fn metadata(
+                &self,
+                _name: &str,
+                _version: Option<&str>,
+            ) -> Result<Option<PackageMetadata>> {
+                anyhow::bail!("metadata unavailable");
+            }
+
+            fn ecosystem(&self) -> &str {
+                "npm"
+            }
+        }
+
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let err = check_metadata(&ErrorRegistry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("metadata unavailable"));
+    }
+
+    #[tokio::test]
+    async fn non_exact_versions_are_flagged_instead_of_using_latest_release_data() {
+        let now = chrono_free_now();
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                latest_version_date: Some(now),
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep_with_version("some-pkg", "^1.2.3")];
+        let config = config_with_age(72);
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.check == "metadata/unresolved-version")
+        );
+        assert!(!issues.iter().any(|i| i.check == "metadata/version-age"));
     }
 
     // ── Feature 1: Install script signal amplifier ──
@@ -441,8 +585,13 @@ mod tests {
         };
         let deps = vec![dep("expresz")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let script_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/install-script-risk")
+            .collect();
         assert!(!script_issues.is_empty());
         assert!(script_issues[0].message.contains("install scripts"));
     }
@@ -461,8 +610,13 @@ mod tests {
         };
         let deps = vec![dep("new-pkg-with-scripts")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let script_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/install-script-risk")
+            .collect();
         assert!(!script_issues.is_empty());
     }
 
@@ -477,8 +631,13 @@ mod tests {
         };
         let deps = vec![dep("well-known-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let script_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/install-script-risk")
+            .collect();
         assert!(script_issues.is_empty());
     }
 
@@ -493,8 +652,13 @@ mod tests {
         };
         let deps = vec![dep("low-dl-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let script_issues: Vec<_> = issues.iter().filter(|i| i.check == "metadata/install-script-risk").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let script_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/install-script-risk")
+            .collect();
         assert!(script_issues.is_empty());
     }
 
@@ -511,8 +675,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let explosion: Vec<_> = issues.iter().filter(|i| i.check == "metadata/dependency-explosion").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let explosion: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/dependency-explosion")
+            .collect();
         assert!(!explosion.is_empty());
         assert!(explosion[0].message.contains("added 15 new dependencies"));
         assert!(explosion[0].message.contains("was 3, now 18"));
@@ -529,8 +698,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let explosion: Vec<_> = issues.iter().filter(|i| i.check == "metadata/dependency-explosion").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let explosion: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/dependency-explosion")
+            .collect();
         assert!(explosion.is_empty());
     }
 
@@ -545,8 +719,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let explosion: Vec<_> = issues.iter().filter(|i| i.check == "metadata/dependency-explosion").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let explosion: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/dependency-explosion")
+            .collect();
         assert!(explosion.is_empty());
     }
 
@@ -563,8 +742,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let mc: Vec<_> = issues.iter().filter(|i| i.check == "metadata/maintainer-change").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let mc: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/maintainer-change")
+            .collect();
         assert!(!mc.is_empty());
         assert!(mc[0].message.contains("original-author"));
         assert!(mc[0].message.contains("new-person"));
@@ -581,8 +765,13 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let mc: Vec<_> = issues.iter().filter(|i| i.check == "metadata/maintainer-change").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let mc: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/maintainer-change")
+            .collect();
         assert!(mc.is_empty());
     }
 
@@ -593,15 +782,23 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity()).await.unwrap();
-        let mc: Vec<_> = issues.iter().filter(|i| i.check == "metadata/maintainer-change").collect();
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+            .await
+            .unwrap();
+        let mc: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/maintainer-change")
+            .collect();
         assert!(mc.is_empty());
     }
 
     /// Generate a "now" timestamp without chrono dependency.
     fn chrono_free_now() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         // Approximate: good enough for tests
         let days_since_epoch = secs / 86400;
         let year = 1970 + days_since_epoch / 365; // rough
@@ -609,6 +806,9 @@ mod tests {
         let day = 21;
         let hour = (secs % 86400) / 3600;
         let min = (secs % 3600) / 60;
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:00Z", year, month, day, hour, min)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:00Z",
+            year, month, day, hour, min
+        )
     }
 }

@@ -7,11 +7,15 @@ pub struct CratesIoRegistry {
 
 impl CratesIoRegistry {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
-            .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+        Self {
+            client: super::http_client(),
+        }
+    }
+}
+
+impl Default for CratesIoRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -20,14 +24,35 @@ impl super::Registry for CratesIoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        Ok(resp.status().is_success())
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "crates.io lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
+        }
+        Ok(true)
     }
 
-    async fn metadata(&self, package_name: &str, version: Option<&str>) -> Result<Option<super::PackageMetadata>> {
+    async fn metadata(
+        &self,
+        package_name: &str,
+        version: Option<&str>,
+    ) -> Result<Option<super::PackageMetadata>> {
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        if !resp.status().is_success() {
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "crates.io metadata lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
         }
         let body: serde_json::Value = resp.json().await?;
 
@@ -35,12 +60,14 @@ impl super::Registry for CratesIoRegistry {
         let downloads = body["crate"]["downloads"].as_u64();
 
         let latest_version_date = if let Some(ver) = version {
-            let base_ver = ver.trim_start_matches(|c: char| c == '^' || c == '~' || c == '>' || c == '=' || c == '<' || c == ' ');
+            let base_ver = ver.trim_start_matches(['^', '~', '>', '=', '<', ' ']);
             // Search the versions array for the matching version
             body["versions"]
                 .as_array()
                 .and_then(|versions| {
-                    versions.iter().find(|v| v["num"].as_str() == Some(base_ver))
+                    versions
+                        .iter()
+                        .find(|v| v["num"].as_str() == Some(base_ver))
                 })
                 .and_then(|v| v["created_at"].as_str())
                 .or_else(|| body["crate"]["updated_at"].as_str())

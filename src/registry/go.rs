@@ -7,11 +7,15 @@ pub struct GoRegistry {
 
 impl GoRegistry {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
-            .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+        Self {
+            client: super::http_client(),
+        }
+    }
+}
+
+impl Default for GoRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -20,7 +24,17 @@ impl super::Registry for GoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         let url = format!("https://pkg.go.dev/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        Ok(resp.status().is_success())
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "Go package lookup for '{}' returned HTTP {}",
+                package_name,
+                resp.status()
+            );
+        }
+        Ok(true)
     }
 
     fn ecosystem(&self) -> &str {

@@ -4,8 +4,7 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("requirements.txt");
-    let content =
-        std::fs::read_to_string(&path).context("Failed to read requirements.txt")?;
+    let content = std::fs::read_to_string(&path).context("Failed to read requirements.txt")?;
 
     let mut deps = Vec::new();
 
@@ -17,9 +16,9 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
 
         // Parse "package==version", "package>=version", "package~=version", or just "package"
-        let (name, version) = if let Some(pos) = line.find(|c: char| c == '=' || c == '>' || c == '<' || c == '~' || c == '!') {
+        let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!']) {
             let name = &line[..pos];
-            let version_part = line[pos..].trim_start_matches(|c: char| c == '=' || c == '>' || c == '<' || c == '~' || c == '!');
+            let version_part = line[pos..].trim_start_matches(['=', '>', '<', '~', '!']);
             (name.to_string(), Some(version_part.to_string()))
         } else {
             (line.to_string(), None)

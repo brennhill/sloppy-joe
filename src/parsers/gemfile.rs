@@ -4,8 +4,7 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("Gemfile");
-    let content =
-        std::fs::read_to_string(&path).context("Failed to read Gemfile")?;
+    let content = std::fs::read_to_string(&path).context("Failed to read Gemfile")?;
 
     let mut deps = Vec::new();
 
@@ -15,18 +14,30 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             continue;
         }
 
-        if line.starts_with("gem ") || line.starts_with("gem\t") {
-            if let Some(name) = extract_gem_name(line) {
-                deps.push(Dependency {
-                    name,
-                    version: None,
-                    ecosystem: "ruby".to_string(),
-                });
-            }
+        if (line.starts_with("gem ") || line.starts_with("gem\t"))
+            && let Some(name) = extract_gem_name(line)
+        {
+            deps.push(Dependency {
+                name,
+                version: None,
+                ecosystem: "ruby".to_string(),
+            });
         }
     }
 
     Ok(deps)
+}
+
+fn extract_gem_name(line: &str) -> Option<String> {
+    // Match gem 'name' or gem "name"
+    let after_gem = line.strip_prefix("gem")?.trim_start();
+    let quote = after_gem.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let rest = &after_gem[1..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_string())
 }
 
 #[cfg(test)]
@@ -106,16 +117,4 @@ mod tests {
     fn extract_gem_name_no_quotes() {
         assert_eq!(extract_gem_name("gem rails"), None);
     }
-}
-
-fn extract_gem_name(line: &str) -> Option<String> {
-    // Match gem 'name' or gem "name"
-    let after_gem = line.strip_prefix("gem")?.trim_start();
-    let quote = after_gem.chars().next()?;
-    if quote != '\'' && quote != '"' {
-        return None;
-    }
-    let rest = &after_gem[1..];
-    let end = rest.find(quote)?;
-    Some(rest[..end].to_string())
 }
