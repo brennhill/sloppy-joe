@@ -64,6 +64,7 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
                 ),
                 suggestion: None,
                 registry_url: Some(url),
+                source: None,
             });
         }
     }
@@ -108,6 +109,7 @@ pub(crate) fn check_existence_from_metadata(
                 ),
                 suggestion: None,
                 registry_url: Some(url),
+                source: None,
             });
         }
     }

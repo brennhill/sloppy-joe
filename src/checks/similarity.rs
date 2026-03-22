@@ -903,6 +903,7 @@ fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix
         fix: fix.to_string(),
         suggestion: Some(popular.to_string()),
         registry_url: None,
+        source: None,
     }
 }
 

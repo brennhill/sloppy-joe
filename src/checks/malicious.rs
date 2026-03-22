@@ -316,6 +316,7 @@ pub async fn check_malicious_with_cache(
                 ),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             });
         }
     }

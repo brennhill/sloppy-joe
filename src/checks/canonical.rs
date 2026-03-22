@@ -28,6 +28,7 @@ pub fn check_canonical(
                 ),
                 suggestion: Some(canonical.clone()),
                 registry_url: None,
+                source: None,
             });
         }
     }

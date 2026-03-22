@@ -18,6 +18,9 @@ pub struct Issue {
     pub suggestion: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry_url: Option<String>,
+    /// "direct" or "transitive" — None defaults to direct for backward compat
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,11 +143,16 @@ fn print_issue(issue: &Issue) {
         Severity::Warning => ("WARN".yellow().bold(), issue.package.yellow().bold()),
     };
 
+    let source_label = match issue.source.as_deref() {
+        Some("transitive") => " [transitive]".dimmed().to_string(),
+        _ => String::new(),
+    };
     println!(
-        "  {} {} {}",
+        "  {} {} {}{}",
         label,
         colorized_package,
-        format!("[{}]", issue.check).dimmed()
+        format!("[{}]", issue.check).dimmed(),
+        source_label
     );
     println!("        {}", issue.message);
     println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
@@ -179,6 +187,7 @@ mod tests {
                 fix: "remove it".to_string(),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             }],
             vec![],
             vec![],
@@ -204,6 +213,7 @@ mod tests {
             fix: "fix it".to_string(),
             suggestion: Some("replacement".to_string()),
             registry_url: Some("https://example.com".to_string()),
+            source: None,
         }
     }
 
@@ -333,9 +343,11 @@ mod tests {
             fix: "fix".to_string(),
             suggestion: None,
             registry_url: None,
+            source: None,
         };
         let json = serde_json::to_string(&i).unwrap();
         assert!(!json.contains("suggestion"));
         assert!(!json.contains("registry_url"));
+        assert!(!json.contains("source"));
     }
 }

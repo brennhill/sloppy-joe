@@ -70,6 +70,10 @@ enum Commands {
         /// See CONFIG.md for format details.
         #[arg(long, env = "SLOPPY_JOE_CONFIG", value_name = "PATH_OR_URL")]
         config: Option<String>,
+
+        /// Run similarity checks on transitive dependencies (slower, more thorough)
+        #[arg(long)]
+        deep: bool,
     },
     /// Print a template config to stdout
     ///
@@ -88,10 +92,16 @@ async fn main() {
             json,
             dir,
             config,
+            deep,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            match sloppy_joe::scan_with_source(&dir, project_type.as_deref(), config.as_deref())
-                .await
+            match sloppy_joe::scan_with_source(
+                &dir,
+                project_type.as_deref(),
+                config.as_deref(),
+                deep,
+            )
+            .await
             {
                 Ok(report) => {
                     if json {

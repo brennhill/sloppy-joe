@@ -164,6 +164,7 @@ pub(crate) fn issues_from_lookups(
                 ),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             });
         }
 
@@ -187,6 +188,7 @@ pub(crate) fn issues_from_lookups(
                 ),
                 suggestion: None,
                 registry_url: Some(crate::checks::existence::registry_url(ecosystem, name)),
+                source: None,
             });
         }
 
@@ -208,6 +210,7 @@ pub(crate) fn issues_from_lookups(
                 ),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             });
         }
 
@@ -246,6 +249,7 @@ pub(crate) fn issues_from_lookups(
                     fix: "Do not install this package. Verify it is legitimate before proceeding.".to_string(),
                     suggestion: None,
                     registry_url: None,
+                    source: None,
                 });
             }
         }
@@ -267,6 +271,7 @@ pub(crate) fn issues_from_lookups(
                 fix: "Review the new dependencies manually before installing.".to_string(),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             });
         }
 
@@ -286,6 +291,7 @@ pub(crate) fn issues_from_lookups(
                 fix: "Verify the maintainer change is legitimate before installing.".to_string(),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             });
         }
     }

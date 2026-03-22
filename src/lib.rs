@@ -30,11 +30,12 @@ pub async fn scan_with_source(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
     config_source: Option<&str>,
+    deep: bool,
 ) -> Result<ScanReport> {
     let config = config::load_config_from_source(config_source, Some(project_dir))
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    scan_with_config(project_dir, project_type, config).await
+    scan_with_config(project_dir, project_type, config, deep).await
 }
 
 pub async fn scan(
@@ -44,13 +45,14 @@ pub async fn scan(
 ) -> Result<ScanReport> {
     let config = config::load_config_with_project(config_path, Some(project_dir))
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    scan_with_config(project_dir, project_type, config).await
+    scan_with_config(project_dir, project_type, config, false).await
 }
 
 async fn scan_with_config(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
     config: config::SloppyJoeConfig,
+    deep: bool,
 ) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
     let ecosystem = deps
@@ -59,7 +61,7 @@ async fn scan_with_config(
         .unwrap_or("npm");
     let registry = registry::registry_for(ecosystem);
     let osv_client = checks::malicious::RealOsvClient::new();
-    scan_with_services(project_dir, project_type, config, &*registry, &osv_client).await
+    scan_with_services(project_dir, project_type, config, &*registry, &osv_client, deep).await
 }
 
 async fn scan_with_services(
@@ -68,6 +70,7 @@ async fn scan_with_services(
     config: config::SloppyJoeConfig,
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
+    deep: bool,
 ) -> Result<ScanReport> {
     scan_with_services_inner(
         project_dir,
@@ -76,6 +79,7 @@ async fn scan_with_services(
         registry,
         osv_client,
         false,
+        deep,
     )
     .await
 }
@@ -87,6 +91,7 @@ async fn scan_with_services_inner(
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
     disable_osv_disk_cache: bool,
+    deep: bool,
 ) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
 
@@ -199,8 +204,108 @@ async fn scan_with_services_inner(
         checks::malicious::check_malicious(osv_client, &non_internal, &resolution).await?
     };
 
+    // Mark all direct dep issues with source: "direct"
+    fn mark_source(issues: &mut [Issue], source: &str) {
+        for issue in issues.iter_mut() {
+            issue.source = Some(source.to_string());
+        }
+    }
+
+    let mut existence_results = existence_results;
+    let mut similarity_results = similarity_results;
+    let mut canonical_results = canonical_results;
+    let mut metadata_results = metadata_results;
+    let mut malicious_results = malicious_results;
+
+    mark_source(&mut existence_results, "direct");
+    mark_source(&mut similarity_results, "direct");
+    mark_source(&mut canonical_results, "direct");
+    mark_source(&mut metadata_results, "direct");
+    mark_source(&mut malicious_results, "direct");
+
+    // Transitive dependency scanning
+    let mut transitive_deps =
+        lockfiles::parse_all_lockfile_deps(project_dir, &non_internal)?;
+
+    if !transitive_deps.is_empty() {
+        // Filter out internal and allowed transitive deps
+        transitive_deps.retain(|dep| {
+            !config.is_internal(&ecosystem, &dep.name)
+                && !config.is_allowed(&ecosystem, &dep.name)
+        });
+    }
+
+    if !transitive_deps.is_empty() {
+        let trans_resolution = lockfiles::resolve_versions(project_dir, &transitive_deps)?;
+
+        // Existence + metadata checks on transitive deps
+        let (trans_existence, mut trans_metadata) = if supports_metadata_registry {
+            let trans_lookups =
+                checks::metadata::fetch_metadata(registry, &transitive_deps, &trans_resolution)
+                    .await?;
+            let trans_meta = checks::metadata::issues_from_lookups(
+                &trans_lookups,
+                &config,
+                &similarity_flagged,
+            );
+            (
+                checks::existence::check_existence_from_metadata(
+                    &ecosystem,
+                    &transitive_deps,
+                    &trans_lookups,
+                ),
+                trans_meta,
+            )
+        } else {
+            (
+                checks::existence::check_existence(registry, &transitive_deps).await?,
+                checks::metadata::check_metadata(
+                    registry,
+                    &transitive_deps,
+                    &config,
+                    &similarity_flagged,
+                    &trans_resolution,
+                )
+                .await?,
+            )
+        };
+
+        // OSV check on transitive deps
+        let mut trans_malicious = if disable_osv_disk_cache {
+            checks::malicious::check_malicious_with_cache(
+                osv_client,
+                &transitive_deps,
+                &trans_resolution,
+                None,
+            )
+            .await?
+        } else {
+            checks::malicious::check_malicious(osv_client, &transitive_deps, &trans_resolution)
+                .await?
+        };
+
+        // Similarity on transitive deps only if --deep
+        let mut trans_similarity = if deep {
+            checks::similarity::check_similarity(&transitive_deps, &ecosystem, &corpus)
+        } else {
+            vec![]
+        };
+
+        // Mark all transitive issues
+        let mut trans_existence = trans_existence;
+        mark_source(&mut trans_existence, "transitive");
+        mark_source(&mut trans_similarity, "transitive");
+        mark_source(&mut trans_metadata, "transitive");
+        mark_source(&mut trans_malicious, "transitive");
+
+        existence_results.extend(trans_existence);
+        similarity_results.extend(trans_similarity);
+        metadata_results.extend(trans_metadata);
+        malicious_results.extend(trans_malicious);
+    }
+
     Ok(ScanReport::new(
-        deps.len(),
+        deps.len() + transitive_deps.len(),
         existence_results,
         similarity_results,
         canonical_results,
@@ -263,6 +368,7 @@ fn unresolved_version_policy_issues(
                 fix: "Pin an exact version or provide a trusted lockfile entry. To continue with reduced accuracy, set allow_unresolved_versions to true in the config.".to_string(),
                 suggestion: None,
                 registry_url: None,
+                source: None,
             }
         })
         .collect()
@@ -402,6 +508,7 @@ mod tests {
             registry,
             osv_client,
             true,
+            false,
         )
         .await
     }
@@ -428,6 +535,7 @@ mod tests {
             Default::default(),
             &registry,
             &FakeOsvClient,
+            false,
         )
         .await
         .unwrap();
@@ -453,6 +561,7 @@ mod tests {
             Default::default(),
             &registry,
             &FakeOsvClient,
+            false,
         )
         .await
         .unwrap();
@@ -479,7 +588,7 @@ mod tests {
         let registry = FakeRegistry {
             existing: vec!["react".to_string()],
         };
-        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient)
+        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false)
             .await
             .unwrap();
         assert_eq!(report.packages_checked, 2);
@@ -513,7 +622,7 @@ mod tests {
         let registry = FakeRegistry {
             existing: vec!["moment".to_string()],
         };
-        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient)
+        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false)
             .await
             .unwrap();
         let canonical_issues: Vec<_> = report
@@ -543,7 +652,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = scan_with_source(&dir, Some("npm"), Some(config_path.to_str().unwrap()))
+        let err = scan_with_source(&dir, Some("npm"), Some(config_path.to_str().unwrap()), false)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("outside the project directory"));
@@ -780,5 +889,215 @@ serde = { workspace = true }
         assert!(!report.has_errors());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct VulnOsvClient {
+        vulnerable: Vec<String>,
+    }
+
+    #[async_trait]
+    impl OsvClient for VulnOsvClient {
+        async fn query(
+            &self,
+            name: &str,
+            _ecosystem: &str,
+            _version: Option<&str>,
+        ) -> Result<Vec<String>> {
+            if self.vulnerable.contains(&name.to_string()) {
+                Ok(vec!["GHSA-1234-5678".to_string()])
+            } else {
+                Ok(vec![])
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transitive_dep_with_osv_hit_has_transitive_source() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "18.3.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{
+              "name": "demo",
+              "lockfileVersion": 3,
+              "packages": {
+                "": {"name": "demo", "dependencies": {"react": "18.3.1"}},
+                "node_modules/react": {"version": "18.3.1"},
+                "node_modules/evil-transitive": {"version": "1.0.0"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let registry = FakeRegistry {
+            existing: vec!["react".to_string(), "evil-transitive".to_string()],
+        };
+        let osv = VulnOsvClient {
+            vulnerable: vec!["evil-transitive".to_string()],
+        };
+
+        let report = scan_with_services_inner(
+            &dir,
+            Some("npm"),
+            Default::default(),
+            &registry,
+            &osv,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // evil-transitive should have a malicious issue with source=transitive
+        let trans_issue = report
+            .issues
+            .iter()
+            .find(|i| i.package == "evil-transitive" && i.check.contains("malicious"));
+        assert!(
+            trans_issue.is_some(),
+            "Expected OSV issue for evil-transitive"
+        );
+        assert_eq!(
+            trans_issue.unwrap().source,
+            Some("transitive".to_string())
+        );
+
+        // react issues should be source=direct
+        let react_issues: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.package == "react")
+            .collect();
+        for issue in &react_issues {
+            assert_eq!(issue.source, Some("direct".to_string()));
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn deep_flag_does_not_crash_and_scans_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "18.3.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{
+              "name": "demo",
+              "lockfileVersion": 3,
+              "packages": {
+                "": {"name": "demo", "dependencies": {"react": "18.3.1"}},
+                "node_modules/react": {"version": "18.3.1"},
+                "node_modules/loose-envify": {"version": "1.4.0"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let registry = FakeRegistry {
+            existing: vec!["react".to_string(), "loose-envify".to_string()],
+        };
+
+        // With deep=true, the scan should complete without errors and
+        // include transitive deps in the package count
+        let report = scan_with_services_inner(
+            &dir,
+            Some("npm"),
+            Default::default(),
+            &registry,
+            &FakeOsvClient,
+            true,
+            true,
+        )
+        .await
+        .unwrap();
+
+        // packages_checked should include transitive deps
+        assert_eq!(report.packages_checked, 2); // react (direct) + loose-envify (transitive)
+
+        // Without deep, similarity on transitive is skipped but scan still works
+        let report_no_deep = scan_with_services_inner(
+            &dir,
+            Some("npm"),
+            Default::default(),
+            &registry,
+            &FakeOsvClient,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report_no_deep.packages_checked, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn transitive_internal_deps_are_skipped() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "18.3.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{
+              "name": "demo",
+              "lockfileVersion": 3,
+              "packages": {
+                "": {"name": "demo", "dependencies": {"react": "18.3.1"}},
+                "node_modules/react": {"version": "18.3.1"},
+                "node_modules/@myorg/internal-lib": {"version": "1.0.0"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let config_dir = unique_dir();
+        let config_path = config_dir.join("config.json");
+        std::fs::write(
+            &config_path,
+            r#"{"canonical":{},"internal":{"npm":["@myorg/*"]},"allowed":{}}"#,
+        )
+        .unwrap();
+        let config = config::load_config(Some(config_path.as_path())).unwrap();
+
+        let registry = FakeRegistry {
+            existing: vec!["react".to_string()],
+        };
+
+        let report = scan_with_services_inner(
+            &dir,
+            Some("npm"),
+            config,
+            &registry,
+            &FakeOsvClient,
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        // @myorg/internal-lib should not appear in any issues
+        let internal_issues: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.package.contains("myorg"))
+            .collect();
+        assert!(
+            internal_issues.is_empty(),
+            "Internal transitive deps should be skipped"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&config_dir);
     }
 }
