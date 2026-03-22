@@ -53,6 +53,10 @@ sloppy-joe init > config.json
 
 **Release automation:** pushing a tag like `v0.8.0` triggers a GitHub Releases build for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`. Release binaries are built with `cargo auditable` metadata embedded and gated by `cargo audit bin` before publication.
 
+**Accepted Change:** this metric only stays honest when each accepted change is still small enough for real human review. We follow the review-size guidance from SmartBear's Cisco study and Jason Cohen's *Best-Kept Secrets of Peer Code Review*: keep changes [under 400 LOC for effective review](https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/) and treat [1-400 LOC as the practical range](https://smartbear.com/learn/code-review/what-is-code-review/) for maximizing the leverage of human attention. That keeps the "per change" metric consistent. There is much less value in computing a 5,000-line change that nobody can honestly review.
+
+For greenfield work, the initial spec-to-build output is different. The first large scaffold or "initial build" is not treated as an Accepted Change, because it is bootstrapping a new system rather than modifying an existing reviewed one. The metric starts with the changes made after that initial build, when humans are reviewing deltas instead of raw generated volume.
+
 ---
 
 ## Why sloppy-joe?
