@@ -74,6 +74,7 @@ pub(crate) struct MetadataLookup {
     pub version: Option<String>,
     pub resolved_version: Option<String>,
     pub unresolved_version: bool,
+    pub exists: bool,
     pub metadata: Option<PackageMetadata>,
 }
 
@@ -93,12 +94,21 @@ pub(crate) async fn fetch_metadata(
                 let metadata = registry
                     .metadata(&package, exact_version.as_deref())
                     .await?;
+                // If metadata parsing succeeded, the package exists.
+                // If metadata is None, it could be "not found" OR "found but
+                // metadata parse failed". Fall back to exists() to distinguish.
+                let exists = if metadata.is_some() {
+                    true
+                } else {
+                    registry.exists(&package).await?
+                };
                 Ok::<_, anyhow::Error>(MetadataLookup {
                     package,
                     ecosystem,
                     version,
                     resolved_version: exact_version,
                     unresolved_version,
+                    exists,
                     metadata,
                 })
             }
@@ -472,6 +482,7 @@ mod tests {
             version: None,
             resolved_version: None,
             unresolved_version: false,
+            exists: true,
             metadata: Some(PackageMetadata {
                 created: Some(now.clone()),
                 latest_version_date: Some(now),

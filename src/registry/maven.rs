@@ -197,7 +197,11 @@ mod tests {
 
     #[test]
     fn search_query_escapes_embedded_quotes_and_backslashes() {
-        let query = search_query(r#"com.example\"group"#, r#"demo"artifact"#, Some(r#"1.2\"3"#));
+        let query = search_query(
+            r#"com.example\"group"#,
+            r#"demo"artifact"#,
+            Some(r#"1.2\"3"#),
+        );
         assert_eq!(
             query,
             r#"g:"com.example\\\"group"+AND+a:"demo\"artifact"+AND+v:"1.2\\\"3""#

@@ -60,7 +60,13 @@ fn metadata_from_body(
     let previous_ver = version_list
         .iter()
         .position(|v| v == &selected_ver)
-        .and_then(|p| if p > 0 { Some(version_list[p - 1].clone()) } else { None });
+        .and_then(|p| {
+            if p > 0 {
+                Some(version_list[p - 1].clone())
+            } else {
+                None
+            }
+        });
 
     let scripts = &body["versions"][selected_ver.as_str()]["scripts"];
     let has_install_scripts = scripts["preinstall"].is_string()
@@ -115,6 +121,24 @@ fn ordered_versions(time: &serde_json::Value) -> Vec<String> {
     versions.into_iter().map(|(k, _)| k).collect()
 }
 
+/// Fetch last-month download count from the npm downloads API.
+/// Returns Ok(Some(count)) on success, Ok(None) if unavailable.
+async fn fetch_downloads(
+    client: &reqwest::Client,
+    package_name: &str,
+) -> Result<Option<u64>> {
+    let url = format!(
+        "https://api.npmjs.org/downloads/point/last-month/{}",
+        package_name
+    );
+    let resp = client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: serde_json::Value = resp.json().await?;
+    Ok(body["downloads"].as_u64())
+}
+
 #[async_trait]
 impl super::Registry for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
@@ -151,7 +175,18 @@ impl super::Registry for NpmRegistry {
             );
         }
         let body: serde_json::Value = resp.json().await?;
-        Ok(metadata_from_body(&body, version))
+        let mut meta = match metadata_from_body(&body, version) {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        // Fetch download counts from the npm downloads API.
+        // This is a separate service; failures are non-fatal.
+        if let Ok(downloads) = fetch_downloads(&self.client, package_name).await {
+            meta.downloads = downloads;
+        }
+
+        Ok(Some(meta))
     }
 
     fn ecosystem(&self) -> &str {

@@ -2,7 +2,8 @@ use crate::Dependency;
 use crate::report::{Issue, Severity};
 use std::collections::HashSet;
 
-/// Placeholder popular package lists per ecosystem.
+/// Test-only hardcoded popular package lists per ecosystem.
+#[cfg(test)]
 fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
     match ecosystem {
         "npm" => &[
@@ -564,15 +565,17 @@ fn max_distance(name_len: usize) -> usize {
 }
 
 /// Build a HashSet of popular package names (lowercased) for fast lookup.
-fn build_corpus(popular: &[&str]) -> HashSet<String> {
+fn build_corpus(popular: &[String]) -> HashSet<String> {
     popular.iter().map(|p| p.to_lowercase()).collect()
 }
 
 /// Main entry point. Runs generative checks first, Levenshtein as fallback.
-pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
-    let popular = popular_packages(ecosystem);
+/// The `corpus` parameter is a list of popular/known-good package names to check against.
+/// Use `registry::corpus::fetch_popular(ecosystem)` to build this dynamically.
+pub fn check_similarity(deps: &[Dependency], ecosystem: &str, corpus_list: &[String]) -> Vec<Issue> {
+    let popular: Vec<&str> = corpus_list.iter().map(|s| s.as_str()).collect();
     let case_insensitive = is_case_insensitive(ecosystem);
-    let corpus = build_corpus(popular);
+    let corpus = build_corpus(corpus_list);
     let mut issues = Vec::new();
     let mut flagged: HashSet<String> = HashSet::new();
 
@@ -650,7 +653,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         let (normalized, had_homoglyphs) = normalize_homoglyphs(&dep.name);
         if had_homoglyphs {
             let norm_lower = normalized.to_lowercase();
-            for &pop in popular {
+            for &pop in &popular {
                 if norm_lower == pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -672,7 +675,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
 
         // 1. Separator normalization
         let dep_normalized = normalize_separators(&dep_lower);
-        for &pop in popular {
+        for &pop in &popular {
             let pop_normalized = normalize_separators(&pop.to_lowercase());
             if dep_normalized == pop_normalized && dep_lower != pop.to_lowercase() {
                 if flagged.insert(dep.name.clone()) {
@@ -692,7 +695,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         // 2. Collapsed repeated characters
         let collapsed_variants = collapse_one_repeated(&dep_lower);
         'repeated: for variant in &collapsed_variants {
-            for &pop in popular {
+            for &pop in &popular {
                 if variant == &pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -712,7 +715,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         // 3. Version suffix stripping
         let dep_stripped = strip_version_suffix(&dep_lower);
         if dep_stripped != dep_lower {
-            for &pop in popular {
+            for &pop in &popular {
                 if dep_stripped == pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -732,7 +735,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         // 4. Word reordering
         let reorderings = word_reorderings(&dep_lower);
         'reorder: for variant in &reorderings {
-            for &pop in popular {
+            for &pop in &popular {
                 if variant == &pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -752,7 +755,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         // 5. Adjacent character swaps
         let swaps = adjacent_swaps(&dep_lower);
         'swaps: for variant in &swaps {
-            for &pop in popular {
+            for &pop in &popular {
                 if variant == &pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -772,7 +775,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         // 6. Omitted character (one char dropped)
         let insertions = insert_each_char(&dep_lower);
         'omitted: for variant in &insertions {
-            for &pop in popular {
+            for &pop in &popular {
                 if variant == &pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -792,7 +795,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
         // 7. Ecosystem-specific confused forms
         let confused = apply_confused_forms(&dep.name, ecosystem);
         'confused: for variant in &confused {
-            for &pop in popular {
+            for &pop in &popular {
                 if variant == &pop.to_lowercase() {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -811,7 +814,7 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
 
         // ── Fallback: Levenshtein distance (catches novel mutations) ──
         let threshold = max_distance(dep_lower.len());
-        for &pop in popular {
+        for &pop in &popular {
             let pop_lower = pop.to_lowercase();
             let distance = strsim::levenshtein(&dep_lower, &pop_lower);
             if distance > 0 && distance <= threshold {
@@ -834,6 +837,61 @@ pub fn check_similarity(deps: &[Dependency], ecosystem: &str) -> Vec<Issue> {
     }
 
     issues
+}
+
+/// Generate cheap mutation candidates for a package name.
+/// Used by the reverse-check in existence.rs to suggest corrections
+/// for non-existent packages.
+pub fn generate_candidates(name: &str) -> HashSet<String> {
+    let lower = name.to_lowercase();
+    let mut candidates = HashSet::new();
+
+    // Separator normalization — generate with different separators
+    let stripped = normalize_separators(&lower);
+    if stripped != lower {
+        candidates.insert(stripped);
+    }
+
+    // Collapsed repeated characters
+    for variant in collapse_one_repeated(&lower) {
+        candidates.insert(variant);
+    }
+
+    // Version suffix stripping
+    let no_suffix = strip_version_suffix(&lower);
+    if no_suffix != lower {
+        candidates.insert(no_suffix);
+    }
+
+    // Word reorderings
+    for variant in word_reorderings(&lower) {
+        candidates.insert(variant);
+    }
+
+    // Adjacent swaps
+    for variant in adjacent_swaps(&lower) {
+        candidates.insert(variant);
+    }
+
+    // Delete one character (catches extra-char typosquats)
+    let chars: Vec<char> = lower.chars().collect();
+    for i in 0..chars.len() {
+        let variant: String = chars.iter().enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, c)| c)
+            .collect();
+        candidates.insert(variant);
+    }
+
+    // Homoglyph normalization
+    let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
+    if had_homoglyphs {
+        candidates.insert(normalized.to_lowercase());
+    }
+
+    // Remove the original name
+    candidates.remove(&lower);
+    candidates
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
@@ -868,12 +926,19 @@ mod tests {
         }
     }
 
+    fn corpus(ecosystem: &str) -> Vec<String> {
+        popular_packages(ecosystem)
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     // ── Exact match ──
 
     #[test]
     fn exact_match_produces_no_issue() {
         let deps = vec![dep("react")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(issues.is_empty());
     }
 
@@ -883,7 +948,7 @@ mod tests {
     fn separator_confusion_hyphen_vs_underscore() {
         // "socket_io" should match "socket.io" after separator normalization
         let deps = vec![dep("socket_io")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("separator"));
         assert_eq!(issues[0].suggestion, Some("socket.io".to_string()));
@@ -893,7 +958,7 @@ mod tests {
     fn separator_removed_entirely() {
         // "socketio" should match "socket.io"
         let deps = vec![dep("socketio")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("separator"));
     }
@@ -904,7 +969,7 @@ mod tests {
     fn repeated_chars_caught() {
         // "expresss" → "express"
         let deps = vec![dep("expresss")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("repeated"));
         assert_eq!(issues[0].suggestion, Some("express".to_string()));
@@ -914,7 +979,7 @@ mod tests {
     fn repeated_chars_interior() {
         // "reeact" → "react"
         let deps = vec![dep("reeact")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert_eq!(issues[0].suggestion, Some("react".to_string()));
     }
@@ -925,7 +990,7 @@ mod tests {
     fn version_suffix_caught() {
         // "react2" → "react"
         let deps = vec![dep("react2")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("version"));
         assert_eq!(issues[0].suggestion, Some("react".to_string()));
@@ -935,7 +1000,7 @@ mod tests {
     fn version_suffix_with_separator() {
         // "lodash-4" → "lodash"
         let deps = vec![dep("lodash-4")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("version"));
     }
@@ -946,7 +1011,7 @@ mod tests {
     fn word_reorder_caught() {
         // "bot-factory" should match "factory_bot" on Ruby
         let deps = vec![dep_eco("bot_factory", "ruby")];
-        let issues = check_similarity(&deps, "ruby");
+        let issues = check_similarity(&deps, "ruby", &corpus("ruby"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("word-reorder"));
         assert_eq!(issues[0].suggestion, Some("factory_bot".to_string()));
@@ -959,7 +1024,7 @@ mod tests {
         // "reuqest" → swap e,u → "request" ... but "requests" is in pypi list
         // "reqeusts" → swap u,e → "requests"
         let deps = vec![dep_eco("reqeusts", "pypi")];
-        let issues = check_similarity(&deps, "pypi");
+        let issues = check_similarity(&deps, "pypi", &corpus("pypi"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("char-swap"));
         assert_eq!(issues[0].suggestion, Some("requests".to_string()));
@@ -994,7 +1059,7 @@ mod tests {
     fn levenshtein_fallback_catches_novel_typo() {
         // "expresz" is edit distance 1 from "express", not caught by generative checks
         let deps = vec![dep("expresz")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("edit-distance"));
         assert_eq!(issues[0].suggestion, Some("express".to_string()));
@@ -1004,7 +1069,7 @@ mod tests {
     fn levenshtein_short_name_threshold() {
         // "zzzz" — too far from anything, should not flag
         let deps = vec![dep("zzzz")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(issues.is_empty());
     }
 
@@ -1013,21 +1078,21 @@ mod tests {
     #[test]
     fn case_insensitive_registry_skips_case_variant() {
         let deps = vec![dep("React")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(issues.is_empty());
     }
 
     #[test]
     fn case_insensitive_registry_dotnet_skips_case_variant() {
         let deps = vec![dep_eco("newtonsoft.json", "dotnet")];
-        let issues = check_similarity(&deps, "dotnet");
+        let issues = check_similarity(&deps, "dotnet", &corpus("dotnet"));
         assert!(issues.is_empty());
     }
 
     #[test]
     fn case_sensitive_registry_flags_case_variant_go() {
         let deps = vec![dep_eco("github.com/Gin-Gonic/Gin", "go")];
-        let issues = check_similarity(&deps, "go");
+        let issues = check_similarity(&deps, "go", &corpus("go"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("case-variant"));
     }
@@ -1035,7 +1100,7 @@ mod tests {
     #[test]
     fn case_sensitive_registry_flags_case_variant_ruby() {
         let deps = vec![dep_eco("Rails", "ruby")];
-        let issues = check_similarity(&deps, "ruby");
+        let issues = check_similarity(&deps, "ruby", &corpus("ruby"));
         assert!(!issues.is_empty());
         assert_eq!(issues[0].suggestion, Some("rails".to_string()));
     }
@@ -1043,14 +1108,14 @@ mod tests {
     #[test]
     fn case_sensitive_registry_flags_case_variant_jvm() {
         let deps = vec![dep_eco("Junit:Junit", "jvm")];
-        let issues = check_similarity(&deps, "jvm");
+        let issues = check_similarity(&deps, "jvm", &corpus("jvm"));
         assert!(!issues.is_empty());
     }
 
     #[test]
     fn case_sensitive_registry_exact_match_no_issue() {
         let deps = vec![dep_eco("rails", "ruby")];
-        let issues = check_similarity(&deps, "ruby");
+        let issues = check_similarity(&deps, "ruby", &corpus("ruby"));
         assert!(issues.is_empty());
     }
 
@@ -1088,14 +1153,14 @@ mod tests {
     #[test]
     fn unknown_ecosystem_returns_no_issues() {
         let deps = vec![dep("anything")];
-        let issues = check_similarity(&deps, "unknown");
+        let issues = check_similarity(&deps, "unknown", &corpus("unknown"));
         assert!(issues.is_empty());
     }
 
     #[test]
     fn completely_unrelated_name_no_issue() {
         let deps = vec![dep("zzzzzzzzzzzzz")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(issues.is_empty());
     }
 
@@ -1105,7 +1170,7 @@ mod tests {
     fn no_duplicate_flags_for_same_package() {
         // "expresss" would match repeated-chars AND levenshtein — should only report once
         let deps = vec![dep("expresss")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         let count = issues.iter().filter(|i| i.package == "expresss").count();
         assert_eq!(count, 1);
     }
@@ -1177,7 +1242,7 @@ mod tests {
     fn omitted_char_caught_in_check() {
         // "reqests" should match "requests" on pypi
         let deps = vec![dep_eco("reqests", "pypi")];
-        let issues = check_similarity(&deps, "pypi");
+        let issues = check_similarity(&deps, "pypi", &corpus("pypi"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("omitted-char"));
         assert_eq!(issues[0].suggestion, Some("requests".to_string()));
@@ -1186,7 +1251,7 @@ mod tests {
     #[test]
     fn omitted_char_not_flagged_for_exact_match() {
         let deps = vec![dep_eco("requests", "pypi")];
-        let issues = check_similarity(&deps, "pypi");
+        let issues = check_similarity(&deps, "pypi", &corpus("pypi"));
         assert!(issues.is_empty());
     }
 
@@ -1196,7 +1261,7 @@ mod tests {
     fn test_homoglyph_cyrillic_e() {
         // "r\u{0435}quests" — Cyrillic е instead of Latin e — should match "requests"
         let deps = vec![dep_eco("r\u{0435}quests", "pypi")];
-        let issues = check_similarity(&deps, "pypi");
+        let issues = check_similarity(&deps, "pypi", &corpus("pypi"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("homoglyph"));
         assert_eq!(issues[0].suggestion, Some("requests".to_string()));
@@ -1206,7 +1271,7 @@ mod tests {
     fn test_homoglyph_no_match() {
         // Pure ASCII name that doesn't match anything — should not trigger homoglyph
         let deps = vec![dep("my-safe-package")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         let homoglyph_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("homoglyph"))
@@ -1233,7 +1298,7 @@ mod tests {
     fn test_npm_scope_exact_match_no_flag() {
         // @types/lodash — known scope, should not flag scope-squatting
         let deps = vec![dep("@types/lodash")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         let scope_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("scope-squatting"))
@@ -1245,7 +1310,7 @@ mod tests {
     fn test_npm_scope_squatting_flagged() {
         // @typos/lodash — scope '@typos' is distance 1 from '@types'
         let deps = vec![dep("@typos/lodash")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("@typos"));
@@ -1256,7 +1321,7 @@ mod tests {
     fn test_npm_no_scope_no_flag() {
         // lodash — unscoped, scope-squatting check should not apply
         let deps = vec![dep("lodash")];
-        let issues = check_similarity(&deps, "npm");
+        let issues = check_similarity(&deps, "npm", &corpus("npm"));
         let scope_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("scope-squatting"))
@@ -1268,7 +1333,7 @@ mod tests {
     fn test_php_vendor_squatting_flagged() {
         // larvael/framework — vendor 'larvael' is distance 2 from 'laravel'
         let deps = vec![dep_eco("larvael/framework", "php")];
-        let issues = check_similarity(&deps, "php");
+        let issues = check_similarity(&deps, "php", &corpus("php"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("larvael"));
@@ -1279,7 +1344,7 @@ mod tests {
     fn test_go_org_squatting_flagged() {
         // github.com/gooogle/protobuf — org 'github.com/gooogle' is distance 1 from 'github.com/google'
         let deps = vec![dep_eco("github.com/gooogle/protobuf", "go")];
-        let issues = check_similarity(&deps, "go");
+        let issues = check_similarity(&deps, "go", &corpus("go"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("github.com/gooogle"));
@@ -1290,7 +1355,7 @@ mod tests {
     fn test_jvm_group_squatting_flagged() {
         // com.gogle.guava:guava — group 'com.gogle' is distance 1 from 'com.google'
         let deps = vec![dep_eco("com.gogle.guava:guava", "jvm")];
-        let issues = check_similarity(&deps, "jvm");
+        let issues = check_similarity(&deps, "jvm", &corpus("jvm"));
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("com.gogle"));

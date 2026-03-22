@@ -126,7 +126,9 @@ async fn scan_with_services_inner(
 
     // Checkable deps get full checks
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
-    let similarity_results = checks::similarity::check_similarity(&checkable_owned, &ecosystem);
+    let corpus = registry::corpus::fetch_popular(&ecosystem).await;
+    let similarity_results =
+        checks::similarity::check_similarity(&checkable_owned, &ecosystem, &corpus);
 
     // Build set of similarity-flagged package names for signal amplifier
     let similarity_flagged: HashSet<String> = similarity_results
@@ -243,12 +245,12 @@ fn unresolved_version_policy_issues(
         .map(|dep| {
             let message = if let Some(requirement) = dep.version.as_deref() {
                 format!(
-                    "'{}' uses the unresolved version requirement '{}'. No exact version could be proven, so version-sensitive checks were skipped.",
+                    "'{}' uses the unresolved version requirement '{}'. Without a resolved version, the following checks are skipped: version-age, install-script-risk, dependency-explosion, maintainer-change, and known-vulnerability (OSV).",
                     dep.name, requirement
                 )
             } else {
                 format!(
-                    "'{}' does not declare an exact version and no trusted lockfile resolution was available. Version-sensitive checks were skipped.",
+                    "'{}' does not declare an exact version and no trusted lockfile resolution was available. The following checks are skipped: version-age, install-script-risk, dependency-explosion, maintainer-change, and known-vulnerability (OSV).",
                     dep.name
                 )
             };

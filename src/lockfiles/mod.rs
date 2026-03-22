@@ -1,5 +1,5 @@
-use crate::report::{Issue, Severity};
 use crate::Dependency;
+use crate::report::{Issue, Severity};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,8 @@ impl ResolutionResult {
     }
 
     pub fn exact_version(&self, dep: &Dependency) -> Option<&str> {
-        self.resolved_version(dep).map(|resolved| resolved.version.as_str())
+        self.resolved_version(dep)
+            .map(|resolved| resolved.version.as_str())
     }
 
     pub fn is_unresolved(&self, dep: &Dependency) -> bool {
@@ -68,7 +69,8 @@ pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<Resol
 }
 
 fn resolve_npm(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let Some(path) = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"]) else {
+    let Some(path) = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
+    else {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
         return Ok(result);
@@ -93,7 +95,9 @@ fn resolve_npm(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResu
     };
 
     let packages = parsed.get("packages").and_then(|value| value.as_object());
-    let dependencies = parsed.get("dependencies").and_then(|value| value.as_object());
+    let dependencies = parsed
+        .get("dependencies")
+        .and_then(|value| value.as_object());
     if packages.is_none() && dependencies.is_none() {
         let mut result = ResolutionResult::default();
         result.issues.push(parse_failed_issue(
@@ -234,7 +238,9 @@ fn resolve_cargo(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionRe
                     },
                 );
             } else {
-                result.issues.push(out_of_sync_issue(dep, &versions.join(", ")));
+                result
+                    .issues
+                    .push(out_of_sync_issue(dep, &versions.join(", ")));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         } else {
@@ -272,14 +278,17 @@ fn add_manifest_exact_fallback(result: &mut ResolutionResult, dep: &Dependency) 
 
 fn parse_failed_issue(lockfile: &str, detail: String) -> Issue {
     Issue {
-        package: lockfile.to_string(),
+        package: "<lockfile>".to_string(),
         check: "resolution/parse-failed".to_string(),
         severity: Severity::Error,
         message: format!(
             "Could not parse '{}'. Exact lockfile resolution is unavailable, so version-sensitive checks cannot trust this project state. {}",
             lockfile, detail
         ),
-        fix: format!("Repair or regenerate '{}', then rerun sloppy-joe.", lockfile),
+        fix: format!(
+            "Repair or regenerate '{}', then rerun sloppy-joe.",
+            lockfile
+        ),
         suggestion: None,
         registry_url: None,
     }
@@ -448,10 +457,12 @@ mod tests {
 
         assert_eq!(resolved.version, "18.2.0");
         assert_eq!(resolved.source, ResolutionSource::ManifestExact);
-        assert!(result
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/lockfile-out-of-sync"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/lockfile-out-of-sync")
+        );
     }
 
     #[test]
@@ -473,10 +484,12 @@ mod tests {
         let result = resolve_versions(&dir, &deps).unwrap();
 
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/missing-lockfile-entry"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/missing-lockfile-entry")
+        );
     }
 
     #[test]
@@ -490,10 +503,12 @@ mod tests {
 
         assert_eq!(resolved.version, "18.2.0");
         assert_eq!(resolved.source, ResolutionSource::ManifestExact);
-        assert!(result
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/parse-failed"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/parse-failed")
+        );
     }
 
     #[test]
@@ -562,10 +577,12 @@ version = "1.0.203"
         let result = resolve_versions(&dir, &deps).unwrap();
 
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/ambiguous"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/ambiguous")
+        );
     }
 
     #[test]
@@ -585,10 +602,12 @@ version = "1.42.0"
         let result = resolve_versions(&dir, &deps).unwrap();
 
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/missing-lockfile-entry"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/missing-lockfile-entry")
+        );
     }
 
     #[test]
@@ -600,9 +619,11 @@ version = "1.42.0"
         let result = resolve_versions(&dir, &deps).unwrap();
 
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/parse-failed"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/parse-failed")
+        );
     }
 }

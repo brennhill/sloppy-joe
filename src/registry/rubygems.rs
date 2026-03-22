@@ -71,7 +71,11 @@ impl super::Registry for RubyGemsRegistry {
         let downloads = body["downloads"].as_u64();
 
         let latest_version_date = if let Some(version) = version {
-            let version_resp = self.client.get(gem_version_url(package_name, version)).send().await?;
+            let version_resp = self
+                .client
+                .get(gem_version_url(package_name, version))
+                .send()
+                .await?;
             if version_resp.status() == reqwest::StatusCode::NOT_FOUND {
                 body["version_created_at"].as_str().map(|s| s.to_string())
             } else if !version_resp.status().is_success() {

@@ -1,3 +1,4 @@
+pub mod corpus;
 pub mod crates_io;
 pub mod go;
 pub mod maven;

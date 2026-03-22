@@ -81,7 +81,7 @@ pub(crate) fn check_existence_from_metadata(
         .map(|lookup| {
             (
                 (lookup.package.clone(), lookup.version.clone()),
-                lookup.metadata.is_some(),
+                lookup.exists,
             )
         })
         .collect();
