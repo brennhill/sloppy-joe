@@ -123,22 +123,6 @@ pub(crate) fn issues_from_lookups(
         let resolved_version = &lookup.resolved_version;
         let unresolved_version = lookup.unresolved_version;
 
-        if unresolved_version {
-            issues.push(Issue {
-                package: name.clone(),
-                check: "metadata/unresolved-version".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "'{}' uses the non-exact version requirement '{}'. Version-age checks are skipped because manifest ranges are not precise enough for an accurate result.",
-                    name,
-                    version.as_deref().unwrap_or("")
-                ),
-                fix: "Pin an exact version or add lockfile-aware resolution before enforcing version-age policy.".to_string(),
-                suggestion: None,
-                registry_url: None,
-            });
-        }
-
         let Some(meta) = lookup.metadata.as_ref() else {
             continue;
         };
@@ -410,11 +394,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let age_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("version-age"))
@@ -427,11 +417,17 @@ mod tests {
         let registry = FakeRegistry {
             metadata_response: Some(default_meta()),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let age_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("version-age"))
@@ -451,9 +447,15 @@ mod tests {
         };
         let deps = vec![dep("brand-new-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let new_pkg: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("new-package"))
@@ -498,9 +500,15 @@ mod tests {
         };
         let deps = vec![dep("obscure-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let dl_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("low-downloads"))
@@ -518,9 +526,15 @@ mod tests {
         };
         let deps = vec![dep("popular-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         assert!(issues.is_empty());
     }
 
@@ -535,11 +549,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(0);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         assert!(!issues.iter().any(|i| i.check == "metadata/version-age"));
         assert!(issues.iter().any(|i| i.check == "metadata/new-package"));
         assert!(issues.iter().any(|i| i.check == "metadata/low-downloads"));
@@ -552,9 +572,15 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         assert!(issues.is_empty());
     }
 
@@ -583,14 +609,20 @@ mod tests {
 
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let err = check_metadata(&ErrorRegistry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap_err();
+        let err = check_metadata(
+            &ErrorRegistry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("metadata unavailable"));
     }
 
     #[tokio::test]
-    async fn non_exact_versions_are_flagged_instead_of_using_latest_release_data() {
+    async fn non_exact_versions_skip_version_age_checks() {
         let now = chrono_free_now();
         let registry = FakeRegistry {
             metadata_response: Some(PackageMetadata {
@@ -600,11 +632,45 @@ mod tests {
         };
         let deps = vec![dep_with_version("some-pkg", "^1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         assert!(
-            issues
+            !issues
+                .iter()
+                .any(|i| i.check == "metadata/unresolved-version")
+        );
+        assert!(!issues.iter().any(|i| i.check == "metadata/version-age"));
+    }
+
+    #[tokio::test]
+    async fn versionless_dependencies_skip_version_age_checks() {
+        let now = chrono_free_now();
+        let registry = FakeRegistry {
+            metadata_response: Some(PackageMetadata {
+                latest_version_date: Some(now),
+                ..default_meta()
+            }),
+        };
+        let deps = vec![dep("some-pkg")];
+        let config = config_with_age(72);
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !issues
                 .iter()
                 .any(|i| i.check == "metadata/unresolved-version")
         );
@@ -622,11 +688,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("expresz")];
+        let deps = vec![dep_with_version("expresz", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let script_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/install-script-risk")
@@ -647,11 +719,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("new-pkg-with-scripts")];
+        let deps = vec![dep_with_version("new-pkg-with-scripts", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let script_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/install-script-risk")
@@ -668,11 +746,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("well-known-pkg")];
+        let deps = vec![dep_with_version("well-known-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let script_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/install-script-risk")
@@ -689,11 +773,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("low-dl-pkg")];
+        let deps = vec![dep_with_version("low-dl-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let script_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/install-script-risk")
@@ -712,11 +802,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let explosion: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/dependency-explosion")
@@ -735,11 +831,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let explosion: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/dependency-explosion")
@@ -756,11 +858,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let explosion: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/dependency-explosion")
@@ -779,11 +887,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let mc: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/maintainer-change")
@@ -802,11 +916,17 @@ mod tests {
                 ..default_meta()
             }),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let mc: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/maintainer-change")
@@ -819,11 +939,17 @@ mod tests {
         let registry = FakeRegistry {
             metadata_response: Some(default_meta()),
         };
-        let deps = vec![dep("some-pkg")];
+        let deps = vec![dep_with_version("some-pkg", "1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
-            .await
-            .unwrap();
+        let issues = check_metadata(
+            &registry,
+            &deps,
+            &config,
+            &empty_similarity(),
+            &no_resolution(),
+        )
+        .await
+        .unwrap();
         let mc: Vec<_> = issues
             .iter()
             .filter(|i| i.check == "metadata/maintainer-change")

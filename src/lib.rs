@@ -11,7 +11,7 @@ mod version;
 use anyhow::Result;
 use checks::malicious::OsvClient;
 use registry::Registry;
-use report::ScanReport;
+use report::{Issue, ScanReport, Severity};
 use std::collections::HashSet;
 
 /// Run all checks on the detected or specified project type.
@@ -69,7 +69,15 @@ async fn scan_with_services(
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
 ) -> Result<ScanReport> {
-    scan_with_services_inner(project_dir, project_type, config, registry, osv_client, false).await
+    scan_with_services_inner(
+        project_dir,
+        project_type,
+        config,
+        registry,
+        osv_client,
+        false,
+    )
+    .await
 }
 
 async fn scan_with_services_inner(
@@ -134,7 +142,12 @@ async fn scan_with_services_inner(
         .collect();
     let canonical_results = checks::canonical::check_canonical(&non_internal, &config, &ecosystem);
     let resolution = lockfiles::resolve_versions(project_dir, &non_internal)?;
-    let resolution_issues = resolution.issues.clone();
+    let mut resolution_issues = resolution.issues.clone();
+    resolution_issues.extend(unresolved_version_policy_issues(
+        &non_internal,
+        &resolution,
+        &config,
+    ));
 
     let supports_metadata_registry = matches!(
         ecosystem.as_str(),
@@ -142,7 +155,8 @@ async fn scan_with_services_inner(
     );
 
     let (existence_results, metadata_results) = if supports_metadata_registry {
-        let lookups = checks::metadata::fetch_metadata(registry, &non_internal, &resolution).await?;
+        let lookups =
+            checks::metadata::fetch_metadata(registry, &non_internal, &resolution).await?;
         let mut metadata_results = resolution_issues;
         metadata_results.extend(checks::metadata::issues_from_lookups(
             &lookups,
@@ -209,8 +223,47 @@ impl Dependency {
     }
 
     pub fn has_unresolved_version(&self) -> bool {
-        self.version.is_some() && self.exact_version().is_none()
+        self.exact_version().is_none()
     }
+}
+
+fn unresolved_version_policy_issues(
+    deps: &[Dependency],
+    resolution: &lockfiles::ResolutionResult,
+    config: &config::SloppyJoeConfig,
+) -> Vec<Issue> {
+    let severity = if config.allow_unresolved_versions {
+        Severity::Warning
+    } else {
+        Severity::Error
+    };
+
+    deps.iter()
+        .filter(|dep| resolution.is_unresolved(dep))
+        .map(|dep| {
+            let message = if let Some(requirement) = dep.version.as_deref() {
+                format!(
+                    "'{}' uses the unresolved version requirement '{}'. No exact version could be proven, so version-sensitive checks were skipped.",
+                    dep.name, requirement
+                )
+            } else {
+                format!(
+                    "'{}' does not declare an exact version and no trusted lockfile resolution was available. Version-sensitive checks were skipped.",
+                    dep.name
+                )
+            };
+
+            Issue {
+                package: dep.name.clone(),
+                check: "resolution/no-exact-version".to_string(),
+                severity: severity.clone(),
+                message,
+                fix: "Pin an exact version or provide a trusted lockfile entry. To continue with reduced accuracy, set allow_unresolved_versions to true in the config.".to_string(),
+                suggestion: None,
+                registry_url: None,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -218,8 +271,8 @@ mod tests {
     use super::*;
     use crate::registry::PackageMetadata;
     use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct FakeRegistry {
@@ -618,6 +671,111 @@ mod tests {
             osv_versions.lock().unwrap().as_slice(),
             &[Some("18.2.0".to_string())]
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scan_versionless_dependency_blocks_by_default() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+        let osv_versions = Arc::new(Mutex::new(Vec::new()));
+        let registry = RecordingRegistry {
+            existing: vec!["serde".to_string()],
+            versions: metadata_versions,
+        };
+        let osv = RecordingOsvClient {
+            versions: osv_versions.clone(),
+        };
+
+        let report = scan_with_services_no_osv_cache(
+            &dir,
+            Some("cargo"),
+            Default::default(),
+            &registry,
+            &osv,
+        )
+        .await
+        .unwrap();
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.check == "resolution/no-exact-version")
+            .unwrap();
+        assert_eq!(issue.severity, report::Severity::Error);
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "metadata/unresolved-version")
+        );
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "malicious/unresolved-version")
+        );
+        assert!(report.has_issues());
+        assert!(report.has_errors());
+        assert!(osv_versions.lock().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scan_versionless_dependency_warns_when_allowed() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let registry = RecordingRegistry {
+            existing: vec!["serde".to_string()],
+            versions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let osv = RecordingOsvClient {
+            versions: Arc::new(Mutex::new(Vec::new())),
+        };
+        let config = config::SloppyJoeConfig {
+            allow_unresolved_versions: true,
+            ..Default::default()
+        };
+
+        let report = scan_with_services_no_osv_cache(&dir, Some("cargo"), config, &registry, &osv)
+            .await
+            .unwrap();
+
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.check == "resolution/no-exact-version")
+            .unwrap();
+        assert_eq!(issue.severity, report::Severity::Warning);
+        assert!(report.has_issues());
+        assert!(!report.has_errors());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

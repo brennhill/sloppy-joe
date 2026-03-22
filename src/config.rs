@@ -18,7 +18,8 @@ use std::path::Path;
 ///   "allowed": {
 ///     "npm": ["some-vetted-pkg"]
 ///   },
-///   "min_version_age_hours": 72
+///   "min_version_age_hours": 72,
+///   "allow_unresolved_versions": false
 /// }
 /// ```
 ///
@@ -29,6 +30,8 @@ use std::path::Path;
 /// - `min_version_age_hours`: block any dependency whose latest version was
 ///   published less than this many hours ago. Default: 72 (3 days).
 ///   Internal packages are exempt. Allowed packages are NOT exempt.
+/// - `allow_unresolved_versions`: downgrade unresolved-version policy failures
+///   to warnings, but still emit them. Default: false.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SloppyJoeConfig {
     #[serde(default)]
@@ -39,6 +42,8 @@ pub struct SloppyJoeConfig {
     pub allowed: HashMap<String, Vec<String>>,
     #[serde(default = "default_min_version_age_hours")]
     pub min_version_age_hours: u64,
+    #[serde(default)]
+    pub allow_unresolved_versions: bool,
 }
 
 fn default_min_version_age_hours() -> u64 {
@@ -52,6 +57,7 @@ impl Default for SloppyJoeConfig {
             internal: HashMap::new(),
             allowed: HashMap::new(),
             min_version_age_hours: default_min_version_age_hours(),
+            allow_unresolved_versions: false,
         }
     }
 }
@@ -295,6 +301,7 @@ pub fn print_template() {
             vec!["some-vetted-external-pkg".to_string()],
         )]),
         min_version_age_hours: 72,
+        allow_unresolved_versions: false,
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     println!("{json}");
@@ -407,6 +414,7 @@ mod tests {
         assert!(config.internal.is_empty());
         assert!(config.allowed.is_empty());
         assert_eq!(config.min_version_age_hours, 72);
+        assert!(!config.allow_unresolved_versions);
     }
 
     #[test]
@@ -425,13 +433,14 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48}"#,
+            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48,"allow_unresolved_versions":true}"#,
         ).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
         assert!(config.internal.contains_key("npm"));
         assert!(config.allowed.contains_key("npm"));
         assert_eq!(config.min_version_age_hours, 48);
+        assert!(config.allow_unresolved_versions);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,7 +1,7 @@
 # Lockfile Handling Specification
 
 **Created**: 2026-03-22
-**Status**: Draft for implementation
+**Status**: Implemented
 **Input**: "Add lockfile support to materially improve version-accurate checks."
 
 ## 1. Problem / Why Now
@@ -16,7 +16,9 @@ improves version-age checks, version-relative metadata checks, and OSV lookups w
 adding network cost.
 
 This spec adds lockfile-aware exact-version resolution while keeping manifest parsing as
-the source of dependency intent.
+the source of dependency intent. It also formalizes the default policy for unresolved
+versions: if no exact version can be proven, the scan fails closed unless the user
+explicitly opts into reduced-accuracy warnings with `allow_unresolved_versions`.
 
 ## 2. User Scenarios & Testing
 
@@ -78,6 +80,30 @@ missing, broken, or ambiguous.
 3. **Given** a lockfile that omits a direct dependency, **When** the scan runs,
    **Then** the scan emits `resolution/missing-lockfile-entry`.
 
+### User Story 4 - Unresolved versions block by default and warn only by explicit opt-out (Priority: P1)
+
+A project declares a dependency without an exact version and no trusted lockfile exact
+version can be proven.
+
+**Why this priority**: This tool is accuracy-first. If no exact version is known, the
+scanner must not silently downgrade into latest-version guesses.
+
+**Independent test**: The scan emits `resolution/no-exact-version` for any dependency
+whose exact version cannot be proven. The finding is an error by default and a warning
+only when `allow_unresolved_versions` is enabled.
+
+**Acceptance scenarios**:
+
+1. **Given** a direct dependency with a range or no version and no trusted exact
+   lockfile result, **When** the scan runs with default config, **Then** the scan emits
+   `resolution/no-exact-version` as a blocking error.
+2. **Given** the same dependency state, **When** the scan runs with
+   `allow_unresolved_versions=true`, **Then** the scan emits
+   `resolution/no-exact-version` as a warning and still skips version-sensitive checks.
+3. **Given** an exact manifest pin and a malformed or stale lockfile, **When** the scan
+   runs, **Then** the scan emits the lockfile-state issue but MUST NOT also emit
+   `resolution/no-exact-version`, because the manifest already proves an exact version.
+
 ### Edge Cases
 
 - No supported lockfile is present: preserve current conservative behavior.
@@ -88,6 +114,10 @@ missing, broken, or ambiguous.
   `resolution/lockfile-out-of-sync`.
 - A supported lockfile exists but the direct dependency is absent from it: emit
   `resolution/missing-lockfile-entry`.
+- A dependency with a range or no version and no trusted exact resolution: emit
+  `resolution/no-exact-version`.
+- A manifest exact pin plus lockfile failure/out-of-sync: keep the exact manifest
+  version for version-sensitive checks, and do not misclassify it as unresolved.
 
 ## 3. Requirements
 
@@ -103,6 +133,11 @@ missing, broken, or ambiguous.
   lockfile result exists.
 - **FR-005**: The system MUST leave a dependency unresolved when neither a trusted
   lockfile version nor a manifest exact version exists.
+- **FR-005a**: The system MUST emit `resolution/no-exact-version` whenever an exact
+  version cannot be proven.
+- **FR-005b**: `resolution/no-exact-version` MUST be a blocking error by default.
+- **FR-005c**: The config field `allow_unresolved_versions` MUST downgrade
+  `resolution/no-exact-version` from error to warning, but MUST NOT suppress it.
 - **FR-006**: Phase 1 MUST support `package-lock.json` and `npm-shrinkwrap.json`.
 - **FR-007**: Phase 1 MUST support `Cargo.lock`.
 - **FR-008**: The system MUST emit blocking resolution issues when lockfile state makes
@@ -128,7 +163,8 @@ missing, broken, or ambiguous.
 
 1. Use a supported, trusted lockfile exact version when available.
 2. Else use a manifest exact version when available.
-3. Else keep the dependency unresolved and preserve current conservative behavior.
+3. Else keep the dependency unresolved, emit `resolution/no-exact-version`, and skip
+   version-sensitive checks.
 
 #### Phase 1 supported lockfiles
 
@@ -142,6 +178,7 @@ missing, broken, or ambiguous.
 - `resolution/lockfile-out-of-sync`
 - `resolution/ambiguous`
 - `resolution/parse-failed`
+- `resolution/no-exact-version`
 
 #### Cargo.lock strategy
 
@@ -188,8 +225,11 @@ Human-useful but weaker for implementation scoring:
 - **ResolvedVersion**: Exact version chosen for a dependency, plus its source.
 - **ResolutionSource**: `Lockfile` or `ManifestExact`.
 - **ResolutionResult**: Resolved versions plus emitted resolution issues.
-- **ResolutionProblem**: Parse failure, missing entry, ambiguity, or out-of-sync state.
+- **ResolutionProblem**: Parse failure, missing entry, ambiguity, out-of-sync state, or
+  no exact version.
 - **Dependency**: Existing manifest-derived direct dependency record.
+- **allow_unresolved_versions**: Config switch that permits reduced-accuracy scans to
+  continue, but only with visible warnings.
 
 ## 4. Non-Negotiable Constraints
 
@@ -234,12 +274,14 @@ Human-useful but weaker for implementation scoring:
 
 - Trusted exact versions for version-sensitive checks
 - Blocking `resolution/*` issues when lockfile state is not trustworthy
-- Preserved unresolved-version behavior when no trusted exact version exists
+- `resolution/no-exact-version` when no exact version can be proven
+- Warning-only `resolution/no-exact-version` when `allow_unresolved_versions=true`
 
 ### Integration strategy
 
 - Keep `Dependency` as the manifest model.
 - Thread `ResolutionResult` into scan orchestration.
+- Emit unresolved-version policy once in scan orchestration.
 - Use resolved exact versions only in metadata and malicious checks.
 - Preserve current name-based and policy-based checks unchanged.
 

@@ -29,8 +29,8 @@ Examples:
   sloppy-joe init > /etc/sj/config.json         Generate config template
 
 Exit codes:
-  0  All checks passed
-  1  Issues found (errors or warnings)
+  0  No blocking errors found (warnings may still be reported)
+  1  Blocking errors found
   2  Runtime error (missing manifest, network failure)
 
 Config security:
@@ -99,7 +99,7 @@ async fn main() {
                     } else {
                         report.print_human();
                     }
-                    if report.has_issues() {
+                    if report.has_errors() {
                         process::exit(1);
                     }
                 }

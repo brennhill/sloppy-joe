@@ -1,5 +1,5 @@
-use crate::lockfiles::ResolutionResult;
 use crate::Dependency;
+use crate::lockfiles::ResolutionResult;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -260,19 +260,6 @@ pub async fn check_malicious_with_cache(
 
     for dep in deps {
         if resolution.is_unresolved(dep) {
-            issues.push(Issue {
-                package: dep.name.clone(),
-                check: "malicious/unresolved-version".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "'{}' uses the non-exact version requirement '{}'. OSV results would be inaccurate without a resolved lockfile version.",
-                    dep.name,
-                    dep.version.as_deref().unwrap_or("")
-                ),
-                fix: "Pin an exact version or add lockfile-aware resolution before enforcing OSV checks.".to_string(),
-                suggestion: None,
-                registry_url: None,
-            });
             continue;
         }
 
@@ -386,7 +373,7 @@ mod tests {
         );
         let client = MockOsvClient { responses };
 
-        let deps = vec![dep("event-stream")];
+        let deps = vec![dep_with_version("event-stream", "3.3.6")];
         let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
@@ -404,7 +391,7 @@ mod tests {
             responses: HashMap::new(),
         };
 
-        let deps = vec![dep("react")];
+        let deps = vec![dep_with_version("react", "18.2.0")];
         let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
@@ -445,7 +432,10 @@ mod tests {
         };
 
         // Two identical deps — second should use in-memory cache
-        let deps = vec![dep("some-pkg"), dep("some-pkg")];
+        let deps = vec![
+            dep_with_version("some-pkg", "1.2.3"),
+            dep_with_version("some-pkg", "1.2.3"),
+        ];
         let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
@@ -456,18 +446,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_exact_versions_are_flagged_for_precision() {
-        let client = MockOsvClient {
-            responses: HashMap::new(),
-        };
+    async fn non_exact_versions_skip_osv_queries() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
+        struct CountingClient(Arc<AtomicU32>);
+
+        #[async_trait::async_trait]
+        impl OsvClient for CountingClient {
+            async fn query(
+                &self,
+                _name: &str,
+                _ecosystem: &str,
+                _version: Option<&str>,
+            ) -> Result<Vec<String>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![])
+            }
+        }
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let client = CountingClient(call_count.clone());
         let deps = vec![dep_with_version("react", "^18.0.0")];
         let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
 
-        assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].check, "malicious/unresolved-version");
+        assert!(issues.is_empty());
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn versionless_dependencies_skip_osv_queries() {
+        let client = MockOsvClient {
+            responses: HashMap::new(),
+        };
+
+        let deps = vec![dep("react")];
+        let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
+            .await
+            .unwrap();
+
+        assert!(issues.is_empty());
     }
 
     #[tokio::test]
@@ -489,11 +509,17 @@ mod tests {
             }
         }
 
-        let deps = vec![dep("a"), dep("b"), dep("c"), dep("d")];
+        let deps = vec![
+            dep_with_version("a", "1.0.0"),
+            dep_with_version("b", "1.0.0"),
+            dep_with_version("c", "1.0.0"),
+            dep_with_version("d", "1.0.0"),
+        ];
         let start = Instant::now();
-        let issues = check_malicious_with_cache(&SlowClient, &deps, &ResolutionResult::default(), None)
-            .await
-            .unwrap();
+        let issues =
+            check_malicious_with_cache(&SlowClient, &deps, &ResolutionResult::default(), None)
+                .await
+                .unwrap();
         let elapsed = start.elapsed();
 
         assert!(issues.is_empty());
@@ -534,9 +560,14 @@ mod tests {
             responses: HashMap::new(),
         };
         let cache_path = dir.join("osv-cache.json");
-        let issues = check_malicious_with_cache(&client, &[dep("react")], &ResolutionResult::default(), Some(&cache_path))
-            .await
-            .unwrap();
+        let issues = check_malicious_with_cache(
+            &client,
+            &[dep_with_version("react", "18.2.0")],
+            &ResolutionResult::default(),
+            Some(&cache_path),
+        )
+        .await
+        .unwrap();
         assert!(issues.is_empty());
 
         let mut cleanup_perms = std::fs::metadata(&dir).unwrap().permissions();

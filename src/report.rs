@@ -4,6 +4,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum Severity {
     Error,
+    Warning,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +58,12 @@ impl ScanReport {
         !self.issues.is_empty()
     }
 
+    pub fn has_errors(&self) -> bool {
+        self.issues
+            .iter()
+            .any(|issue| matches!(issue.severity, Severity::Error))
+    }
+
     pub fn print_json(&self) {
         println!("{}", serde_json::to_string_pretty(self).unwrap());
     }
@@ -71,45 +78,83 @@ impl ScanReport {
             return;
         }
 
-        println!();
-        println!("{}", "ERRORS (build blocked):".red().bold());
-        println!();
+        let errors: Vec<&Issue> = self
+            .issues
+            .iter()
+            .filter(|issue| matches!(issue.severity, Severity::Error))
+            .collect();
+        let warnings: Vec<&Issue> = self
+            .issues
+            .iter()
+            .filter(|issue| matches!(issue.severity, Severity::Warning))
+            .collect();
 
-        for issue in &self.issues {
-            println!(
-                "  {} {} {}",
-                "ERROR".red().bold(),
-                issue.package.red().bold(),
-                format!("[{}]", issue.check).dimmed()
-            );
-            println!("        {}", issue.message);
-            println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
-            if let Some(ref s) = issue.suggestion {
-                println!("        Replace with: {}", s.green().bold());
-            }
-            if let Some(ref url) = issue.registry_url {
-                println!("        Verify: {}", url.dimmed());
-            }
+        println!();
+        if !errors.is_empty() {
+            println!("{}", "ERRORS (build blocked):".red().bold());
             println!();
+            for issue in &errors {
+                print_issue(issue);
+            }
+        }
+
+        if !warnings.is_empty() {
+            println!("{}", "WARNINGS (build allowed):".yellow().bold());
+            println!();
+            for issue in &warnings {
+                print_issue(issue);
+            }
         }
 
         println!("{}", "─".repeat(60));
         println!(
-            "{}: {} packages checked, {} {}",
+            "{}: {} packages checked, {} {}, {} {}",
             "Summary".bold(),
             self.packages_checked,
-            self.issues.len(),
-            if self.issues.len() == 1 {
-                "error"
+            errors.len(),
+            if errors.len() == 1 { "error" } else { "errors" },
+            warnings.len(),
+            if warnings.len() == 1 {
+                "warning"
             } else {
-                "errors"
+                "warnings"
             },
         );
-        println!(
-            "\n{}  Remove or replace the packages above before merging.",
-            "BLOCKED".red().bold()
-        );
+        if self.has_errors() {
+            println!(
+                "\n{}  Remove or replace the packages above before merging.",
+                "BLOCKED".red().bold()
+            );
+        } else {
+            println!(
+                "\n{}  Warnings did not block this scan, but accuracy is reduced.",
+                "WARN".yellow().bold()
+            );
+        }
     }
+}
+
+fn print_issue(issue: &Issue) {
+    let (label, colorized_package) = match issue.severity {
+        Severity::Error => ("ERROR".red().bold(), issue.package.red().bold()),
+        Severity::Warning => ("WARN".yellow().bold(), issue.package.yellow().bold()),
+    };
+
+    println!(
+        "  {} {} {}",
+        label,
+        colorized_package,
+        format!("[{}]", issue.check).dimmed()
+    );
+    println!("        {}", issue.message);
+    println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
+    if let Some(ref s) = issue.suggestion {
+        println!("        Replace with: {}", s.green().bold());
+    }
+    if let Some(ref url) = issue.registry_url {
+        println!("        Verify: {}", url.dimmed());
+    }
+    println!();
 }
 
 #[cfg(test)]
@@ -247,6 +292,26 @@ mod tests {
     fn severity_serializes_correctly() {
         let json = serde_json::to_string(&Severity::Error).unwrap();
         assert_eq!(json, "\"Error\"");
+        let json = serde_json::to_string(&Severity::Warning).unwrap();
+        assert_eq!(json, "\"Warning\"");
+    }
+
+    #[test]
+    fn warnings_do_not_count_as_errors() {
+        let report = ScanReport::new(
+            1,
+            vec![issue(
+                "pkg",
+                "resolution/no-exact-version",
+                Severity::Warning,
+            )],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        assert!(report.has_issues());
+        assert!(!report.has_errors());
     }
 
     #[test]
