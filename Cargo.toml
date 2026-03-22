@@ -24,3 +24,8 @@ colored = "2"
 futures = "0.3"
 toml = "0.8"
 async-trait = "0.1"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

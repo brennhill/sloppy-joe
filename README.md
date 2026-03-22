@@ -20,6 +20,9 @@ AI code generators hallucinate package names [~20% of the time](https://arxiv.or
 # Install (single static binary, no runtime dependencies)
 cargo install sloppy-joe
 
+# Or download an auditable binary archive from GitHub Releases
+# https://github.com/brennhill/sloppy-joe/releases
+
 # Check current project — auto-detects ecosystem from manifest files
 sloppy-joe check
 
@@ -47,6 +50,8 @@ sloppy-joe init > config.json
 **Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
 
 **Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
+
+**Release automation:** pushing a tag like `v0.8.0` triggers a GitHub Releases build for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`. Release binaries are built with `cargo auditable` metadata embedded and gated by `cargo audit bin` before publication.
 
 ---
 
