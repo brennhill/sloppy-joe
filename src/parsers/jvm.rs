@@ -112,11 +112,7 @@ fn parse_pom_dep(lines: &[&str], start: usize) -> (Option<Dependency>, usize) {
 }
 
 fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = line.find(&open)? + open.len();
-    let end = line.find(&close)?;
-    Some(line[start..end].to_string())
+    super::extract_xml_value(line, tag)
 }
 
 #[cfg(test)]

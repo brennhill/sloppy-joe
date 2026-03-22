@@ -134,6 +134,26 @@ pub(crate) fn issues_from_lookups(
         let unresolved_version = lookup.unresolved_version;
 
         let Some(meta) = lookup.metadata.as_ref() else {
+            // Package exists but metadata couldn't be parsed — emit warning
+            if lookup.exists {
+                issues.push(Issue {
+                    package: name.clone(),
+                    check: "metadata/parse-failed".to_string(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "'{}' exists on the {} registry but its metadata could not be parsed. \
+                         Metadata-based checks (version age, install scripts, etc.) are skipped for this package.",
+                        name, ecosystem
+                    ),
+                    fix: format!(
+                        "This may be a transient registry issue. Retry later. If it persists, check '{}' manually.",
+                        name
+                    ),
+                    suggestion: None,
+                    registry_url: None,
+                source: None,
+                });
+            }
             continue;
         };
 
@@ -249,7 +269,7 @@ pub(crate) fn issues_from_lookups(
                     fix: "Do not install this package. Verify it is legitimate before proceeding.".to_string(),
                     suggestion: None,
                     registry_url: None,
-                    source: None,
+                source: None,
                 });
             }
         }
@@ -583,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_metadata_no_issues() {
+    async fn no_metadata_emits_parse_failed_warning_when_exists() {
         let registry = FakeRegistry {
             metadata_response: None,
         };
@@ -598,7 +618,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(issues.is_empty());
+        // Package exists (FakeRegistry.exists returns true) but metadata is None
+        // → should emit a parse-failed warning
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].check, "metadata/parse-failed");
+        assert_eq!(issues[0].severity, Severity::Warning);
     }
 
     #[tokio::test]
@@ -972,6 +996,48 @@ mod tests {
             .filter(|i| i.check == "metadata/maintainer-change")
             .collect();
         assert!(mc.is_empty());
+    }
+
+    #[test]
+    fn parse_failed_warning_when_exists_but_no_metadata() {
+        let lookups = vec![MetadataLookup {
+            package: "broken-pkg".to_string(),
+            ecosystem: "npm".to_string(),
+            version: None,
+            resolved_version: None,
+            unresolved_version: false,
+            exists: true,
+            metadata: None,
+        }];
+
+        let issues = issues_from_lookups(&lookups, &config_with_age(72), &empty_similarity());
+        let parse_failed: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/parse-failed")
+            .collect();
+        assert_eq!(parse_failed.len(), 1);
+        assert_eq!(parse_failed[0].severity, Severity::Warning);
+        assert!(parse_failed[0].message.contains("broken-pkg"));
+    }
+
+    #[test]
+    fn no_warning_when_package_does_not_exist() {
+        let lookups = vec![MetadataLookup {
+            package: "nonexistent-pkg".to_string(),
+            ecosystem: "npm".to_string(),
+            version: None,
+            resolved_version: None,
+            unresolved_version: false,
+            exists: false,
+            metadata: None,
+        }];
+
+        let issues = issues_from_lookups(&lookups, &config_with_age(72), &empty_similarity());
+        let parse_failed: Vec<_> = issues
+            .iter()
+            .filter(|i| i.check == "metadata/parse-failed")
+            .collect();
+        assert!(parse_failed.is_empty());
     }
 
     /// Generate a "now" timestamp without chrono dependency.

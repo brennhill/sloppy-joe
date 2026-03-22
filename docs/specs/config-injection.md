@@ -2,9 +2,10 @@
 
 **Created**: 2026-03-22
 **Status**: Accepted Design / Current State
-**Input**: "Create a spec for config injection since that's a clear design decision."
 
-## 1. Problem / Why Now
+## Context
+
+### Problem / Why Now
 
 Config loading is part of the trust boundary of `sloppy-joe`.
 
@@ -16,156 +17,162 @@ decision, not a convenience feature.
 The accepted design is simple: policy must come from outside the project being scanned,
 must use secure transport when remote, and must fail closed when broken.
 
-## 2. User Scenarios & Testing
+### Expected Outcomes
 
-### User Story 1 - In-repo config tampering is blocked (Priority: P1)
+- In-repo config tampering is blocked by design.
+- CI pipelines can use centrally managed policy files from outside the repo or via HTTPS.
+- Broken config sources fail closed with actionable error messages.
+- Config semantics for `internal`, `allowed`, `canonical`, and `min_version_age_hours`
+  are preserved.
 
-A coding agent with write access to the repository tries to add a config file inside the
-repo that allowlists a hallucinated dependency.
+### Alternatives Considered
 
-**Why this priority**: This is the core threat the design is meant to stop.
+- **Auto-discover config from the repo**: Creates the exact injection vector this
+  design prevents.
+- **Allow `http://` remote config**: Downgrades transport security for convenience.
+- **Silent fallback to defaults on broken config**: Creates the illusion of protection.
 
-**Independent test**: Provide `--config ./repo/sloppy-joe.json` while scanning the same
-repo and verify the scanner rejects it.
+---
 
-**Acceptance scenarios**:
+## Acceptance Criteria
 
-1. **Given** a config path inside the project directory, **When** the scan starts,
-   **Then** config loading fails with an explicit trust-boundary error.
-2. **Given** a nested path under the repo that resolves through canonicalization,
-   **When** the scan starts, **Then** the scanner still rejects it as project-local.
+### In-repo config tampering is blocked
 
-### User Story 2 - CI can use centrally managed policy (Priority: P1)
+- **Given** a config path inside the project directory, **When** the scan starts,
+  **Then** config loading fails with an explicit trust-boundary error.
+- **Given** a nested path under the repo that resolves through canonicalization,
+  **When** the scan starts, **Then** the scanner still rejects it as project-local.
 
-A CI pipeline needs one policy file shared across many repositories.
+### CI can use centrally managed policy
 
-**Why this priority**: The secure design has to remain usable in CI or people will route
-around it.
+- **Given** a config path outside the scanned repo, **When** the scan starts,
+  **Then** config is loaded and applied.
+- **Given** a valid `https://` config URL, **When** the scan starts, **Then** config is
+  fetched and applied.
 
-**Independent test**: Use a local config path outside the repo or an `https://` URL and
-verify config loads successfully.
+### Broken config does not silently weaken policy
 
-**Acceptance scenarios**:
+- **Given** an unreadable config file, **When** the scan starts, **Then** the command
+  fails with a fix-oriented error message.
+- **Given** malformed JSON, **When** the scan starts, **Then** the command fails and
+  points to the JSON problem.
+- **Given** a remote URL returning non-success HTTP, **When** the scan starts,
+  **Then** the command fails and names the returned status.
 
-1. **Given** a config path outside the scanned repo, **When** the scan starts,
-   **Then** config is loaded and applied.
-2. **Given** a valid `https://` config URL, **When** the scan starts, **Then** config is
-   fetched and applied.
+### Config source precedence
 
-### User Story 3 - Broken config does not silently weaken policy (Priority: P1)
+- **Given** both `--config` flag and `SLOPPY_JOE_CONFIG` env var are set, **When** the
+  scan starts, **Then** the `--config` flag wins.
+- **Given** no `--config` flag but `SLOPPY_JOE_CONFIG` is set, **When** the scan
+  starts, **Then** the env var is used.
+- **Given** neither `--config` nor `SLOPPY_JOE_CONFIG`, **When** the scan starts,
+  **Then** safe defaults are used and the repo is not searched for config.
 
-A developer provides an unreadable path, malformed JSON, or a failing remote URL.
-
-**Why this priority**: Silent fallback would create the illusion of protection.
-
-**Independent test**: Supply a broken config source and verify the scan fails instead of
-continuing with defaults.
-
-**Acceptance scenarios**:
-
-1. **Given** an unreadable config file, **When** the scan starts, **Then** the command
-   fails with a fix-oriented error message.
-2. **Given** malformed JSON, **When** the scan starts, **Then** the command fails and
-   points to the JSON problem.
-3. **Given** a remote URL returning non-success HTTP, **When** the scan starts,
-   **Then** the command fails and names the returned status.
-
-### Edge Cases
+### Edge cases
 
 - No config source is provided: use safe defaults and do not search the repo.
 - `http://` is provided: reject it outright instead of downgrading security.
-- Config path canonicalization fails: compare with the best available path information and
-  still enforce the trust boundary.
+- Config path canonicalization fails: compare with the best available path information
+  and still enforce the trust boundary.
 - The operator intentionally points to a weak config outside the repo: this design
   protects against injection, not operator intent.
 
-## 3. Requirements
+---
 
-### Functional Requirements
+## Constraints
 
-- **FR-001**: The scanner MUST never auto-discover config from the project directory.
-- **FR-002**: The scanner MUST resolve config source precedence as: `--config`, then
-  `SLOPPY_JOE_CONFIG`, then default config.
-- **FR-003**: The scanner MUST reject project-local config files when a project directory
-  is known.
-- **FR-004**: The scanner MUST only allow remote config over `https://`.
-- **FR-005**: The scanner MUST reject `http://` config URLs.
-- **FR-006**: The scanner MUST fail closed on unreadable files, fetch failures,
-  non-success HTTP responses, empty config, and invalid JSON.
-- **FR-007**: The scanner MUST provide actionable config error messages.
-- **FR-008**: The scanner MUST preserve explicit semantics for `internal`, `allowed`,
-  `canonical`, and `min_version_age_hours`.
-- **FR-009**: The scanner MUST use safe defaults when no explicit config source is
-  provided.
-- **FR-010**: The spec MUST include context anchors to the config-loading code paths and
-  trust-boundary enforcement points.
-- **FR-011**: The spec MUST include the input contract for accepted config sources.
-- **FR-012**: The spec MUST include the output contract for config-loading failures.
-- **FR-013**: The spec MUST describe the side effect of config decisions on downstream
-  check tiers.
-
-#### Current accepted behavior
-
-| Area | Current behavior | Implementation |
-| --- | --- | --- |
-| Source precedence | CLI flag wins, then env var, then default config | `resolve_config_source(...)` |
-| Project-local config | Rejected when inside project tree | `ensure_config_outside_project(...)` |
-| Remote transport | `https://` allowed, `http://` rejected | `load_config_from_source(...)` |
-| Parse failures | Fail closed with explicit errors | `parse_config_content(...)` |
-| Missing config source | Safe defaults used | `SloppyJoeConfig::default()` |
-
-#### Current semantics protected by this design
-
-- `internal`: skip all checks
-- `allowed`: skip existence and similarity only
-- `canonical`: organizational replacement policy
-- `min_version_age_hours`: exact-version age gate
-
-### Scoring Rubric — Machine Usability
-
-If this spec is graded with the UPFRONT rubric, the machine-usable sections are:
-
-| Section | What an AI or reviewer uses it for | Weight |
-| --- | --- | --- |
-| Acceptance scenarios | Derive failure-path and trust-boundary tests | High |
-| Edge cases | Avoid silent downgrade behavior | High |
-| Functional requirements | Anchor the explicit security contract | High |
-| Config behavior tables | Prevent drift between docs and code | High |
-| Architectural boundaries | Show where trust is enforced in code | Medium |
-| Key entities | Keep terminology stable | Medium |
-
-Human-useful but weaker for implementation scoring:
-
-| Section | Why it is weaker for implementation |
-| --- | --- |
-| Status metadata | Context only |
-| General security motivation | Useful framing, not executable behavior |
-
-### Key Entities
-
-- **Config Source**: Explicit source string from CLI or environment.
-- **Project Directory**: Repository being scanned; defines the trust boundary.
-- **SloppyJoeConfig**: Parsed JSON policy object.
-- **Trust Boundary**: Rule that policy must come from outside the scanned project.
-- **Source Resolver**: Precedence logic for CLI, environment, and default config.
-
-## 4. Non-Negotiable Constraints
+### Operational
 
 - A broken explicit config source must never silently fall back to default config.
+- The trust boundary must hold even when path canonicalization is imperfect.
+- Config must be resolved before any dependency checks run.
+
+### Security
+
 - In-repo config files must never be treated as trusted policy.
 - Remote config transport must never downgrade to plain HTTP.
-- The trust boundary must hold even when path canonicalization is imperfect.
+- The scanner MUST never auto-discover config from the project directory.
 
-## 5. Out of Scope
+---
 
+## Scope Boundaries
+
+In scope:
+- Config source resolution (CLI flag, env var, defaults).
+- Trust boundary enforcement (project-local config rejection).
+- Remote config transport security (HTTPS only).
+- Fail-closed behavior on broken config.
+- Config semantics for `internal`, `allowed`, `canonical`, `min_version_age_hours`.
+
+Out of scope:
 - Signature verification or pinned-digest verification for remote config.
 - Preventing an operator from intentionally choosing a weak config outside the repo.
 - Auto-discovery of organization-wide config by repo convention.
 - Secret management for private remote config sources.
 
-## 6. Architectural Boundaries
+---
 
-### Data sources
+## I/O Contracts
+
+### CLI signatures
+
+```
+sloppy-joe check [--config PATH_OR_URL] [existing flags...]
+```
+
+- `--config`: Explicit config source. Must be a path outside the project directory or
+  an `https://` URL.
+- `SLOPPY_JOE_CONFIG` env var: Alternative to `--config` with lower precedence.
+
+### Config source precedence
+
+1. `--config` CLI flag
+2. `SLOPPY_JOE_CONFIG` environment variable
+3. Default safe config (no file search)
+
+### Config schema
+
+```json
+{
+  "internal": ["@my-org/internal-lib"],
+  "allowed": ["fast-xml-parser"],
+  "canonical": { "colors": "chalk" },
+  "min_version_age_hours": 72
+}
+```
+
+### Error message contract
+
+Config errors MUST include:
+- The specific problem (trust boundary violation, malformed JSON, HTTP status, etc.)
+- The config source that failed
+- A fix-oriented directive (e.g., "move config outside the project directory" or
+  "check JSON syntax at line N")
+
+### Data shapes
+
+- **Config Source**: Explicit source string from CLI or environment.
+- **Project Directory**: Repository being scanned; defines the trust boundary.
+- **SloppyJoeConfig**: Parsed JSON policy object with `internal`, `allowed`,
+  `canonical`, and `min_version_age_hours` fields.
+- **Trust Boundary**: Rule that policy must come from outside the scanned project.
+
+---
+
+## Context Anchors
+
+- `src/config.rs` — source resolution, trust-boundary enforcement, fetch, and parse.
+  Contains `resolve_config_source()`, `ensure_config_outside_project()`,
+  `load_config_from_source()`, and `parse_config_content()`.
+- `src/lib.rs` and `src/main.rs` — passing project context and selected source.
+- `SloppyJoeConfig::default()` — safe defaults when no config source is provided.
+- `reqwest` via `crate::registry::http_client()` — remote fetches (HTTPS only).
+
+---
+
+## Architecture
+
+### Data Sources
 
 - CLI `--config` flag
 - `SLOPPY_JOE_CONFIG` environment variable
@@ -188,20 +195,3 @@ Human-useful but weaker for implementation scoring:
 - Parsed `SloppyJoeConfig`
 - Explicit user-facing config errors
 - Deterministic tiering effects on `internal`, `allowed`, and canonical policy
-
-## 7. Out of Scope for Scoring
-
-These are useful to humans, but not central to machine-usability scoring for this spec:
-
-- Long-form security philosophy
-- Centralized policy governance process
-- Business process around who is allowed to approve config changes
-
-## 8. Spec Quality Self-Assessment
-
-- **Completeness**: High. Trust boundary, precedence, failure handling, and protected
-  semantics are all captured.
-- **Ambiguity**: Low. "Config injection" is defined concretely as policy originating from
-  the scanned project or an insecure source.
-- **Consistency**: High. The spec matches current behavior in `src/config.rs`.
-- **Testability**: High. Each requirement maps to a direct path, URL, or parse scenario.

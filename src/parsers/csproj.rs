@@ -4,7 +4,8 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let csproj = find_csproj(project_dir)?;
-    let content = std::fs::read_to_string(&csproj).context_msg(&csproj)?;
+    let content = super::read_file_limited(&csproj, super::MAX_MANIFEST_BYTES)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
 
     let mut deps = Vec::new();
     let mut current_name: Option<String> = None;
@@ -73,22 +74,9 @@ fn extract_attr(line: &str, attr: &str) -> Option<String> {
 }
 
 fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = line.find(&open)? + open.len();
-    let end = line.find(&close)?;
-    Some(line[start..end].to_string())
+    super::extract_xml_value(line, tag)
 }
 
-trait ContextMsg {
-    fn context_msg(self, path: &Path) -> Result<String>;
-}
-
-impl ContextMsg for std::io::Result<String> {
-    fn context_msg(self, path: &Path) -> Result<String> {
-        self.map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
-    }
-}
 
 #[cfg(test)]
 mod tests {

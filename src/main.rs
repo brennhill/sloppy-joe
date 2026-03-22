@@ -74,6 +74,14 @@ enum Commands {
         /// Run similarity checks on transitive dependencies (slower, more thorough)
         #[arg(long)]
         deep: bool,
+
+        /// Disable reading from the similarity disk cache.
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Directory to store similarity cache files.
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<PathBuf>,
     },
     /// Print a template config to stdout
     ///
@@ -93,15 +101,12 @@ async fn main() {
             dir,
             config,
             deep,
+            no_cache,
+            cache_dir,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            match sloppy_joe::scan_with_source(
-                &dir,
-                project_type.as_deref(),
-                config.as_deref(),
-                deep,
-            )
-            .await
+            match sloppy_joe::scan_with_source_full(&dir, project_type.as_deref(), config.as_deref(), deep, no_cache, cache_dir.as_deref())
+                .await
             {
                 Ok(report) => {
                     if json {

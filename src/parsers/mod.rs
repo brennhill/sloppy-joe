@@ -11,6 +11,33 @@ use crate::Dependency;
 use anyhow::{Result, bail};
 use std::path::Path;
 
+/// Read a file with a size limit to prevent memory exhaustion on huge files.
+pub(crate) fn read_file_limited(path: &std::path::Path, max_bytes: u64) -> Result<String> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > max_bytes {
+        anyhow::bail!(
+            "File too large: {} bytes (max {})",
+            meta.len(),
+            max_bytes
+        );
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
+/// Maximum file size for manifest/lockfile parsing (100 MB).
+pub(crate) const MAX_MANIFEST_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Shared XML value extractor: `<tag>value</tag>` on a single line.
+/// Searches for the close tag starting AFTER the open tag to avoid
+/// matching a close tag that appears before the open tag.
+pub(crate) fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = line.find(&open)? + open.len();
+    let end = line[start..].find(&close).map(|i| i + start)?;
+    Some(line[start..end].to_string())
+}
+
 /// Auto-detect the project type and parse dependencies, or use the specified type.
 pub fn parse_dependencies(
     project_dir: &Path,
@@ -215,6 +242,62 @@ mod tests {
     fn has_csproj_no_file() {
         let dir = unique_dir();
         assert!(!has_csproj(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── extract_xml_value tests ──
+
+    #[test]
+    fn extract_xml_value_basic() {
+        assert_eq!(
+            extract_xml_value("  <Version>1.2.3</Version>", "Version"),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_xml_value_handles_close_before_open() {
+        // P0-3: "</Version><Version>1.2.3</Version>" should return Some("1.2.3"), not panic
+        assert_eq!(
+            extract_xml_value("</Version><Version>1.2.3</Version>", "Version"),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_xml_value_no_open_tag() {
+        assert_eq!(extract_xml_value("just text", "Version"), None);
+    }
+
+    #[test]
+    fn extract_xml_value_no_close_tag() {
+        assert_eq!(
+            extract_xml_value("<Version>1.2.3", "Version"),
+            None
+        );
+    }
+
+    // ── read_file_limited tests ──
+
+    #[test]
+    fn read_file_limited_rejects_oversized() {
+        let dir = unique_dir();
+        let path = dir.join("big.txt");
+        std::fs::write(&path, "hello world").unwrap();
+        // Set limit to 5 bytes - "hello world" is 11
+        let result = read_file_limited(&path, 5);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_file_limited_allows_small() {
+        let dir = unique_dir();
+        let path = dir.join("small.txt");
+        std::fs::write(&path, "ok").unwrap();
+        let result = read_file_limited(&path, 100);
+        assert_eq!(result.unwrap(), "ok");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

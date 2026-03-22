@@ -37,12 +37,27 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn normalize_distribution_name(raw: &str) -> String {
-    raw.trim()
-        .split('[')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    let base = raw.trim().split('[').next().unwrap_or("").trim();
+    // PEP 503: lowercase, replace runs of [-_.] with a single hyphen
+    let lowered = base.to_lowercase();
+    let mut result = String::with_capacity(lowered.len());
+    let mut in_sep = false;
+    for c in lowered.chars() {
+        if c == '-' || c == '_' || c == '.' {
+            if !in_sep && !result.is_empty() {
+                result.push('-');
+            }
+            in_sep = true;
+        } else {
+            in_sep = false;
+            result.push(c);
+        }
+    }
+    // Trim trailing hyphen
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -111,6 +126,14 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "requests");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn pep503_normalization() {
+        assert_eq!(normalize_distribution_name("Python-Dateutil"), "python-dateutil");
+        assert_eq!(normalize_distribution_name("python_dateutil"), "python-dateutil");
+        assert_eq!(normalize_distribution_name("REQUESTS"), "requests");
+        assert_eq!(normalize_distribution_name("Foo..Bar__Baz"), "foo-bar-baz");
     }
 
     #[test]

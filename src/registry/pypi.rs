@@ -56,7 +56,16 @@ impl super::Registry for PypiRegistry {
         }
         let body: serde_json::Value = resp.json().await?;
 
-        let created = body["info"]["upload_time"].as_str().map(|s| s.to_string());
+        let created = body["releases"]
+            .as_object()
+            .and_then(|releases| {
+                releases
+                    .values()
+                    .filter_map(|files| files.as_array()?.first()?.get("upload_time")?.as_str())
+                    .min()
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| body["info"]["upload_time"].as_str().map(|s| s.to_string()));
 
         let latest_version_date = if let Some(ver) = version {
             let base_ver = ver.trim_start_matches(['^', '~', '>', '=', '<', ' ']);

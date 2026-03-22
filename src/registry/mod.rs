@@ -78,9 +78,27 @@ pub fn http_client() -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
+/// Return the concurrency limit for similarity checks on a given ecosystem.
+/// crates.io: 2 (strict rate limits), Go: 5, others: 20.
+pub fn similarity_concurrency(ecosystem: &str) -> usize {
+    match ecosystem {
+        "cargo" => 2,
+        "go" => 5,
+        _ => 20,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrency_limits_per_ecosystem() {
+        assert_eq!(similarity_concurrency("cargo"), 2);
+        assert_eq!(similarity_concurrency("go"), 5);
+        assert_eq!(similarity_concurrency("npm"), 20);
+        assert_eq!(similarity_concurrency("pypi"), 20);
+    }
 
     #[test]
     fn registry_for_all_ecosystems() {

@@ -32,10 +32,21 @@ pub async fn scan_with_source(
     config_source: Option<&str>,
     deep: bool,
 ) -> Result<ScanReport> {
+    scan_with_source_full(project_dir, project_type, config_source, deep, false, None).await
+}
+
+pub async fn scan_with_source_full(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config_source: Option<&str>,
+    deep: bool,
+    no_cache: bool,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<ScanReport> {
     let config = config::load_config_from_source(config_source, Some(project_dir))
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    scan_with_config(project_dir, project_type, config, deep).await
+    scan_with_config(project_dir, project_type, config, deep, no_cache, cache_dir).await
 }
 
 pub async fn scan(
@@ -45,7 +56,7 @@ pub async fn scan(
 ) -> Result<ScanReport> {
     let config = config::load_config_with_project(config_path, Some(project_dir))
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    scan_with_config(project_dir, project_type, config, false).await
+    scan_with_config(project_dir, project_type, config, false, false, None).await
 }
 
 async fn scan_with_config(
@@ -53,6 +64,8 @@ async fn scan_with_config(
     project_type: Option<&str>,
     config: config::SloppyJoeConfig,
     deep: bool,
+    no_cache: bool,
+    cache_dir: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
     let ecosystem = deps
@@ -61,7 +74,7 @@ async fn scan_with_config(
         .unwrap_or("npm");
     let registry = registry::registry_for(ecosystem);
     let osv_client = checks::malicious::RealOsvClient::new();
-    scan_with_services(project_dir, project_type, config, &*registry, &osv_client, deep).await
+    scan_with_services(project_dir, project_type, config, &*registry, &osv_client, deep, no_cache, cache_dir).await
 }
 
 async fn scan_with_services(
@@ -71,6 +84,8 @@ async fn scan_with_services(
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
     deep: bool,
+    no_cache: bool,
+    cache_dir: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
     scan_with_services_inner(
         project_dir,
@@ -80,6 +95,8 @@ async fn scan_with_services(
         osv_client,
         false,
         deep,
+        no_cache,
+        cache_dir,
     )
     .await
 }
@@ -92,6 +109,8 @@ async fn scan_with_services_inner(
     osv_client: &dyn OsvClient,
     disable_osv_disk_cache: bool,
     deep: bool,
+    no_cache: bool,
+    cache_dir: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
 
@@ -131,9 +150,8 @@ async fn scan_with_services_inner(
 
     // Checkable deps get full checks
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
-    let corpus = registry::corpus::fetch_popular(&ecosystem).await;
     let similarity_results =
-        checks::similarity::check_similarity(&checkable_owned, &ecosystem, &corpus);
+        checks::similarity::check_similarity_with_cache(registry, &checkable_owned, &ecosystem, cache_dir, no_cache).await?;
 
     // Build set of similarity-flagged package names for signal amplifier
     let similarity_flagged: HashSet<String> = similarity_results
@@ -286,7 +304,7 @@ async fn scan_with_services_inner(
 
         // Similarity on transitive deps only if --deep
         let mut trans_similarity = if deep {
-            checks::similarity::check_similarity(&transitive_deps, &ecosystem, &corpus)
+            checks::similarity::check_similarity(registry, &transitive_deps, &ecosystem).await?
         } else {
             vec![]
         };
@@ -509,6 +527,8 @@ mod tests {
             osv_client,
             true,
             false,
+            true, // no_cache in tests
+            None,
         )
         .await
     }
@@ -536,6 +556,8 @@ mod tests {
             &registry,
             &FakeOsvClient,
             false,
+            true,
+            None,
         )
         .await
         .unwrap();
@@ -562,6 +584,8 @@ mod tests {
             &registry,
             &FakeOsvClient,
             false,
+            true,
+            None,
         )
         .await
         .unwrap();
@@ -588,7 +612,7 @@ mod tests {
         let registry = FakeRegistry {
             existing: vec!["react".to_string()],
         };
-        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false)
+        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false, true, None)
             .await
             .unwrap();
         assert_eq!(report.packages_checked, 2);
@@ -622,7 +646,7 @@ mod tests {
         let registry = FakeRegistry {
             existing: vec!["moment".to_string()],
         };
-        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false)
+        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false, true, None)
             .await
             .unwrap();
         let canonical_issues: Vec<_> = report
@@ -948,6 +972,8 @@ serde = { workspace = true }
             &osv,
             true,
             false,
+            true,
+            None,
         )
         .await
         .unwrap();
@@ -1015,6 +1041,8 @@ serde = { workspace = true }
             &FakeOsvClient,
             true,
             true,
+            true,
+            None,
         )
         .await
         .unwrap();
@@ -1031,6 +1059,8 @@ serde = { workspace = true }
             &FakeOsvClient,
             true,
             false,
+            true,
+            None,
         )
         .await
         .unwrap();
@@ -1082,6 +1112,8 @@ serde = { workspace = true }
             &FakeOsvClient,
             true,
             false,
+            true,
+            None,
         )
         .await
         .unwrap();

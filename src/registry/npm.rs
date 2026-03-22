@@ -199,6 +199,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_from_body_downloads_defaults_to_none() {
+        // metadata_from_body itself does not populate downloads —
+        // that comes from the separate downloads API call in metadata().
+        let body = serde_json::json!({
+            "time": {
+                "created": "2020-01-01T00:00:00Z",
+                "modified": "2024-02-01T00:00:00Z",
+                "1.0.0": "2020-01-02T00:00:00Z"
+            },
+            "dist-tags": { "latest": "1.0.0" },
+            "versions": {
+                "1.0.0": {
+                    "scripts": {},
+                    "dependencies": {},
+                    "_npmUser": { "name": "alice" }
+                }
+            }
+        });
+        let metadata = metadata_from_body(&body, None).unwrap();
+        // downloads is None until enriched by fetch_downloads
+        assert_eq!(metadata.downloads, None);
+    }
+
+    #[test]
     fn metadata_uses_requested_version_for_release_signals() {
         let body = serde_json::json!({
             "time": {
