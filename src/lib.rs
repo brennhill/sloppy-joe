@@ -17,12 +17,34 @@ use std::collections::HashSet;
 /// - **internal**: skip ALL checks (your org's packages, change constantly)
 /// - **allowed**: skip existence + similarity, still subject to canonical + age gate
 /// - **everything else**: full checks
+/// Run all checks, loading config from a file path or URL.
+/// Prefer this over `scan()` — it supports `--config https://...`.
+pub async fn scan_with_source(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config_source: Option<&str>,
+) -> Result<ScanReport> {
+    let config = config::load_config_from_source(config_source)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    scan_with_config(project_dir, project_type, config).await
+}
+
 pub async fn scan(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
     config_path: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
-    let config = config::load_config(config_path);
+    let config = config::load_config(config_path)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    scan_with_config(project_dir, project_type, config).await
+}
+
+async fn scan_with_config(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config: config::SloppyJoeConfig,
+) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
 
     if deps.is_empty() {

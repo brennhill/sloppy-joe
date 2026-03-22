@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
 
+
 #[derive(Parser)]
 #[command(name = "sloppy-joe")]
 #[command(version)]
@@ -58,11 +59,12 @@ enum Commands {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
 
-        /// Path to config file with canonical rules and allowed list.
-        /// Overrides SLOPPY_JOE_CONFIG env var. Never reads from the
+        /// Config file path or URL. Overrides SLOPPY_JOE_CONFIG env var.
+        /// Accepts a local path or https:// URL. Never reads from the
         /// project directory — AI agents could rewrite it.
-        #[arg(long, env = "SLOPPY_JOE_CONFIG", value_name = "PATH")]
-        config: Option<PathBuf>,
+        /// See CONFIG.md for format details.
+        #[arg(long, env = "SLOPPY_JOE_CONFIG", value_name = "PATH_OR_URL")]
+        config: Option<String>,
     },
     /// Print a template config to stdout
     ///
@@ -83,8 +85,7 @@ async fn main() {
             config,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let config_path = config.as_deref();
-            match sloppy_joe::scan(&dir, project_type.as_deref(), config_path).await {
+            match sloppy_joe::scan_with_source(&dir, project_type.as_deref(), config.as_deref()).await {
                 Ok(report) => {
                     if json {
                         report.print_json();

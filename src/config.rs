@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Config format:
 /// ```json
@@ -103,29 +103,100 @@ impl SloppyJoeConfig {
     }
 }
 
-/// Resolve config path: --config flag overrides SLOPPY_JOE_CONFIG env var.
+/// Resolve config source: --config flag overrides SLOPPY_JOE_CONFIG env var.
 /// Never reads from the project directory.
-pub fn resolve_config_path(cli_config: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = cli_config {
-        return Some(path.to_path_buf());
+/// Accepts a file path or a URL (http:// or https://).
+pub fn resolve_config_source(cli_config: Option<&str>) -> Option<String> {
+    if let Some(source) = cli_config {
+        return Some(source.to_string());
     }
-    std::env::var("SLOPPY_JOE_CONFIG")
-        .ok()
-        .map(PathBuf::from)
+    std::env::var("SLOPPY_JOE_CONFIG").ok()
 }
 
-/// Load config from a resolved path. Returns empty config if no path.
-pub fn load_config(config_path: Option<&Path>) -> SloppyJoeConfig {
-    match config_path {
-        Some(path) => {
-            let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-                eprintln!("Warning: could not read config {}: {}", path.display(), e);
-                String::new()
-            });
-            serde_json::from_str(&content).unwrap_or_default()
-        }
-        None => SloppyJoeConfig::default(),
+/// Load config from a resolved path. Fails hard on malformed config —
+/// a broken config should never silently fall back to no protection.
+pub fn load_config(config_path: Option<&Path>) -> Result<SloppyJoeConfig, String> {
+    let Some(path) = config_path else {
+        return Ok(SloppyJoeConfig::default());
+    };
+
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "Could not read config file: {}\n  Path: {}\n  Fix: Check that the file exists and is readable.\n       Use 'sloppy-joe init > config.json' to generate a template.",
+            e, path.display()
+        )
+    })?;
+
+    parse_config_content(&content, &path.display().to_string())
+}
+
+/// Load config from a string source — either a file path or a URL.
+/// Fails hard on errors — a misconfigured CI pipeline should not
+/// silently run without protection.
+pub async fn load_config_from_source(source: Option<&str>) -> Result<SloppyJoeConfig, String> {
+    let Some(source) = source else {
+        return Ok(SloppyJoeConfig::default());
+    };
+
+    if source.starts_with("http://") || source.starts_with("https://") {
+        fetch_config_from_url(source).await
+    } else {
+        load_config(Some(Path::new(source)))
     }
+}
+
+/// Fetch config JSON from a URL.
+async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
+    let response = reqwest::get(url).await.map_err(|e| {
+        format!(
+            "Could not fetch config from URL: {}\n  URL: {}\n  Fix: Check that the URL is reachable and returns valid JSON.\n       For private repos, ensure your CI token has read access.",
+            e, url
+        )
+    })?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Config URL returned HTTP {}\n  URL: {}\n  Fix: Check that the URL points to a valid JSON file.\n       For GitHub raw URLs, use: https://raw.githubusercontent.com/org/repo/main/sloppy-joe.json",
+            response.status(), url
+        ));
+    }
+
+    let content = response.text().await.map_err(|e| {
+        format!("Could not read response body from {}: {}", url, e)
+    })?;
+
+    parse_config_content(&content, url)
+}
+
+/// Parse config JSON content with actionable error messages.
+fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, String> {
+    if content.trim().is_empty() {
+        return Err(format!(
+            "Config is empty.\n  Source: {}\n  Fix: Use 'sloppy-joe init > config.json' to generate a template.",
+            source
+        ));
+    }
+
+    serde_json::from_str(content).map_err(|e| {
+        let mut msg = format!(
+            "Config is not valid JSON.\n  Source: {}\n  Error: {}",
+            source, e
+        );
+
+        // Add specific hints for common mistakes
+        if content.contains("//") {
+            msg.push_str("\n  Hint: JSON does not support comments. Remove lines starting with //.");
+        }
+        if content.contains(",\n}") || content.contains(",\n]") || content.contains(", }") || content.contains(", ]") {
+            msg.push_str("\n  Hint: Trailing commas are not allowed in JSON. Remove the comma before } or ].");
+        }
+        if !content.starts_with('{') {
+            msg.push_str("\n  Hint: Config must be a JSON object starting with {.");
+        }
+
+        msg.push_str("\n  Fix: Validate your JSON at https://jsonlint.com or use 'sloppy-joe init' for a template.");
+        msg
+    })
 }
 
 /// Print a template config to stdout.
@@ -268,7 +339,7 @@ mod tests {
 
     #[test]
     fn load_config_none_returns_default() {
-        let config = load_config(None);
+        let config = load_config(None).unwrap();
         assert!(config.canonical.is_empty());
         assert!(config.internal.is_empty());
         assert!(config.allowed.is_empty());
@@ -276,10 +347,12 @@ mod tests {
     }
 
     #[test]
-    fn load_config_nonexistent_path_returns_default() {
-        let config = load_config(Some(Path::new("/tmp/nonexistent-sloppy-joe-config.json")));
-        assert!(config.canonical.is_empty());
-        assert_eq!(config.min_version_age_hours, 72);
+    fn load_config_nonexistent_path_returns_error() {
+        let result = load_config(Some(Path::new("/tmp/nonexistent-sloppy-joe-config.json")));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Could not read config file"));
+        assert!(err.contains("Fix:"));
     }
 
     #[test]
@@ -291,11 +364,38 @@ mod tests {
             &path,
             r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48}"#,
         ).unwrap();
-        let config = load_config(Some(&path));
+        let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
         assert!(config.internal.contains_key("npm"));
         assert!(config.allowed.contains_key("npm"));
         assert_eq!(config.min_version_age_hours, 48);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_empty_file_returns_error() {
+        let dir = std::env::temp_dir().join("sloppy-joe-test-empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "").unwrap();
+        let result = load_config(Some(&path));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Config is empty"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_invalid_json_returns_error_with_hints() {
+        let dir = std::env::temp_dir().join("sloppy-joe-test-invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{ "canonical": {}, // this is a comment }"#).unwrap();
+        let result = load_config(Some(&path));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Config is not valid JSON"));
+        assert!(err.contains("comments"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -306,9 +406,24 @@ mod tests {
     }
 
     #[test]
-    fn resolve_config_path_with_cli_flag() {
-        let path = resolve_config_path(Some(Path::new("/some/path.json")));
-        assert_eq!(path, Some(PathBuf::from("/some/path.json")));
+    fn resolve_config_source_with_cli_flag() {
+        let source = resolve_config_source(Some("/some/path.json"));
+        assert_eq!(source, Some("/some/path.json".to_string()));
+    }
+
+    #[test]
+    fn resolve_config_source_with_url() {
+        let source = resolve_config_source(Some("https://example.com/config.json"));
+        assert_eq!(source, Some("https://example.com/config.json".to_string()));
+    }
+
+    #[test]
+    fn resolve_config_source_none() {
+        // When no env var is set and no CLI flag, returns None
+        // (can't reliably test env var in parallel tests)
+        let source = resolve_config_source(None);
+        // May or may not be None depending on env, just verify it doesn't panic
+        let _ = source;
     }
 
     #[test]

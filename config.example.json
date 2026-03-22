@@ -1,0 +1,42 @@
+{
+  "canonical": {
+    "npm": {
+      "lodash": ["underscore", "ramda", "lazy.js"],
+      "dayjs": ["moment", "luxon", "date-fns"],
+      "axios": ["request", "got", "node-fetch", "superagent"],
+      "express": ["koa", "hapi", "fastify"]
+    },
+    "pypi": {
+      "httpx": ["urllib3", "requests"],
+      "ruff": ["flake8", "pylint", "pyflakes"],
+      "pydantic": ["attrs", "dataclasses-json"]
+    },
+    "cargo": {
+      "reqwest": ["hyper", "ureq", "surf"],
+      "serde": ["bincode"]
+    },
+    "go": {},
+    "ruby": {},
+    "php": {},
+    "jvm": {},
+    "dotnet": {}
+  },
+
+  "internal": {
+    "npm": ["@yourorg/*"],
+    "pypi": ["yourorg-*"],
+    "go": ["github.com/yourorg/*"],
+    "cargo": ["yourorg-*"],
+    "jvm": ["com.yourorg:*"],
+    "ruby": ["yourorg-*"],
+    "php": ["yourorg/*"],
+    "dotnet": ["YourOrg.*"]
+  },
+
+  "allowed": {
+    "npm": ["some-vetted-external-pkg", "another-approved-pkg"],
+    "pypi": ["company-fork-of-requests"]
+  },
+
+  "min_version_age_hours": 72
+}

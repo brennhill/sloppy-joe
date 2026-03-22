@@ -14,7 +14,49 @@
 
 AI code generators hallucinate package names [~20% of the time](https://arxiv.org/abs/2406.10279). Attackers register those names and wait. sloppy-joe catches them in CI before `npm install` or `pip install` runs.
 
+## How to Use
+
+```bash
+# Install (single static binary, no runtime dependencies)
+cargo install sloppy-joe
+
+# Check current project — auto-detects ecosystem from manifest files
+sloppy-joe check
+
+# Check a specific directory
+sloppy-joe check --dir ./my-project
+
+# Check only npm dependencies
+sloppy-joe check --type npm
+
+# Enforce canonical rules and org standards via config
+sloppy-joe check --config /etc/sloppy-joe/config.json
+
+# Config from a URL (useful in CI — no secrets to manage)
+sloppy-joe check --config https://raw.githubusercontent.com/yourorg/security-configs/main/sloppy-joe.json
+
+# JSON output for CI pipelines
+sloppy-joe check --json
+
+# Generate a starter config
+sloppy-joe init > config.json
+```
+
+**Exit codes:** `0` = all clear, `1` = issues found, `2` = runtime error.
+
+**Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
+
+**Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
+
+---
+
 ## Why sloppy-joe?
+
+**Single binary. 8 ecosystems. 16 attack types. Zero false positives on generative checks. Config that AI agents can't tamper with.**
+
+Most dependency security tools check one or two things — existence, or edit distance. sloppy-joe checks 16 attack vectors in a single pass: hallucinated packages, 10 types of typosquatting (homoglyphs, scope squatting, repeated chars, separator confusion, word reordering, adjacent swaps, omitted chars, confused forms, case variants, version suffixes), canonical enforcement, version age gating, install script amplification, dependency explosion, maintainer changes, and known vulnerabilities via OSV.dev.
+
+It runs as a single Rust binary with no runtime dependencies. It supports all 8 major package ecosystems. And its config is designed for security: never read from the project directory, loadable from a URL for CI, with clear error messages when something is wrong.
 
 | | sloppy-joe | Socket.dev | GuardDog | Phantom Guard | antislopsquat |
 |---|:---:|:---:|:---:|:---:|:---:|
@@ -337,9 +379,14 @@ sloppy-joe check --json
 The config is **never read from the project directory**. An AI agent with shell access could rewrite an in-repo config to allowlist whatever it wants.
 
 Config resolution:
-1. `--config /path/to/config.json` (CLI flag, highest priority)
-2. `SLOPPY_JOE_CONFIG=/path/to/config.json` (env var)
-3. No config = existence + similarity + metadata checks only
+1. `--config /path/to/config.json` — local file (CLI flag, highest priority)
+2. `--config https://example.com/config.json` — fetch from URL
+3. `SLOPPY_JOE_CONFIG=...` — env var (file path or URL)
+4. No config = existence + similarity + metadata checks only
+
+Malformed configs **fail hard** with actionable error messages — a broken config never silently falls back to no protection.
+
+See [CONFIG.md](CONFIG.md) for full format reference, CI integration patterns, and examples.
 
 Generate a template:
 ```bash
@@ -409,7 +456,7 @@ Generative checks fire only when a mutation produces an **exact match** to a kno
 
 ## Tests
 
-163 tests. Covers all similarity checks (including scope squatting), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing, all 8 parsers, and report formatting.
+167 tests. Covers all similarity checks (including scope squatting), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing, all 8 parsers, and report formatting.
 
 ```bash
 cargo test
