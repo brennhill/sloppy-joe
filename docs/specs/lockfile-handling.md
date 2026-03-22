@@ -1,369 +1,262 @@
-# Lockfile Handling Spec
+# Lockfile Handling Specification
 
-Date: 2026-03-22
-Status: Draft for implementation
-Owner: `sloppy-joe`
+**Created**: 2026-03-22
+**Status**: Draft for implementation
+**Input**: "Add lockfile support to materially improve version-accurate checks."
 
-## Summary
+## 1. Problem / Why Now
 
-`sloppy-joe` currently parses manifests and checks direct dependencies from the version
-strings found there. That is fast, but it is not always accurate because many manifests
-contain ranges instead of concrete versions. Lockfile support closes that gap by resolving
-direct dependencies to the exact installed version when a supported lockfile is present.
+Manifest-only scanning leaves accuracy on the table.
 
-The design in this document keeps manifest parsing as the source of dependency intent,
-then layers lockfile resolution on top for version-sensitive checks only. This preserves
-current behavior where it is correct, improves accuracy where exact versions are
-available, and avoids guessing when the lockfile is stale, ambiguous, or unsupported.
+`sloppy-joe` already makes the conservative choice when a dependency is declared with a
+range instead of an exact version: it refuses to pretend metadata and OSV results are
+precise. That is correct, but incomplete. When a lockfile is present, the project often
+already has the exact installed version locally. Using that resolved version materially
+improves version-age checks, version-relative metadata checks, and OSV lookups without
+adding network cost.
 
-## Problem
+This spec adds lockfile-aware exact-version resolution while keeping manifest parsing as
+the source of dependency intent.
 
-Manifest-only scanning has a hard accuracy limit:
+## 2. User Scenarios & Testing
 
-- `package.json` can request `^18.2.0`, but the installed version comes from
-  `package-lock.json`.
-- `Cargo.toml` can request `serde = "1"`, but the installed version comes from
-  `Cargo.lock`.
-- Version-age checks, OSV lookups, and release-specific metadata checks are only
-  accurate against an exact resolved version.
+### User Story 1 - npm project gets exact-version checks from lockfile (Priority: P1)
 
-The current tool handles exact manifest pins better than before, but unresolved version
-ranges still produce intentionally conservative results. That is correct, but it leaves
-coverage on the table when a lockfile already exists locally.
+A project declares `react: ^18.2.0` in `package.json` and has a valid
+`package-lock.json`.
 
-## Goals
+**Why this priority**: npm lockfiles are the highest-leverage first target because they
+map direct dependencies to exact installed versions with low ambiguity.
 
-- Improve accuracy for version-sensitive checks without reducing accuracy elsewhere.
-- Prefer local exact versions from lockfiles over manifest ranges when the resolution is
-  trustworthy.
-- Detect and surface stale, missing, ambiguous, or unsupported lockfile states instead of
-  silently guessing.
-- Add no extra network round-trips.
-- Keep the first implementation incremental and easy to verify.
+**Independent test**: A range in `package.json` plus a resolved direct version in
+`package-lock.json` removes unresolved-version blocking and feeds the exact version into
+metadata and OSV checks.
 
-## Non-Goals
+**Acceptance scenarios**:
 
-- Do not scan transitive dependencies in this phase.
-- Do not replace manifest parsing with lockfile parsing.
-- Do not infer exact versions when the lockfile is ambiguous.
-- Do not add Python, Ruby, PHP, JVM, Go, or .NET lockfile support in phase 1.
-- Do not change canonical, similarity, or existence checks unless resolution status makes
-  a correctness issue impossible to ignore.
-
-## Scope
-
-Phase 1 lockfile support covers:
-
-- `Cargo.lock`
-- `package-lock.json`
-- `npm-shrinkwrap.json`
-
-Phase 1 explicitly does not cover:
-
-- `pnpm-lock.yaml`
-- `yarn.lock`
-- `poetry.lock`
-- `uv.lock`
-- `Gemfile.lock`
-- `composer.lock`
-- Gradle or Maven lock data
-
-Those belong in later phases after the Cargo and npm flows are stable.
-
-## Design Principles
-
-- Manifest files remain the source of direct dependency names and policy tiers.
-- Lockfiles only override the exact version used by version-sensitive checks.
-- If the lockfile cannot prove the exact direct dependency version, the scanner must not
-  guess.
-- Accuracy beats convenience: stale or ambiguous lockfile states become explicit issues.
-- Performance remains linear in the number of direct dependencies and requires only local
-  file reads.
-
-## Proposed Architecture
-
-### 1. Keep manifest parsing unchanged
-
-Existing parsers continue to return direct dependencies from the manifest:
-
-- package names
-- requested version strings
-- ecosystem
-
-This preserves the current source of truth for:
-
-- which dependencies are direct
-- internal and allowed package classification
-- canonical and similarity checks
-
-### 2. Add a lockfile resolution layer
-
-Introduce a new module, likely `src/lockfiles/`, that resolves exact versions for direct
-dependencies after manifest parsing and before metadata and OSV checks.
-
-Suggested data structures:
-
-```rust
-pub struct ResolvedVersion {
-    pub version: String,
-    pub source: ResolutionSource,
-}
-
-pub enum ResolutionSource {
-    Lockfile,
-    ManifestExact,
-}
-
-pub enum ResolutionProblem {
-    MissingFromLockfile,
-    LockfileParseFailed,
-    LockfileOutOfSync,
-    AmbiguousVersion,
-    UnsupportedLockfile,
-}
-```
-
-The primary interface should be ecosystem-specific but return a common result:
-
-```rust
-pub struct ResolutionResult {
-    pub exact_versions: HashMap<String, ResolvedVersion>,
-    pub issues: Vec<Issue>,
-}
-```
-
-This lets the rest of the scan pipeline:
-
-- use a resolved exact version when present
-- emit lockfile issues directly into the report
-- retain current conservative behavior when no trusted exact version exists
-
-### 3. Apply resolution only where version accuracy matters
-
-Use resolved versions in:
-
-- metadata fetches
-- version-age checks
-- OSV queries
-- version-specific metadata signals such as dependency explosion and maintainer change
-
-Do not use lockfile resolution to alter:
-
-- dependency identity
-- canonical package rules
-- similarity checks
-- internal or allowed matching
-
-## Resolution Precedence
-
-For each direct dependency:
-
-1. If a supported lockfile resolves an exact direct version and the lockfile appears in
-   sync, use that exact version.
-2. Else if the manifest itself pins an exact version, use the manifest exact version.
-3. Else treat the dependency as unresolved and keep the current conservative issue path.
-
-This keeps the meaning clear:
-
-- manifest exact versions are still useful
-- lockfiles are preferred because they reflect what actually installs
-- range-based manifest entries stay blocked until resolution is concrete
-
-## Cargo.lock Resolution
-
-### Supported input
-
-- Current root `Cargo.toml`
-- Current root `Cargo.lock`
-
-### Strategy
-
-1. Parse direct dependencies from `Cargo.toml` exactly as today.
-2. Parse `Cargo.lock` using the existing `toml` dependency.
-3. Build an index of locked package versions by crate name.
-4. Resolve each direct dependency using the following rules:
-   - one locked version for that name: use it
-   - multiple locked versions and the manifest has an exact `=x.y.z`: use the matching one
-   - multiple locked versions and no exact disambiguator: emit `resolution/ambiguous`
-   - no locked version for a direct manifest dependency: emit `resolution/missing-lockfile-entry`
-
-### Why this design
-
-This is intentionally conservative. `Cargo.lock` does not make direct-dependency
-selection trivial in every case, especially when multiple versions of the same crate are
-present. The tool should only claim an exact version when the lockfile proves it.
-
-### Phase 1 limitation
-
-This phase does not attempt full workspace-root or renamed-dependency graph traversal.
-If a future implementation needs higher Cargo precision, it can add root-package
-dependency graph parsing without changing the public scan model.
-
-## npm Lockfile Resolution
-
-### Supported input
-
-- `package.json`
-- `package-lock.json`
-- `npm-shrinkwrap.json`
-
-### Strategy
-
-Support both common lockfile layouts:
-
-- v2/v3 `packages["node_modules/<name>"].version`
-- v1 `dependencies[<name>].version`
-
-For each direct dependency from `package.json`:
-
-1. Resolve the exact version from the lockfile entry for that direct package.
-2. If the manifest had an exact pin and the lockfile version differs, emit
+1. **Given** `package.json` with `^18.2.0` and `package-lock.json` resolving `18.3.1`,
+   **When** the scan runs, **Then** version-sensitive checks use `18.3.1`.
+2. **Given** an exact pin in `package.json` and a different version in
+   `package-lock.json`, **When** the scan runs, **Then** the scan emits
    `resolution/lockfile-out-of-sync`.
-3. If the lockfile exists but the direct dependency is missing, emit
-   `resolution/missing-lockfile-entry`.
-4. If the lockfile cannot be parsed, emit `resolution/parse-failed`.
 
-### Why this design
+### User Story 2 - Cargo project resolves only when the version is provable (Priority: P1)
 
-npm lockfiles are the most direct path to materially better accuracy because they map
-top-level dependencies to concrete installed versions without any extra network work.
+A Rust project declares direct dependencies in `Cargo.toml` and has a `Cargo.lock`.
 
-## Report Behavior
+**Why this priority**: Cargo gives strong local exact-version data, but direct dependency
+resolution can be ambiguous when multiple locked versions of the same crate exist.
 
-Add lockfile-related issues to the normal report as blocking errors.
+**Independent test**: `Cargo.lock` only overrides a dependency when the exact direct
+version can be proven without guessing.
 
-Proposed check names:
+**Acceptance scenarios**:
+
+1. **Given** exactly one locked version for a direct crate, **When** the scan runs,
+   **Then** that exact version is used.
+2. **Given** multiple locked versions and an exact manifest pin `=1.2.3`,
+   **When** the scan runs, **Then** the matching locked version is used.
+3. **Given** multiple locked versions and no exact disambiguator, **When** the scan
+   runs, **Then** the scan emits `resolution/ambiguous`.
+
+### User Story 3 - Missing or broken lockfiles do not cause silent guessing (Priority: P1)
+
+A project has no supported lockfile, a malformed lockfile, or a stale lockfile.
+
+**Why this priority**: The feature only adds value if it preserves the current
+accuracy-first posture.
+
+**Independent test**: The scanner remains conservative when lockfile resolution is
+missing, broken, or ambiguous.
+
+**Acceptance scenarios**:
+
+1. **Given** no supported lockfile, **When** the scan runs, **Then** the scanner falls
+   back to existing manifest behavior without inventing a resolved version.
+2. **Given** a malformed supported lockfile, **When** the scan runs, **Then** the scan
+   emits `resolution/parse-failed`.
+3. **Given** a lockfile that omits a direct dependency, **When** the scan runs,
+   **Then** the scan emits `resolution/missing-lockfile-entry`.
+
+### Edge Cases
+
+- No supported lockfile is present: preserve current conservative behavior.
+- A supported lockfile is malformed: emit `resolution/parse-failed`.
+- `Cargo.lock` contains multiple versions of the same crate and the direct dependency
+  cannot be proven exactly: emit `resolution/ambiguous`.
+- Manifest exact pin conflicts with resolved lockfile version: emit
+  `resolution/lockfile-out-of-sync`.
+- A supported lockfile exists but the direct dependency is absent from it: emit
+  `resolution/missing-lockfile-entry`.
+
+## 3. Requirements
+
+### Functional Requirements
+
+- **FR-001**: The system MUST keep manifest parsing as the source of direct dependency
+  names, ecosystems, and policy classification.
+- **FR-002**: The system MUST add a lockfile resolution layer after manifest parsing and
+  before version-sensitive checks.
+- **FR-003**: The system MUST prefer a trusted resolved lockfile version over a manifest
+  range for metadata and OSV checks.
+- **FR-004**: The system MUST fall back to a manifest exact version when no trusted
+  lockfile result exists.
+- **FR-005**: The system MUST leave a dependency unresolved when neither a trusted
+  lockfile version nor a manifest exact version exists.
+- **FR-006**: Phase 1 MUST support `package-lock.json` and `npm-shrinkwrap.json`.
+- **FR-007**: Phase 1 MUST support `Cargo.lock`.
+- **FR-008**: The system MUST emit blocking resolution issues when lockfile state makes
+  exact-version-sensitive checks untrustworthy.
+- **FR-009**: The system MUST use resolved versions only for version-sensitive checks.
+- **FR-010**: The system MUST NOT use lockfile resolution to alter canonical, similarity,
+  `internal`, or `allowed` classification.
+- **FR-011**: The system MUST avoid any additional network requests for lockfile
+  resolution.
+- **FR-012**: The system MUST keep phase 1 scoped to direct dependencies only.
+- **FR-013**: The spec MUST include context anchors to the integration points in
+  `src/lib.rs`, metadata checks, and malicious checks.
+- **FR-014**: The spec MUST include input contracts for each supported lockfile.
+- **FR-015**: The spec MUST include output contracts for `resolution/*` issues.
+- **FR-016**: The spec MUST describe side effects on metadata and OSV lookups once a
+  dependency is resolved.
+- **FR-017**: The spec MUST describe the state transition from unresolved dependency to
+  trusted resolved version.
+- **FR-018**: The spec MUST describe parse-failure and ambiguity states explicitly rather
+  than implying fallback guessing.
+
+#### Resolution precedence
+
+1. Use a supported, trusted lockfile exact version when available.
+2. Else use a manifest exact version when available.
+3. Else keep the dependency unresolved and preserve current conservative behavior.
+
+#### Phase 1 supported lockfiles
+
+- `package-lock.json`
+- `npm-shrinkwrap.json`
+- `Cargo.lock`
+
+#### Proposed resolution issue keys
 
 - `resolution/missing-lockfile-entry`
 - `resolution/lockfile-out-of-sync`
 - `resolution/ambiguous`
 - `resolution/parse-failed`
 
-These are blocking because they mean the scanner cannot honestly claim exact
-version-sensitive results for that dependency.
+#### Cargo.lock strategy
 
-## Scan Flow Changes
+- Parse direct dependencies from `Cargo.toml` exactly as today.
+- Parse `Cargo.lock` with the existing `toml` dependency.
+- Index locked package versions by crate name.
+- Resolve exact direct versions conservatively:
+  - one locked version for that name: use it
+  - multiple locked versions and exact manifest pin: use the matching one
+  - multiple locked versions without proof: emit `resolution/ambiguous`
+  - missing locked version for a direct dependency: emit
+    `resolution/missing-lockfile-entry`
 
-Current:
+#### npm lockfile strategy
 
-1. Parse manifest dependencies
-2. Classify internal and allowed packages
-3. Run checks
+- Support v2/v3 `packages["node_modules/<name>"].version`.
+- Support v1 `dependencies[<name>].version`.
+- Resolve direct dependencies from `package.json`.
+- Emit `resolution/lockfile-out-of-sync` when manifest exact pin and lockfile exact
+  version disagree.
 
-Proposed:
+### Scoring Rubric — Machine Usability
 
-1. Parse manifest dependencies
-2. Attempt ecosystem-specific direct lockfile resolution
-3. Attach resolution issues to the report
-4. Use resolved exact versions for metadata and OSV checks
-5. Fall back to manifest exact versions where no lockfile result exists
-6. Keep unresolved-version issues only for dependencies with no trusted exact version
+If this spec is graded with the UPFRONT rubric, the machine-usable sections are:
 
-## Integration Strategy
+| Section | What an AI or reviewer uses it for | Weight |
+| --- | --- | --- |
+| Acceptance scenarios | Derive resolver and fallback tests | High |
+| Edge cases | Prevent hidden ambiguity or stale-lockfile drift | High |
+| Functional requirements | Anchor the lockfile contract | High |
+| Resolution strategies | Constrain resolver behavior | High |
+| Architectural boundaries | Prevent feature creep into unrelated checks | Medium |
+| Key entities | Stabilize types and terminology | Medium |
 
-The smallest-churn integration is:
+Human-useful but weaker for implementation scoring:
 
-- keep `Dependency` as the manifest model
-- add a `ResolutionResult`
-- thread `exact_versions: HashMap<String, ResolvedVersion>` into metadata and malicious
-  checks
+| Section | Why it is weaker for implementation |
+| --- | --- |
+| Status metadata | Context only |
+| General motivation | Useful framing, not executable behavior |
 
-That avoids rewriting all parsers and keeps this feature isolated to:
+### Key Entities
 
-- scan orchestration
-- new lockfile module
-- version-sensitive checks
+- **ResolvedVersion**: Exact version chosen for a dependency, plus its source.
+- **ResolutionSource**: `Lockfile` or `ManifestExact`.
+- **ResolutionResult**: Resolved versions plus emitted resolution issues.
+- **ResolutionProblem**: Parse failure, missing entry, ambiguity, or out-of-sync state.
+- **Dependency**: Existing manifest-derived direct dependency record.
 
-## Failure Handling
+## 4. Non-Negotiable Constraints
 
-### Missing lockfile
+- The system must not guess exact versions from ambiguous lockfile state.
+- The system must not weaken current accuracy to improve apparent coverage.
+- The feature must not add network round-trips.
+- Phase 1 must stay reviewable and incremental.
+- Accepted changes should stay within human-reviewable slices rather than one giant patch.
 
-If no supported lockfile exists, do not emit an issue. Fall back to current behavior.
+## 5. Out of Scope
 
-### Parse failure
+- Transitive dependency scanning.
+- Replacing manifest parsing with lockfile parsing.
+- `pnpm-lock.yaml`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Gemfile.lock`,
+  `composer.lock`, Gradle lockfiles, and Maven resolved graphs in phase 1.
+- Full Cargo workspace graph traversal and renamed-dependency resolution in phase 1.
+- Changing canonical, similarity, existence, `internal`, or `allowed` semantics.
 
-If a supported lockfile exists but cannot be parsed, emit a blocking resolution issue and
-fall back to conservative manifest-only handling for affected dependencies.
+## 6. Architectural Boundaries
 
-### Stale lockfile
+### Data sources
 
-If the manifest exact pin conflicts with the lockfile exact version, emit a blocking
-resolution issue and do not pretend the result is trustworthy.
+- Existing manifest parsers in `src/parsers/`
+- `package-lock.json`
+- `npm-shrinkwrap.json`
+- `Cargo.lock`
 
-### Ambiguous Cargo resolution
+### Modules
 
-If multiple locked versions exist and the direct dependency cannot be proven exactly,
-emit a blocking resolution issue instead of guessing.
+- New `src/lockfiles/` module for resolver logic and types
+- `src/lib.rs` for orchestration
+- `src/checks/metadata.rs` for version-sensitive metadata checks
+- `src/checks/malicious.rs` for exact-version OSV checks
 
-## Testing Plan
+### Dependencies
 
-### Unit tests
+- Existing `toml` dependency for `Cargo.lock`
+- Existing JSON parsing stack for npm lockfiles
+- Existing `Dependency` model and report model
 
-- Cargo resolver returns exact version when only one locked version exists
-- Cargo resolver chooses the exact manifest match when multiple locked versions exist
-- Cargo resolver emits ambiguity when multiple locked versions exist and no exact match is
-  provable
-- npm resolver reads v2/v3 `packages` entries
-- npm resolver reads v1 `dependencies` entries
-- lockfile parse failures emit resolution issues
+### Outputs
 
-### Integration tests
+- Trusted exact versions for version-sensitive checks
+- Blocking `resolution/*` issues when lockfile state is not trustworthy
+- Preserved unresolved-version behavior when no trusted exact version exists
 
-- exact manifest range plus lockfile exact version removes unresolved-version issues
-- metadata fetch receives the resolved lockfile version
-- OSV fetch receives the resolved lockfile version
-- stale lockfile produces a blocking resolution issue
-- missing lockfile preserves current manifest-only behavior
+### Integration strategy
 
-## Performance Expectations
+- Keep `Dependency` as the manifest model.
+- Thread `ResolutionResult` into scan orchestration.
+- Use resolved exact versions only in metadata and malicious checks.
+- Preserve current name-based and policy-based checks unchanged.
 
-- one additional local file read per supported ecosystem
-- no new network requests
-- no new runtime dependencies for phase 1
-- lockfile parsing should be negligible relative to registry and OSV requests
+## 7. Out of Scope for Scoring
 
-## Rollout Plan
+These are useful to humans, but not central to machine-usability scoring for this spec:
 
-### Slice 1
+- Release sequencing beyond phase 1
+- Long-term ecosystem expansion order
+- Product positioning for lockfile support
 
-- add lockfile resolution module and types
-- implement `package-lock.json` and `npm-shrinkwrap.json`
-- wire resolution into metadata and OSV checks
+## 8. Spec Quality Self-Assessment
 
-### Slice 2
-
-- implement `Cargo.lock`
-- add ambiguity and out-of-sync reporting
-
-### Slice 3
-
-- add integration tests covering fallback and error paths
-- document lockfile-aware behavior in `README.md`
-
-## Change Sizing
-
-This is not greenfield work. The codebase already exists, so implementation should be
-split into accepted changes that stay reviewable by humans.
-
-Use the repo’s accepted-change guidance:
-
-- maximize leverage of human attention
-- keep individual implementation slices between roughly 1 and 400 LOC where practical
-- do not treat a large multi-thousand-line patch as one reviewable change
-
-Large initial builds are different. This feature is not an initial build, so it should be
-delivered as small reviewable increments after this spec.
-
-## Future Work
-
-After phase 1 is stable, add:
-
-- `pnpm-lock.yaml`
-- `yarn.lock`
-- Python lockfiles such as `poetry.lock` and `uv.lock`
-- `composer.lock`
-- `Gemfile.lock`
-
-Future phases can also consider scanning resolved transitive dependencies, but that is a
-separate product decision and should not be mixed into direct-dependency lockfile
-resolution.
+- **Completeness**: High. Supported inputs, precedence, failure modes, and integration
+  points are all captured.
+- **Ambiguity**: Low. The spec explicitly says when to resolve, when to fall back, and
+  when to refuse to guess.
+- **Consistency**: High. The design preserves the current accuracy-first behavior of
+  unresolved-version checks.
+- **Testability**: High. Each resolution path maps to direct unit or integration cases.
