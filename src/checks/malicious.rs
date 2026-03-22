@@ -1,3 +1,4 @@
+use crate::lockfiles::ResolutionResult;
 use crate::Dependency;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
@@ -231,9 +232,10 @@ impl OsvClient for RealOsvClient {
 pub async fn check_malicious(
     osv_client: &dyn OsvClient,
     deps: &[Dependency],
+    resolution: &ResolutionResult,
 ) -> Result<Vec<Issue>> {
     let cache_path = default_cache_file();
-    check_malicious_with_cache(osv_client, deps, Some(cache_path.as_path())).await
+    check_malicious_with_cache(osv_client, deps, resolution, Some(cache_path.as_path())).await
 }
 
 /// Check all dependencies against the OSV vulnerability database.
@@ -241,6 +243,7 @@ pub async fn check_malicious(
 pub async fn check_malicious_with_cache(
     osv_client: &dyn OsvClient,
     deps: &[Dependency],
+    resolution: &ResolutionResult,
     cache_path: Option<&Path>,
 ) -> Result<Vec<Issue>> {
     // Load disk cache if fresh
@@ -256,7 +259,7 @@ pub async fn check_malicious_with_cache(
     let mut pending = HashMap::new();
 
     for dep in deps {
-        if dep.has_unresolved_version() {
+        if resolution.is_unresolved(dep) {
             issues.push(Issue {
                 package: dep.name.clone(),
                 check: "malicious/unresolved-version".to_string(),
@@ -273,7 +276,7 @@ pub async fn check_malicious_with_cache(
             continue;
         }
 
-        let exact_version = dep.exact_version();
+        let exact_version = resolution.exact_version(dep).map(str::to_string);
         let version_suffix = exact_version.clone().unwrap_or_default();
         let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
         if !cache.contains_key(&cache_key) {
@@ -299,11 +302,11 @@ pub async fn check_malicious_with_cache(
     }
 
     for dep in deps {
-        if dep.has_unresolved_version() {
+        if resolution.is_unresolved(dep) {
             continue;
         }
 
-        let version_suffix = dep.exact_version().unwrap_or_default();
+        let version_suffix = resolution.exact_version(dep).unwrap_or_default();
         let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
         let vuln_ids = cache
             .get(&cache_key)
@@ -384,7 +387,7 @@ mod tests {
         let client = MockOsvClient { responses };
 
         let deps = vec![dep("event-stream")];
-        let issues = check_malicious_with_cache(&client, &deps, None)
+        let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
 
@@ -402,7 +405,7 @@ mod tests {
         };
 
         let deps = vec![dep("react")];
-        let issues = check_malicious_with_cache(&client, &deps, None)
+        let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
 
@@ -443,7 +446,7 @@ mod tests {
 
         // Two identical deps — second should use in-memory cache
         let deps = vec![dep("some-pkg"), dep("some-pkg")];
-        let issues = check_malicious_with_cache(&client, &deps, None)
+        let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
 
@@ -459,7 +462,7 @@ mod tests {
         };
 
         let deps = vec![dep_with_version("react", "^18.0.0")];
-        let issues = check_malicious_with_cache(&client, &deps, None)
+        let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
 
@@ -488,7 +491,7 @@ mod tests {
 
         let deps = vec![dep("a"), dep("b"), dep("c"), dep("d")];
         let start = Instant::now();
-        let issues = check_malicious_with_cache(&SlowClient, &deps, None)
+        let issues = check_malicious_with_cache(&SlowClient, &deps, &ResolutionResult::default(), None)
             .await
             .unwrap();
         let elapsed = start.elapsed();
@@ -531,7 +534,7 @@ mod tests {
             responses: HashMap::new(),
         };
         let cache_path = dir.join("osv-cache.json");
-        let issues = check_malicious_with_cache(&client, &[dep("react")], Some(&cache_path))
+        let issues = check_malicious_with_cache(&client, &[dep("react")], &ResolutionResult::default(), Some(&cache_path))
             .await
             .unwrap();
         assert!(issues.is_empty());

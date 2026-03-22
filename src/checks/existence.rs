@@ -6,7 +6,7 @@ use anyhow::Result;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 
-fn registry_url(ecosystem: &str, name: &str) -> String {
+pub(crate) fn registry_url(ecosystem: &str, name: &str) -> String {
     match ecosystem {
         "npm" => format!("https://www.npmjs.com/package/{}", name),
         "pypi" => format!("https://pypi.org/project/{}/", name),

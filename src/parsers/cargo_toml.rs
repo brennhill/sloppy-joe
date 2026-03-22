@@ -12,15 +12,19 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = parsed.get(section).and_then(|v| v.as_table()) {
             for (name, value) in table {
-                let version = match value {
-                    toml::Value::String(v) => Some(v.clone()),
-                    toml::Value::Table(t) => {
-                        t.get("version").and_then(|v| v.as_str()).map(String::from)
-                    }
-                    _ => None,
+                let (package_name, version) = match value {
+                    toml::Value::String(v) => (name.clone(), Some(v.clone())),
+                    toml::Value::Table(t) => (
+                        t.get("package")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                            .unwrap_or_else(|| name.clone()),
+                        t.get("version").and_then(|v| v.as_str()).map(String::from),
+                    ),
+                    _ => (name.clone(), None),
                 };
                 deps.push(Dependency {
-                    name: name.clone(),
+                    name: package_name,
                     version,
                     ecosystem: "cargo".to_string(),
                 });
@@ -120,6 +124,25 @@ tokio-test = "0.4"
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "tokio-test");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_renamed_dependency_uses_package_name() {
+        let dir = setup_dir(
+            r#"
+[package]
+name = "test"
+version = "0.1.0"
+
+[dependencies]
+serde1 = { package = "serde", version = "1.0" }
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "serde");
+        assert_eq!(deps[0].version, Some("1.0".to_string()));
         cleanup(&dir);
     }
 }

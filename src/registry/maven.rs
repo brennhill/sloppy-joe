@@ -20,16 +20,36 @@ impl Default for MavenRegistry {
 }
 
 fn search_url(group: &str, artifact: &str, version: Option<&str>) -> String {
+    let mut url = reqwest::Url::parse("https://search.maven.org/solrsearch/select")
+        .expect("static Maven URL should parse");
+    url.query_pairs_mut()
+        .append_pair("q", &search_query(group, artifact, version))
+        .append_pair("rows", "1")
+        .append_pair("wt", "json");
+    url.into()
+}
+
+fn search_query(group: &str, artifact: &str, version: Option<&str>) -> String {
+    let group = escape_solr_term(group);
+    let artifact = escape_solr_term(artifact);
     match version {
         Some(version) => format!(
-            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22+AND+v:%22{}%22&rows=1&wt=json",
-            group, artifact, version
+            r#"g:"{}"+AND+a:"{}"+AND+v:"{}""#,
+            group,
+            artifact,
+            escape_solr_term(version)
         ),
-        None => format!(
-            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22&rows=1&wt=json",
-            group, artifact
-        ),
+        None => format!(r#"g:"{}"+AND+a:"{}""#, group, artifact),
     }
+}
+
+fn escape_solr_term(term: &str) -> String {
+    term.chars()
+        .flat_map(|ch| match ch {
+            '\\' | '"' => ['\\', ch].into_iter().collect::<Vec<_>>(),
+            _ => [ch].into_iter().collect::<Vec<_>>(),
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -166,8 +186,21 @@ mod tests {
     #[test]
     fn search_url_includes_exact_version_when_requested() {
         let url = search_url("com.example", "demo", Some("1.2.3"));
-        assert!(url.contains("g:%22com.example%22"));
-        assert!(url.contains("a:%22demo%22"));
-        assert!(url.contains("v:%221.2.3%22"));
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let query = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "q")
+            .map(|(_, value)| value.into_owned())
+            .unwrap();
+        assert_eq!(query, r#"g:"com.example"+AND+a:"demo"+AND+v:"1.2.3""#);
+    }
+
+    #[test]
+    fn search_query_escapes_embedded_quotes_and_backslashes() {
+        let query = search_query(r#"com.example\"group"#, r#"demo"artifact"#, Some(r#"1.2\"3"#));
+        assert_eq!(
+            query,
+            r#"g:"com.example\\\"group"+AND+a:"demo\"artifact"+AND+v:"1.2\\\"3""#
+        );
     }
 }

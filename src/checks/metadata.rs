@@ -1,5 +1,6 @@
 use crate::Dependency;
 use crate::config::SloppyJoeConfig;
+use crate::lockfiles::ResolutionResult;
 use crate::registry::{PackageMetadata, Registry};
 use crate::report::{Issue, Severity};
 use anyhow::Result;
@@ -69,7 +70,9 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64) -> i64 {
 #[derive(Debug, Clone)]
 pub(crate) struct MetadataLookup {
     pub package: String,
+    pub ecosystem: String,
     pub version: Option<String>,
+    pub resolved_version: Option<String>,
     pub unresolved_version: bool,
     pub metadata: Option<PackageMetadata>,
 }
@@ -77,20 +80,24 @@ pub(crate) struct MetadataLookup {
 pub(crate) async fn fetch_metadata(
     registry: &dyn Registry,
     deps: &[Dependency],
+    resolution: &ResolutionResult,
 ) -> Result<Vec<MetadataLookup>> {
     stream::iter(deps)
         .map(|dep| {
             let package = dep.name.clone();
+            let ecosystem = dep.ecosystem.clone();
             let version = dep.version.clone();
-            let exact_version = dep.exact_version();
-            let unresolved_version = dep.has_unresolved_version();
+            let exact_version = resolution.exact_version(dep).map(str::to_string);
+            let unresolved_version = resolution.is_unresolved(dep);
             async move {
                 let metadata = registry
                     .metadata(&package, exact_version.as_deref())
                     .await?;
                 Ok::<_, anyhow::Error>(MetadataLookup {
                     package,
+                    ecosystem,
                     version,
+                    resolved_version: exact_version,
                     unresolved_version,
                     metadata,
                 })
@@ -111,7 +118,9 @@ pub(crate) fn issues_from_lookups(
 
     for lookup in lookups {
         let name = &lookup.package;
+        let ecosystem = &lookup.ecosystem;
         let version = &lookup.version;
+        let resolved_version = &lookup.resolved_version;
         let unresolved_version = lookup.unresolved_version;
 
         if unresolved_version {
@@ -142,7 +151,7 @@ pub(crate) fn issues_from_lookups(
             && let Some(age_hours) = age_in_hours(date)
             && age_hours < min_age
         {
-            let version_label = if let Some(v) = version {
+            let version_label = if let Some(v) = resolved_version.as_ref().or(version.as_ref()) {
                 format!("Version '{}' of '{}'", v, name)
             } else {
                 format!("The latest version of '{}'", name)
@@ -183,7 +192,7 @@ pub(crate) fn issues_from_lookups(
                     name
                 ),
                 suggestion: None,
-                registry_url: Some(format!("https://www.npmjs.com/package/{}", name)),
+                registry_url: Some(crate::checks::existence::registry_url(ecosystem, name)),
             });
         }
 
@@ -301,8 +310,9 @@ pub async fn check_metadata(
     deps: &[Dependency],
     config: &SloppyJoeConfig,
     similarity_flagged: &HashSet<String>,
+    resolution: &ResolutionResult,
 ) -> Result<Vec<Issue>> {
-    let lookups = fetch_metadata(registry, deps).await?;
+    let lookups = fetch_metadata(registry, deps, resolution).await?;
     Ok(issues_from_lookups(&lookups, config, similarity_flagged))
 }
 
@@ -372,6 +382,10 @@ mod tests {
         HashSet::new()
     }
 
+    fn no_resolution() -> ResolutionResult {
+        ResolutionResult::default()
+    }
+
     #[test]
     fn age_in_hours_parses_iso8601() {
         // A date far in the past should return a large number
@@ -398,7 +412,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let age_issues: Vec<_> = issues
@@ -415,7 +429,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let age_issues: Vec<_> = issues
@@ -437,7 +451,7 @@ mod tests {
         };
         let deps = vec![dep("brand-new-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let new_pkg: Vec<_> = issues
@@ -445,6 +459,33 @@ mod tests {
             .filter(|i| i.check.contains("new-package"))
             .collect();
         assert!(!new_pkg.is_empty());
+    }
+
+    #[test]
+    fn new_package_uses_ecosystem_registry_url() {
+        let now = chrono_free_now();
+        let lookups = vec![MetadataLookup {
+            package: "requests".to_string(),
+            ecosystem: "pypi".to_string(),
+            version: None,
+            resolved_version: None,
+            unresolved_version: false,
+            metadata: Some(PackageMetadata {
+                created: Some(now.clone()),
+                latest_version_date: Some(now),
+                ..default_meta()
+            }),
+        }];
+
+        let issues = issues_from_lookups(&lookups, &config_with_age(72), &empty_similarity());
+        let issue = issues
+            .iter()
+            .find(|issue| issue.check == "metadata/new-package")
+            .unwrap();
+        assert_eq!(
+            issue.registry_url.as_deref(),
+            Some("https://pypi.org/project/requests/")
+        );
     }
 
     #[tokio::test]
@@ -457,7 +498,7 @@ mod tests {
         };
         let deps = vec![dep("obscure-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let dl_issues: Vec<_> = issues
@@ -477,7 +518,7 @@ mod tests {
         };
         let deps = vec![dep("popular-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         assert!(issues.is_empty());
@@ -496,7 +537,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(0);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         assert!(!issues.iter().any(|i| i.check == "metadata/version-age"));
@@ -511,7 +552,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         assert!(issues.is_empty());
@@ -542,7 +583,7 @@ mod tests {
 
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let err = check_metadata(&ErrorRegistry, &deps, &config, &empty_similarity())
+        let err = check_metadata(&ErrorRegistry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("metadata unavailable"));
@@ -559,7 +600,7 @@ mod tests {
         };
         let deps = vec![dep_with_version("some-pkg", "^1.2.3")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         assert!(
@@ -583,7 +624,7 @@ mod tests {
         };
         let deps = vec![dep("expresz")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let script_issues: Vec<_> = issues
@@ -608,7 +649,7 @@ mod tests {
         };
         let deps = vec![dep("new-pkg-with-scripts")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let script_issues: Vec<_> = issues
@@ -629,7 +670,7 @@ mod tests {
         };
         let deps = vec![dep("well-known-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let script_issues: Vec<_> = issues
@@ -650,7 +691,7 @@ mod tests {
         };
         let deps = vec![dep("low-dl-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let script_issues: Vec<_> = issues
@@ -673,7 +714,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let explosion: Vec<_> = issues
@@ -696,7 +737,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let explosion: Vec<_> = issues
@@ -717,7 +758,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let explosion: Vec<_> = issues
@@ -740,7 +781,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let mc: Vec<_> = issues
@@ -763,7 +804,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let mc: Vec<_> = issues
@@ -780,7 +821,7 @@ mod tests {
         };
         let deps = vec![dep("some-pkg")];
         let config = config_with_age(72);
-        let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
+        let issues = check_metadata(&registry, &deps, &config, &empty_similarity(), &no_resolution())
             .await
             .unwrap();
         let mc: Vec<_> = issues

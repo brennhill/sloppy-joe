@@ -2,6 +2,7 @@
 
 pub mod checks;
 pub mod config;
+pub mod lockfiles;
 pub mod parsers;
 pub mod registry;
 pub mod report;
@@ -68,6 +69,17 @@ async fn scan_with_services(
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
 ) -> Result<ScanReport> {
+    scan_with_services_inner(project_dir, project_type, config, registry, osv_client, false).await
+}
+
+async fn scan_with_services_inner(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config: config::SloppyJoeConfig,
+    registry: &dyn Registry,
+    osv_client: &dyn OsvClient,
+    disable_osv_disk_cache: bool,
+) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
 
     if deps.is_empty() {
@@ -121,6 +133,8 @@ async fn scan_with_services(
         .cloned()
         .collect();
     let canonical_results = checks::canonical::check_canonical(&non_internal, &config, &ecosystem);
+    let resolution = lockfiles::resolve_versions(project_dir, &non_internal)?;
+    let resolution_issues = resolution.issues.clone();
 
     let supports_metadata_registry = matches!(
         ecosystem.as_str(),
@@ -128,25 +142,46 @@ async fn scan_with_services(
     );
 
     let (existence_results, metadata_results) = if supports_metadata_registry {
-        let lookups = checks::metadata::fetch_metadata(registry, &non_internal).await?;
+        let lookups = checks::metadata::fetch_metadata(registry, &non_internal, &resolution).await?;
+        let mut metadata_results = resolution_issues;
+        metadata_results.extend(checks::metadata::issues_from_lookups(
+            &lookups,
+            &config,
+            &similarity_flagged,
+        ));
         (
             checks::existence::check_existence_from_metadata(
                 &ecosystem,
                 &checkable_owned,
                 &lookups,
             ),
-            checks::metadata::issues_from_lookups(&lookups, &config, &similarity_flagged),
+            metadata_results,
         )
     } else {
+        let mut metadata_results = resolution_issues;
+        metadata_results.extend(
+            checks::metadata::check_metadata(
+                registry,
+                &non_internal,
+                &config,
+                &similarity_flagged,
+                &resolution,
+            )
+            .await?,
+        );
         (
             checks::existence::check_existence(registry, &checkable_owned).await?,
-            checks::metadata::check_metadata(registry, &non_internal, &config, &similarity_flagged)
-                .await?,
+            metadata_results,
         )
     };
 
     // Malicious/vulnerability check runs on all non-internal deps
-    let malicious_results = checks::malicious::check_malicious(osv_client, &non_internal).await?;
+    let malicious_results = if disable_osv_disk_cache {
+        checks::malicious::check_malicious_with_cache(osv_client, &non_internal, &resolution, None)
+            .await?
+    } else {
+        checks::malicious::check_malicious(osv_client, &non_internal, &resolution).await?
+    };
 
     Ok(ScanReport::new(
         deps.len(),
@@ -183,6 +218,7 @@ mod tests {
     use super::*;
     use crate::registry::PackageMetadata;
     use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -234,6 +270,85 @@ mod tests {
         ) -> Result<Vec<String>> {
             Ok(vec![])
         }
+    }
+
+    struct RecordingRegistry {
+        existing: Vec<String>,
+        versions: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl Registry for RecordingRegistry {
+        async fn exists(&self, package_name: &str) -> Result<bool> {
+            Ok(self.existing.iter().any(|name| name == package_name))
+        }
+
+        async fn metadata(
+            &self,
+            package_name: &str,
+            version: Option<&str>,
+        ) -> Result<Option<PackageMetadata>> {
+            self.versions
+                .lock()
+                .unwrap()
+                .push(version.map(str::to_string));
+            if self.existing.iter().any(|name| name == package_name) {
+                Ok(Some(PackageMetadata {
+                    created: Some("2020-01-01T00:00:00Z".to_string()),
+                    latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
+                    downloads: Some(50000),
+                    has_install_scripts: false,
+                    dependency_count: None,
+                    previous_dependency_count: None,
+                    current_publisher: None,
+                    previous_publisher: None,
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+
+    struct RecordingOsvClient {
+        versions: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl OsvClient for RecordingOsvClient {
+        async fn query(
+            &self,
+            _name: &str,
+            _ecosystem: &str,
+            version: Option<&str>,
+        ) -> Result<Vec<String>> {
+            self.versions
+                .lock()
+                .unwrap()
+                .push(version.map(str::to_string));
+            Ok(vec![])
+        }
+    }
+
+    async fn scan_with_services_no_osv_cache(
+        project_dir: &std::path::Path,
+        project_type: Option<&str>,
+        config: config::SloppyJoeConfig,
+        registry: &dyn Registry,
+        osv_client: &dyn OsvClient,
+    ) -> Result<ScanReport> {
+        scan_with_services_inner(
+            project_dir,
+            project_type,
+            config,
+            registry,
+            osv_client,
+            true,
+        )
+        .await
     }
 
     fn unique_dir() -> std::path::PathBuf {
@@ -377,6 +492,132 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("outside the project directory"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scan_uses_npm_lockfile_version_for_metadata_and_osv() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "^18.2.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{
+              "name": "demo",
+              "lockfileVersion": 3,
+              "packages": {
+                "": {"name": "demo", "dependencies": {"react": "^18.2.0"}},
+                "node_modules/react": {"version": "18.3.1"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+        let osv_versions = Arc::new(Mutex::new(Vec::new()));
+        let registry = RecordingRegistry {
+            existing: vec!["react".to_string()],
+            versions: metadata_versions.clone(),
+        };
+        let osv = RecordingOsvClient {
+            versions: osv_versions.clone(),
+        };
+
+        let report =
+            scan_with_services_no_osv_cache(&dir, Some("npm"), Default::default(), &registry, &osv)
+                .await
+                .unwrap();
+
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "metadata/unresolved-version")
+        );
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "malicious/unresolved-version")
+        );
+        assert_eq!(
+            metadata_versions.lock().unwrap().as_slice(),
+            &[Some("18.3.1".to_string())]
+        );
+        assert_eq!(
+            osv_versions.lock().unwrap().as_slice(),
+            &[Some("18.3.1".to_string())]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scan_reports_out_of_sync_lockfile_state() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "18.2.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{
+              "name": "demo",
+              "lockfileVersion": 3,
+              "packages": {
+                "": {"name": "demo", "dependencies": {"react": "18.2.0"}},
+                "node_modules/react": {"version": "18.3.1"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+        let osv_versions = Arc::new(Mutex::new(Vec::new()));
+        let registry = RecordingRegistry {
+            existing: vec!["react".to_string()],
+            versions: metadata_versions.clone(),
+        };
+        let osv = RecordingOsvClient {
+            versions: osv_versions.clone(),
+        };
+
+        let report =
+            scan_with_services_no_osv_cache(&dir, Some("npm"), Default::default(), &registry, &osv)
+                .await
+                .unwrap();
+
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "resolution/lockfile-out-of-sync")
+        );
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "metadata/unresolved-version")
+        );
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "malicious/unresolved-version")
+        );
+        assert_eq!(
+            metadata_versions.lock().unwrap().as_slice(),
+            &[Some("18.2.0".to_string())]
+        );
+        assert_eq!(
+            osv_versions.lock().unwrap().as_slice(),
+            &[Some("18.2.0".to_string())]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -17,11 +17,11 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
         // Parse "package==version", "package>=version", "package~=version", or just "package"
         let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!']) {
-            let name = &line[..pos];
+            let name = normalize_distribution_name(&line[..pos]);
             let version_part = line[pos..].trim();
-            (name.to_string(), Some(version_part.to_string()))
+            (name, Some(version_part.to_string()))
         } else {
-            (line.to_string(), None)
+            (normalize_distribution_name(line), None)
         };
 
         if !name.is_empty() {
@@ -34,6 +34,15 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(deps)
+}
+
+fn normalize_distribution_name(raw: &str) -> String {
+    raw.trim()
+        .split('[')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -101,6 +110,16 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "requests");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn strip_extras_from_distribution_name() {
+        let dir = setup_dir("requests[socks]==2.28.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "requests");
+        assert_eq!(deps[0].version, Some("==2.28.0".to_string()));
         cleanup(&dir);
     }
 }
