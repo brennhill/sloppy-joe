@@ -33,9 +33,33 @@ fn now_nanos() -> u128 {
 }
 
 fn default_cache_file() -> std::path::PathBuf {
+    user_cache_dir().join("sloppy-joe").join("osv-cache.json")
+}
+
+fn user_cache_dir() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
+        return path.into();
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return Path::new(&home).join("Library").join("Caches");
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(path) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
+        return path.into();
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return Path::new(&home).join(".cache");
+    }
     std::env::temp_dir()
-        .join("sloppy-joe")
-        .join("osv-cache.json")
+}
+
+fn cache_tmp_path(path: &Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("tmp-{}-{}-{}", std::process::id(), now_nanos(), id))
 }
 
 fn ensure_safe_cache_path(path: &Path) -> Result<()> {
@@ -51,7 +75,9 @@ fn ensure_safe_cache_path(path: &Path) -> Result<()> {
 }
 
 fn load_disk_cache(path: &Path) -> Result<Option<DiskCache>> {
-    ensure_safe_cache_path(path)?;
+    if ensure_safe_cache_path(path).is_err() {
+        return Ok(None);
+    }
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(_) => return Ok(None),
@@ -69,25 +95,45 @@ fn load_disk_cache(path: &Path) -> Result<Option<DiskCache>> {
 }
 
 fn save_disk_cache(path: &Path, entries: &HashMap<String, CacheEntry>) -> Result<()> {
-    ensure_safe_cache_path(path)?;
+    if ensure_safe_cache_path(path).is_err() {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        if std::fs::create_dir_all(parent).is_err() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let Ok(metadata) = std::fs::metadata(parent) else {
+                return Ok(());
+            };
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o700);
+            let _ = std::fs::set_permissions(parent, perms);
+        }
     }
     let cache = DiskCache {
         timestamp: now_epoch(),
         entries: entries.clone(),
     };
-    let json = serde_json::to_string(&cache)?;
-    let tmp_path = path.with_extension(format!("tmp-{}-{}", std::process::id(), now_nanos()));
-    std::fs::write(&tmp_path, json)?;
+    let Ok(json) = serde_json::to_string(&cache) else {
+        return Ok(());
+    };
+    let tmp_path = cache_tmp_path(path);
+    if std::fs::write(&tmp_path, json).is_err() {
+        return Ok(());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tmp_path)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(&tmp_path, perms)?;
+        if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&tmp_path, perms);
+        }
     }
-    std::fs::rename(&tmp_path, path)?;
+    let _ = std::fs::rename(&tmp_path, path);
     Ok(())
 }
 
@@ -459,6 +505,40 @@ mod tests {
     fn default_cache_path_uses_user_cache_directory() {
         let path = default_cache_file();
         assert!(path.ends_with("sloppy-joe/osv-cache.json"));
-        assert!(!path.starts_with("/tmp/sloppy-joe-osv-cache.json"));
+        assert!(path.starts_with(user_cache_dir()));
+    }
+
+    #[test]
+    fn cache_tmp_path_is_unique_per_call() {
+        let base = Path::new("/tmp/sloppy-joe-test-cache.json");
+        let first = cache_tmp_path(base);
+        let second = cache_tmp_path(base);
+        assert_ne!(first, second);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unwritable_cache_path_is_ignored() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("sj-cache-ro-{}", now_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        let client = MockOsvClient {
+            responses: HashMap::new(),
+        };
+        let cache_path = dir.join("osv-cache.json");
+        let issues = check_malicious_with_cache(&client, &[dep("react")], Some(&cache_path))
+            .await
+            .unwrap();
+        assert!(issues.is_empty());
+
+        let mut cleanup_perms = std::fs::metadata(&dir).unwrap().permissions();
+        cleanup_perms.set_mode(0o700);
+        let _ = std::fs::set_permissions(&dir, cleanup_perms);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -302,10 +302,6 @@ pub async fn check_metadata(
     config: &SloppyJoeConfig,
     similarity_flagged: &HashSet<String>,
 ) -> Result<Vec<Issue>> {
-    let min_age = config.min_version_age_hours;
-    if min_age == 0 {
-        return Ok(vec![]); // Age gate disabled
-    }
     let lookups = fetch_metadata(registry, deps).await?;
     Ok(issues_from_lookups(&lookups, config, similarity_flagged))
 }
@@ -503,7 +499,9 @@ mod tests {
         let issues = check_metadata(&registry, &deps, &config, &empty_similarity())
             .await
             .unwrap();
-        assert!(issues.is_empty());
+        assert!(!issues.iter().any(|i| i.check == "metadata/version-age"));
+        assert!(issues.iter().any(|i| i.check == "metadata/new-package"));
+        assert!(issues.iter().any(|i| i.check == "metadata/low-downloads"));
     }
 
     #[tokio::test]

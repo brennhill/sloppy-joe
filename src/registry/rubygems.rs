@@ -1,6 +1,17 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
+fn gem_url(package_name: &str) -> String {
+    format!("https://rubygems.org/api/v1/gems/{}.json", package_name)
+}
+
+fn gem_version_url(package_name: &str, version: &str) -> String {
+    format!(
+        "https://rubygems.org/api/v2/rubygems/{}/versions/{}.json",
+        package_name, version
+    )
+}
+
 pub struct RubyGemsRegistry {
     client: reqwest::Client,
 }
@@ -22,7 +33,7 @@ impl Default for RubyGemsRegistry {
 #[async_trait]
 impl super::Registry for RubyGemsRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
-        let url = format!("https://rubygems.org/api/v1/gems/{}.json", package_name);
+        let url = gem_url(package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
@@ -40,9 +51,9 @@ impl super::Registry for RubyGemsRegistry {
     async fn metadata(
         &self,
         package_name: &str,
-        _version: Option<&str>,
+        version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
-        let url = format!("https://rubygems.org/api/v1/gems/{}.json", package_name);
+        let url = gem_url(package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -57,8 +68,29 @@ impl super::Registry for RubyGemsRegistry {
         let body: serde_json::Value = resp.json().await?;
 
         let created = body["created_at"].as_str().map(|s| s.to_string());
-        let latest_version_date = body["version_created_at"].as_str().map(|s| s.to_string());
         let downloads = body["downloads"].as_u64();
+
+        let latest_version_date = if let Some(version) = version {
+            let version_resp = self.client.get(gem_version_url(package_name, version)).send().await?;
+            if version_resp.status() == reqwest::StatusCode::NOT_FOUND {
+                body["version_created_at"].as_str().map(|s| s.to_string())
+            } else if !version_resp.status().is_success() {
+                anyhow::bail!(
+                    "RubyGems version metadata lookup for '{}' {} returned HTTP {}",
+                    package_name,
+                    version,
+                    version_resp.status()
+                );
+            } else {
+                let version_body: serde_json::Value = version_resp.json().await?;
+                version_body["version_created_at"]
+                    .as_str()
+                    .or_else(|| body["version_created_at"].as_str())
+                    .map(|s| s.to_string())
+            }
+        } else {
+            body["version_created_at"].as_str().map(|s| s.to_string())
+        };
 
         Ok(Some(super::PackageMetadata {
             created,
@@ -74,5 +106,19 @@ impl super::Registry for RubyGemsRegistry {
 
     fn ecosystem(&self) -> &str {
         "ruby"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_metadata_url_uses_specific_version_endpoint() {
+        let url = gem_version_url("rails", "7.0.4");
+        assert_eq!(
+            url,
+            "https://rubygems.org/api/v2/rubygems/rails/versions/7.0.4.json"
+        );
     }
 }

@@ -49,7 +49,10 @@ fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
     if project_dir.join("composer.json").exists() {
         return composer_json::parse(project_dir);
     }
-    if project_dir.join("build.gradle").exists() || project_dir.join("pom.xml").exists() {
+    if project_dir.join("build.gradle").exists()
+        || project_dir.join("build.gradle.kts").exists()
+        || project_dir.join("pom.xml").exists()
+    {
         return jvm::parse(project_dir);
     }
     if has_csproj(project_dir) {
@@ -183,6 +186,20 @@ mod tests {
         let dir = unique_dir();
         let result = parse_dependencies(&dir, None);
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_detect_build_gradle_kts() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("build.gradle.kts"),
+            "implementation(\"com.google.guava:guava:31.1-jre\")",
+        )
+        .unwrap();
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].ecosystem, "jvm");
+        assert_eq!(deps[0].name, "com.google.guava:guava");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

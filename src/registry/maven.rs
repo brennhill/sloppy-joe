@@ -19,6 +19,19 @@ impl Default for MavenRegistry {
     }
 }
 
+fn search_url(group: &str, artifact: &str, version: Option<&str>) -> String {
+    match version {
+        Some(version) => format!(
+            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22+AND+v:%22{}%22&rows=1&wt=json",
+            group, artifact, version
+        ),
+        None => format!(
+            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22&rows=1&wt=json",
+            group, artifact
+        ),
+    }
+}
+
 #[async_trait]
 impl super::Registry for MavenRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
@@ -28,10 +41,7 @@ impl super::Registry for MavenRegistry {
         }
         let (group, artifact) = (parts[0], parts[1]);
         // Use quoted values in the Solr query for exact matching
-        let url = format!(
-            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22&rows=1&wt=json",
-            group, artifact
-        );
+        let url = search_url(group, artifact, None);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
@@ -51,17 +61,14 @@ impl super::Registry for MavenRegistry {
     async fn metadata(
         &self,
         package_name: &str,
-        _version: Option<&str>,
+        version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
         let parts: Vec<&str> = package_name.splitn(2, ':').collect();
         if parts.len() != 2 {
             return Ok(None);
         }
         let (group, artifact) = (parts[0], parts[1]);
-        let url = format!(
-            "https://search.maven.org/solrsearch/select?q=g:%22{}%22+AND+a:%22{}%22&rows=1&wt=json",
-            group, artifact
-        );
+        let url = search_url(group, artifact, version);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -149,5 +156,18 @@ impl super::Registry for MavenRegistry {
 
     fn ecosystem(&self) -> &str {
         "jvm"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_url_includes_exact_version_when_requested() {
+        let url = search_url("com.example", "demo", Some("1.2.3"));
+        assert!(url.contains("g:%22com.example%22"));
+        assert!(url.contains("a:%22demo%22"));
+        assert!(url.contains("v:%221.2.3%22"));
     }
 }

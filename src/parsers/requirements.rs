@@ -18,7 +18,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         // Parse "package==version", "package>=version", "package~=version", or just "package"
         let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!']) {
             let name = &line[..pos];
-            let version_part = line[pos..].trim_start_matches(['=', '>', '<', '~', '!']);
+            let version_part = line[pos..].trim();
             (name.to_string(), Some(version_part.to_string()))
         } else {
             (line.to_string(), None)
@@ -61,7 +61,7 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "requests");
-        assert_eq!(deps[0].version, Some("2.28.0".to_string()));
+        assert_eq!(deps[0].version, Some("==2.28.0".to_string()));
         assert_eq!(deps[0].ecosystem, "pypi");
         cleanup(&dir);
     }
@@ -72,6 +72,7 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "requests");
+        assert_eq!(deps[0].version, Some(">=1.0,<2.0".to_string()));
         cleanup(&dir);
     }
 
