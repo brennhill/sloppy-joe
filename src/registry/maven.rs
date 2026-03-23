@@ -11,6 +11,10 @@ impl MavenRegistry {
             client: super::http_client(),
         }
     }
+
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
+    }
 }
 
 impl Default for MavenRegistry {
