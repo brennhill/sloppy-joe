@@ -123,13 +123,13 @@ fn cache_tmp_path(path: &Path) -> PathBuf {
 }
 
 /// Atomically write JSON to a cache file (write to temp, set 0o600, rename).
-pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) -> Result<()> {
+pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) {
     if ensure_no_symlink(path).is_err() {
-        return Ok(());
+        return;
     }
     if let Some(parent) = path.parent() {
         if std::fs::create_dir_all(parent).is_err() {
-            return Ok(());
+            return;
         }
         #[cfg(unix)]
         {
@@ -142,11 +142,11 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) -> Result<(
         }
     }
     let Ok(json) = serde_json::to_string(data) else {
-        return Ok(());
+        return;
     };
     let tmp_path = cache_tmp_path(path);
     if std::fs::write(&tmp_path, json).is_err() {
-        return Ok(());
+        return;
     }
     #[cfg(unix)]
     {
@@ -160,7 +160,6 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) -> Result<(
     if std::fs::rename(&tmp_path, path).is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
-    Ok(())
 }
 
 /// Read and deserialize a JSON cache file, returning None if expired, missing,
@@ -212,7 +211,7 @@ mod tests {
             timestamp: now_epoch(),
             value: "hello".to_string(),
         };
-        atomic_write_json(&path, &data).unwrap();
+        atomic_write_json(&path, &data);
         let loaded: TestCache =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.value, "hello");
@@ -227,7 +226,7 @@ mod tests {
             timestamp: now_epoch().saturating_sub(10000), // 10000 seconds ago
             value: "old".to_string(),
         };
-        atomic_write_json(&path, &data).unwrap();
+        atomic_write_json(&path, &data);
         let loaded = read_json_cache::<TestCache>(&path, 3600, |d| d.timestamp);
         assert!(loaded.is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -241,7 +240,7 @@ mod tests {
             timestamp: now_epoch(),
             value: "new".to_string(),
         };
-        atomic_write_json(&path, &data).unwrap();
+        atomic_write_json(&path, &data);
         let loaded = read_json_cache::<TestCache>(&path, 3600, |d| d.timestamp);
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().value, "new");
@@ -258,7 +257,7 @@ mod tests {
             timestamp: now_epoch(),
             value: "symlinked".to_string(),
         };
-        atomic_write_json(&real, &data).unwrap();
+        atomic_write_json(&real, &data);
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let loaded = read_json_cache::<TestCache>(&link, 3600, |d| d.timestamp);
         assert!(loaded.is_none());

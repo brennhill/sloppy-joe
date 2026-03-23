@@ -111,7 +111,7 @@ pub fn registry_for_with_client(
 
 /// Validate that a package name is safe to use in registry URLs.
 /// Rejects path traversal, null bytes, control characters, percent-encoding,
-/// newlines, and URL-meaningful characters (?#@\).
+/// newlines, and URL-meaningful characters (?#\).
 pub fn validate_package_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -130,11 +130,6 @@ pub fn validate_package_name(name: &str) -> bool {
         }
     }
     true
-}
-
-/// Per-registry concurrency limits for similarity queries.
-pub fn similarity_concurrency(ecosystem: Ecosystem) -> usize {
-    ecosystem.similarity_concurrency()
 }
 
 pub fn http_client() -> reqwest::Client {
