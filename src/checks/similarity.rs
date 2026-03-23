@@ -1,4 +1,5 @@
 use crate::cache;
+use crate::Ecosystem;
 use crate::registry::Registry;
 use crate::report::{Issue, Severity};
 use crate::Dependency;
@@ -19,7 +20,7 @@ struct SimilarityCache {
     entries: HashMap<String, bool>,
 }
 
-fn cache_path_for(ecosystem: &str, cache_dir: Option<&Path>) -> PathBuf {
+fn cache_path_for(ecosystem: Ecosystem, cache_dir: Option<&Path>) -> PathBuf {
     let base = cache_dir
         .map(PathBuf::from)
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
@@ -32,7 +33,7 @@ fn cache_path_for(ecosystem: &str, cache_dir: Option<&Path>) -> PathBuf {
 /// Implementations are composed into a vector and iterated by generate_mutations.
 pub trait MutationGenerator: Send + Sync {
     fn name(&self) -> &str;
-    fn generate(&self, name: &str, ecosystem: &str) -> Vec<String>;
+    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String>;
 }
 
 /// Returns the default set of mutation generators.
@@ -52,8 +53,8 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
 struct SeparatorSwapGen;
 impl MutationGenerator for SeparatorSwapGen {
     fn name(&self) -> &str { "separator-swap" }
-    fn generate(&self, name: &str, ecosystem: &str) -> Vec<String> {
-        if ecosystem == "pypi" { return vec![]; }
+    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
+        if ecosystem == Ecosystem::PyPI { return vec![]; }
         let lower = name.to_lowercase();
         let mut results = Vec::new();
         let stripped = normalize_separators(&lower);
@@ -69,7 +70,7 @@ impl MutationGenerator for SeparatorSwapGen {
 struct CollapseRepeatedGen;
 impl MutationGenerator for CollapseRepeatedGen {
     fn name(&self) -> &str { "collapse-repeated" }
-    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         collapse_one_repeated(&name.to_lowercase())
     }
 }
@@ -77,7 +78,7 @@ impl MutationGenerator for CollapseRepeatedGen {
 struct VersionSuffixGen;
 impl MutationGenerator for VersionSuffixGen {
     fn name(&self) -> &str { "version-suffix" }
-    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         let lower = name.to_lowercase();
         let stripped = strip_version_suffix(&lower);
         if stripped != lower { vec![stripped] } else { vec![] }
@@ -87,7 +88,7 @@ impl MutationGenerator for VersionSuffixGen {
 struct WordReorderGen;
 impl MutationGenerator for WordReorderGen {
     fn name(&self) -> &str { "word-reorder" }
-    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         word_reorderings(&name.to_lowercase())
     }
 }
@@ -95,7 +96,7 @@ impl MutationGenerator for WordReorderGen {
 struct AdjacentSwapGen;
 impl MutationGenerator for AdjacentSwapGen {
     fn name(&self) -> &str { "adjacent-swap" }
-    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         adjacent_swaps(&name.to_lowercase())
     }
 }
@@ -103,7 +104,7 @@ impl MutationGenerator for AdjacentSwapGen {
 struct DeleteOneCharGen;
 impl MutationGenerator for DeleteOneCharGen {
     fn name(&self) -> &str { "delete-one-char" }
-    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         delete_one_char(&name.to_lowercase()).into_iter().collect()
     }
 }
@@ -111,7 +112,7 @@ impl MutationGenerator for DeleteOneCharGen {
 struct HomoglyphGen;
 impl MutationGenerator for HomoglyphGen {
     fn name(&self) -> &str { "homoglyph" }
-    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
         if had_homoglyphs { vec![normalized.to_lowercase()] } else { vec![] }
     }
@@ -120,17 +121,17 @@ impl MutationGenerator for HomoglyphGen {
 struct ConfusedFormsGen;
 impl MutationGenerator for ConfusedFormsGen {
     fn name(&self) -> &str { "confused-forms" }
-    fn generate(&self, name: &str, ecosystem: &str) -> Vec<String> {
+    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         apply_confused_forms(name, ecosystem)
     }
 }
 
 /// Ecosystem-specific confused forms: terms that are interchangeable
 /// and commonly swapped by AI or humans.
-fn confused_forms(ecosystem: &str) -> &'static [(&'static str, &'static str)] {
+fn confused_forms(ecosystem: Ecosystem) -> &'static [(&'static str, &'static str)] {
     match ecosystem {
-        "pypi" => &[("python", "py"), ("python-", "py-"), ("python_", "py_")],
-        "go" => &[
+        Ecosystem::PyPI => &[("python", "py"), ("python-", "py-"), ("python_", "py_")],
+        Ecosystem::Go => &[
             ("github.com", "gitlab.com"),
             ("golang", "go"),
             ("golang-", "go-"),
@@ -184,9 +185,9 @@ fn normalize_homoglyphs(name: &str) -> (String, bool) {
 // -- Scope/namespace squatting detection ------------------------------------
 
 /// Known-good scopes/namespaces per ecosystem.
-fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
+fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
     match ecosystem {
-        "npm" => &[
+        Ecosystem::Npm => &[
             "@types",
             "@babel",
             "@angular",
@@ -227,7 +228,7 @@ fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
             "@grpc",
             "@protobuf",
         ],
-        "php" => &[
+        Ecosystem::Php => &[
             "laravel",
             "symfony",
             "illuminate",
@@ -252,7 +253,7 @@ fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
             "composer",
             "sebastian",
         ],
-        "go" => &[
+        Ecosystem::Go => &[
             "github.com/gin-gonic",
             "github.com/labstack",
             "github.com/gofiber",
@@ -282,7 +283,7 @@ fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
             "golang.org",
             "cloud.google.com",
         ],
-        "jvm" => &[
+        Ecosystem::Jvm => &[
             "com.google",
             "org.springframework",
             "org.apache",
@@ -306,9 +307,9 @@ fn known_scopes(ecosystem: &str) -> &'static [&'static str] {
 }
 
 /// Extract the scope/namespace from a package name for a given ecosystem.
-fn extract_scope(name: &str, ecosystem: &str) -> Option<String> {
+fn extract_scope(name: &str, ecosystem: Ecosystem) -> Option<String> {
     match ecosystem {
-        "npm" => {
+        Ecosystem::Npm => {
             // @scope/package -> @scope
             if name.starts_with('@') {
                 name.split('/').next().map(|s| s.to_string())
@@ -316,14 +317,14 @@ fn extract_scope(name: &str, ecosystem: &str) -> Option<String> {
                 None
             }
         }
-        "php" => {
+        Ecosystem::Php => {
             // vendor/package -> vendor
             name.split('/')
                 .next()
                 .filter(|_| name.contains('/'))
                 .map(|s| s.to_string())
         }
-        "go" => {
+        Ecosystem::Go => {
             // github.com/org/repo -> github.com/org
             let parts: Vec<&str> = name.splitn(3, '/').collect();
             if parts.len() >= 2 {
@@ -332,7 +333,7 @@ fn extract_scope(name: &str, ecosystem: &str) -> Option<String> {
                 None
             }
         }
-        "jvm" => {
+        Ecosystem::Jvm => {
             // com.google.guava:guava -> com.google
             name.split(':').next().and_then(|group| {
                 let parts: Vec<&str> = group.splitn(3, '.').collect();
@@ -434,7 +435,7 @@ fn permutations(segments: &mut Vec<&str>, start: usize, sep: char, results: &mut
 
 /// Generate ecosystem-specific confused forms.
 /// "python-dateutil" -> "py-dateutil", "py-utils" -> "python-utils"
-fn apply_confused_forms(name: &str, ecosystem: &str) -> Vec<String> {
+fn apply_confused_forms(name: &str, ecosystem: Ecosystem) -> Vec<String> {
     let forms = confused_forms(ecosystem);
     let mut results = Vec::new();
     let lower = name.to_lowercase();
@@ -485,8 +486,8 @@ fn adjacent_swaps(name: &str) -> Vec<String> {
 
 // -- Orchestration -----------------------------------------------------------
 
-fn is_case_insensitive(ecosystem: &str) -> bool {
-    matches!(ecosystem, "npm" | "pypi" | "cargo" | "dotnet" | "php")
+fn is_case_insensitive(ecosystem: Ecosystem) -> bool {
+    ecosystem.is_case_insensitive()
 }
 
 /// Max allowed Levenshtein distance, scaled by name length (for scope squatting).
@@ -500,7 +501,7 @@ fn max_distance(name_len: usize) -> usize {
 
 /// Generate all mutation candidates for a package name.
 /// Returns a set of candidate names to query the registry for.
-fn generate_mutations(name: &str, ecosystem: &str) -> HashSet<String> {
+fn generate_mutations(name: &str, ecosystem: Ecosystem) -> HashSet<String> {
     generate_mutations_with(&default_generators(), name, ecosystem)
 }
 
@@ -508,7 +509,7 @@ fn generate_mutations(name: &str, ecosystem: &str) -> HashSet<String> {
 fn generate_mutations_with(
     generators: &[Box<dyn MutationGenerator>],
     name: &str,
-    ecosystem: &str,
+    ecosystem: Ecosystem,
 ) -> HashSet<String> {
     let lower = name.to_lowercase();
     let case_insensitive = is_case_insensitive(ecosystem);
@@ -531,9 +532,9 @@ fn generate_mutations_with(
 }
 
 /// Classify which generator produced a candidate match.
-fn classify_match(dep_name: &str, candidate: &str, ecosystem: &str) -> (&'static str, String) {
+fn classify_match(dep_name: &str, candidate: &str, ecosystem: Ecosystem) -> (&'static str, String) {
     let dep_lower = dep_name.to_lowercase();
-    let suppress_separators = ecosystem == "pypi";
+    let suppress_separators = ecosystem == Ecosystem::PyPI;
 
     // Homoglyph check
     let (normalized, had_homoglyphs) = normalize_homoglyphs(dep_name);
@@ -672,7 +673,7 @@ fn classify_match(dep_name: &str, candidate: &str, ecosystem: &str) -> (&'static
 pub async fn check_similarity(
     registry: &dyn Registry,
     deps: &[Dependency],
-    ecosystem: &str,
+    ecosystem: Ecosystem,
 ) -> Result<Vec<Issue>> {
     check_similarity_with_cache(registry, deps, ecosystem, None, false).await
 }
@@ -681,7 +682,7 @@ pub async fn check_similarity(
 pub async fn check_similarity_with_cache(
     registry: &dyn Registry,
     deps: &[Dependency],
-    ecosystem: &str,
+    ecosystem: Ecosystem,
     cache_dir: Option<&Path>,
     no_cache: bool,
 ) -> Result<Vec<Issue>> {
@@ -976,7 +977,7 @@ pub async fn check_similarity_with_cache(
 /// neutral ecosystem to get the full set of candidates.
 pub fn generate_candidates(name: &str) -> HashSet<String> {
     // Use "npm" as a neutral ecosystem (no separator suppression, includes all generators)
-    generate_mutations(name, "npm")
+    generate_mutations(name, Ecosystem::Npm)
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
@@ -1055,15 +1056,15 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: None,
-            ecosystem: "npm".to_string(),
+            ecosystem: Ecosystem::Npm,
         }
     }
 
-    fn dep_eco(name: &str, ecosystem: &str) -> Dependency {
+    fn dep_eco(name: &str, ecosystem: Ecosystem) -> Dependency {
         Dependency {
             name: name.to_string(),
             version: None,
-            ecosystem: ecosystem.to_string(),
+            ecosystem,
         }
     }
 
@@ -1074,7 +1075,7 @@ mod tests {
         // "expresss" -> mutation "express" exists on registry
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("repeated"));
         assert_eq!(issues[0].suggestion, Some("express".to_string()));
@@ -1086,7 +1087,7 @@ mod tests {
     async fn version_suffix_caught() {
         let registry = FakeRegistry::with(&["react"]);
         let deps = vec![dep("react2")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("version-suffix"));
         assert_eq!(issues[0].suggestion, Some("react".to_string()));
@@ -1097,8 +1098,8 @@ mod tests {
     #[tokio::test]
     async fn adjacent_swap_caught() {
         let registry = FakeRegistry::with(&["requests"]);
-        let deps = vec![dep_eco("reqeusts", "pypi")];
-        let issues = check_similarity(&registry, &deps, "pypi").await.unwrap();
+        let deps = vec![dep_eco("reqeusts", Ecosystem::PyPI)];
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("char-swap"));
         assert_eq!(issues[0].suggestion, Some("requests".to_string()));
@@ -1111,7 +1112,7 @@ mod tests {
         // "expressx" -> delete 'x' -> "express" exists
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expressx")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("extra-char"));
         assert_eq!(issues[0].suggestion, Some("express".to_string()));
@@ -1123,7 +1124,7 @@ mod tests {
     async fn no_match_produces_no_issue() {
         let registry = FakeRegistry::with(&["react", "express"]);
         let deps = vec![dep("zzzzzzzzzzzzz")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(issues.is_empty());
     }
 
@@ -1134,7 +1135,7 @@ mod tests {
         // Even a non-popular package: if mutation exists on registry, flag it
         let registry = FakeRegistry::with(&["my-lib"]);
         let deps = vec![dep("myy-lib")]; // repeated 'y' -> "my-lib"
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
     }
 
@@ -1145,7 +1146,7 @@ mod tests {
         // Both "lodash" and "lodahs" in manifest (adjacent swap) -- flag without network
         let registry = FakeRegistry::empty();
         let deps = vec![dep("lodash"), dep("lodahs")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
         // One of them should be flagged
         assert!(
@@ -1161,8 +1162,8 @@ mod tests {
         // On PyPI, separator normalization is suppressed (PEP 503 normalizes)
         // So "python-dateutil" vs "python_dateutil" should NOT be flagged as separator-confusion
         let registry = FakeRegistry::with(&["python_dateutil"]);
-        let deps = vec![dep_eco("python-dateutil", "pypi")];
-        let issues = check_similarity(&registry, &deps, "pypi").await.unwrap();
+        let deps = vec![dep_eco("python-dateutil", Ecosystem::PyPI)];
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
         let sep_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("separator"))
@@ -1177,7 +1178,7 @@ mod tests {
         // On npm, separator variants ARE flagged
         let registry = FakeRegistry::with(&["socket.io"]);
         let deps = vec![dep("socket_io")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("separator"));
     }
@@ -1188,7 +1189,7 @@ mod tests {
     async fn scope_squatting_flagged() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("@typos/lodash")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("@typos"));
@@ -1199,7 +1200,7 @@ mod tests {
     async fn scope_exact_match_no_flag() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("@types/lodash")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         let scope_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("scope-squatting"))
@@ -1213,8 +1214,8 @@ mod tests {
     async fn case_variant_flagged_on_case_sensitive_registry() {
         // Go is case-sensitive; "Github.com/spf13/cobra" differs from "github.com/spf13/cobra"
         let registry = FakeRegistry::with(&["github.com/spf13/cobra"]);
-        let deps = vec![dep_eco("Github.com/spf13/cobra", "go")];
-        let issues = check_similarity(&registry, &deps, "go").await.unwrap();
+        let deps = vec![dep_eco("Github.com/spf13/cobra", Ecosystem::Go)];
+        let issues = check_similarity(&registry, &deps, Ecosystem::Go).await.unwrap();
         assert!(
             issues.iter().any(|i| i.check.contains("case-variant")),
             "Expected case-variant issue on case-sensitive registry"
@@ -1226,7 +1227,7 @@ mod tests {
         // npm is case-insensitive; "React" should not trigger case-variant
         let registry = FakeRegistry::with(&["react"]);
         let deps = vec![dep("React")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         let case_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("case-variant"))
@@ -1241,7 +1242,7 @@ mod tests {
         // "expresss" might match via repeated-chars AND delete-one -- should only report once
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
-        let issues = check_similarity(&registry, &deps, "npm").await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         let count = issues.iter().filter(|i| i.package == "expresss").count();
         assert_eq!(count, 1);
     }
@@ -1252,8 +1253,8 @@ mod tests {
     async fn homoglyph_caught() {
         // Cyrillic 'e' in "r\u{0435}quests" -> normalizes to "requests"
         let registry = FakeRegistry::with(&["requests"]);
-        let deps = vec![dep_eco("r\u{0435}quests", "pypi")];
-        let issues = check_similarity(&registry, &deps, "pypi").await.unwrap();
+        let deps = vec![dep_eco("r\u{0435}quests", Ecosystem::PyPI)];
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("homoglyph"));
     }
@@ -1320,38 +1321,38 @@ mod tests {
 
     #[test]
     fn is_case_insensitive_correct() {
-        assert!(is_case_insensitive("npm"));
-        assert!(is_case_insensitive("pypi"));
-        assert!(is_case_insensitive("cargo"));
-        assert!(is_case_insensitive("dotnet"));
-        assert!(is_case_insensitive("php"));
-        assert!(!is_case_insensitive("go"));
-        assert!(!is_case_insensitive("jvm"));
-        assert!(!is_case_insensitive("ruby"));
+        assert!(is_case_insensitive(Ecosystem::Npm));
+        assert!(is_case_insensitive(Ecosystem::PyPI));
+        assert!(is_case_insensitive(Ecosystem::Cargo));
+        assert!(is_case_insensitive(Ecosystem::Dotnet));
+        assert!(is_case_insensitive(Ecosystem::Php));
+        assert!(!is_case_insensitive(Ecosystem::Go));
+        assert!(!is_case_insensitive(Ecosystem::Jvm));
+        assert!(!is_case_insensitive(Ecosystem::Ruby));
     }
 
     #[test]
     fn test_extract_scope_npm() {
         assert_eq!(
-            extract_scope("@types/lodash", "npm"),
+            extract_scope("@types/lodash", Ecosystem::Npm),
             Some("@types".to_string())
         );
-        assert_eq!(extract_scope("lodash", "npm"), None);
+        assert_eq!(extract_scope("lodash", Ecosystem::Npm), None);
     }
 
     #[test]
     fn test_extract_scope_php() {
         assert_eq!(
-            extract_scope("laravel/framework", "php"),
+            extract_scope("laravel/framework", Ecosystem::Php),
             Some("laravel".to_string())
         );
-        assert_eq!(extract_scope("monolog", "php"), None);
+        assert_eq!(extract_scope("monolog", Ecosystem::Php), None);
     }
 
     #[test]
     fn test_extract_scope_go() {
         assert_eq!(
-            extract_scope("github.com/google/protobuf", "go"),
+            extract_scope("github.com/google/protobuf", Ecosystem::Go),
             Some("github.com/google".to_string())
         );
     }
@@ -1359,34 +1360,34 @@ mod tests {
     #[test]
     fn test_extract_scope_jvm() {
         assert_eq!(
-            extract_scope("com.google.guava:guava", "jvm"),
+            extract_scope("com.google.guava:guava", Ecosystem::Jvm),
             Some("com.google".to_string())
         );
     }
 
     #[test]
     fn test_known_scopes_populated() {
-        for eco in &["npm", "php", "go", "jvm"] {
+        for eco in [Ecosystem::Npm, Ecosystem::Php, Ecosystem::Go, Ecosystem::Jvm] {
             assert!(
                 !known_scopes(eco).is_empty(),
                 "known_scopes empty for {}",
                 eco
             );
         }
-        assert!(known_scopes("unknown").is_empty());
+        assert!(known_scopes(Ecosystem::PyPI).is_empty());
     }
 
     #[test]
     fn confused_form_pypi_py_vs_python() {
-        let forms = apply_confused_forms("python-utils", "pypi");
+        let forms = apply_confused_forms("python-utils", Ecosystem::PyPI);
         assert!(forms.contains(&"py-utils".to_string()));
-        let forms = apply_confused_forms("py-utils", "pypi");
+        let forms = apply_confused_forms("py-utils", Ecosystem::PyPI);
         assert!(forms.contains(&"python-utils".to_string()));
     }
 
     #[test]
     fn confused_form_go_github_gitlab() {
-        let forms = apply_confused_forms("github.com/spf13/cobra", "go");
+        let forms = apply_confused_forms("github.com/spf13/cobra", Ecosystem::Go);
         assert!(forms.contains(&"gitlab.com/spf13/cobra".to_string()));
     }
 }

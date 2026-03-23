@@ -27,7 +27,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 deps.push(Dependency {
                     name: package_name,
                     version,
-                    ecosystem: "cargo".to_string(),
+                    ecosystem: crate::Ecosystem::Cargo,
                 });
             }
         }
@@ -73,7 +73,7 @@ anyhow = "1"
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"serde"));
         assert!(names.contains(&"anyhow"));
-        assert_eq!(deps[0].ecosystem, "cargo");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Cargo);
         cleanup(&dir);
     }
 

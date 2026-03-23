@@ -138,7 +138,7 @@ pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
         deps.push(Dependency {
             name: name.to_string(),
             version,
-            ecosystem: "cargo".to_string(),
+            ecosystem: crate::Ecosystem::Cargo,
         });
     }
 

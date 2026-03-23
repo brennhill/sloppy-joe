@@ -1,4 +1,5 @@
 use crate::Dependency;
+use crate::Ecosystem;
 use crate::config::SloppyJoeConfig;
 use crate::lockfiles::ResolutionResult;
 use crate::registry::{PackageMetadata, Registry};
@@ -74,7 +75,7 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -
 #[derive(Debug, Clone)]
 pub struct MetadataLookup {
     pub package: String,
-    pub ecosystem: String,
+    pub ecosystem: Ecosystem,
     pub version: Option<String>,
     pub resolved_version: Option<String>,
     pub unresolved_version: bool,
@@ -95,7 +96,7 @@ pub(crate) async fn fetch_metadata(
         .map(|dep| {
             (
                 dep.name.clone(),
-                dep.ecosystem.clone(),
+                dep.ecosystem,
                 dep.version.clone(),
                 resolution.exact_version(dep).map(str::to_string),
                 resolution.is_unresolved(dep),

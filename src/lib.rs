@@ -2,6 +2,8 @@
 
 pub(crate) mod cache;
 pub mod checks;
+pub mod ecosystem;
+pub use ecosystem::Ecosystem;
 pub mod config;
 pub mod lockfiles;
 pub mod parsers;
@@ -69,8 +71,8 @@ async fn scan_with_config(
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
     let ecosystem = deps
         .first()
-        .map(|dep| dep.ecosystem.as_str())
-        .unwrap_or("npm");
+        .map(|dep| dep.ecosystem)
+        .unwrap_or(Ecosystem::Npm);
     let client = registry::http_client();
     let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
     let osv_client = checks::malicious::RealOsvClient::with_client(client);
@@ -89,10 +91,10 @@ async fn scan_with_services_inner(
         return Ok(ScanReport::empty());
     }
 
-    let ecosystem = deps[0].ecosystem.clone();
+    let ecosystem = deps[0].ecosystem;
 
     // Classify deps into three tiers
-    let (checkable, non_internal) = classify_deps(&deps, &config, &ecosystem);
+    let (checkable, non_internal) = classify_deps(&deps, &config, ecosystem);
 
     // Parse lockfile once
     let lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
@@ -106,7 +108,7 @@ async fn scan_with_services_inner(
         registry,
         osv_client,
         resolution: &lockfile_data.resolution,
-        ecosystem: &ecosystem,
+        ecosystem,
         opts,
     };
     let mut acc = checks::ScanAccumulator::new();
@@ -118,8 +120,8 @@ async fn scan_with_services_inner(
     // Transitive dependency scanning
     let mut transitive_deps = lockfile_data.transitive_deps;
     transitive_deps.retain(|dep| {
-        !config.is_internal(&ecosystem, &dep.name)
-            && !config.is_allowed(&ecosystem, &dep.name)
+        !config.is_internal(ecosystem.as_str(), &dep.name)
+            && !config.is_allowed(ecosystem.as_str(), &dep.name)
     });
 
     if !transitive_deps.is_empty() {
@@ -145,7 +147,7 @@ async fn scan_with_services_inner(
             registry,
             osv_client,
             resolution: &trans_resolution,
-            ecosystem: &ecosystem,
+            ecosystem,
             opts,
         };
         let mut trans_acc = checks::ScanAccumulator::new();
@@ -168,16 +170,17 @@ async fn scan_with_services_inner(
 fn classify_deps(
     deps: &[Dependency],
     config: &config::SloppyJoeConfig,
-    ecosystem: &str,
+    ecosystem: Ecosystem,
 ) -> (Vec<Dependency>, Vec<Dependency>) {
+    let eco_str = ecosystem.as_str();
     let (internal, rest): (Vec<&Dependency>, Vec<&Dependency>) = deps
         .iter()
-        .partition(|dep| config.is_internal(ecosystem, &dep.name));
+        .partition(|dep| config.is_internal(eco_str, &dep.name));
 
     let (allowed, checkable): (Vec<&Dependency>, Vec<&Dependency>) = rest
         .iter()
         .copied()
-        .partition(|dep| config.is_allowed(ecosystem, &dep.name));
+        .partition(|dep| config.is_allowed(eco_str, &dep.name));
 
     if !internal.is_empty() {
         let names: Vec<_> = internal.iter().map(|d| d.name.as_str()).collect();
@@ -200,7 +203,7 @@ fn classify_deps(
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
     let non_internal: Vec<Dependency> = deps
         .iter()
-        .filter(|dep| !config.is_internal(ecosystem, &dep.name))
+        .filter(|dep| !config.is_internal(eco_str, &dep.name))
         .cloned()
         .collect();
 
@@ -227,14 +230,14 @@ pub struct ScanOptions<'a> {
 pub struct Dependency {
     pub name: String,
     pub version: Option<String>,
-    pub ecosystem: String,
+    pub ecosystem: Ecosystem,
 }
 
 impl Dependency {
     pub fn exact_version(&self) -> Option<String> {
         self.version
             .as_deref()
-            .and_then(|version| version::exact_version(version, &self.ecosystem))
+            .and_then(|version| version::exact_version(version, self.ecosystem))
     }
 
     pub fn has_unresolved_version(&self) -> bool {

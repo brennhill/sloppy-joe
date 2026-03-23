@@ -121,7 +121,7 @@ pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
             deps.push(Dependency {
                 name: name.to_string(),
                 version,
-                ecosystem: "npm".to_string(),
+                ecosystem: crate::Ecosystem::Npm,
             });
         }
     } else if let Some(dependencies) = parsed.get("dependencies").and_then(|v| v.as_object()) {
@@ -133,7 +133,7 @@ pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
             deps.push(Dependency {
                 name: name.clone(),
                 version,
-                ecosystem: "npm".to_string(),
+                ecosystem: crate::Ecosystem::Npm,
             });
         }
     } else {

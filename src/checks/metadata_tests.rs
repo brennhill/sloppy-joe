@@ -25,11 +25,11 @@ impl RegistryMetadata for FakeRegistry {
 }
 
 fn dep(name: &str) -> Dependency {
-    Dependency { name: name.to_string(), version: None, ecosystem: "npm".to_string() }
+    Dependency { name: name.to_string(), version: None, ecosystem: crate::Ecosystem::Npm }
 }
 
 fn dep_with_version(name: &str, version: &str) -> Dependency {
-    Dependency { name: name.to_string(), version: Some(version.to_string()), ecosystem: "npm".to_string() }
+    Dependency { name: name.to_string(), version: Some(version.to_string()), ecosystem: crate::Ecosystem::Npm }
 }
 
 fn config_with_age(hours: u64) -> SloppyJoeConfig {
@@ -95,7 +95,7 @@ async fn new_package_is_flagged() {
 fn new_package_uses_ecosystem_registry_url() {
     let now = chrono_free_now();
     let lookups = vec![MetadataLookup {
-        package: "requests".to_string(), ecosystem: "pypi".to_string(),
+        package: "requests".to_string(), ecosystem: crate::Ecosystem::PyPI,
         version: None, resolved_version: None, unresolved_version: false, exists: true,
         metadata: Some(PackageMetadata { created: Some(now.clone()), latest_version_date: Some(now), ..default_meta() }),
     }];
@@ -264,7 +264,7 @@ async fn no_publisher_info_not_flagged() {
 #[test]
 fn parse_failed_warning_when_exists_but_no_metadata() {
     let lookups = vec![MetadataLookup {
-        package: "broken-pkg".to_string(), ecosystem: "npm".to_string(),
+        package: "broken-pkg".to_string(), ecosystem: crate::Ecosystem::Npm,
         version: None, resolved_version: None, unresolved_version: false, exists: true, metadata: None,
     }];
     let issues = issues_from_lookups(&lookups, &config_with_age(72), &empty_similarity());
@@ -276,7 +276,7 @@ fn parse_failed_warning_when_exists_but_no_metadata() {
 #[test]
 fn no_warning_when_package_does_not_exist() {
     let lookups = vec![MetadataLookup {
-        package: "nonexistent-pkg".to_string(), ecosystem: "npm".to_string(),
+        package: "nonexistent-pkg".to_string(), ecosystem: crate::Ecosystem::Npm,
         version: None, resolved_version: None, unresolved_version: false, exists: false, metadata: None,
     }];
     let issues = issues_from_lookups(&lookups, &config_with_age(72), &empty_similarity());

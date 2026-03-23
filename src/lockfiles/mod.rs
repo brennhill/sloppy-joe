@@ -2,6 +2,7 @@ mod cargo;
 mod npm;
 
 use crate::Dependency;
+use crate::Ecosystem;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -69,8 +70,8 @@ impl LockfileData {
         let direct_names: HashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
 
         let all_deps = if let Some(first) = direct_deps.first() {
-            match first.ecosystem.as_str() {
-                "npm" => {
+            match first.ecosystem {
+                Ecosystem::Npm => {
                     let path = first_existing(
                         project_dir,
                         &["package-lock.json", "npm-shrinkwrap.json"],
@@ -86,7 +87,7 @@ impl LockfileData {
                         None => vec![],
                     }
                 }
-                "cargo" => {
+                Ecosystem::Cargo => {
                     let path = project_dir.join("Cargo.lock");
                     if path.exists() {
                         let content = crate::parsers::read_file_limited(
@@ -172,9 +173,9 @@ pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<Resol
         return Ok(ResolutionResult::default());
     };
 
-    match first.ecosystem.as_str() {
-        "npm" => npm::resolve(project_dir, deps),
-        "cargo" => cargo::resolve(project_dir, deps),
+    match first.ecosystem {
+        Ecosystem::Npm => npm::resolve(project_dir, deps),
+        Ecosystem::Cargo => cargo::resolve(project_dir, deps),
         _ => {
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
@@ -301,7 +302,7 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: Some(version.to_string()),
-            ecosystem: "npm".to_string(),
+            ecosystem: Ecosystem::Npm,
         }
     }
 
@@ -309,7 +310,7 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: Some(version.to_string()),
-            ecosystem: "cargo".to_string(),
+            ecosystem: Ecosystem::Cargo,
         }
     }
 

@@ -1,4 +1,5 @@
 use crate::Dependency;
+use crate::Ecosystem;
 use crate::config::SloppyJoeConfig;
 use crate::report::{Issue, Severity};
 
@@ -7,10 +8,10 @@ use crate::report::{Issue, Severity};
 pub fn check_canonical(
     deps: &[Dependency],
     config: &SloppyJoeConfig,
-    ecosystem: &str,
+    ecosystem: Ecosystem,
 ) -> Vec<Issue> {
     let mut issues = Vec::new();
-    let alternatives = config.alternatives_map(ecosystem);
+    let alternatives = config.alternatives_map(ecosystem.as_str());
 
     for dep in deps {
         if let Some(canonical) = alternatives.get(&dep.name) {
@@ -45,7 +46,7 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: None,
-            ecosystem: "npm".to_string(),
+            ecosystem: Ecosystem::Npm,
         }
     }
 
@@ -59,7 +60,7 @@ mod tests {
             ..Default::default()
         };
         let deps = vec![dep("react"), dep("express")];
-        let issues = check_canonical(&deps, &config, "npm");
+        let issues = check_canonical(&deps, &config, Ecosystem::Npm);
         assert!(issues.is_empty());
     }
 
@@ -73,7 +74,7 @@ mod tests {
             ..Default::default()
         };
         let deps = vec![dep("underscore")];
-        let issues = check_canonical(&deps, &config, "npm");
+        let issues = check_canonical(&deps, &config, Ecosystem::Npm);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].package, "underscore");
         assert_eq!(issues[0].severity, Severity::Error);
@@ -90,7 +91,7 @@ mod tests {
             ..Default::default()
         };
         let deps = vec![dep("moment")];
-        let issues = check_canonical(&deps, &config, "npm");
+        let issues = check_canonical(&deps, &config, Ecosystem::Npm);
         assert_eq!(issues[0].suggestion, Some("dayjs".to_string()));
     }
 
@@ -107,7 +108,7 @@ mod tests {
             ..Default::default()
         };
         let deps = vec![dep("underscore"), dep("ramda")];
-        let issues = check_canonical(&deps, &config, "npm");
+        let issues = check_canonical(&deps, &config, Ecosystem::Npm);
         assert_eq!(issues.len(), 2);
     }
 
@@ -115,7 +116,7 @@ mod tests {
     fn empty_config_no_issues() {
         let config = SloppyJoeConfig::default();
         let deps = vec![dep("anything")];
-        let issues = check_canonical(&deps, &config, "npm");
+        let issues = check_canonical(&deps, &config, Ecosystem::Npm);
         assert!(issues.is_empty());
     }
 }

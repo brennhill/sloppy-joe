@@ -26,19 +26,11 @@ fn default_cache_file() -> std::path::PathBuf {
         .join("osv-cache.json")
 }
 
-/// Map ecosystem strings to OSV ecosystem names.
-fn osv_ecosystem(ecosystem: &str) -> &str {
-    match ecosystem {
-        "npm" => "npm",
-        "pypi" => "PyPI",
-        "cargo" => "crates.io",
-        "go" => "Go",
-        "ruby" => "RubyGems",
-        "jvm" => "Maven",
-        "dotnet" => "NuGet",
-        "php" => "Packagist",
-        _ => ecosystem,
-    }
+use crate::Ecosystem;
+
+/// Map ecosystem to OSV ecosystem names.
+fn osv_ecosystem(ecosystem: Ecosystem) -> &'static str {
+    ecosystem.osv_name()
 }
 
 /// An OSV client that can be swapped out for testing.
@@ -83,7 +75,8 @@ impl OsvClient for RealOsvClient {
         ecosystem: &str,
         version: Option<&str>,
     ) -> Result<Vec<String>> {
-        let osv_eco = osv_ecosystem(ecosystem);
+        let eco: Ecosystem = ecosystem.parse().unwrap_or(Ecosystem::Npm);
+        let osv_eco = osv_ecosystem(eco);
         let mut body = serde_json::json!({
             "package": {
                 "name": name,
@@ -159,14 +152,14 @@ pub async fn check_malicious_with_cache(
         if !cache.contains_key(&cache_key) {
             pending
                 .entry(cache_key)
-                .or_insert_with(|| (dep.name.clone(), dep.ecosystem.clone(), exact_version));
+                .or_insert_with(|| (dep.name.clone(), dep.ecosystem, exact_version));
         }
     }
 
     let fetched = stream::iter(pending.into_iter())
         .map(|(cache_key, (name, ecosystem, version))| async move {
             let ids = osv_client
-                .query(&name, &ecosystem, version.as_deref())
+                .query(&name, ecosystem.as_str(), version.as_deref())
                 .await?;
             Ok::<_, anyhow::Error>((cache_key, CacheEntry { vuln_ids: ids }))
         })
@@ -247,7 +240,7 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: None,
-            ecosystem: "npm".to_string(),
+            ecosystem: Ecosystem::Npm,
         }
     }
 
@@ -255,7 +248,7 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: Some(version.to_string()),
-            ecosystem: "npm".to_string(),
+            ecosystem: Ecosystem::Npm,
         }
     }
 

@@ -28,7 +28,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 deps.push(Dependency {
                     name: name.to_string(),
                     version,
-                    ecosystem: "go".to_string(),
+                    ecosystem: crate::Ecosystem::Go,
                 });
             }
             continue;
@@ -44,7 +44,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             deps.push(Dependency {
                 name: name.to_string(),
                 version,
-                ecosystem: "go".to_string(),
+                ecosystem: crate::Ecosystem::Go,
             });
         }
     }
@@ -89,7 +89,7 @@ require (
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "github.com/gin-gonic/gin");
         assert_eq!(deps[0].version, Some("v1.9.1".to_string()));
-        assert_eq!(deps[0].ecosystem, "go");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Go);
         assert_eq!(deps[1].name, "github.com/spf13/cobra");
         cleanup(&dir);
     }

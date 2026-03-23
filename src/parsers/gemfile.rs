@@ -21,7 +21,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             deps.push(Dependency {
                 name,
                 version,
-                ecosystem: "ruby".to_string(),
+                ecosystem: crate::Ecosystem::Ruby,
             });
         }
     }
@@ -81,7 +81,7 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "rails");
-        assert_eq!(deps[0].ecosystem, "ruby");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Ruby);
         cleanup(&dir);
     }
 

@@ -147,7 +147,7 @@ mod tests {
         )
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "npm");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Npm);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -156,7 +156,7 @@ mod tests {
         let dir = unique_dir();
         std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "pypi");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::PyPI);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -169,7 +169,7 @@ mod tests {
         )
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "cargo");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Cargo);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -182,7 +182,7 @@ mod tests {
         )
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "go");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Go);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -191,7 +191,7 @@ mod tests {
         let dir = unique_dir();
         std::fs::write(dir.join("Gemfile"), "gem 'rails'\n").unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "ruby");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Ruby);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -204,7 +204,7 @@ mod tests {
         )
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "php");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Php);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -225,7 +225,7 @@ mod tests {
         )
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
-        assert_eq!(deps[0].ecosystem, "jvm");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Jvm);
         assert_eq!(deps[0].name, "com.google.guava:guava");
         let _ = std::fs::remove_dir_all(&dir);
     }

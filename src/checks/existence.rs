@@ -1,4 +1,5 @@
 use crate::Dependency;
+use crate::Ecosystem;
 use crate::checks::metadata::MetadataLookup;
 use crate::registry::Registry;
 use crate::report::{Issue, Severity};
@@ -6,34 +7,14 @@ use anyhow::Result;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 
-pub(crate) fn registry_url(ecosystem: &str, name: &str) -> String {
-    match ecosystem {
-        "npm" => format!("https://www.npmjs.com/package/{}", name),
-        "pypi" => format!("https://pypi.org/project/{}/", name),
-        "cargo" => format!("https://crates.io/crates/{}", name),
-        "go" => format!("https://pkg.go.dev/{}", name),
-        "ruby" => format!("https://rubygems.org/gems/{}", name),
-        "php" => format!("https://packagist.org/packages/{}", name),
-        "jvm" => {
-            let parts: Vec<&str> = name.splitn(2, ':').collect();
-            if parts.len() == 2 {
-                format!(
-                    "https://search.maven.org/artifact/{}/{}",
-                    parts[0], parts[1]
-                )
-            } else {
-                format!("https://search.maven.org/search?q={}", name)
-            }
-        }
-        "dotnet" => format!("https://www.nuget.org/packages/{}", name),
-        _ => String::new(),
-    }
+pub(crate) fn registry_url(ecosystem: Ecosystem, name: &str) -> String {
+    ecosystem.registry_url_for(name)
 }
 
 /// Check whether each dependency actually exists on its registry.
 /// Uses a concurrency limit of 10 simultaneous requests.
 pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Result<Vec<Issue>> {
-    let ecosystem = registry.ecosystem().to_string();
+    let ecosystem: Ecosystem = registry.ecosystem().parse().unwrap_or(Ecosystem::Npm);
     let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
     let results = stream::iter(names)
         .map(|name| {
@@ -49,7 +30,7 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
     let mut issues = Vec::new();
     for (name, exists) in results? {
         if !exists {
-            let url = registry_url(&ecosystem, &name);
+            let url = registry_url(ecosystem, &name);
             issues.push(Issue {
                 package: name.clone(),
                 check: "existence".to_string(),
@@ -73,7 +54,7 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
 }
 
 pub(crate) fn check_existence_from_metadata(
-    ecosystem: &str,
+    ecosystem: Ecosystem,
     deps: &[Dependency],
     lookups: &[MetadataLookup],
 ) -> Vec<Issue> {
@@ -149,7 +130,7 @@ mod tests {
         Dependency {
             name: name.to_string(),
             version: None,
-            ecosystem: "npm".to_string(),
+            ecosystem: Ecosystem::Npm,
         }
     }
 

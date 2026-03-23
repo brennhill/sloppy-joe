@@ -17,7 +17,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 deps.push(Dependency {
                     name: name.clone(),
                     version: version.as_str().map(String::from),
-                    ecosystem: "npm".to_string(),
+                    ecosystem: crate::Ecosystem::Npm,
                 });
             }
         }
@@ -59,7 +59,7 @@ mod tests {
         assert!(names.contains(&"react"));
         assert!(names.contains(&"express"));
         assert!(names.contains(&"jest"));
-        assert_eq!(deps[0].ecosystem, "npm");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Npm);
         cleanup(&dir);
     }
 
