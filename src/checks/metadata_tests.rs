@@ -284,26 +284,5 @@ fn no_warning_when_package_does_not_exist() {
 }
 
 fn chrono_free_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-    let days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut rem_days = secs / 86400;
-    let mut year = 1970i64;
-    loop {
-        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-        if rem_days < ydays { break; }
-        rem_days -= ydays;
-        year += 1;
-    }
-    let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let mut month = 1i64;
-    for (i, &md) in days_per_month.iter().enumerate() {
-        let md = if i == 1 && is_leap { md + 1 } else { md } as i64;
-        if rem_days < md { break; }
-        rem_days -= md;
-        month += 1;
-    }
-    let day = rem_days + 1;
-    let remaining = secs % 86400;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, remaining / 3600, (remaining % 3600) / 60, remaining % 60)
+    crate::cache::now_iso8601()
 }

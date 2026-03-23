@@ -201,11 +201,7 @@ fn classify_deps(
     }
 
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
-    let non_internal: Vec<Dependency> = deps
-        .iter()
-        .filter(|dep| !config.is_internal(eco_str, &dep.name))
-        .cloned()
-        .collect();
+    let non_internal: Vec<Dependency> = rest.into_iter().cloned().collect();
 
     (checkable_owned, non_internal)
 }

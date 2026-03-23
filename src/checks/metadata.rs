@@ -37,43 +37,14 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
         .and_then(|s| s.split('.').next()?.parse().ok())
         .unwrap_or(0);
 
-    // Rough epoch calculation (good enough for age comparison)
-    let pkg_epoch = rough_epoch(year, month, day, hour, min, sec);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
+    let pkg_epoch = crate::cache::date_to_epoch(year, month, day, hour, min, sec);
+    let now = crate::cache::now_epoch() as i64;
 
     let diff_seconds = now - pkg_epoch;
     if diff_seconds < 0 {
         return Some(0);
     }
     Some((diff_seconds / 3600) as u64)
-}
-
-/// Rough seconds-since-epoch. Not perfectly accurate (ignores leap years
-/// in some edge cases) but sufficient for "is this older than 72 hours?"
-fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64 {
-    let days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut days: i64 = 0;
-    // Years since 1970
-    for y in 1970..year {
-        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-    }
-    // Months
-    for m in 0..((month - 1) as usize) {
-        days += days_per_month.get(m).copied().unwrap_or(30) as i64;
-    }
-    // Leap day
-    if month > 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-        days += 1;
-    }
-    days += day - 1;
-    days * 86400 + hour * 3600 + min * 60 + sec
 }
 
 #[derive(Debug, Clone)]
