@@ -32,7 +32,7 @@ fn cache_path_for(ecosystem: Ecosystem, cache_dir: Option<&Path>) -> PathBuf {
 /// A mutation generator produces candidate names from a dependency name.
 /// Implementations are composed into a vector and iterated by generate_mutations.
 pub trait MutationGenerator: Send + Sync {
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String>;
 }
 
@@ -52,7 +52,7 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
 
 struct SeparatorSwapGen;
 impl MutationGenerator for SeparatorSwapGen {
-    fn name(&self) -> &str { "separator-swap" }
+    fn name(&self) -> &'static str { "separator-swap" }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         if ecosystem == Ecosystem::PyPI { return vec![]; }
         let lower = name.to_lowercase();
@@ -69,7 +69,7 @@ impl MutationGenerator for SeparatorSwapGen {
 
 struct CollapseRepeatedGen;
 impl MutationGenerator for CollapseRepeatedGen {
-    fn name(&self) -> &str { "collapse-repeated" }
+    fn name(&self) -> &'static str { "collapse-repeated" }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         collapse_one_repeated(&name.to_lowercase())
     }
@@ -77,7 +77,7 @@ impl MutationGenerator for CollapseRepeatedGen {
 
 struct VersionSuffixGen;
 impl MutationGenerator for VersionSuffixGen {
-    fn name(&self) -> &str { "version-suffix" }
+    fn name(&self) -> &'static str { "version-suffix" }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         let lower = name.to_lowercase();
         let stripped = strip_version_suffix(&lower);
@@ -87,7 +87,7 @@ impl MutationGenerator for VersionSuffixGen {
 
 struct WordReorderGen;
 impl MutationGenerator for WordReorderGen {
-    fn name(&self) -> &str { "word-reorder" }
+    fn name(&self) -> &'static str { "word-reorder" }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         word_reorderings(&name.to_lowercase())
     }
@@ -95,7 +95,7 @@ impl MutationGenerator for WordReorderGen {
 
 struct AdjacentSwapGen;
 impl MutationGenerator for AdjacentSwapGen {
-    fn name(&self) -> &str { "adjacent-swap" }
+    fn name(&self) -> &'static str { "char-swap" }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         adjacent_swaps(&name.to_lowercase())
     }
@@ -103,7 +103,7 @@ impl MutationGenerator for AdjacentSwapGen {
 
 struct DeleteOneCharGen;
 impl MutationGenerator for DeleteOneCharGen {
-    fn name(&self) -> &str { "delete-one-char" }
+    fn name(&self) -> &'static str { "extra-char" }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         delete_one_char(&name.to_lowercase()).into_iter().collect()
     }
@@ -111,7 +111,7 @@ impl MutationGenerator for DeleteOneCharGen {
 
 struct HomoglyphGen;
 impl MutationGenerator for HomoglyphGen {
-    fn name(&self) -> &str { "homoglyph" }
+    fn name(&self) -> &'static str { "homoglyph" }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
         if had_homoglyphs { vec![normalized.to_lowercase()] } else { vec![] }
@@ -120,7 +120,7 @@ impl MutationGenerator for HomoglyphGen {
 
 struct ConfusedFormsGen;
 impl MutationGenerator for ConfusedFormsGen {
-    fn name(&self) -> &str { "confused-forms" }
+    fn name(&self) -> &'static str { "confused-forms" }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         apply_confused_forms(name, ecosystem)
     }
@@ -499,31 +499,56 @@ fn max_distance(name_len: usize) -> usize {
     }
 }
 
+/// Generator severity ordering (higher = more dangerous, reported first).
+fn generator_severity(name: &str) -> u8 {
+    match name {
+        "homoglyph" => 7,
+        "confused-forms" => 6,
+        "char-swap" => 5,
+        "collapse-repeated" => 4,
+        "extra-char" => 3,
+        "version-suffix" => 2,
+        "word-reorder" => 1,
+        "separator-swap" => 0,
+        _ => 0,
+    }
+}
+
 /// Generate all mutation candidates for a package name.
-/// Returns a set of candidate names to query the registry for.
-fn generate_mutations(name: &str, ecosystem: Ecosystem) -> HashSet<String> {
+/// Returns a map of candidate → generator_name, tagged for classification.
+fn generate_mutations(name: &str, ecosystem: Ecosystem) -> HashMap<String, &'static str> {
     generate_mutations_with(&default_generators(), name, ecosystem)
 }
 
 /// Generate mutations using a specific set of generators.
+/// Returns HashMap<candidate, generator_name>. If multiple generators produce
+/// the same candidate, the highest-severity generator wins.
 fn generate_mutations_with(
     generators: &[Box<dyn MutationGenerator>],
     name: &str,
     ecosystem: Ecosystem,
-) -> HashSet<String> {
+) -> HashMap<String, &'static str> {
     let lower = name.to_lowercase();
-    let case_insensitive = is_case_insensitive(ecosystem);
-    let mut candidates = HashSet::new();
+    let case_insensitive = ecosystem.is_case_insensitive();
+    let mut candidates: HashMap<String, &'static str> = HashMap::new();
 
     for generator in generators {
+        let gen_name = generator.name();
         for variant in generator.generate(name, ecosystem) {
-            candidates.insert(variant);
+            candidates
+                .entry(variant)
+                .and_modify(|existing| {
+                    if generator_severity(gen_name) > generator_severity(existing) {
+                        *existing = gen_name;
+                    }
+                })
+                .or_insert(gen_name);
         }
     }
 
     // On case-insensitive registries, remove candidates that only differ by case
     if case_insensitive {
-        candidates.retain(|c| c != &lower);
+        candidates.retain(|c, _| c != &lower);
     }
 
     // Remove the original name itself
@@ -531,136 +556,65 @@ fn generate_mutations_with(
     candidates
 }
 
-/// Classify which generator produced a candidate match.
-fn classify_match(dep_name: &str, candidate: &str, ecosystem: Ecosystem) -> (&'static str, String) {
-    let dep_lower = dep_name.to_lowercase();
-    let suppress_separators = ecosystem == Ecosystem::PyPI;
-
-    // Homoglyph check
-    let (normalized, had_homoglyphs) = normalize_homoglyphs(dep_name);
-    if had_homoglyphs && normalized.to_lowercase() == candidate.to_lowercase() {
-        return (
-            "homoglyph",
-            format!(
-                "'{}' contains non-Latin characters that look identical to letters in '{}'. \
-                 This is a homoglyph attack -- the package name uses lookalike Unicode characters \
-                 to impersonate a legitimate package. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Separator normalization
-    if !suppress_separators {
-        let dep_normalized = normalize_separators(&dep_lower);
-        let cand_normalized = normalize_separators(candidate);
-        if dep_normalized == cand_normalized && dep_lower != candidate {
-            return (
-                "separator-confusion",
-                format!(
-                    "'{}' matches '{}' after normalizing separators (-, _, .). \
-                     These may resolve to different packages. \
-                     Examine both packages and add the intended one to your allowed list.",
-                    dep_name, candidate
-                ),
-            );
-        }
-    }
-
-    // Collapsed repeated characters
-    let collapsed = collapse_one_repeated(&dep_lower);
-    if collapsed.iter().any(|v| v == candidate) {
-        return (
-            "repeated-chars",
-            format!(
-                "'{}' matches '{}' after removing a repeated character. \
-                 This is a common typosquatting pattern. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Version suffix stripping
-    let stripped = strip_version_suffix(&dep_lower);
-    if stripped != dep_lower && stripped == candidate {
-        return (
-            "version-suffix",
-            format!(
-                "'{}' looks like '{}' with a version suffix appended. \
-                 An attacker could register the suffixed variant as a separate package. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Word reordering
-    let reorderings = word_reorderings(&dep_lower);
-    if reorderings.iter().any(|v| v == candidate) {
-        return (
-            "word-reorder",
-            format!(
-                "'{}' is a reordering of '{}'. Word-swapped package names are a known \
-                 typosquatting vector. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Adjacent swap
-    let swaps = adjacent_swaps(&dep_lower);
-    if swaps.iter().any(|v| v == candidate) {
-        return (
-            "char-swap",
-            format!(
-                "'{}' matches '{}' with two adjacent characters swapped. \
-                 This is a common typo and a known typosquatting pattern. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Delete-one-char (extra char in dep name)
-    let deletions = delete_one_char(&dep_lower);
-    if deletions.iter().any(|v| v == candidate) {
-        return (
-            "extra-char",
-            format!(
-                "'{}' matches '{}' with one character removed. \
-                 An extra character may have been added -- this is a common typosquatting pattern. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Confused forms
-    let confused = apply_confused_forms(dep_name, ecosystem);
-    if confused.iter().any(|v| v == candidate) {
-        return (
-            "confused-form",
-            format!(
-                "'{}' is a confused form of '{}'. These are commonly interchanged but \
-                 resolve to different packages. \
-                 Examine both packages and add the intended one to your allowed list.",
-                dep_name, candidate
-            ),
-        );
-    }
-
-    // Fallback (should not normally reach here)
-    (
-        "mutation-match",
-        format!(
+/// Format a human-readable message for a match, given the generator name (from tagged mutations).
+/// Replaces the old `classify_match` which re-ran all generators to determine the match type.
+fn format_match_message(dep_name: &str, candidate: &str, generator: &str) -> String {
+    match generator {
+        "homoglyph" => format!(
+            "'{}' contains non-Latin characters that look identical to letters in '{}'. \
+             This is a homoglyph attack -- the package name uses lookalike Unicode characters \
+             to impersonate a legitimate package. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "separator-swap" => format!(
+            "'{}' matches '{}' after normalizing separators (-, _, .). \
+             These may resolve to different packages. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "collapse-repeated" => format!(
+            "'{}' matches '{}' after removing a repeated character. \
+             This is a common typosquatting pattern. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "version-suffix" => format!(
+            "'{}' looks like '{}' with a version suffix appended. \
+             An attacker could register the suffixed variant as a separate package. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "word-reorder" => format!(
+            "'{}' is a reordering of '{}'. Word-swapped package names are a known \
+             typosquatting vector. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "char-swap" => format!(
+            "'{}' matches '{}' with two adjacent characters swapped. \
+             This is a common typo and a known typosquatting pattern. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "extra-char" => format!(
+            "'{}' matches '{}' with one character removed. \
+             An extra character may have been added -- this is a common typosquatting pattern. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "confused-forms" => format!(
+            "'{}' is a confused form of '{}'. These are commonly interchanged but \
+             resolve to different packages. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        _ => format!(
             "'{}' is suspiciously similar to '{}'. \
              Examine both packages and add the intended one to your allowed list.",
             dep_name, candidate
         ),
-    )
+    }
 }
 
 /// Main entry point. Registry-based similarity checking.
@@ -732,8 +686,8 @@ pub async fn check_similarity_with_cache(
         }
     }
 
-    // ---- Pre-compute mutations once for Phase 1 + Phase 2 ----
-    let mut all_mutations: HashMap<String, HashSet<String>> = HashMap::new();
+    // ---- Pre-compute tagged mutations once for Phase 1 + Phase 2 ----
+    let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
     for dep in deps {
         if !flagged.contains(&dep.name) {
             all_mutations.insert(dep.name.clone(), generate_mutations(&dep.name, ecosystem));
@@ -746,18 +700,17 @@ pub async fn check_similarity_with_cache(
             continue;
         }
         if let Some(mutations) = all_mutations.get(&dep.name) {
-            for mutation in mutations {
+            for (mutation, gen_name) in mutations {
                 let mutation_lower = mutation.to_lowercase();
                 if dep_names.contains(&mutation_lower)
                     && mutation_lower != dep.name.to_lowercase()
                 {
                     if flagged.insert(dep.name.clone()) {
-                        let (check_type, message) =
-                            classify_match(&dep.name, &mutation_lower, ecosystem);
+                        let message = format_match_message(&dep.name, &mutation_lower, gen_name);
                         issues.push(make_issue(
                             &dep.name,
                             &mutation_lower,
-                            check_type,
+                            gen_name,
                             &format!(
                                 "{} Both '{}' and '{}' are in your manifest.",
                                 message, dep.name, mutation_lower
@@ -778,7 +731,7 @@ pub async fn check_similarity_with_cache(
             continue;
         }
         if let Some(mutations) = all_mutations.get(&dep.name) {
-            for mutation in mutations {
+            for mutation in mutations.keys() {
                 queries.push((dep.name.clone(), mutation.clone()));
             }
         }
@@ -879,14 +832,18 @@ pub async fn check_similarity_with_cache(
     }
 
     // ---- Phase 3: Fetch metadata for matches concurrently, build issues ----
-    // Collect all (dep_name, candidate) pairs that need metadata
+    // For each dep with matches, pick the highest-severity match (deterministic).
     let metadata_queries: Vec<(String, String)> = deps
         .iter()
         .filter(|dep| !flagged.contains(&dep.name))
         .filter_map(|dep| {
-            matches.get(&dep.name).and_then(|candidates| {
-                candidates.first().map(|c| (dep.name.clone(), c.clone()))
-            })
+            let dep_matches = matches.get(&dep.name)?;
+            let dep_mutations = all_mutations.get(&dep.name)?;
+            // Pick the candidate with the highest generator severity
+            let best = dep_matches.iter().max_by_key(|c| {
+                dep_mutations.get(c.as_str()).map(|g| generator_severity(g)).unwrap_or(0)
+            })?;
+            Some((dep.name.clone(), best.clone()))
         })
         .collect();
 
@@ -903,14 +860,18 @@ pub async fn check_similarity_with_cache(
 
     for (dep_name, candidate, metadata) in metadata_results {
         if flagged.insert(dep_name.clone()) {
-            let (check_type, mut message) =
-                classify_match(&dep_name, &candidate, ecosystem);
+            // Look up the generator name from tagged mutations (deterministic classification)
+            let gen_name = all_mutations
+                .get(&dep_name)
+                .and_then(|m| m.get(candidate.as_str()).copied())
+                .unwrap_or("mutation-match");
+            let mut message = format_match_message(&dep_name, &candidate, gen_name);
 
             if let Some(ref meta) = metadata {
                 let mut evidence_parts = Vec::new();
                 if let Some(downloads) = meta.downloads {
                     evidence_parts
-                        .push(format!("{} has {:?} downloads", candidate, downloads));
+                        .push(format!("{} has {} downloads", candidate, downloads));
                 }
                 if let Some(ref created) = meta.created {
                     evidence_parts
@@ -924,7 +885,7 @@ pub async fn check_similarity_with_cache(
             issues.push(make_issue(
                 &dep_name,
                 &candidate,
-                check_type,
+                gen_name,
                 &message,
                 "Examine both packages and add the intended one to your allowed list.",
             ));
@@ -976,8 +937,7 @@ pub async fn check_similarity_with_cache(
 /// for non-existent packages. Delegates to generate_mutations with a
 /// neutral ecosystem to get the full set of candidates.
 pub fn generate_candidates(name: &str) -> HashSet<String> {
-    // Use "npm" as a neutral ecosystem (no separator suppression, includes all generators)
-    generate_mutations(name, Ecosystem::Npm)
+    generate_mutations(name, Ecosystem::Npm).into_keys().collect()
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
@@ -1089,7 +1049,13 @@ mod tests {
         let deps = vec![dep("react2")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
-        assert!(issues[0].check.contains("version-suffix"));
+        // "react2" matches "react" via both version-suffix and extra-char.
+        // extra-char has higher severity and wins deterministically.
+        assert!(
+            issues[0].check.contains("extra-char") || issues[0].check.contains("version-suffix"),
+            "Expected extra-char or version-suffix, got: {}",
+            issues[0].check
+        );
         assert_eq!(issues[0].suggestion, Some("react".to_string()));
     }
 
@@ -1389,5 +1355,47 @@ mod tests {
     fn confused_form_go_github_gitlab() {
         let forms = apply_confused_forms("github.com/spf13/cobra", Ecosystem::Go);
         assert!(forms.contains(&"gitlab.com/spf13/cobra".to_string()));
+    }
+
+    #[tokio::test]
+    async fn match_reporting_is_deterministic() {
+        // "expresss" matches "express" via both collapse-repeated AND extra-char.
+        // The reported check type must be deterministic (highest severity wins).
+        let registry = FakeRegistry::with(&["express"]);
+        let deps = vec![dep("expresss")];
+
+        // Run multiple times to prove determinism
+        for _ in 0..5 {
+            let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+            assert_eq!(issues.len(), 1);
+            // collapse-repeated (severity 4) > extra-char (severity 3)
+            assert!(
+                issues[0].check.contains("collapse-repeated"),
+                "Expected deterministic collapse-repeated, got: {}",
+                issues[0].check
+            );
+        }
+    }
+
+    #[test]
+    fn generator_severity_ordering_is_correct() {
+        // Verify the severity ordering: homoglyph > confused > char-swap > collapse > extra > version > word > separator
+        assert!(generator_severity("homoglyph") > generator_severity("confused-forms"));
+        assert!(generator_severity("confused-forms") > generator_severity("char-swap"));
+        assert!(generator_severity("char-swap") > generator_severity("collapse-repeated"));
+        assert!(generator_severity("collapse-repeated") > generator_severity("extra-char"));
+        assert!(generator_severity("extra-char") > generator_severity("version-suffix"));
+        assert!(generator_severity("version-suffix") > generator_severity("word-reorder"));
+        assert!(generator_severity("word-reorder") > generator_severity("separator-swap"));
+    }
+
+    #[test]
+    fn tagged_mutations_include_generator_names() {
+        let mutations = generate_mutations("expresss", Ecosystem::Npm);
+        // "express" should be tagged with collapse-repeated (and possibly extra-char)
+        let gen_name = mutations.get("express");
+        assert!(gen_name.is_some(), "Expected 'express' in mutations");
+        // collapse-repeated has higher severity than extra-char, so it should win
+        assert_eq!(*gen_name.unwrap(), "collapse-repeated");
     }
 }

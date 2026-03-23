@@ -87,32 +87,25 @@ impl Check for MetadataCheck {
                 ctx.config,
             ));
 
-            let supports_metadata_registry = ctx.ecosystem.supports_metadata();
-
-            if supports_metadata_registry {
-                let lookups = super::metadata::fetch_metadata(
-                    ctx.registry,
-                    ctx.non_internal_deps,
-                    ctx.resolution,
-                )
-                .await?;
-                acc.issues.extend(super::metadata::issues_from_lookups(
-                    &lookups,
-                    ctx.config,
-                    &acc.similarity_flagged,
-                ));
-                acc.metadata_lookups = Some(lookups);
-            } else {
-                let results = super::metadata::check_metadata(
-                    ctx.registry,
-                    ctx.non_internal_deps,
-                    ctx.config,
-                    &acc.similarity_flagged,
-                    ctx.resolution,
-                )
-                .await?;
-                acc.issues.extend(results);
-            }
+            // Always fetch metadata lookups and store in accumulator.
+            // For metadata-supporting ecosystems (npm, pypi, cargo, ruby, jvm),
+            // this calls metadata() + conditional exists() fallback per dep.
+            // For non-metadata ecosystems (go, php, dotnet), metadata() returns
+            // None immediately and exists() is called once as fallback.
+            // Either way, ExistenceCheck reads from acc.metadata_lookups
+            // instead of making redundant registry calls.
+            let lookups = super::metadata::fetch_metadata(
+                ctx.registry,
+                ctx.non_internal_deps,
+                ctx.resolution,
+            )
+            .await?;
+            acc.issues.extend(super::metadata::issues_from_lookups(
+                &lookups,
+                ctx.config,
+                &acc.similarity_flagged,
+            ));
+            acc.metadata_lookups = Some(lookups);
 
             Ok(())
         })
