@@ -1,5 +1,118 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Abstract cache service. Enables disk caching in production and
+/// deterministic in-memory caching in tests.
+pub trait CacheService: Send + Sync {
+    fn read_raw(&self, key: &str, ttl_secs: u64) -> Option<String>;
+    fn write_raw(&self, key: &str, data: &str) -> Result<()>;
+}
+
+/// Extension methods for typed cache operations.
+pub trait CacheServiceExt: CacheService {
+    fn read<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+        ttl_secs: u64,
+    ) -> Option<T> {
+        let raw = self.read_raw(key, ttl_secs)?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    fn write<T: serde::Serialize>(&self, key: &str, data: &T) -> Result<()> {
+        let json = serde_json::to_string(data)?;
+        self.write_raw(key, &json)
+    }
+}
+
+impl<S: CacheService + ?Sized> CacheServiceExt for S {}
+
+/// Disk-backed cache with symlink protection, atomic writes, 0o600 permissions.
+/// Keys are mapped to files under a base directory.
+pub struct DiskCacheService {
+    base_dir: PathBuf,
+}
+
+impl DiskCacheService {
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self { base_dir }
+    }
+
+    fn path_for(&self, key: &str) -> PathBuf {
+        self.base_dir.join(key)
+    }
+}
+
+impl CacheService for DiskCacheService {
+    fn read_raw(&self, key: &str, _ttl_secs: u64) -> Option<String> {
+        let path = self.path_for(key);
+        if ensure_no_symlink(&path).is_err() {
+            return None;
+        }
+        std::fs::read_to_string(&path).ok()
+    }
+
+    fn write_raw(&self, key: &str, data: &str) -> Result<()> {
+        let path = self.path_for(key);
+        if ensure_no_symlink(&path).is_err() {
+            return Ok(());
+        }
+        if let Some(parent) = path.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return Ok(());
+        }
+        let tmp_path = cache_tmp_path(&path);
+        if std::fs::write(&tmp_path, data).is_err() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&tmp_path, perms);
+            }
+        }
+        let _ = std::fs::rename(&tmp_path, &path);
+        Ok(())
+    }
+}
+
+/// In-memory cache for testing. No disk I/O, fully deterministic.
+pub struct InMemoryCacheService {
+    store: Mutex<HashMap<String, String>>,
+}
+
+impl InMemoryCacheService {
+    pub fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for InMemoryCacheService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CacheService for InMemoryCacheService {
+    fn read_raw(&self, key: &str, _ttl_secs: u64) -> Option<String> {
+        self.store.lock().ok()?.get(key).cloned()
+    }
+
+    fn write_raw(&self, key: &str, data: &str) -> Result<()> {
+        if let Ok(mut store) = self.store.lock() {
+            store.insert(key.to_string(), data.to_string());
+        }
+        Ok(())
+    }
+}
 
 /// Return the platform-appropriate user cache directory.
 pub fn user_cache_dir() -> PathBuf {
@@ -231,5 +344,40 @@ mod tests {
         let a = cache_tmp_path(base);
         let b = cache_tmp_path(base);
         assert_ne!(a, b);
+    }
+
+    // -- CacheService trait tests --
+
+    #[test]
+    fn in_memory_cache_round_trips() {
+        let cache = InMemoryCacheService::new();
+        assert!(cache.read_raw("key", 3600).is_none());
+        cache.write_raw("key", "value").unwrap();
+        assert_eq!(cache.read_raw("key", 3600), Some("value".to_string()));
+    }
+
+    #[test]
+    fn in_memory_cache_typed_round_trips() {
+        let cache = InMemoryCacheService::new();
+        let data = TestCache {
+            timestamp: now_epoch(),
+            value: "typed".to_string(),
+        };
+        cache.write("typed-key", &data).unwrap();
+        let loaded: TestCache = cache.read("typed-key", 3600).unwrap();
+        assert_eq!(loaded.value, "typed");
+    }
+
+    #[test]
+    fn disk_cache_service_round_trips() {
+        let dir = unique_dir();
+        let cache = DiskCacheService::new(dir.clone());
+        assert!(cache.read_raw("test.json", 3600).is_none());
+        cache.write_raw("test.json", r#"{"hello":"world"}"#).unwrap();
+        assert_eq!(
+            cache.read_raw("test.json", 3600),
+            Some(r#"{"hello":"world"}"#.to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

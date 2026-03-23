@@ -26,6 +26,105 @@ fn cache_path_for(ecosystem: &str, cache_dir: Option<&Path>) -> PathBuf {
     base.join(format!("similarity-{}.json", ecosystem))
 }
 
+// -- Mutation generator trait ------------------------------------------------
+
+/// A mutation generator produces candidate names from a dependency name.
+/// Implementations are composed into a vector and iterated by generate_mutations.
+pub trait MutationGenerator: Send + Sync {
+    fn name(&self) -> &str;
+    fn generate(&self, name: &str, ecosystem: &str) -> Vec<String>;
+}
+
+/// Returns the default set of mutation generators.
+pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
+    vec![
+        Box::new(SeparatorSwapGen),
+        Box::new(CollapseRepeatedGen),
+        Box::new(VersionSuffixGen),
+        Box::new(WordReorderGen),
+        Box::new(AdjacentSwapGen),
+        Box::new(DeleteOneCharGen),
+        Box::new(HomoglyphGen),
+        Box::new(ConfusedFormsGen),
+    ]
+}
+
+struct SeparatorSwapGen;
+impl MutationGenerator for SeparatorSwapGen {
+    fn name(&self) -> &str { "separator-swap" }
+    fn generate(&self, name: &str, ecosystem: &str) -> Vec<String> {
+        if ecosystem == "pypi" { return vec![]; }
+        let lower = name.to_lowercase();
+        let mut results = Vec::new();
+        let stripped = normalize_separators(&lower);
+        if stripped != lower { results.push(stripped); }
+        for &sep in &['-', '_', '.'] {
+            let with_sep: String = lower.chars().map(|c| if c == '-' || c == '_' || c == '.' { sep } else { c }).collect();
+            if with_sep != lower { results.push(with_sep); }
+        }
+        results
+    }
+}
+
+struct CollapseRepeatedGen;
+impl MutationGenerator for CollapseRepeatedGen {
+    fn name(&self) -> &str { "collapse-repeated" }
+    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+        collapse_one_repeated(&name.to_lowercase())
+    }
+}
+
+struct VersionSuffixGen;
+impl MutationGenerator for VersionSuffixGen {
+    fn name(&self) -> &str { "version-suffix" }
+    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+        let lower = name.to_lowercase();
+        let stripped = strip_version_suffix(&lower);
+        if stripped != lower { vec![stripped] } else { vec![] }
+    }
+}
+
+struct WordReorderGen;
+impl MutationGenerator for WordReorderGen {
+    fn name(&self) -> &str { "word-reorder" }
+    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+        word_reorderings(&name.to_lowercase())
+    }
+}
+
+struct AdjacentSwapGen;
+impl MutationGenerator for AdjacentSwapGen {
+    fn name(&self) -> &str { "adjacent-swap" }
+    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+        adjacent_swaps(&name.to_lowercase())
+    }
+}
+
+struct DeleteOneCharGen;
+impl MutationGenerator for DeleteOneCharGen {
+    fn name(&self) -> &str { "delete-one-char" }
+    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+        delete_one_char(&name.to_lowercase()).into_iter().collect()
+    }
+}
+
+struct HomoglyphGen;
+impl MutationGenerator for HomoglyphGen {
+    fn name(&self) -> &str { "homoglyph" }
+    fn generate(&self, name: &str, _ecosystem: &str) -> Vec<String> {
+        let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
+        if had_homoglyphs { vec![normalized.to_lowercase()] } else { vec![] }
+    }
+}
+
+struct ConfusedFormsGen;
+impl MutationGenerator for ConfusedFormsGen {
+    fn name(&self) -> &str { "confused-forms" }
+    fn generate(&self, name: &str, ecosystem: &str) -> Vec<String> {
+        apply_confused_forms(name, ecosystem)
+    }
+}
+
 /// Ecosystem-specific confused forms: terms that are interchangeable
 /// and commonly swapped by AI or humans.
 fn confused_forms(ecosystem: &str) -> &'static [(&'static str, &'static str)] {
@@ -402,76 +501,27 @@ fn max_distance(name_len: usize) -> usize {
 /// Generate all mutation candidates for a package name.
 /// Returns a set of candidate names to query the registry for.
 fn generate_mutations(name: &str, ecosystem: &str) -> HashSet<String> {
+    generate_mutations_with(&default_generators(), name, ecosystem)
+}
+
+/// Generate mutations using a specific set of generators.
+fn generate_mutations_with(
+    generators: &[Box<dyn MutationGenerator>],
+    name: &str,
+    ecosystem: &str,
+) -> HashSet<String> {
     let lower = name.to_lowercase();
     let case_insensitive = is_case_insensitive(ecosystem);
-    let suppress_separators = ecosystem == "pypi";
     let mut candidates = HashSet::new();
 
-    // Separator normalization (suppress on PyPI -- registry normalizes per PEP 503)
-    if !suppress_separators {
-        let stripped = normalize_separators(&lower);
-        if stripped != lower {
-            candidates.insert(stripped);
-        }
-        // Also generate with different separators swapped
-        for &sep in &['-', '_', '.'] {
-            let with_sep: String = lower
-                .chars()
-                .map(|c| {
-                    if c == '-' || c == '_' || c == '.' {
-                        sep
-                    } else {
-                        c
-                    }
-                })
-                .collect();
-            if with_sep != lower {
-                candidates.insert(with_sep);
-            }
+    for generator in generators {
+        for variant in generator.generate(name, ecosystem) {
+            candidates.insert(variant);
         }
     }
 
-    // Collapsed repeated characters
-    for variant in collapse_one_repeated(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Version suffix stripping
-    let no_suffix = strip_version_suffix(&lower);
-    if no_suffix != lower {
-        candidates.insert(no_suffix);
-    }
-
-    // Word reorderings
-    for variant in word_reorderings(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Adjacent swaps
-    for variant in adjacent_swaps(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Delete one character (catches extra-char typosquats)
-    for variant in delete_one_char(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Homoglyph normalization
-    let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
-    if had_homoglyphs {
-        candidates.insert(normalized.to_lowercase());
-    }
-
-    // Confused forms
-    for variant in apply_confused_forms(name, ecosystem) {
-        candidates.insert(variant);
-    }
-
-    // On case-insensitive registries, don't generate case-variant candidates
-    // (they resolve to the same package anyway)
+    // On case-insensitive registries, remove candidates that only differ by case
     if case_insensitive {
-        // Remove candidates that only differ by case from the original
         candidates.retain(|c| c != &lower);
     }
 

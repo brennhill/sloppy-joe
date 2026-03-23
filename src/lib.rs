@@ -2,6 +2,7 @@
 
 pub(crate) mod cache;
 pub mod checks;
+pub(crate) mod error_budget;
 pub mod config;
 pub mod lockfiles;
 pub mod parsers;
@@ -149,11 +150,12 @@ async fn scan_with_services_inner(
         .cloned()
         .collect();
     let canonical_results = checks::canonical::check_canonical(&non_internal, &config, &ecosystem);
-    let resolution = lockfiles::resolve_versions(project_dir, &non_internal)?;
+    let lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
+    let resolution = &lockfile_data.resolution;
     let mut resolution_issues = resolution.issues.clone();
     resolution_issues.extend(unresolved_version_policy_issues(
         &non_internal,
-        &resolution,
+        resolution,
         &config,
     ));
 
@@ -224,9 +226,8 @@ async fn scan_with_services_inner(
     mark_source(&mut metadata_results, "direct");
     mark_source(&mut malicious_results, "direct");
 
-    // Transitive dependency scanning
-    let mut transitive_deps =
-        lockfiles::parse_all_lockfile_deps(project_dir, &non_internal)?;
+    // Transitive dependency scanning (uses pre-parsed lockfile data)
+    let mut transitive_deps = lockfile_data.transitive_deps;
 
     if !transitive_deps.is_empty() {
         // Filter out internal and allowed transitive deps
