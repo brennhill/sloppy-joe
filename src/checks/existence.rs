@@ -34,9 +34,9 @@ pub(crate) fn registry_url(ecosystem: &str, name: &str) -> String {
 /// Uses a concurrency limit of 10 simultaneous requests.
 pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Result<Vec<Issue>> {
     let ecosystem = registry.ecosystem().to_string();
-    let results = stream::iter(deps)
-        .map(|dep| {
-            let name = dep.name.clone();
+    let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
+    let results = stream::iter(names)
+        .map(|name| {
             async move {
                 let exists = registry.exists(&name).await?;
                 Ok::<_, anyhow::Error>((name, exists))
