@@ -209,22 +209,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_registry_error_does_not_block() {
-        // A registry that fails for one specific package but works for others
-        // We can't test partial failure with the simple FakeRegistry,
-        // but we can test that a single dep failure doesn't produce a blocking issue
+    async fn few_errors_do_not_trigger_fail_closed() {
+        // With only 1 query, 100% failure rate but below MIN_QUERIES_FOR_RATE,
+        // so rate-based threshold doesn't apply. Also below hard limit (5).
         let registry = FakeRegistry {
             existing: vec![],
             fail: true,
         };
         let deps = vec![dep("react")];
         let issues = check_existence(&registry, &deps).await.unwrap();
-        // With only 1 query, 100% failure rate but only 1 error (under HARD_LIMIT of 5)
-        // Should NOT produce registry-unreachable since error_count <= 5
-        // But it will since error_rate > 10%, so it should produce the blocking issue
         assert!(
-            issues.iter().any(|i| i.check.contains("registry-unreachable")),
-            "Single dep with 100% failure should trigger rate-based fail-closed"
+            !issues.iter().any(|i| i.check.contains("registry-unreachable")),
+            "Few errors should not trigger fail-closed"
         );
     }
 }

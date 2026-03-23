@@ -154,7 +154,8 @@ async fn registry_errors_emit_blocking_issue() {
             anyhow::bail!("metadata unavailable");
         }
     }
-    let deps = vec![dep("some-pkg")];
+    // Need enough deps to exceed the hard error limit (5) so fail-closed triggers
+    let deps: Vec<_> = (0..6).map(|i| dep(&format!("pkg-{}", i))).collect();
     let issues = check_metadata(&ErrorRegistry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap();
     assert!(
         issues.iter().any(|i| i.check.contains("registry-unreachable")),

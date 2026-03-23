@@ -65,6 +65,12 @@ impl Default for ScanAccumulator {
     }
 }
 
+/// Minimum number of queries before the error rate threshold applies.
+/// Below this, only the hard error count limit triggers fail-closed.
+/// This prevents 2/2 failures from triggering "registry unreachable"
+/// when most queries were served from cache.
+const MIN_QUERIES_FOR_RATE: usize = 5;
+
 /// Check if error count/rate exceeds ecosystem-aware thresholds.
 /// Returns true if the check should emit a fail-closed blocking issue.
 pub(crate) fn exceeds_error_threshold(
@@ -72,13 +78,21 @@ pub(crate) fn exceeds_error_threshold(
     total_queries: usize,
     ecosystem: Ecosystem,
 ) -> bool {
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
+    if error_count == 0 {
         return false;
-    };
-    error_count > ecosystem.error_hard_limit()
-        || error_rate > ecosystem.error_rate_threshold()
+    }
+    // Hard limit: always applies regardless of sample size
+    if error_count > ecosystem.error_hard_limit() {
+        return true;
+    }
+    // Rate limit: only applies with enough queries to be meaningful
+    if total_queries >= MIN_QUERIES_FOR_RATE {
+        let error_rate = error_count as f64 / total_queries as f64;
+        if error_rate > ecosystem.error_rate_threshold() {
+            return true;
+        }
+    }
+    false
 }
 
 /// A composable check. Checks execute in pipeline order and can read/write
@@ -94,4 +108,51 @@ pub trait Check: Send + Sync {
         ctx: &'a CheckContext<'a>,
         acc: &'a mut ScanAccumulator,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_errors_never_exceeds() {
+        assert!(!exceeds_error_threshold(0, 100, Ecosystem::Npm));
+        assert!(!exceeds_error_threshold(0, 0, Ecosystem::Npm));
+    }
+
+    #[test]
+    fn hard_limit_always_triggers() {
+        // 6 errors > 5 hard limit for npm, regardless of total
+        assert!(exceeds_error_threshold(6, 1000, Ecosystem::Npm));
+        // Even with few total queries
+        assert!(exceeds_error_threshold(6, 6, Ecosystem::Npm));
+    }
+
+    #[test]
+    fn rate_needs_minimum_queries() {
+        // 2/2 = 100% but below MIN_QUERIES_FOR_RATE (5), so no trigger
+        assert!(!exceeds_error_threshold(2, 2, Ecosystem::Npm));
+        // 3/3 = 100% still below minimum
+        assert!(!exceeds_error_threshold(3, 3, Ecosystem::Npm));
+        // 4/5 = 80% with exactly 5 queries — triggers (above 10%)
+        assert!(exceeds_error_threshold(4, 5, Ecosystem::Npm));
+    }
+
+    #[test]
+    fn go_has_higher_rate_threshold() {
+        // 2/10 = 20% — exceeds npm (10%) but not Go (25%)
+        assert!(exceeds_error_threshold(2, 10, Ecosystem::Npm));
+        assert!(!exceeds_error_threshold(2, 10, Ecosystem::Go));
+        // 3/10 = 30% — exceeds Go (25%)
+        assert!(exceeds_error_threshold(3, 10, Ecosystem::Go));
+    }
+
+    #[test]
+    fn go_has_higher_hard_limit() {
+        // 6 errors — exceeds npm (5) but not Go (10)
+        assert!(exceeds_error_threshold(6, 100, Ecosystem::Npm));
+        assert!(!exceeds_error_threshold(6, 100, Ecosystem::Go));
+        // 11 errors — exceeds Go (10)
+        assert!(exceeds_error_threshold(11, 100, Ecosystem::Go));
+    }
 }
