@@ -40,7 +40,7 @@ impl Default for GoRegistry {
 }
 
 #[async_trait]
-impl super::Registry for GoRegistry {
+impl super::RegistryExistence for GoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let encoded = encode_module_path(package_name);
@@ -64,6 +64,9 @@ impl super::Registry for GoRegistry {
         "go"
     }
 }
+
+#[async_trait]
+impl super::RegistryMetadata for GoRegistry {}
 
 #[cfg(test)]
 mod tests {

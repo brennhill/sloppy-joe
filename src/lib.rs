@@ -166,7 +166,7 @@ async fn scan_with_services_inner(
 
     let (existence_results, metadata_results) = if supports_metadata_registry {
         let lookups =
-            checks::metadata::fetch_metadata(registry, &non_internal, &resolution).await?;
+            checks::metadata::fetch_metadata(registry, &non_internal, resolution).await?;
         let mut metadata_results = resolution_issues;
         metadata_results.extend(checks::metadata::issues_from_lookups(
             &lookups,
@@ -189,7 +189,7 @@ async fn scan_with_services_inner(
                 &non_internal,
                 &config,
                 &similarity_flagged,
-                &resolution,
+                resolution,
             )
             .await?,
         );
@@ -201,10 +201,10 @@ async fn scan_with_services_inner(
 
     // Malicious/vulnerability check runs on all non-internal deps
     let malicious_results = if opts.disable_osv_disk_cache {
-        checks::malicious::check_malicious_with_cache(osv_client, &non_internal, &resolution, None)
+        checks::malicious::check_malicious_with_cache(osv_client, &non_internal, resolution, None)
             .await?
     } else {
-        checks::malicious::check_malicious(osv_client, &non_internal, &resolution).await?
+        checks::malicious::check_malicious(osv_client, &non_internal, resolution).await?
     };
 
     // Mark all direct dep issues with source: "direct"
@@ -388,7 +388,7 @@ fn unresolved_version_policy_issues(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::PackageMetadata;
+    use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -399,11 +399,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl Registry for FakeRegistry {
+    impl RegistryExistence for FakeRegistry {
         async fn exists(&self, package_name: &str) -> Result<bool> {
             Ok(self.existing.iter().any(|name| name == package_name))
         }
 
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+
+    #[async_trait]
+    impl RegistryMetadata for FakeRegistry {
         async fn metadata(
             &self,
             package_name: &str,
@@ -423,10 +430,6 @@ mod tests {
             } else {
                 Ok(None)
             }
-        }
-
-        fn ecosystem(&self) -> &str {
-            "npm"
         }
     }
 
@@ -450,11 +453,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl Registry for RecordingRegistry {
+    impl RegistryExistence for RecordingRegistry {
         async fn exists(&self, package_name: &str) -> Result<bool> {
             Ok(self.existing.iter().any(|name| name == package_name))
         }
 
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+
+    #[async_trait]
+    impl RegistryMetadata for RecordingRegistry {
         async fn metadata(
             &self,
             package_name: &str,
@@ -478,10 +488,6 @@ mod tests {
             } else {
                 Ok(None)
             }
-        }
-
-        fn ecosystem(&self) -> &str {
-            "npm"
         }
     }
 

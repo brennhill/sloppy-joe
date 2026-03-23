@@ -343,6 +343,7 @@ pub async fn check_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::{RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
 
     struct FakeRegistry {
@@ -350,19 +351,23 @@ mod tests {
     }
 
     #[async_trait]
-    impl Registry for FakeRegistry {
+    impl RegistryExistence for FakeRegistry {
         async fn exists(&self, _name: &str) -> Result<bool> {
             Ok(true)
         }
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+
+    #[async_trait]
+    impl RegistryMetadata for FakeRegistry {
         async fn metadata(
             &self,
             _name: &str,
             _version: Option<&str>,
         ) -> Result<Option<PackageMetadata>> {
             Ok(self.metadata_response.clone())
-        }
-        fn ecosystem(&self) -> &str {
-            "npm"
         }
     }
 
@@ -634,21 +639,24 @@ mod tests {
         struct ErrorRegistry;
 
         #[async_trait]
-        impl Registry for ErrorRegistry {
+        impl RegistryExistence for ErrorRegistry {
             async fn exists(&self, _name: &str) -> Result<bool> {
                 Ok(true)
             }
 
+            fn ecosystem(&self) -> &str {
+                "npm"
+            }
+        }
+
+        #[async_trait]
+        impl RegistryMetadata for ErrorRegistry {
             async fn metadata(
                 &self,
                 _name: &str,
                 _version: Option<&str>,
             ) -> Result<Option<PackageMetadata>> {
                 anyhow::bail!("metadata unavailable");
-            }
-
-            fn ecosystem(&self) -> &str {
-                "npm"
             }
         }
 

@@ -24,7 +24,7 @@ impl Default for PackagistRegistry {
 }
 
 #[async_trait]
-impl super::Registry for PackagistRegistry {
+impl super::RegistryExistence for PackagistRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         // Package names are vendor/package format
@@ -47,3 +47,6 @@ impl super::Registry for PackagistRegistry {
         "php"
     }
 }
+
+#[async_trait]
+impl super::RegistryMetadata for PackagistRegistry {}

@@ -995,7 +995,7 @@ fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::PackageMetadata;
+    use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
 
     struct FakeRegistry {
@@ -1017,11 +1017,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl Registry for FakeRegistry {
+    impl RegistryExistence for FakeRegistry {
         async fn exists(&self, package_name: &str) -> Result<bool> {
             Ok(self.existing.contains(package_name))
         }
 
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+
+    #[async_trait]
+    impl RegistryMetadata for FakeRegistry {
         async fn metadata(
             &self,
             package_name: &str,
@@ -1041,10 +1048,6 @@ mod tests {
             } else {
                 Ok(None)
             }
-        }
-
-        fn ecosystem(&self) -> &str {
-            "npm"
         }
     }
 
