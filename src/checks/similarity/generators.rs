@@ -14,6 +14,7 @@ pub trait MutationGenerator: Send + Sync {
 }
 
 /// Returns the default set of mutation generators.
+/// Use `paranoid_generators()` for the full set including bitflip.
 pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
     vec![
         Box::new(SeparatorSwapGen),
@@ -24,9 +25,16 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
         Box::new(DeleteOneCharGen),
         Box::new(HomoglyphGen),
         Box::new(ConfusedFormsGen),
-        Box::new(BitflipGen),
         Box::new(KeyboardProximityGen),
     ]
+}
+
+/// Returns all generators including expensive ones (bitflip).
+/// Activated by --paranoid. Produces ~10x more mutations than default.
+pub fn paranoid_generators() -> Vec<Box<dyn MutationGenerator>> {
+    let mut gens = default_generators();
+    gens.push(Box::new(BitflipGen));
+    gens
 }
 
 // -- Generator implementations -----------------------------------------------

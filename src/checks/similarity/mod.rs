@@ -60,8 +60,9 @@ fn generator_severity(name: &str) -> u8 {
     }
 }
 
-/// Generate all mutation candidates for a package name.
+/// Generate all mutation candidates for a package name using default generators.
 /// Returns a map of candidate → generator_name, tagged for classification.
+#[cfg(test)]
 fn generate_mutations(name: &str, ecosystem: Ecosystem) -> HashMap<String, &'static str> {
     generate_mutations_with(&default_generators(), name, ecosystem)
 }
@@ -189,16 +190,17 @@ pub async fn check_similarity(
     deps: &[Dependency],
     ecosystem: Ecosystem,
 ) -> Result<Vec<Issue>> {
-    check_similarity_with_cache(registry, deps, ecosystem, None, false).await
+    check_similarity_with_cache(registry, deps, ecosystem, None, false, false).await
 }
 
-/// Check similarity with configurable cache.
+/// Check similarity with configurable cache and generator selection.
 pub async fn check_similarity_with_cache(
     registry: &dyn Registry,
     deps: &[Dependency],
     ecosystem: Ecosystem,
     cache_dir: Option<&Path>,
     no_cache: bool,
+    paranoid: bool,
 ) -> Result<Vec<Issue>> {
     let case_insensitive = is_case_insensitive(ecosystem);
     let mut issues = Vec::new();
@@ -247,10 +249,18 @@ pub async fn check_similarity_with_cache(
     }
 
     // ---- Pre-compute tagged mutations once for Phase 1 + Phase 2 ----
+    let generators = if paranoid {
+        generators::paranoid_generators()
+    } else {
+        generators::default_generators()
+    };
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
     for dep in deps {
         if !flagged.contains(&dep.name) {
-            all_mutations.insert(dep.name.clone(), generate_mutations(&dep.name, ecosystem));
+            all_mutations.insert(
+                dep.name.clone(),
+                generate_mutations_with(&generators, &dep.name, ecosystem),
+            );
         }
     }
 

@@ -75,6 +75,11 @@ enum Commands {
         #[arg(long)]
         deep: bool,
 
+        /// Enable expensive mutation generators (bitflip). Produces ~10x more
+        /// similarity queries. Use for high-security environments.
+        #[arg(long)]
+        paranoid: bool,
+
         /// Disable reading from the similarity disk cache.
         #[arg(long)]
         no_cache: bool,
@@ -101,11 +106,12 @@ async fn main() {
             dir,
             config,
             deep,
+            paranoid,
             no_cache,
             cache_dir,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            match sloppy_joe::scan_with_source_full(&dir, project_type.as_deref(), config.as_deref(), deep, no_cache, cache_dir.as_deref())
+            match sloppy_joe::scan_with_source_full(&dir, project_type.as_deref(), config.as_deref(), deep, paranoid, no_cache, cache_dir.as_deref())
                 .await
             {
                 Ok(report) => {

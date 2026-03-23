@@ -34,7 +34,7 @@ pub async fn scan_with_source(
     config_source: Option<&str>,
     deep: bool,
 ) -> Result<ScanReport> {
-    scan_with_source_full(project_dir, project_type, config_source, deep, false, None).await
+    scan_with_source_full(project_dir, project_type, config_source, deep, false, false, None).await
 }
 
 pub async fn scan_with_source_full(
@@ -42,13 +42,14 @@ pub async fn scan_with_source_full(
     project_type: Option<&str>,
     config_source: Option<&str>,
     deep: bool,
+    paranoid: bool,
     no_cache: bool,
     cache_dir: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
     let config = config::load_config_from_source(config_source, Some(project_dir))
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    let opts = ScanOptions { deep, no_cache, cache_dir, disable_osv_disk_cache: false };
+    let opts = ScanOptions { deep, paranoid, no_cache, cache_dir, disable_osv_disk_cache: false };
     scan_with_config(project_dir, project_type, config, &opts).await
 }
 
@@ -219,6 +220,8 @@ fn mark_source(issues: &mut [Issue], source: &str) {
 pub struct ScanOptions<'a> {
     /// Enable similarity checks on transitive dependencies (--deep).
     pub deep: bool,
+    /// Enable expensive mutation generators like bitflip (--paranoid).
+    pub paranoid: bool,
     /// Disable reading from disk caches (--no-cache). Writes still happen.
     pub no_cache: bool,
     /// Override the default cache directory (--cache-dir).
