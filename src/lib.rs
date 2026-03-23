@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub(crate) mod cache;
 pub mod checks;
 pub mod config;
 pub mod lockfiles;
