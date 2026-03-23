@@ -46,8 +46,10 @@ fn max_distance(name_len: usize) -> usize {
 /// Generator severity ordering (higher = more dangerous, reported first).
 fn generator_severity(name: &str) -> u8 {
     match name {
-        "homoglyph" => 7,
-        "confused-forms" => 6,
+        "homoglyph" => 9,
+        "bitflip" => 8,
+        "confused-forms" => 7,
+        "keyboard-proximity" => 6,
         "char-swap" => 5,
         "collapse-repeated" => 4,
         "extra-char" => 3,
@@ -150,6 +152,20 @@ fn format_match_message(dep_name: &str, candidate: &str, generator: &str) -> Str
         "confused-forms" => format!(
             "'{}' is a confused form of '{}'. These are commonly interchanged but \
              resolve to different packages. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "bitflip" => format!(
+            "'{}' matches '{}' with a single-bit character change. \
+             Bitflip attacks exploit hardware errors or deliberate bit manipulation \
+             to produce names that differ by exactly one bit in a character. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "keyboard-proximity" => format!(
+            "'{}' matches '{}' with a keyboard-adjacent character substitution. \
+             An attacker could register a name where one key is replaced by its \
+             neighbor on a QWERTY keyboard. \
              Examine both packages and add the intended one to your allowed list.",
             dep_name, candidate
         ),
@@ -874,8 +890,10 @@ mod tests {
 
     #[test]
     fn generator_severity_ordering_is_correct() {
-        assert!(generator_severity("homoglyph") > generator_severity("confused-forms"));
-        assert!(generator_severity("confused-forms") > generator_severity("char-swap"));
+        assert!(generator_severity("homoglyph") > generator_severity("bitflip"));
+        assert!(generator_severity("bitflip") > generator_severity("confused-forms"));
+        assert!(generator_severity("confused-forms") > generator_severity("keyboard-proximity"));
+        assert!(generator_severity("keyboard-proximity") > generator_severity("char-swap"));
         assert!(generator_severity("char-swap") > generator_severity("collapse-repeated"));
         assert!(generator_severity("collapse-repeated") > generator_severity("extra-char"));
         assert!(generator_severity("extra-char") > generator_severity("version-suffix"));
@@ -889,5 +907,53 @@ mod tests {
         let gen_name = mutations.get("express");
         assert!(gen_name.is_some(), "Expected 'express' in mutations");
         assert_eq!(*gen_name.unwrap(), "collapse-repeated");
+    }
+
+    // -- Bitflip --
+
+    #[test]
+    fn bitflip_variants_produce_single_bit_changes() {
+        let variants = bitflip_variants("ab");
+        // 'a' (0x61) XOR 1 = 'b' (0x60 is backtick, not valid; 0x61^1=0x60)
+        // 'a' XOR 2 = 'c'
+        assert!(variants.contains(&"cb".to_string()), "a XOR 2 = c");
+        // 'a' XOR 4 = 'e'
+        assert!(variants.contains(&"eb".to_string()), "a XOR 4 = e");
+    }
+
+    #[test]
+    fn bitflip_only_produces_valid_chars() {
+        let variants = bitflip_variants("react");
+        for v in &variants {
+            assert!(
+                v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "Bitflip produced invalid char in: {}",
+                v
+            );
+        }
+    }
+
+    // -- Keyboard proximity --
+
+    #[test]
+    fn keyboard_proximity_produces_adjacent_keys() {
+        let variants = keyboard_proximity_variants("react");
+        // 'r' neighbors: e, t, d, f
+        assert!(variants.contains(&"eeact".to_string()), "r -> e");
+        assert!(variants.contains(&"teact".to_string()), "r -> t");
+        // 'a' neighbors: q, w, s, z
+        assert!(variants.contains(&"reqct".to_string()), "a -> q");
+        assert!(variants.contains(&"resct".to_string()), "a -> s");
+    }
+
+    #[test]
+    fn keyboard_proximity_ignores_non_qwerty_chars() {
+        let variants = keyboard_proximity_variants("a-b");
+        // '-' has no keyboard neighbors in our map, so only a and b get variants
+        assert!(!variants.is_empty());
+        // All variants should still contain a hyphen at position 1
+        for v in &variants {
+            assert!(v.len() == 3, "Expected same length: {}", v);
+        }
     }
 }

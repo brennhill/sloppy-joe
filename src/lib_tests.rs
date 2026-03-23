@@ -435,10 +435,12 @@ async fn non_metadata_ecosystem_makes_one_registry_call_per_dep() {
     // We can't know exact similarity mutation count, but we can verify exists()
     // is NOT called for the 2 original dep names beyond what fetch_metadata does.
     // Since acc.metadata_lookups is now always set, ExistenceCheck should add 0 calls.
-    // A rough upper bound: each dep generates ~50 mutations, so ~100 from similarity + 2 from metadata fallback.
+    // Each dep generates ~200+ mutations (10 generators: bitflip ~150 per dep,
+    // keyboard ~25, others ~50), so ~500 from similarity + 2 from metadata fallback.
+    // The test verifies ExistenceCheck doesn't add redundant calls on top of similarity.
     assert!(
-        total_exists <= 110,
-        "Expected at most ~102 exists() calls (similarity mutations + metadata fallback), got {} — ExistenceCheck may be making redundant calls",
+        total_exists <= 600,
+        "Expected at most ~500 exists() calls (similarity mutations + metadata fallback), got {} — ExistenceCheck may be making redundant calls",
         total_exists
     );
 

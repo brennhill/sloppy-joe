@@ -24,6 +24,8 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
         Box::new(DeleteOneCharGen),
         Box::new(HomoglyphGen),
         Box::new(ConfusedFormsGen),
+        Box::new(BitflipGen),
+        Box::new(KeyboardProximityGen),
     ]
 }
 
@@ -102,6 +104,22 @@ impl MutationGenerator for ConfusedFormsGen {
     fn name(&self) -> &'static str { "confused-forms" }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         apply_confused_forms(name, ecosystem)
+    }
+}
+
+struct BitflipGen;
+impl MutationGenerator for BitflipGen {
+    fn name(&self) -> &'static str { "bitflip" }
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
+        bitflip_variants(&name.to_lowercase())
+    }
+}
+
+struct KeyboardProximityGen;
+impl MutationGenerator for KeyboardProximityGen {
+    fn name(&self) -> &'static str { "keyboard-proximity" }
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
+        keyboard_proximity_variants(&name.to_lowercase())
     }
 }
 
@@ -417,4 +435,93 @@ pub(super) fn adjacent_swaps(name: &str) -> Vec<String> {
         }
     }
     results
+}
+
+/// Generate bitflip variants: flip each bit in each ASCII character.
+/// Only flips bits that produce another printable ASCII letter/digit.
+/// "express" → "dxpress" (e XOR 1 = d), "gxpress" (e XOR 2 = g), etc.
+pub(super) fn bitflip_variants(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = HashSet::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        if !ch.is_ascii() {
+            continue;
+        }
+        let byte = ch as u8;
+        for bit in 0..8 {
+            let flipped = byte ^ (1 << bit);
+            let flipped_char = flipped as char;
+            // Only keep if result is a valid package-name character
+            if (flipped_char.is_ascii_alphanumeric() || flipped_char == '-' || flipped_char == '_')
+                && flipped_char != ch
+            {
+                let mut variant = chars.clone();
+                variant[i] = flipped_char;
+                let s: String = variant.into_iter().collect();
+                results.insert(s);
+            }
+        }
+    }
+    results.into_iter().collect()
+}
+
+/// QWERTY keyboard adjacency map for common package-name characters.
+fn keyboard_neighbors() -> &'static [(char, &'static [char])] {
+    &[
+        ('q', &['w', 'a']),
+        ('w', &['q', 'e', 'a', 's']),
+        ('e', &['w', 'r', 's', 'd']),
+        ('r', &['e', 't', 'd', 'f']),
+        ('t', &['r', 'y', 'f', 'g']),
+        ('y', &['t', 'u', 'g', 'h']),
+        ('u', &['y', 'i', 'h', 'j']),
+        ('i', &['u', 'o', 'j', 'k']),
+        ('o', &['i', 'p', 'k', 'l']),
+        ('p', &['o', 'l']),
+        ('a', &['q', 'w', 's', 'z']),
+        ('s', &['w', 'e', 'a', 'd', 'z', 'x']),
+        ('d', &['e', 'r', 's', 'f', 'x', 'c']),
+        ('f', &['r', 't', 'd', 'g', 'c', 'v']),
+        ('g', &['t', 'y', 'f', 'h', 'v', 'b']),
+        ('h', &['y', 'u', 'g', 'j', 'b', 'n']),
+        ('j', &['u', 'i', 'h', 'k', 'n', 'm']),
+        ('k', &['i', 'o', 'j', 'l', 'm']),
+        ('l', &['o', 'p', 'k']),
+        ('z', &['a', 's', 'x']),
+        ('x', &['z', 's', 'd', 'c']),
+        ('c', &['x', 'd', 'f', 'v']),
+        ('v', &['c', 'f', 'g', 'b']),
+        ('b', &['v', 'g', 'h', 'n']),
+        ('n', &['b', 'h', 'j', 'm']),
+        ('m', &['n', 'j', 'k']),
+        ('1', &['2', 'q']),
+        ('2', &['1', '3', 'q', 'w']),
+        ('3', &['2', '4', 'w', 'e']),
+        ('4', &['3', '5', 'e', 'r']),
+        ('5', &['4', '6', 'r', 't']),
+        ('6', &['5', '7', 't', 'y']),
+        ('7', &['6', '8', 'y', 'u']),
+        ('8', &['7', '9', 'u', 'i']),
+        ('9', &['8', '0', 'i', 'o']),
+        ('0', &['9', 'o', 'p']),
+    ]
+}
+
+/// Generate keyboard proximity variants: replace each character with its
+/// QWERTY neighbors. "react" → "eeact", "rwact", "resct", etc.
+pub(super) fn keyboard_proximity_variants(name: &str) -> Vec<String> {
+    let neighbors = keyboard_neighbors();
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = HashSet::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        if let Some((_, adjacents)) = neighbors.iter().find(|(k, _)| *k == ch) {
+            for &neighbor in *adjacents {
+                let mut variant = chars.clone();
+                variant[i] = neighbor;
+                let s: String = variant.into_iter().collect();
+                results.insert(s);
+            }
+        }
+    }
+    results.into_iter().collect()
 }
