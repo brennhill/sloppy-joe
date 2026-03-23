@@ -3,3 +3,5 @@ Cargo.lock
 *.swp
 *.swo
 .DS_Store
+.coherence-baseline.json
+.coherence-data/
