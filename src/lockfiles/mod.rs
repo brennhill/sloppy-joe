@@ -52,6 +52,70 @@ impl ResolutionResult {
     }
 }
 
+/// Pre-parsed lockfile data. Reads and parses the lockfile once, then provides
+/// both version resolution and transitive dep extraction from the same in-memory data.
+pub struct LockfileData {
+    pub resolution: ResolutionResult,
+    pub transitive_deps: Vec<Dependency>,
+}
+
+impl LockfileData {
+    /// Parse the lockfile once and extract both resolution and transitive deps.
+    pub fn parse(project_dir: &Path, direct_deps: &[Dependency]) -> Result<Self> {
+        let resolution = resolve_versions(project_dir, direct_deps)?;
+
+        let direct_names: HashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
+
+        let all_deps = if let Some(first) = direct_deps.first() {
+            match first.ecosystem.as_str() {
+                "npm" => {
+                    let path = first_existing(
+                        project_dir,
+                        &["package-lock.json", "npm-shrinkwrap.json"],
+                    );
+                    match path {
+                        Some(p) => {
+                            let content = crate::parsers::read_file_limited(
+                                &p,
+                                crate::parsers::MAX_MANIFEST_BYTES,
+                            )?;
+                            parse_all_npm(&content)?
+                        }
+                        None => vec![],
+                    }
+                }
+                "cargo" => {
+                    let path = project_dir.join("Cargo.lock");
+                    if path.exists() {
+                        let content = crate::parsers::read_file_limited(
+                            &path,
+                            crate::parsers::MAX_MANIFEST_BYTES,
+                        )?;
+                        parse_all_cargo(&content)?
+                    } else {
+                        vec![]
+                    }
+                }
+                _ => vec![],
+            }
+        } else {
+            vec![]
+        };
+
+        let mut transitive: Vec<Dependency> = all_deps
+            .into_iter()
+            .filter(|dep| !direct_names.contains(&dep.name))
+            .collect();
+        let mut seen = HashSet::new();
+        transitive.retain(|dep| seen.insert((dep.name.clone(), dep.version.clone())));
+
+        Ok(Self {
+            resolution,
+            transitive_deps: transitive,
+        })
+    }
+}
+
 /// Parse all transitive dependencies from the lockfile.
 /// Returns deps NOT in the direct dependency list.
 pub fn parse_all_lockfile_deps(
@@ -828,6 +892,36 @@ version = "1.0.0"
         // "safe-pkg" should resolve fine
         let resolved = result.resolved_version(&deps[1]).unwrap();
         assert_eq!(resolved.version, "1.0.0");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lockfile_data_parse_provides_resolution_and_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{
+              "name": "demo",
+              "lockfileVersion": 3,
+              "packages": {
+                "": {"name": "demo", "dependencies": {"react": "^18.2.0"}},
+                "node_modules/react": {"version": "18.3.1"},
+                "node_modules/loose-envify": {"version": "1.4.0"}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let direct = vec![npm_dep("react", "^18.2.0")];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+
+        // Resolution should work
+        assert_eq!(data.resolution.exact_version(&direct[0]), Some("18.3.1"));
+
+        // Transitive deps should exclude direct
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(data.transitive_deps[0].name, "loose-envify");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
