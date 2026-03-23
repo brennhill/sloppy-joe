@@ -22,6 +22,7 @@ impl Default for PackagistRegistry {
 #[async_trait]
 impl super::Registry for PackagistRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         // Package names are vendor/package format
         let url = format!("https://repo.packagist.org/p2/{}.json", package_name);
         let resp = self.client.get(&url).send().await?;

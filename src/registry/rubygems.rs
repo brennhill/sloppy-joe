@@ -33,6 +33,7 @@ impl Default for RubyGemsRegistry {
 #[async_trait]
 impl super::Registry for RubyGemsRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let url = gem_url(package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -53,6 +54,7 @@ impl super::Registry for RubyGemsRegistry {
         package_name: &str,
         version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
+        self.validate_name(package_name)?;
         let url = gem_url(package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {

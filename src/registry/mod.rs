@@ -36,6 +36,7 @@ pub struct PackageMetadata {
 #[async_trait]
 pub trait Registry: Send + Sync {
     /// Check if a package exists on this registry.
+    /// Implementors should use `exists_raw`; callers should use `exists_validated`.
     async fn exists(&self, package_name: &str) -> Result<bool>;
 
     /// Fetch metadata for a package. Returns None if not supported or not found.
@@ -52,6 +53,18 @@ pub trait Registry: Send + Sync {
 
     /// The ecosystem name (e.g. "npm", "pypi", "cargo").
     fn ecosystem(&self) -> &str;
+
+    /// Validate package name before any registry operation.
+    /// Returns Err if the name is unsafe for URL construction.
+    fn validate_name(&self, package_name: &str) -> Result<()> {
+        if !validate_package_name(package_name) {
+            anyhow::bail!(
+                "invalid package name for registry query: '{}'",
+                package_name
+            );
+        }
+        Ok(())
+    }
 }
 
 pub fn registry_for(ecosystem: &str) -> Result<Box<dyn Registry>> {
@@ -167,5 +180,14 @@ mod tests {
     #[test]
     fn validate_package_name_rejects_empty() {
         assert!(!validate_package_name(""));
+    }
+
+    #[test]
+    fn validate_name_trait_method_rejects_traversal() {
+        let registry = registry_for("npm").unwrap();
+        assert!(registry.validate_name("react").is_ok());
+        assert!(registry.validate_name("../etc/passwd").is_err());
+        assert!(registry.validate_name("foo\0bar").is_err());
+        assert!(registry.validate_name("foo%2fbar").is_err());
     }
 }

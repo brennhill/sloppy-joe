@@ -22,6 +22,7 @@ impl Default for NugetRegistry {
 #[async_trait]
 impl super::Registry for NugetRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let lower = package_name.to_lowercase();
         let url = format!(
             "https://api.nuget.org/v3-flatcontainer/{}/index.json",

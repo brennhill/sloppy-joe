@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use crate::cache;
+use std::path::PathBuf;
 
 const CACHE_TTL_SECS: u64 = 24 * 3600; // 24 hours
 
@@ -8,61 +9,30 @@ struct CorpusCache {
     packages: Vec<String>,
 }
 
-fn now_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn cache_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
-        return path.into();
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join("Library").join("Caches");
-    }
-    #[cfg(target_os = "windows")]
-    if let Some(path) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
-        return path.into();
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join(".cache");
-    }
-    std::env::temp_dir()
-}
-
 fn cache_path(ecosystem: &str) -> PathBuf {
-    cache_dir()
+    cache::user_cache_dir()
         .join("sloppy-joe")
         .join(format!("corpus-{}.json", ecosystem))
 }
 
 fn load_cached(ecosystem: &str) -> Option<Vec<String>> {
     let path = cache_path(ecosystem);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let cache: CorpusCache = serde_json::from_str(&content).ok()?;
-    let age = now_epoch().saturating_sub(cache.timestamp);
-    if age < CACHE_TTL_SECS && !cache.packages.is_empty() {
-        Some(cache.packages)
-    } else {
+    let cache =
+        cache::read_json_cache::<CorpusCache>(&path, CACHE_TTL_SECS, |c| c.timestamp)?;
+    if cache.packages.is_empty() {
         None
+    } else {
+        Some(cache.packages)
     }
 }
 
 fn save_cached(ecosystem: &str, packages: &[String]) {
     let path = cache_path(ecosystem);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let cache = CorpusCache {
-        timestamp: now_epoch(),
+        timestamp: cache::now_epoch(),
         packages: packages.to_vec(),
     };
-    if let Ok(json) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(&path, json);
-    }
+    let _ = cache::atomic_write_json(&path, &cache);
 }
 
 /// Fetch the popular packages corpus for an ecosystem.

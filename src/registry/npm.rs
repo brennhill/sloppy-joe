@@ -142,6 +142,7 @@ async fn fetch_downloads(
 #[async_trait]
 impl super::Registry for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -162,6 +163,7 @@ impl super::Registry for NpmRegistry {
         package_name: &str,
         version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
+        self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
