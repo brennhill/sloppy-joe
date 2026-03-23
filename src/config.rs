@@ -202,17 +202,23 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
                 len, MAX_CONFIG_BYTES, url
             ));
         }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
-    if bytes.len() as u64 > MAX_CONFIG_BYTES {
-        return Err(format!(
-            "Config response too large ({} bytes, max {} bytes)\n  URL: {}",
-            bytes.len(), MAX_CONFIG_BYTES, url
-        ));
+    // Read body in chunks with a hard size cap to prevent OOM from chunked responses
+    // that bypass Content-Length (the header check above only works when the server sends it).
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    use futures::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
+        body.extend_from_slice(&chunk);
+        if body.len() as u64 > MAX_CONFIG_BYTES {
+            return Err(format!(
+                "Config response too large (>{} bytes)\n  URL: {}",
+                MAX_CONFIG_BYTES, url
+            ));
+        }
     }
-    let content = String::from_utf8(bytes.to_vec())
+    let bytes = body;
+    let content = String::from_utf8(bytes)
         .map_err(|e| format!("Config response is not valid UTF-8: {}", e))?;
 
     parse_config_content(&content, url)

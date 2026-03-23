@@ -74,13 +74,29 @@ fn find_unquoted_semicolon(s: &str) -> Option<usize> {
     None
 }
 
+/// Normalize per PEP 503: lowercase, replace runs of [-_.] with single `-`, strip extras.
 fn normalize_distribution_name(raw: &str) -> String {
-    raw.trim()
-        .split('[')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    let stripped = raw.trim().split('[').next().unwrap_or("").trim();
+    let lowered = stripped.to_lowercase();
+    // Replace consecutive separator runs with a single dash
+    let mut result = String::with_capacity(lowered.len());
+    let mut prev_sep = false;
+    for ch in lowered.chars() {
+        if ch == '-' || ch == '_' || ch == '.' {
+            if !prev_sep && !result.is_empty() {
+                result.push('-');
+            }
+            prev_sep = true;
+        } else {
+            result.push(ch);
+            prev_sep = false;
+        }
+    }
+    // Trim trailing separator
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
 }
 
 #[cfg(test)]
