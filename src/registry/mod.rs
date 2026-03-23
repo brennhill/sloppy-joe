@@ -7,6 +7,7 @@ pub mod packagist;
 pub mod pypi;
 pub mod rubygems;
 
+use crate::Ecosystem;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -54,7 +55,9 @@ pub trait RegistryExistence: Send + Sync {
         }
         // Reject slashes for ecosystems that don't use them in package names
         let eco = self.ecosystem();
-        if !matches!(eco, "npm" | "go" | "php" | "jvm") && package_name.contains('/') {
+        let eco_parsed: std::result::Result<Ecosystem, _> = eco.parse();
+        let allows_slashes = eco_parsed.map(|e| e.allows_slashes()).unwrap_or(false);
+        if !allows_slashes && package_name.contains('/') {
             anyhow::bail!(
                 "invalid package name for {} registry: '{}' (unexpected '/')",
                 eco,
@@ -86,24 +89,23 @@ pub trait Registry: RegistryExistence + RegistryMetadata {}
 
 impl<T: RegistryExistence + RegistryMetadata> Registry for T {}
 
-pub fn registry_for(ecosystem: &str) -> Result<Box<dyn Registry>> {
+pub fn registry_for(ecosystem: Ecosystem) -> Result<Box<dyn Registry>> {
     registry_for_with_client(ecosystem, http_client())
 }
 
 pub fn registry_for_with_client(
-    ecosystem: &str,
+    ecosystem: Ecosystem,
     client: reqwest::Client,
 ) -> Result<Box<dyn Registry>> {
     match ecosystem {
-        "npm" => Ok(Box::new(npm::NpmRegistry::with_client(client))),
-        "pypi" => Ok(Box::new(pypi::PypiRegistry::with_client(client))),
-        "cargo" => Ok(Box::new(crates_io::CratesIoRegistry::with_client(client))),
-        "go" => Ok(Box::new(go::GoRegistry::with_client(client))),
-        "ruby" => Ok(Box::new(rubygems::RubyGemsRegistry::with_client(client))),
-        "php" => Ok(Box::new(packagist::PackagistRegistry::with_client(client))),
-        "jvm" => Ok(Box::new(maven::MavenRegistry::with_client(client))),
-        "dotnet" => Ok(Box::new(nuget::NugetRegistry::with_client(client))),
-        other => anyhow::bail!("unsupported ecosystem: {}", other),
+        Ecosystem::Npm => Ok(Box::new(npm::NpmRegistry::with_client(client))),
+        Ecosystem::PyPI => Ok(Box::new(pypi::PypiRegistry::with_client(client))),
+        Ecosystem::Cargo => Ok(Box::new(crates_io::CratesIoRegistry::with_client(client))),
+        Ecosystem::Go => Ok(Box::new(go::GoRegistry::with_client(client))),
+        Ecosystem::Ruby => Ok(Box::new(rubygems::RubyGemsRegistry::with_client(client))),
+        Ecosystem::Php => Ok(Box::new(packagist::PackagistRegistry::with_client(client))),
+        Ecosystem::Jvm => Ok(Box::new(maven::MavenRegistry::with_client(client))),
+        Ecosystem::Dotnet => Ok(Box::new(nuget::NugetRegistry::with_client(client))),
     }
 }
 
@@ -128,12 +130,8 @@ pub fn validate_package_name(name: &str) -> bool {
 }
 
 /// Per-registry concurrency limits for similarity queries.
-pub fn similarity_concurrency(ecosystem: &str) -> usize {
-    match ecosystem {
-        "cargo" => 2,
-        "go" => 5,
-        _ => 20,
-    }
+pub fn similarity_concurrency(ecosystem: Ecosystem) -> usize {
+    ecosystem.similarity_concurrency()
 }
 
 pub fn http_client() -> reqwest::Client {
@@ -151,19 +149,14 @@ mod tests {
 
     #[test]
     fn registry_for_all_ecosystems() {
-        assert_eq!(registry_for("npm").unwrap().ecosystem(), "npm");
-        assert_eq!(registry_for("pypi").unwrap().ecosystem(), "pypi");
-        assert_eq!(registry_for("cargo").unwrap().ecosystem(), "cargo");
-        assert_eq!(registry_for("go").unwrap().ecosystem(), "go");
-        assert_eq!(registry_for("ruby").unwrap().ecosystem(), "ruby");
-        assert_eq!(registry_for("php").unwrap().ecosystem(), "php");
-        assert_eq!(registry_for("jvm").unwrap().ecosystem(), "jvm");
-        assert_eq!(registry_for("dotnet").unwrap().ecosystem(), "dotnet");
-    }
-
-    #[test]
-    fn registry_for_unknown_returns_error() {
-        assert!(registry_for("unknown").is_err());
+        assert_eq!(registry_for(Ecosystem::Npm).unwrap().ecosystem(), "npm");
+        assert_eq!(registry_for(Ecosystem::PyPI).unwrap().ecosystem(), "pypi");
+        assert_eq!(registry_for(Ecosystem::Cargo).unwrap().ecosystem(), "cargo");
+        assert_eq!(registry_for(Ecosystem::Go).unwrap().ecosystem(), "go");
+        assert_eq!(registry_for(Ecosystem::Ruby).unwrap().ecosystem(), "ruby");
+        assert_eq!(registry_for(Ecosystem::Php).unwrap().ecosystem(), "php");
+        assert_eq!(registry_for(Ecosystem::Jvm).unwrap().ecosystem(), "jvm");
+        assert_eq!(registry_for(Ecosystem::Dotnet).unwrap().ecosystem(), "dotnet");
     }
 
     #[test]
@@ -210,7 +203,7 @@ mod tests {
 
     #[test]
     fn validate_name_trait_method_rejects_traversal() {
-        let registry = registry_for("npm").unwrap();
+        let registry = registry_for(Ecosystem::Npm).unwrap();
         assert!(registry.validate_name("react").is_ok());
         assert!(registry.validate_name("../etc/passwd").is_err());
         assert!(registry.validate_name("foo\0bar").is_err());

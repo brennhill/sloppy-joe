@@ -51,7 +51,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             deps.push(Dependency {
                 name,
                 version,
-                ecosystem: "pypi".to_string(),
+                ecosystem: crate::Ecosystem::PyPI,
             });
         }
     }
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "requests");
         assert_eq!(deps[0].version, Some("==2.28.0".to_string()));
-        assert_eq!(deps[0].ecosystem, "pypi");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::PyPI);
         cleanup(&dir);
     }
 

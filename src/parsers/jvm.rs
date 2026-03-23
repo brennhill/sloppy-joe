@@ -53,7 +53,7 @@ fn extract_gradle_dep(line: &str) -> Option<Dependency> {
         return Some(Dependency {
             name,
             version,
-            ecosystem: "jvm".to_string(),
+            ecosystem: crate::Ecosystem::Jvm,
         });
     }
     None
@@ -93,7 +93,7 @@ fn parse_pom_dep(lines: &[&str], start: usize) -> (Option<Dependency>, usize) {
                     Some(Dependency {
                         name,
                         version,
-                        ecosystem: "jvm".to_string(),
+                        ecosystem: crate::Ecosystem::Jvm,
                     }),
                     i,
                 );
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "com.google.guava:guava");
         assert_eq!(deps[0].version, Some("31.1-jre".to_string()));
-        assert_eq!(deps[0].ecosystem, "jvm");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Jvm);
         cleanup(&dir);
     }
 

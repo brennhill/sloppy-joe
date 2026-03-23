@@ -20,7 +20,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                     deps.push(Dependency {
                         name,
                         version,
-                        ecosystem: "dotnet".to_string(),
+                        ecosystem: crate::Ecosystem::Dotnet,
                     });
                 } else {
                     current_name = Some(name);
@@ -38,7 +38,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 deps.push(Dependency {
                     name: current_name.take().unwrap(),
                     version: current_version.take(),
-                    ecosystem: "dotnet".to_string(),
+                    ecosystem: crate::Ecosystem::Dotnet,
                 });
             }
         }
@@ -112,7 +112,7 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "Newtonsoft.Json");
         assert_eq!(deps[0].version, Some("13.0.1".to_string()));
-        assert_eq!(deps[0].ecosystem, "dotnet");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Dotnet);
         cleanup(&dir);
     }
 

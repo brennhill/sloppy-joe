@@ -73,7 +73,7 @@ pub(crate) fn check_new_package(
             lookup.package
         ),
         suggestion: None,
-        registry_url: Some(registry_url(&lookup.ecosystem, &lookup.package)),
+        registry_url: Some(registry_url(lookup.ecosystem, &lookup.package)),
         source: None,
     })
 }

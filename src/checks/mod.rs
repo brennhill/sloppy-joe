@@ -10,7 +10,7 @@ use crate::config::SloppyJoeConfig;
 use crate::lockfiles::ResolutionResult;
 use crate::registry::Registry;
 use crate::report::Issue;
-use crate::{Dependency, ScanOptions};
+use crate::{Dependency, Ecosystem, ScanOptions};
 use anyhow::Result;
 use std::collections::HashSet;
 
@@ -24,7 +24,7 @@ pub struct CheckContext<'a> {
     pub registry: &'a dyn Registry,
     pub osv_client: &'a dyn malicious::OsvClient,
     pub resolution: &'a ResolutionResult,
-    pub ecosystem: &'a str,
+    pub ecosystem: Ecosystem,
     pub opts: &'a ScanOptions<'a>,
 }
 

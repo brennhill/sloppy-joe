@@ -87,10 +87,7 @@ impl Check for MetadataCheck {
                 ctx.config,
             ));
 
-            let supports_metadata_registry = matches!(
-                ctx.ecosystem,
-                "npm" | "pypi" | "cargo" | "ruby" | "jvm"
-            );
+            let supports_metadata_registry = ctx.ecosystem.supports_metadata();
 
             if supports_metadata_registry {
                 let lookups = super::metadata::fetch_metadata(

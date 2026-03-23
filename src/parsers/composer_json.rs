@@ -21,7 +21,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 deps.push(Dependency {
                     name: name.clone(),
                     version: version.as_str().map(String::from),
-                    ecosystem: "php".to_string(),
+                    ecosystem: crate::Ecosystem::Php,
                 });
             }
         }
@@ -62,7 +62,7 @@ mod tests {
         let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"laravel/framework"));
         assert!(names.contains(&"phpunit/phpunit"));
-        assert_eq!(deps[0].ecosystem, "php");
+        assert_eq!(deps[0].ecosystem, crate::Ecosystem::Php);
         cleanup(&dir);
     }
 
