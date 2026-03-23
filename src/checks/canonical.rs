@@ -15,22 +15,18 @@ pub fn check_canonical(
 
     for dep in deps {
         if let Some(canonical) = alternatives.get(&dep.name) {
-            issues.push(Issue {
-                package: dep.name.clone(),
-                check: "canonical".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "'{}' is not the approved package for this purpose. Your team uses '{}'. Using non-canonical packages creates inconsistency and increases maintenance cost.",
-                    dep.name, canonical
-                ),
-                fix: format!(
-                    "Replace '{}' with '{}' in your manifest file. If your team has decided to switch to '{}', update the sloppy-joe config to reflect the new canonical choice.",
-                    dep.name, canonical, dep.name
-                ),
-                suggestion: Some(canonical.clone()),
-                registry_url: None,
-                source: None,
-            });
+            issues.push(
+                Issue::new(&dep.name, super::names::CANONICAL, Severity::Error)
+                    .message(format!(
+                        "'{}' is not the approved package for this purpose. Your team uses '{}'. Using non-canonical packages creates inconsistency and increases maintenance cost.",
+                        dep.name, canonical
+                    ))
+                    .fix(format!(
+                        "Replace '{}' with '{}' in your manifest file. If your team has decided to switch to '{}', update the sloppy-joe config to reflect the new canonical choice.",
+                        dep.name, canonical, dep.name
+                    ))
+                    .suggestion(canonical),
+            );
         }
     }
 
@@ -42,13 +38,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn dep(name: &str) -> Dependency {
-        Dependency {
-            name: name.to_string(),
-            version: None,
-            ecosystem: Ecosystem::Npm,
-        }
-    }
+    use crate::test_helpers::npm_dep as dep;
 
     #[test]
     fn no_issues_when_deps_dont_match_alternatives() {

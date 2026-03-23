@@ -91,7 +91,7 @@ pub fn epoch_millis_to_iso8601(millis: i64) -> Option<String> {
 }
 
 /// Convert current time to ISO 8601 string. Used by test helpers.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn now_iso8601() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -30,22 +30,17 @@ pub(crate) fn check_version_age(
             format!("The latest version of '{}'", lookup.package)
         };
 
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/version-age".to_string(),
-        severity: Severity::Error,
-        message: format!(
-            "{} was published {} hours ago (minimum: {} hours). New versions need time for the community and security scanners to review them.",
-            version_label, age_hours, min_age
-        ),
-        fix: format!(
-            "Wait until the version is at least {} hours old, or pin to an older version. If this is urgent, set min_version_age_hours to 0 in your config (not recommended).",
-            min_age
-        ),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_VERSION_AGE, Severity::Error)
+            .message(format!(
+                "{} was published {} hours ago (minimum: {} hours). New versions need time for the community and security scanners to review them.",
+                version_label, age_hours, min_age
+            ))
+            .fix(format!(
+                "Wait until the version is at least {} hours old, or pin to an older version. If this is urgent, set min_version_age_hours to 0 in your config (not recommended).",
+                min_age
+            )),
+    )
 }
 
 /// Package created less than 30 days ago.
@@ -60,22 +55,18 @@ pub(crate) fn check_new_package(
     }
 
     let age_days = age_hours / 24;
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/new-package".to_string(),
-        severity: Severity::Error,
-        message: format!(
-            "'{}' was first published {} day{} ago. New packages are higher risk — verify this is a legitimate, maintained project before depending on it.",
-            lookup.package, age_days, if age_days == 1 { "" } else { "s" }
-        ),
-        fix: format!(
-            "Verify '{}' at its registry page and source repository. If it's legitimate, add it to the 'allowed' list in your config.",
-            lookup.package
-        ),
-        suggestion: None,
-        registry_url: Some(registry_url(lookup.ecosystem, &lookup.package)),
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_NEW_PACKAGE, Severity::Error)
+            .message(format!(
+                "'{}' was first published {} day{} ago. New packages are higher risk — verify this is a legitimate, maintained project before depending on it.",
+                lookup.package, age_days, if age_days == 1 { "" } else { "s" }
+            ))
+            .fix(format!(
+                "Verify '{}' at its registry page and source repository. If it's legitimate, add it to the 'allowed' list in your config.",
+                lookup.package
+            ))
+            .registry_url(registry_url(lookup.ecosystem, &lookup.package)),
+    )
 }
 
 /// Fewer than 100 downloads.
@@ -88,22 +79,17 @@ pub(crate) fn check_low_downloads(
         return None;
     }
 
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/low-downloads".to_string(),
-        severity: Severity::Error,
-        message: format!(
-            "'{}' has only {} downloads. Low-download packages are more likely to be typosquats, placeholders, or abandoned projects.",
-            lookup.package, downloads
-        ),
-        fix: format!(
-            "Verify '{}' is the package you intend to use. If it's legitimate, add it to the 'allowed' list.",
-            lookup.package
-        ),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_LOW_DOWNLOADS, Severity::Error)
+            .message(format!(
+                "'{}' has only {} downloads. Low-download packages are more likely to be typosquats, placeholders, or abandoned projects.",
+                lookup.package, downloads
+            ))
+            .fix(format!(
+                "Verify '{}' is the package you intend to use. If it's legitimate, add it to the 'allowed' list.",
+                lookup.package
+            )),
+    )
 }
 
 /// Install scripts on a new, low-download, or similarity-flagged package.
@@ -141,20 +127,14 @@ pub(crate) fn check_install_script_risk(
     }
     let reason_str = reasons.join(" and ");
 
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/install-script-risk".to_string(),
-        severity: Severity::Error,
-        message: format!(
-            "'{}' has install scripts AND {}. Install scripts on new, low-download packages are the #1 malware delivery vector.",
-            lookup.package, reason_str
-        ),
-        fix: "Do not install this package. Verify it is legitimate before proceeding."
-            .to_string(),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_INSTALL_SCRIPT_RISK, Severity::Error)
+            .message(format!(
+                "'{}' has install scripts AND {}. Install scripts on new, low-download packages are the #1 malware delivery vector.",
+                lookup.package, reason_str
+            ))
+            .fix("Do not install this package. Verify it is legitimate before proceeding."),
+    )
 }
 
 /// 10+ new dependencies added in the latest version.
@@ -174,19 +154,14 @@ pub(crate) fn check_dependency_explosion(
     }
 
     let added = current - previous;
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/dependency-explosion".to_string(),
-        severity: Severity::Error,
-        message: format!(
-            "'{}' added {} new dependencies in its latest version (was {}, now {}). Sudden dependency additions in patch versions are a known supply chain attack vector.",
-            lookup.package, added, previous, current
-        ),
-        fix: "Review the new dependencies manually before installing.".to_string(),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_DEPENDENCY_EXPLOSION, Severity::Error)
+            .message(format!(
+                "'{}' added {} new dependencies in its latest version (was {}, now {}). Sudden dependency additions in patch versions are a known supply chain attack vector.",
+                lookup.package, added, previous, current
+            ))
+            .fix("Review the new dependencies manually before installing."),
+    )
 }
 
 /// Publisher changed between versions.
@@ -206,19 +181,14 @@ pub(crate) fn check_maintainer_change(
         return None;
     }
 
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/maintainer-change".to_string(),
-        severity: Severity::Error,
-        message: format!(
-            "The publisher of '{}' changed from '{}' to '{}' between versions. Maintainer takeovers are a known supply chain attack vector.",
-            lookup.package, previous_pub, current_pub
-        ),
-        fix: "Verify the maintainer change is legitimate before installing.".to_string(),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_MAINTAINER_CHANGE, Severity::Error)
+            .message(format!(
+                "The publisher of '{}' changed from '{}' to '{}' between versions. Maintainer takeovers are a known supply chain attack vector.",
+                lookup.package, previous_pub, current_pub
+            ))
+            .fix("Verify the maintainer change is legitimate before installing."),
+    )
 }
 
 /// Package exists but metadata couldn't be parsed.
@@ -227,21 +197,16 @@ pub(crate) fn check_parse_failed(lookup: &MetadataLookup) -> Option<Issue> {
         return None;
     }
 
-    Some(Issue {
-        package: lookup.package.clone(),
-        check: "metadata/parse-failed".to_string(),
-        severity: Severity::Warning,
-        message: format!(
-            "'{}' exists on the {} registry but its metadata could not be parsed. \
-             Metadata-based checks (version age, install scripts, etc.) are skipped for this package.",
-            lookup.package, lookup.ecosystem
-        ),
-        fix: format!(
-            "This may be a transient registry issue. Retry later. If it persists, check '{}' manually.",
-            lookup.package
-        ),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    })
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_PARSE_FAILED, Severity::Warning)
+            .message(format!(
+                "'{}' exists on the {} registry but its metadata could not be parsed. \
+                 Metadata-based checks (version age, install scripts, etc.) are skipped for this package.",
+                lookup.package, lookup.ecosystem
+            ))
+            .fix(format!(
+                "This may be a transient registry issue. Retry later. If it persists, check '{}' manually.",
+                lookup.package
+            )),
+    )
 }

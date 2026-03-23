@@ -87,6 +87,65 @@ impl SloppyJoeConfig {
         Self::matches_patterns(&self.allowed, ecosystem, package)
     }
 
+    /// Validate config at load time. Returns a list of errors.
+    pub fn validate(&self) -> Vec<String> {
+        let valid_ecosystems = [
+            "npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet",
+        ];
+        let mut errors = Vec::new();
+
+        // Check ecosystem names in all sections
+        for (section, keys) in [
+            ("canonical", self.canonical.keys().collect::<Vec<_>>()),
+            ("internal", self.internal.keys().collect::<Vec<_>>()),
+            ("allowed", self.allowed.keys().collect::<Vec<_>>()),
+        ] {
+            for key in keys {
+                if !valid_ecosystems.contains(&key.as_str()) {
+                    errors.push(format!(
+                        "Unknown ecosystem '{}' in {} section. Valid: {}",
+                        key,
+                        section,
+                        valid_ecosystems.join(", ")
+                    ));
+                }
+            }
+        }
+
+        // Check glob patterns: * only at end
+        for (section_name, section) in [("internal", &self.internal), ("allowed", &self.allowed)] {
+            for (eco, patterns) in section {
+                for pattern in patterns {
+                    if let Some(pos) = pattern.find('*')
+                        && pos != pattern.len() - 1
+                    {
+                        errors.push(format!(
+                            "Invalid glob pattern '{}' in {}.{}: wildcard (*) must be at the end",
+                            pattern, section_name, eco
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check canonical conflicts: a package that's both canonical and an alternative
+        for eco_map in self.canonical.values() {
+            let canonical_names: std::collections::HashSet<&String> = eco_map.keys().collect();
+            for (canonical, alternatives) in eco_map {
+                for alt in alternatives {
+                    if canonical_names.contains(alt) {
+                        errors.push(format!(
+                            "'{}' is listed as both a canonical package and an alternative to '{}'. This is contradictory.",
+                            alt, canonical
+                        ));
+                    }
+                }
+            }
+        }
+
+        errors
+    }
+
     fn matches_patterns(
         map: &HashMap<String, Vec<String>>,
         ecosystem: &str,
@@ -233,7 +292,7 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
         ));
     }
 
-    serde_json::from_str(content).map_err(|e| {
+    let config: SloppyJoeConfig = serde_json::from_str(content).map_err(|e| {
         let mut msg = format!(
             "Config is not valid JSON.\n  Source: {}\n  Error: {}",
             source, e
@@ -252,7 +311,17 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
 
         msg.push_str("\n  Fix: Validate your JSON at https://jsonlint.com or use 'sloppy-joe init' for a template.");
         msg
-    })
+    })?;
+
+    let validation_errors = config.validate();
+    if !validation_errors.is_empty() {
+        return Err(format!(
+            "Config validation failed:\n  {}",
+            validation_errors.join("\n  ")
+        ));
+    }
+
+    Ok(config)
 }
 
 fn ensure_config_outside_project(path: &Path, project_dir: Option<&Path>) -> Result<(), String> {
@@ -543,6 +612,76 @@ mod tests {
     #[test]
     fn print_template_does_not_panic() {
         print_template();
+    }
+
+    #[test]
+    fn validate_rejects_unknown_ecosystem() {
+        let config = SloppyJoeConfig {
+            internal: HashMap::from([("nodejs".to_string(), vec!["pkg".to_string()])]),
+            ..Default::default()
+        };
+        let errors = config.validate();
+        assert!(!errors.is_empty());
+        assert!(errors[0].contains("nodejs"));
+    }
+
+    #[test]
+    fn validate_rejects_bad_glob_pattern() {
+        let config = SloppyJoeConfig {
+            internal: HashMap::from([("npm".to_string(), vec!["@org/*/sub".to_string()])]),
+            ..Default::default()
+        };
+        let errors = config.validate();
+        assert!(!errors.is_empty());
+        assert!(errors[0].contains("*"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        let config = SloppyJoeConfig {
+            canonical: HashMap::from([(
+                "npm".to_string(),
+                HashMap::from([("lodash".to_string(), vec!["underscore".to_string()])]),
+            )]),
+            internal: HashMap::from([("npm".to_string(), vec!["@myorg/*".to_string()])]),
+            allowed: HashMap::from([("npm".to_string(), vec!["vetted-pkg".to_string()])]),
+            ..Default::default()
+        };
+        let errors = config.validate();
+        assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn validate_rejects_canonical_listed_as_alternative() {
+        let config = SloppyJoeConfig {
+            canonical: HashMap::from([(
+                "npm".to_string(),
+                HashMap::from([
+                    ("lodash".to_string(), vec!["underscore".to_string()]),
+                    ("underscore".to_string(), vec!["ramda".to_string()]),
+                ]),
+            )]),
+            ..Default::default()
+        };
+        let errors = config.validate();
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.contains("underscore")));
+    }
+
+    #[test]
+    fn load_config_valid_file_runs_validation() {
+        let dir = std::env::temp_dir().join("sloppy-joe-test-validate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"internal":{"nodejs":["pkg"]}}"#,
+        ).unwrap();
+        let result = load_config(Some(&path));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("nodejs"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

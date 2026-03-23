@@ -1,27 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub struct MavenRegistry {
-    client: reqwest::Client,
-}
-
-impl MavenRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for MavenRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(MavenRegistry);
 
 fn search_url(group: &str, artifact: &str, version: Option<&str>) -> String {
     let mut url = reqwest::Url::parse("https://search.maven.org/solrsearch/select")
@@ -68,15 +48,8 @@ impl super::RegistryExistence for MavenRegistry {
         // Use quoted values in the Solr query for exact matching
         let url = search_url(group, artifact, None);
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if !super::check_existence_status(resp.status(), "Maven", package_name)? {
             return Ok(false);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "Maven lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
         let body: serde_json::Value = resp.json().await?;
         let found = body["response"]["numFound"].as_i64().unwrap_or(0);

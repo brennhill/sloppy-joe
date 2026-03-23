@@ -3,9 +3,9 @@ use crate::Ecosystem;
 use crate::config::SloppyJoeConfig;
 use crate::lockfiles::ResolutionResult;
 use crate::registry::{PackageMetadata, Registry};
-use crate::report::Issue;
+use crate::report::{Issue, Severity};
 use anyhow::Result;
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
 use std::collections::HashSet;
 
 /// Parse an ISO 8601 date string and return the age in hours.
@@ -58,14 +58,16 @@ pub struct MetadataLookup {
     pub metadata: Option<PackageMetadata>,
 }
 
+/// Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
+const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
+const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
+
 pub(crate) async fn fetch_metadata(
     registry: &dyn Registry,
     deps: &[Dependency],
     resolution: &ResolutionResult,
-) -> Result<Vec<MetadataLookup>> {
+) -> (Vec<MetadataLookup>, Vec<Issue>) {
     // Pre-compute per-dep data to avoid borrowing deps inside the async stream.
-    // stream::iter(&[T]).map(|item| async { ... }) requires higher-ranked lifetimes
-    // that Rust can't prove when the items are references and the future captures them.
     let prepared: Vec<_> = deps
         .iter()
         .map(|dep| {
@@ -78,34 +80,68 @@ pub(crate) async fn fetch_metadata(
             )
         })
         .collect();
-    stream::iter(prepared)
+
+    let results: Vec<_> = stream::iter(prepared)
         .map(|(package, ecosystem, version, exact_version, unresolved_version)| {
             async move {
-                let metadata = registry
-                    .metadata(&package, exact_version.as_deref())
-                    .await?;
-                // If metadata parsing succeeded, the package exists.
-                // If metadata is None, it could be "not found" OR "found but
-                // metadata parse failed". Fall back to exists() to distinguish.
-                let exists = if metadata.is_some() {
-                    true
-                } else {
-                    registry.exists(&package).await?
-                };
-                Ok::<_, anyhow::Error>(MetadataLookup {
-                    package,
-                    ecosystem,
-                    version,
-                    resolved_version: exact_version,
-                    unresolved_version,
-                    exists,
-                    metadata,
-                })
+                let result: std::result::Result<MetadataLookup, anyhow::Error> = async {
+                    let metadata = registry
+                        .metadata(&package, exact_version.as_deref())
+                        .await?;
+                    let exists = if metadata.is_some() {
+                        true
+                    } else {
+                        registry.exists(&package).await?
+                    };
+                    Ok(MetadataLookup {
+                        package: package.clone(),
+                        ecosystem,
+                        version,
+                        resolved_version: exact_version,
+                        unresolved_version,
+                        exists,
+                        metadata,
+                    })
+                }.await;
+                (package, result)
             }
         })
         .buffer_unordered(10)
-        .try_collect::<Vec<_>>()
-        .await
+        .collect()
+        .await;
+
+    let total_queries = results.len();
+    let mut error_count = 0usize;
+    let mut lookups = Vec::new();
+    let mut issues = Vec::new();
+
+    for (_package, result) in results {
+        match result {
+            Ok(lookup) => lookups.push(lookup),
+            Err(_) => { error_count += 1; }
+        }
+    }
+
+    let error_rate = if total_queries > 0 {
+        error_count as f64 / total_queries as f64
+    } else {
+        0.0
+    };
+    if error_count > REGISTRY_ERROR_HARD_LIMIT
+        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
+    {
+        issues.push(
+            Issue::new("<registry>", super::names::METADATA_REGISTRY_UNREACHABLE, Severity::Error)
+                .message(format!(
+                    "Registry queries failed for {} of {} metadata checks ({:.0}%). \
+                     Metadata detection is unreliable. Fix network connectivity or retry.",
+                    error_count, total_queries, error_rate * 100.0
+                ))
+                .fix("Ensure the registry is reachable and retry the scan."),
+        );
+    }
+
+    (lookups, issues)
 }
 
 pub(crate) fn issues_from_lookups(
@@ -163,8 +199,9 @@ pub async fn check_metadata(
     similarity_flagged: &HashSet<String>,
     resolution: &ResolutionResult,
 ) -> Result<Vec<Issue>> {
-    let lookups = fetch_metadata(registry, deps, resolution).await?;
-    Ok(issues_from_lookups(&lookups, config, similarity_flagged))
+    let (lookups, mut issues) = fetch_metadata(registry, deps, resolution).await;
+    issues.extend(issues_from_lookups(&lookups, config, similarity_flagged));
+    Ok(issues)
 }
 
 #[cfg(test)]

@@ -102,20 +102,10 @@ fn normalize_distribution_name(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    use crate::parsers::test_utils::*;
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-req-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("requirements.txt"), content).unwrap();
-        dir
-    }
-
-    fn cleanup(dir: &Path) {
-        let _ = std::fs::remove_dir_all(dir);
+        setup_test_dir("req", "requirements.txt", content)
     }
 
     #[test]

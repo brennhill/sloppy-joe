@@ -5,7 +5,7 @@ pub mod checks;
 pub mod ecosystem;
 pub use ecosystem::Ecosystem;
 pub mod config;
-pub mod lockfiles;
+pub(crate) mod lockfiles;
 pub mod parsers;
 pub mod registry;
 pub mod report;
@@ -208,24 +208,33 @@ fn classify_deps(
 
 fn mark_source(issues: &mut [Issue], source: &str) {
     for issue in issues.iter_mut() {
-        issue.source = Some(source.to_string());
+        if issue.source.is_none() {
+            issue.source = Some(source.to_string());
+        }
     }
 }
 
-/// Options that control scan behavior.
+/// Options that control scan behavior, set from CLI flags.
 #[derive(Debug, Clone, Default)]
 pub struct ScanOptions<'a> {
+    /// Enable similarity checks on transitive dependencies (--deep).
     pub deep: bool,
+    /// Disable reading from disk caches (--no-cache). Writes still happen.
     pub no_cache: bool,
+    /// Override the default cache directory (--cache-dir).
     pub cache_dir: Option<&'a std::path::Path>,
+    /// Disable OSV disk cache entirely (for testing).
     pub disable_osv_disk_cache: bool,
 }
 
-/// A dependency parsed from a project file.
+/// A dependency parsed from a project manifest file (package.json, Cargo.toml, etc.).
 #[derive(Debug, Clone)]
 pub struct Dependency {
+    /// Package name as it appears in the manifest (e.g., "react", "@types/node").
     pub name: String,
+    /// Version requirement from the manifest (e.g., "^18.0", "==2.31.0"). None if unspecified.
     pub version: Option<String>,
+    /// Which ecosystem this dependency belongs to.
     pub ecosystem: Ecosystem,
 }
 
@@ -267,18 +276,35 @@ pub(crate) fn unresolved_version_policy_issues(
                 )
             };
 
-            Issue {
-                package: dep.name.clone(),
-                check: "resolution/no-exact-version".to_string(),
-                severity,
-                message,
-                fix: "Pin an exact version or provide a trusted lockfile entry. To continue with reduced accuracy, set allow_unresolved_versions to true in the config.".to_string(),
-                suggestion: None,
-                registry_url: None,
-                source: None,
-            }
+            Issue::new(&dep.name, checks::names::RESOLUTION_NO_EXACT_VERSION, severity)
+                .message(message)
+                .fix("Pin an exact version or provide a trusted lockfile entry. To continue with reduced accuracy, set allow_unresolved_versions to true in the config.")
         })
         .collect()
+}
+
+/// Shared test helpers for creating test dependencies.
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use super::{Dependency, Ecosystem};
+
+    /// Create a test dependency with the given name and Npm ecosystem.
+    pub fn npm_dep(name: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: None,
+            ecosystem: Ecosystem::Npm,
+        }
+    }
+
+    /// Create a test dependency with name, optional version, and ecosystem.
+    pub fn dep_with(name: &str, version: Option<&str>, ecosystem: Ecosystem) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(|v| v.to_string()),
+            ecosystem,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,14 +1,18 @@
 use crate::Dependency;
 use anyhow::Result;
+#[cfg(test)]
 use std::path::Path;
 
 use super::{
-    add_manifest_exact_fallback, add_manifest_exact_fallbacks, first_existing,
-    missing_entry_issue, out_of_sync_issue, parse_failed_issue, ResolutionKey, ResolutionResult,
-    ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, add_manifest_exact_fallbacks, missing_entry_issue,
+    out_of_sync_issue, parse_failed_issue, ResolutionKey, ResolutionResult, ResolutionSource,
+    ResolvedVersion,
 };
+#[cfg(test)]
+use super::first_existing;
 
-/// Read + parse + resolve in one step (used by resolve_versions public API).
+/// Read + parse + resolve in one step (used by resolve_versions test API).
+#[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let Some(path) = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
     else {

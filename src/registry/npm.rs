@@ -2,34 +2,9 @@ use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
-/// Strip semver prefixes like ^, ~, >= from a version string.
-fn strip_version_prefix(version: &str) -> String {
-    version
-        .trim_start_matches(['^', '~', '>', '=', '<', ' '])
-        .to_string()
-}
+use super::strip_version_prefix;
 
-pub struct NpmRegistry {
-    client: reqwest::Client,
-}
-
-impl NpmRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for NpmRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(NpmRegistry);
 
 fn metadata_from_body(
     body: &serde_json::Value,
@@ -150,17 +125,7 @@ impl super::RegistryExistence for NpmRegistry {
         self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "npm registry lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
-        }
-        Ok(true)
+        super::check_existence_status(resp.status(), "npm registry", package_name)
     }
 
     fn ecosystem(&self) -> &str {

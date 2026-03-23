@@ -120,28 +120,14 @@ fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    use crate::parsers::test_utils::*;
 
     fn setup_gradle(content: &str) -> std::path::PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-jvm-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("build.gradle"), content).unwrap();
-        dir
+        setup_test_dir("jvm", "build.gradle", content)
     }
 
     fn setup_pom(content: &str) -> std::path::PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-jvm-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("pom.xml"), content).unwrap();
-        dir
-    }
-
-    fn cleanup(dir: &std::path::Path) {
-        let _ = std::fs::remove_dir_all(dir);
+        setup_test_dir("jvm", "pom.xml", content)
     }
 
     #[test]
@@ -223,10 +209,7 @@ mod tests {
 
     #[test]
     fn gradle_takes_priority_over_pom() {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-jvm-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("build.gradle"), "implementation 'a:b:1.0'").unwrap();
+        let dir = setup_gradle("implementation 'a:b:1.0'");
         std::fs::write(
             dir.join("pom.xml"),
             "<project><dependencies><dependency><groupId>c</groupId><artifactId>d</artifactId></dependency></dependencies></project>",
@@ -248,14 +231,7 @@ mod tests {
 
     #[test]
     fn parse_gradle_kts() {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-jvm-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("build.gradle.kts"),
-            "implementation(\"com.google.guava:guava:31.1-jre\")",
-        )
-        .unwrap();
+        let dir = setup_test_dir("jvm", "build.gradle.kts", "implementation(\"com.google.guava:guava:31.1-jre\")");
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "com.google.guava:guava");

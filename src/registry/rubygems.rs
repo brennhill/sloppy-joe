@@ -13,27 +13,7 @@ fn gem_version_url(package_name: &str, version: &str) -> String {
     )
 }
 
-pub struct RubyGemsRegistry {
-    client: reqwest::Client,
-}
-
-impl RubyGemsRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for RubyGemsRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(RubyGemsRegistry);
 
 #[async_trait]
 impl super::RegistryExistence for RubyGemsRegistry {
@@ -41,17 +21,7 @@ impl super::RegistryExistence for RubyGemsRegistry {
         self.validate_name(package_name)?;
         let url = gem_url(package_name);
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "RubyGems lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
-        }
-        Ok(true)
+        super::check_existence_status(resp.status(), "RubyGems", package_name)
     }
 
     fn ecosystem(&self) -> &str {

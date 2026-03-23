@@ -7,20 +7,69 @@ pub enum Severity {
     Warning,
 }
 
+/// A single issue found during scanning. Each issue identifies a specific
+/// problem with a dependency and provides actionable remediation guidance.
 #[derive(Debug, Clone, Serialize)]
 pub struct Issue {
+    /// The dependency name this issue applies to (e.g., "react", "@types/node").
+    /// Set to "<registry>" or "<lockfile>" for infrastructure-level issues.
     pub package: String,
+    /// The check that produced this issue. Use constants from `checks::names`.
+    /// Format: "category" or "category/subcategory" (e.g., "existence", "metadata/version-age").
     pub check: String,
+    /// Error = blocks the build, Warning = informational but does not block.
     pub severity: Severity,
+    /// Human-readable description of the problem.
     pub message: String,
+    /// Human-readable remediation advice.
     pub fix: String,
+    /// Suggested replacement package (for canonical and similarity checks).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    /// Link to the package's registry page for manual verification.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registry_url: Option<String>,
-    /// "direct" or "transitive" — None defaults to direct for backward compat
+    /// "direct" or "transitive" — set by mark_source() after checks run.
+    /// None defaults to direct for backward compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+impl Issue {
+    /// Create an Issue with required fields. Optional fields default to None.
+    /// Chain `.message()`, `.fix()`, `.suggestion()`, `.registry_url()` to set values.
+    pub fn new(package: impl Into<String>, check: impl Into<String>, severity: Severity) -> Self {
+        Issue {
+            package: package.into(),
+            check: check.into(),
+            severity,
+            message: String::new(),
+            fix: String::new(),
+            suggestion: None,
+            registry_url: None,
+            source: None,
+        }
+    }
+
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    pub fn fix(mut self, fix: impl Into<String>) -> Self {
+        self.fix = fix.into();
+        self
+    }
+
+    pub fn suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
+        self
+    }
+
+    pub fn registry_url(mut self, url: impl Into<String>) -> Self {
+        self.registry_url = Some(url.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +206,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn issue_new_sets_required_fields() {
+        let issue = Issue::new("react", "existence", Severity::Error)
+            .message("not found")
+            .fix("remove it");
+        assert_eq!(issue.package, "react");
+        assert_eq!(issue.check, "existence");
+        assert_eq!(issue.severity, Severity::Error);
+        assert_eq!(issue.message, "not found");
+        assert_eq!(issue.fix, "remove it");
+        assert!(issue.suggestion.is_none());
+        assert!(issue.registry_url.is_none());
+        assert!(issue.source.is_none());
+    }
+
+    #[test]
+    fn issue_builder_optional_fields() {
+        let issue = Issue::new("lodash", "canonical", Severity::Error)
+            .message("wrong package")
+            .fix("use dayjs")
+            .suggestion("dayjs")
+            .registry_url("https://npmjs.com/package/lodash");
+        assert_eq!(issue.suggestion, Some("dayjs".to_string()));
+        assert_eq!(
+            issue.registry_url,
+            Some("https://npmjs.com/package/lodash".to_string())
+        );
+    }
+
+    #[test]
+    fn issue_builder_produces_identical_struct() {
+        let manual = Issue {
+            package: "foo".to_string(),
+            check: "test".to_string(),
+            severity: Severity::Warning,
+            message: "msg".to_string(),
+            fix: "fix".to_string(),
+            suggestion: Some("bar".to_string()),
+            registry_url: None,
+            source: None,
+        };
+        let built = Issue::new("foo", "test", Severity::Warning)
+            .message("msg")
+            .fix("fix")
+            .suggestion("bar");
+        assert_eq!(built.package, manual.package);
+        assert_eq!(built.check, manual.check);
+        assert_eq!(built.severity, manual.severity);
+        assert_eq!(built.message, manual.message);
+        assert_eq!(built.fix, manual.fix);
+        assert_eq!(built.suggestion, manual.suggestion);
+        assert_eq!(built.registry_url, manual.registry_url);
+        assert_eq!(built.source, manual.source);
+    }
+
+    #[test]
     fn has_issues_returns_false_when_empty() {
         let report = ScanReport::empty();
         assert!(!report.has_issues());
@@ -166,16 +270,9 @@ mod tests {
     fn has_issues_returns_true_when_issues_exist() {
         let report = ScanReport::from_issues(
             1,
-            vec![Issue {
-                package: "foo".to_string(),
-                check: "existence".to_string(),
-                severity: Severity::Error,
-                message: "not found".to_string(),
-                fix: "remove it".to_string(),
-                suggestion: None,
-                registry_url: None,
-                source: None,
-            }],
+            vec![Issue::new("foo", "existence", Severity::Error)
+                .message("not found")
+                .fix("remove it")],
         );
         assert!(report.has_issues());
     }
@@ -188,16 +285,11 @@ mod tests {
     }
 
     fn issue(name: &str, check: &str, severity: Severity) -> Issue {
-        Issue {
-            package: name.to_string(),
-            check: check.to_string(),
-            severity,
-            message: "msg".to_string(),
-            fix: "fix it".to_string(),
-            suggestion: Some("replacement".to_string()),
-            registry_url: Some("https://example.com".to_string()),
-            source: None,
-        }
+        Issue::new(name, check, severity)
+            .message("msg")
+            .fix("fix it")
+            .suggestion("replacement")
+            .registry_url("https://example.com")
     }
 
     #[test]
@@ -302,16 +394,9 @@ mod tests {
 
     #[test]
     fn issue_json_skips_none_fields() {
-        let i = Issue {
-            package: "pkg".to_string(),
-            check: "existence".to_string(),
-            severity: Severity::Error,
-            message: "msg".to_string(),
-            fix: "fix".to_string(),
-            suggestion: None,
-            registry_url: None,
-            source: None,
-        };
+        let i = Issue::new("pkg", "existence", Severity::Error)
+            .message("msg")
+            .fix("fix");
         let json = serde_json::to_string(&i).unwrap();
         assert!(!json.contains("suggestion"));
         assert!(!json.contains("registry_url"));

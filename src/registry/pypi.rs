@@ -2,27 +2,7 @@ use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub struct PypiRegistry {
-    client: reqwest::Client,
-}
-
-impl PypiRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for PypiRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(PypiRegistry);
 
 #[async_trait]
 impl super::RegistryExistence for PypiRegistry {
@@ -30,17 +10,7 @@ impl super::RegistryExistence for PypiRegistry {
         self.validate_name(package_name)?;
         let url = format!("https://pypi.org/pypi/{}/json", package_name);
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "PyPI lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
-        }
-        Ok(true)
+        super::check_existence_status(resp.status(), "PyPI", package_name)
     }
 
     fn ecosystem(&self) -> &str {
@@ -82,7 +52,7 @@ impl super::RegistryMetadata for PypiRegistry {
             .or_else(|| body["info"]["upload_time"].as_str().map(|s| s.to_string()));
 
         let latest_version_date = if let Some(ver) = version {
-            let base_ver = ver.trim_start_matches(['^', '~', '>', '=', '<', ' ']);
+            let base_ver = super::strip_version_prefix(ver);
             body["releases"][base_ver]
                 .as_array()
                 .and_then(|arr| arr.first())

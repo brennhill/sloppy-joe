@@ -4,7 +4,7 @@ use crate::checks::metadata::MetadataLookup;
 use crate::registry::Registry;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 
 pub(crate) fn registry_url(ecosystem: Ecosystem, name: &str) -> String {
@@ -13,41 +13,70 @@ pub(crate) fn registry_url(ecosystem: Ecosystem, name: &str) -> String {
 
 /// Check whether each dependency actually exists on its registry.
 /// Uses a concurrency limit of 10 simultaneous requests.
+/// Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
+const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
+const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
+
 pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Result<Vec<Issue>> {
     let ecosystem: Ecosystem = registry.ecosystem().parse().unwrap_or(Ecosystem::Npm);
     let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
-    let results = stream::iter(names)
-        .map(|name| {
-            async move {
-                let exists = registry.exists(&name).await?;
-                Ok::<_, anyhow::Error>((name, exists))
-            }
+
+    // Collect all results including errors (don't abort on first failure)
+    let results: Vec<(String, std::result::Result<bool, anyhow::Error>)> = stream::iter(names)
+        .map(|name| async move {
+            let result = registry.exists(&name).await;
+            (name, result)
         })
         .buffer_unordered(10)
-        .try_collect::<Vec<_>>()
+        .collect()
         .await;
 
+    let total_queries = results.len();
+    let mut error_count = 0usize;
     let mut issues = Vec::new();
-    for (name, exists) in results? {
-        if !exists {
-            let url = registry_url(ecosystem, &name);
-            issues.push(Issue {
-                package: name.clone(),
-                check: "existence".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
-                    name, ecosystem
-                ),
-                fix: format!(
-                    "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
-                    name
-                ),
-                suggestion: None,
-                registry_url: Some(url),
-                source: None,
-            });
+
+    for (name, result) in &results {
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                let url = registry_url(ecosystem, name);
+                issues.push(
+                    Issue::new(name, super::names::EXISTENCE, Severity::Error)
+                        .message(format!(
+                            "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
+                            name, ecosystem
+                        ))
+                        .fix(format!(
+                            "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
+                            name
+                        ))
+                        .registry_url(url),
+                );
+            }
+            Err(_) => {
+                error_count += 1;
+            }
         }
+    }
+
+    // Fail closed if registry is unreachable
+    let error_rate = if total_queries > 0 {
+        error_count as f64 / total_queries as f64
+    } else {
+        0.0
+    };
+    if error_count > REGISTRY_ERROR_HARD_LIMIT
+        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
+    {
+        issues.push(
+            Issue::new("<registry>", super::names::EXISTENCE_REGISTRY_UNREACHABLE, Severity::Error)
+                .message(format!(
+                    "Registry queries failed for {} of {} existence checks ({:.0}%). \
+                     Existence detection is unreliable. Fix network connectivity or retry.",
+                    error_count, total_queries, error_rate * 100.0
+                ))
+                .fix("Ensure the registry is reachable and retry the scan."),
+        );
     }
 
     Ok(issues)
@@ -76,22 +105,18 @@ pub(crate) fn check_existence_from_metadata(
             .unwrap_or(false);
         if !exists {
             let url = registry_url(ecosystem, &dep.name);
-            issues.push(Issue {
-                package: dep.name.clone(),
-                check: "existence".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
-                    dep.name, ecosystem
-                ),
-                fix: format!(
-                    "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
-                    dep.name
-                ),
-                suggestion: None,
-                registry_url: Some(url),
-                source: None,
-            });
+            issues.push(
+                Issue::new(&dep.name, super::names::EXISTENCE, Severity::Error)
+                    .message(format!(
+                        "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
+                        dep.name, ecosystem
+                    ))
+                    .fix(format!(
+                        "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
+                        dep.name
+                    ))
+                    .registry_url(url),
+            );
         }
     }
 
@@ -126,13 +151,7 @@ mod tests {
     #[async_trait]
     impl RegistryMetadata for FakeRegistry {}
 
-    fn dep(name: &str) -> Dependency {
-        Dependency {
-            name: name.to_string(),
-            version: None,
-            ecosystem: Ecosystem::Npm,
-        }
-    }
+    use crate::test_helpers::npm_dep as dep;
 
     #[tokio::test]
     async fn existing_package_no_issue() {
@@ -184,13 +203,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_errors_fail_the_check() {
+    async fn registry_errors_emit_blocking_issue() {
+        let registry = FakeRegistry {
+            existing: vec![],
+            fail: true,
+        };
+        // With many deps, high error rate triggers fail-closed
+        let deps: Vec<_> = (0..10).map(|i| dep(&format!("pkg-{}", i))).collect();
+        let issues = check_existence(&registry, &deps).await.unwrap();
+        assert!(
+            issues.iter().any(|i| i.check.contains("registry-unreachable")),
+            "Expected fail-closed blocking issue, got: {:?}",
+            issues.iter().map(|i| &i.check).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn single_registry_error_does_not_block() {
+        // A registry that fails for one specific package but works for others
+        // We can't test partial failure with the simple FakeRegistry,
+        // but we can test that a single dep failure doesn't produce a blocking issue
         let registry = FakeRegistry {
             existing: vec![],
             fail: true,
         };
         let deps = vec![dep("react")];
-        let err = check_existence(&registry, &deps).await.unwrap_err();
-        assert!(err.to_string().contains("registry unavailable"));
+        let issues = check_existence(&registry, &deps).await.unwrap();
+        // With only 1 query, 100% failure rate but only 1 error (under HARD_LIMIT of 5)
+        // Should NOT produce registry-unreachable since error_count <= 5
+        // But it will since error_rate > 10%, so it should produce the blocking issue
+        assert!(
+            issues.iter().any(|i| i.check.contains("registry-unreachable")),
+            "Single dep with 100% failure should trigger rate-based fail-closed"
+        );
     }
 }

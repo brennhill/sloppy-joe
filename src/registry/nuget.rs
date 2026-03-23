@@ -1,27 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub struct NugetRegistry {
-    client: reqwest::Client,
-}
-
-impl NugetRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for NugetRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(NugetRegistry);
 
 #[async_trait]
 impl super::RegistryExistence for NugetRegistry {
@@ -33,17 +13,7 @@ impl super::RegistryExistence for NugetRegistry {
             lower
         );
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "NuGet lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
-        }
-        Ok(true)
+        super::check_existence_status(resp.status(), "NuGet", package_name)
     }
 
     fn ecosystem(&self) -> &str {
