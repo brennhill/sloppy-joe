@@ -38,6 +38,7 @@ impl Default for GoRegistry {
 #[async_trait]
 impl super::Registry for GoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let encoded = encode_module_path(package_name);
         let url = format!("https://proxy.golang.org/{}/@latest", encoded);
         let resp = self.client.get(&url).send().await?;

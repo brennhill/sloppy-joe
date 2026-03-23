@@ -67,6 +67,7 @@ fn metadata_from_body(
 #[async_trait]
 impl super::Registry for CratesIoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -87,6 +88,7 @@ impl super::Registry for CratesIoRegistry {
         package_name: &str,
         version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
+        self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {

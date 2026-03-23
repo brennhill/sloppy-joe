@@ -55,6 +55,7 @@ fn escape_solr_term(term: &str) -> String {
 #[async_trait]
 impl super::Registry for MavenRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let parts: Vec<&str> = package_name.splitn(2, ':').collect();
         if parts.len() != 2 {
             return Ok(false);

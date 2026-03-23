@@ -22,6 +22,7 @@ impl Default for PypiRegistry {
 #[async_trait]
 impl super::Registry for PypiRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
+        self.validate_name(package_name)?;
         let url = format!("https://pypi.org/pypi/{}/json", package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -42,6 +43,7 @@ impl super::Registry for PypiRegistry {
         package_name: &str,
         version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
+        self.validate_name(package_name)?;
         let url = format!("https://pypi.org/pypi/{}/json", package_name);
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
