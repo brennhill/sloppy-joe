@@ -490,9 +490,10 @@ cargo test
 
 ## Built On
 
-- [strsim](https://crates.io/crates/strsim) — Levenshtein distance for scope squatting detection
-- [reqwest](https://crates.io/crates/reqwest) — Async HTTP client for registry queries
-- [OSV.dev](https://osv.dev) — Known vulnerability database
+- [Typomania](https://github.com/rustfoundation/typomania) — Rust Foundation's typosquatting library, which inspired the generative mutation approach (sloppy-joe implements its own generators rather than using the crate directly)
+- [strsim](https://crates.io/crates/strsim) — Levenshtein distance, used for scope squatting detection
+- [reqwest](https://crates.io/crates/reqwest) — Async HTTP client with retry for registry queries
+- [OSV.dev](https://osv.dev) — Known vulnerability database for malicious package detection
 
 ## License
 
