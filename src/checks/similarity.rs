@@ -26,190 +26,6 @@ fn cache_path_for(ecosystem: &str, cache_dir: Option<&Path>) -> PathBuf {
     base.join(format!("similarity-{}.json", ecosystem))
 }
 
-/// Test-only hardcoded popular package lists per ecosystem.
-#[cfg(test)]
-fn popular_packages(ecosystem: &str) -> &'static [&'static str] {
-    match ecosystem {
-        "npm" => &[
-            "react",
-            "express",
-            "lodash",
-            "axios",
-            "webpack",
-            "typescript",
-            "next",
-            "vue",
-            "angular",
-            "moment",
-            "chalk",
-            "commander",
-            "debug",
-            "uuid",
-            "dotenv",
-            "cors",
-            "jsonwebtoken",
-            "mongoose",
-            "socket.io",
-            "jest",
-        ],
-        "pypi" => &[
-            "requests",
-            "numpy",
-            "pandas",
-            "flask",
-            "django",
-            "pytest",
-            "scipy",
-            "matplotlib",
-            "pillow",
-            "sqlalchemy",
-            "celery",
-            "fastapi",
-            "pydantic",
-            "httpx",
-            "uvicorn",
-            "gunicorn",
-            "boto3",
-            "selenium",
-            "scrapy",
-            "beautifulsoup4",
-        ],
-        "cargo" => &[
-            "serde",
-            "tokio",
-            "clap",
-            "reqwest",
-            "anyhow",
-            "thiserror",
-            "rand",
-            "regex",
-            "chrono",
-            "hyper",
-            "actix-web",
-            "axum",
-            "tracing",
-            "log",
-            "futures",
-            "syn",
-            "quote",
-            "proc-macro2",
-            "bytes",
-            "tower",
-        ],
-        "go" => &[
-            "github.com/gin-gonic/gin",
-            "github.com/labstack/echo",
-            "github.com/gofiber/fiber",
-            "github.com/spf13/cobra",
-            "github.com/spf13/viper",
-            "go.uber.org/zap",
-            "github.com/sirupsen/logrus",
-            "gorm.io/gorm",
-            "github.com/go-chi/chi",
-            "github.com/gorilla/mux",
-            "github.com/stretchr/testify",
-            "github.com/go-redis/redis",
-            "google.golang.org/grpc",
-            "github.com/golang-jwt/jwt",
-            "github.com/jackc/pgx",
-            "github.com/nats-io/nats.go",
-            "github.com/rs/zerolog",
-            "github.com/valyala/fasthttp",
-            "github.com/prometheus/client_golang",
-            "github.com/hashicorp/consul",
-        ],
-        "ruby" => &[
-            "rails",
-            "puma",
-            "sidekiq",
-            "devise",
-            "rspec",
-            "rubocop",
-            "faker",
-            "nokogiri",
-            "pg",
-            "redis",
-            "rack",
-            "sinatra",
-            "capybara",
-            "bcrypt",
-            "aws-sdk",
-            "activerecord",
-            "bundler",
-            "rspec-rails",
-            "factory_bot",
-            "webpacker",
-        ],
-        "php" => &[
-            "laravel/framework",
-            "symfony/console",
-            "guzzlehttp/guzzle",
-            "phpunit/phpunit",
-            "monolog/monolog",
-            "doctrine/orm",
-            "league/flysystem",
-            "vlucas/phpdotenv",
-            "predis/predis",
-            "phpstan/phpstan",
-            "symfony/http-foundation",
-            "nikic/fast-route",
-            "ramsey/uuid",
-            "twig/twig",
-            "carbon/carbon",
-            "intervention/image",
-            "spatie/laravel-permission",
-            "filp/whoops",
-            "mockery/mockery",
-            "barryvdh/laravel-debugbar",
-        ],
-        "jvm" => &[
-            "com.google.guava:guava",
-            "org.springframework:spring-core",
-            "junit:junit",
-            "org.apache.commons:commons-lang3",
-            "org.slf4j:slf4j-api",
-            "ch.qos.logback:logback-classic",
-            "com.fasterxml.jackson.core:jackson-databind",
-            "org.projectlombok:lombok",
-            "org.mockito:mockito-core",
-            "io.netty:netty-all",
-            "org.jetbrains.kotlin:kotlin-stdlib",
-            "com.squareup.okhttp3:okhttp",
-            "io.grpc:grpc-core",
-            "org.apache.kafka:kafka-clients",
-            "com.google.code.gson:gson",
-            "org.hibernate:hibernate-core",
-            "org.assertj:assertj-core",
-            "io.micrometer:micrometer-core",
-            "com.zaxxer:HikariCP",
-            "org.apache.httpcomponents:httpclient",
-        ],
-        "dotnet" => &[
-            "Newtonsoft.Json",
-            "Microsoft.Extensions.DependencyInjection",
-            "xunit",
-            "Serilog",
-            "AutoMapper",
-            "MediatR",
-            "FluentValidation",
-            "Dapper",
-            "Polly",
-            "Moq",
-            "Swashbuckle.AspNetCore",
-            "StackExchange.Redis",
-            "Microsoft.EntityFrameworkCore",
-            "NUnit",
-            "FluentAssertions",
-            "Bogus",
-            "Hangfire",
-            "MassTransit",
-            "Microsoft.Extensions.Logging",
-            "Npgsql",
-        ],
-        _ => &[],
-    }
-}
-
 /// Ecosystem-specific confused forms: terms that are interchangeable
 /// and commonly swapped by AI or humans.
 fn confused_forms(ecosystem: &str) -> &'static [(&'static str, &'static str)] {
@@ -1080,24 +896,22 @@ pub async fn check_similarity_with_cache(
                         continue;
                     }
                 };
-                if exists {
-                    if flagged.insert(dep.name.clone()) {
-                        issues.push(make_issue(
-                            &dep.name,
-                            &dep_lower,
-                            "case-variant",
-                            &format!(
-                                "'{}' differs from '{}' only in letter casing. \
-                                 On case-sensitive registries ({}) these resolve to different packages. \
-                                 An attacker could register the case variant.",
-                                dep.name, dep_lower, ecosystem
-                            ),
-                            &format!(
-                                "Use the exact casing '{}' in your manifest.",
-                                dep_lower
-                            ),
-                        ));
-                    }
+                if exists && flagged.insert(dep.name.clone()) {
+                    issues.push(make_issue(
+                        &dep.name,
+                        &dep_lower,
+                        "case-variant",
+                        &format!(
+                            "'{}' differs from '{}' only in letter casing. \
+                             On case-sensitive registries ({}) these resolve to different packages. \
+                             An attacker could register the case variant.",
+                            dep.name, dep_lower, ecosystem
+                        ),
+                        &format!(
+                            "Use the exact casing '{}' in your manifest.",
+                            dep_lower
+                        ),
+                    ));
                 }
             }
         }
@@ -1461,14 +1275,6 @@ mod tests {
         assert!(!is_case_insensitive("go"));
         assert!(!is_case_insensitive("jvm"));
         assert!(!is_case_insensitive("ruby"));
-    }
-
-    #[test]
-    fn popular_packages_returns_entries_for_known_ecosystems() {
-        for eco in &["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"] {
-            assert!(!popular_packages(eco).is_empty(), "empty for {}", eco);
-        }
-        assert!(popular_packages("unknown").is_empty());
     }
 
     #[test]

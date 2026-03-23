@@ -47,7 +47,8 @@ pub async fn scan_with_source_full(
     let config = config::load_config_from_source(config_source, Some(project_dir))
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    scan_with_config(project_dir, project_type, config, deep, no_cache, cache_dir).await
+    let opts = ScanOptions { deep, no_cache, cache_dir, disable_osv_disk_cache: false };
+    scan_with_config(project_dir, project_type, config, &opts).await
 }
 
 pub async fn scan(
@@ -57,16 +58,14 @@ pub async fn scan(
 ) -> Result<ScanReport> {
     let config = config::load_config_with_project(config_path, Some(project_dir))
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    scan_with_config(project_dir, project_type, config, false, false, None).await
+    scan_with_config(project_dir, project_type, config, &ScanOptions::default()).await
 }
 
 async fn scan_with_config(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
     config: config::SloppyJoeConfig,
-    deep: bool,
-    no_cache: bool,
-    cache_dir: Option<&std::path::Path>,
+    opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
     let ecosystem = deps
@@ -75,46 +74,28 @@ async fn scan_with_config(
         .unwrap_or("npm");
     let registry = registry::registry_for(ecosystem)?;
     let osv_client = checks::malicious::RealOsvClient::new();
-    scan_with_services(project_dir, project_type, config, &*registry, &osv_client, deep, no_cache, cache_dir).await
+    scan_with_services(project_dir, config, deps, &*registry, &osv_client, opts).await
 }
 
 async fn scan_with_services(
     project_dir: &std::path::Path,
-    project_type: Option<&str>,
     config: config::SloppyJoeConfig,
+    deps: Vec<Dependency>,
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
-    deep: bool,
-    no_cache: bool,
-    cache_dir: Option<&std::path::Path>,
+    opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
-    scan_with_services_inner(
-        project_dir,
-        project_type,
-        config,
-        registry,
-        osv_client,
-        false,
-        deep,
-        no_cache,
-        cache_dir,
-    )
-    .await
+    scan_with_services_inner(project_dir, config, deps, registry, osv_client, opts).await
 }
 
 async fn scan_with_services_inner(
     project_dir: &std::path::Path,
-    project_type: Option<&str>,
     config: config::SloppyJoeConfig,
+    deps: Vec<Dependency>,
     registry: &dyn Registry,
     osv_client: &dyn OsvClient,
-    disable_osv_disk_cache: bool,
-    deep: bool,
-    no_cache: bool,
-    cache_dir: Option<&std::path::Path>,
+    opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
-    let deps = parsers::parse_dependencies(project_dir, project_type)?;
-
     if deps.is_empty() {
         return Ok(ScanReport::empty());
     }
@@ -152,7 +133,7 @@ async fn scan_with_services_inner(
     // Checkable deps get full checks
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
     let similarity_results =
-        checks::similarity::check_similarity_with_cache(registry, &checkable_owned, &ecosystem, cache_dir, no_cache).await?;
+        checks::similarity::check_similarity_with_cache(registry, &checkable_owned, &ecosystem, opts.cache_dir, opts.no_cache).await?;
 
     // Build set of similarity-flagged package names for signal amplifier
     let similarity_flagged: HashSet<String> = similarity_results
@@ -216,7 +197,7 @@ async fn scan_with_services_inner(
     };
 
     // Malicious/vulnerability check runs on all non-internal deps
-    let malicious_results = if disable_osv_disk_cache {
+    let malicious_results = if opts.disable_osv_disk_cache {
         checks::malicious::check_malicious_with_cache(osv_client, &non_internal, &resolution, None)
             .await?
     } else {
@@ -290,7 +271,7 @@ async fn scan_with_services_inner(
         };
 
         // OSV check on transitive deps
-        let mut trans_malicious = if disable_osv_disk_cache {
+        let mut trans_malicious = if opts.disable_osv_disk_cache {
             checks::malicious::check_malicious_with_cache(
                 osv_client,
                 &transitive_deps,
@@ -304,7 +285,7 @@ async fn scan_with_services_inner(
         };
 
         // Similarity on transitive deps only if --deep
-        let mut trans_similarity = if deep {
+        let mut trans_similarity = if opts.deep {
             checks::similarity::check_similarity(registry, &transitive_deps, &ecosystem).await?
         } else {
             vec![]
@@ -331,6 +312,15 @@ async fn scan_with_services_inner(
         metadata_results,
         malicious_results,
     ))
+}
+
+/// Options that control scan behavior.
+#[derive(Debug, Clone, Default)]
+pub struct ScanOptions<'a> {
+    pub deep: bool,
+    pub no_cache: bool,
+    pub cache_dir: Option<&'a std::path::Path>,
+    pub disable_osv_disk_cache: bool,
 }
 
 /// A dependency parsed from a project file.
@@ -382,7 +372,7 @@ fn unresolved_version_policy_issues(
             Issue {
                 package: dep.name.clone(),
                 check: "resolution/no-exact-version".to_string(),
-                severity: severity.clone(),
+                severity,
                 message,
                 fix: "Pin an exact version or provide a trusted lockfile entry. To continue with reduced accuracy, set allow_unresolved_versions to true in the config.".to_string(),
                 suggestion: None,
@@ -520,18 +510,9 @@ mod tests {
         registry: &dyn Registry,
         osv_client: &dyn OsvClient,
     ) -> Result<ScanReport> {
-        scan_with_services_inner(
-            project_dir,
-            project_type,
-            config,
-            registry,
-            osv_client,
-            true,
-            false,
-            true, // no_cache in tests
-            None,
-        )
-        .await
+        let deps = parsers::parse_dependencies(project_dir, project_type)?;
+        let opts = ScanOptions { no_cache: true, disable_osv_disk_cache: true, ..Default::default() };
+        scan_with_services_inner(project_dir, config, deps, registry, osv_client, &opts).await
     }
 
     fn unique_dir() -> std::path::PathBuf {
@@ -552,13 +533,11 @@ mod tests {
         let registry = FakeRegistry { existing: vec![] };
         let report = scan_with_services(
             &dir,
-            Some("npm"),
             Default::default(),
+            parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
             &registry,
             &FakeOsvClient,
-            false,
-            true,
-            None,
+            &ScanOptions { no_cache: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -580,13 +559,11 @@ mod tests {
         };
         let report = scan_with_services(
             &dir,
-            Some("npm"),
             Default::default(),
+            parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
             &registry,
             &FakeOsvClient,
-            false,
-            true,
-            None,
+            &ScanOptions { no_cache: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -613,7 +590,7 @@ mod tests {
         let registry = FakeRegistry {
             existing: vec!["react".to_string()],
         };
-        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false, true, None)
+        let report = scan_with_services(&dir, config, parsers::parse_dependencies(&dir, Some("npm")).unwrap(), &registry, &FakeOsvClient, &ScanOptions { no_cache: true, ..Default::default() })
             .await
             .unwrap();
         assert_eq!(report.packages_checked, 2);
@@ -647,7 +624,7 @@ mod tests {
         let registry = FakeRegistry {
             existing: vec!["moment".to_string()],
         };
-        let report = scan_with_services(&dir, Some("npm"), config, &registry, &FakeOsvClient, false, true, None)
+        let report = scan_with_services(&dir, config, parsers::parse_dependencies(&dir, Some("npm")).unwrap(), &registry, &FakeOsvClient, &ScanOptions { no_cache: true, ..Default::default() })
             .await
             .unwrap();
         let canonical_issues: Vec<_> = report
@@ -967,14 +944,11 @@ serde = { workspace = true }
 
         let report = scan_with_services_inner(
             &dir,
-            Some("npm"),
             Default::default(),
+            parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
             &registry,
             &osv,
-            true,
-            false,
-            true,
-            None,
+            &ScanOptions { no_cache: true, disable_osv_disk_cache: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -1036,14 +1010,11 @@ serde = { workspace = true }
         // include transitive deps in the package count
         let report = scan_with_services_inner(
             &dir,
-            Some("npm"),
             Default::default(),
+            parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
             &registry,
             &FakeOsvClient,
-            true,
-            true,
-            true,
-            None,
+            &ScanOptions { deep: true, no_cache: true, disable_osv_disk_cache: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -1054,14 +1025,11 @@ serde = { workspace = true }
         // Without deep, similarity on transitive is skipped but scan still works
         let report_no_deep = scan_with_services_inner(
             &dir,
-            Some("npm"),
             Default::default(),
+            parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
             &registry,
             &FakeOsvClient,
-            true,
-            false,
-            true,
-            None,
+            &ScanOptions { no_cache: true, disable_osv_disk_cache: true, ..Default::default() },
         )
         .await
         .unwrap();
@@ -1107,14 +1075,11 @@ serde = { workspace = true }
 
         let report = scan_with_services_inner(
             &dir,
-            Some("npm"),
             config,
+            parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
             &registry,
             &FakeOsvClient,
-            true,
-            false,
-            true,
-            None,
+            &ScanOptions { no_cache: true, disable_osv_disk_cache: true, ..Default::default() },
         )
         .await
         .unwrap();
