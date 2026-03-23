@@ -58,9 +58,6 @@ pub struct MetadataLookup {
     pub metadata: Option<PackageMetadata>,
 }
 
-/// Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
-const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
-const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
 
 pub(crate) async fn fetch_metadata(
     registry: &dyn Registry,
@@ -122,14 +119,9 @@ pub(crate) async fn fetch_metadata(
         }
     }
 
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
-        0.0
-    };
-    if error_count > REGISTRY_ERROR_HARD_LIMIT
-        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
-    {
+    let ecosystem = deps.first().map(|d| d.ecosystem).unwrap_or(crate::Ecosystem::Npm);
+    if super::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+        let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new("<registry>", super::names::METADATA_REGISTRY_UNREACHABLE, Severity::Error)
                 .message(format!(

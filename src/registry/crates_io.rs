@@ -54,7 +54,7 @@ impl super::RegistryExistence for CratesIoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "crates.io", package_name)
     }
 
@@ -72,7 +72,7 @@ impl super::RegistryMetadata for CratesIoRegistry {
     ) -> Result<Option<super::PackageMetadata>> {
         self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }

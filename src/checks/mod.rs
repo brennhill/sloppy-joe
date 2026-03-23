@@ -65,6 +65,22 @@ impl Default for ScanAccumulator {
     }
 }
 
+/// Check if error count/rate exceeds ecosystem-aware thresholds.
+/// Returns true if the check should emit a fail-closed blocking issue.
+pub(crate) fn exceeds_error_threshold(
+    error_count: usize,
+    total_queries: usize,
+    ecosystem: Ecosystem,
+) -> bool {
+    let error_rate = if total_queries > 0 {
+        error_count as f64 / total_queries as f64
+    } else {
+        return false;
+    };
+    error_count > ecosystem.error_hard_limit()
+        || error_rate > ecosystem.error_rate_threshold()
+}
+
 /// A composable check. Checks execute in pipeline order and can read/write
 /// the accumulator. New checks are added by implementing this trait and
 /// appending to the pipeline vector.

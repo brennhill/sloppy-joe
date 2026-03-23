@@ -15,9 +15,6 @@ use generators::{extract_scope, known_scopes};
 
 const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
 
-/// Registry error tracking threshold: >5 errors OR >10% failure rate triggers blocking issue.
-const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
-const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
 struct SimilarityCache {
@@ -338,14 +335,8 @@ pub async fn check_similarity_with_cache(
     }
 
     // Emit blocking error if registry is unreachable (fail closed)
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
-        0.0
-    };
-    if error_count > REGISTRY_ERROR_HARD_LIMIT
-        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
-    {
+    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+        let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new("<registry>", crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE, Severity::Error)
                 .message(format!(

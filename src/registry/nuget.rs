@@ -12,7 +12,7 @@ impl super::RegistryExistence for NugetRegistry {
             "https://api.nuget.org/v3-flatcontainer/{}/index.json",
             lower
         );
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "NuGet", package_name)
     }
 

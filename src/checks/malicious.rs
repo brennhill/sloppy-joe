@@ -156,10 +156,6 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    // Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
-    const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
-    const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
-
     let results: Vec<_> = stream::iter(pending.into_iter())
         .map(|(cache_key, (name, ecosystem, version))| async move {
             let result = osv_client
@@ -181,14 +177,9 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
-        0.0
-    };
-    if error_count > REGISTRY_ERROR_HARD_LIMIT
-        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
-    {
+    let ecosystem = deps.first().map(|d| d.ecosystem).unwrap_or(crate::Ecosystem::Npm);
+    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+        let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new("<registry>", crate::checks::names::MALICIOUS_REGISTRY_UNREACHABLE, Severity::Error)
                 .message(format!(

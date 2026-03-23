@@ -13,10 +13,6 @@ pub(crate) fn registry_url(ecosystem: Ecosystem, name: &str) -> String {
 
 /// Check whether each dependency actually exists on its registry.
 /// Uses a concurrency limit of 10 simultaneous requests.
-/// Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
-const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
-const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
-
 pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Result<Vec<Issue>> {
     let ecosystem: Ecosystem = registry.ecosystem().parse().unwrap_or(Ecosystem::Npm);
     let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
@@ -60,14 +56,8 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
     }
 
     // Fail closed if registry is unreachable
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
-        0.0
-    };
-    if error_count > REGISTRY_ERROR_HARD_LIMIT
-        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
-    {
+    if super::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+        let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new("<registry>", super::names::EXISTENCE_REGISTRY_UNREACHABLE, Severity::Error)
                 .message(format!(

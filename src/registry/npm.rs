@@ -111,7 +111,7 @@ async fn fetch_downloads(
         "https://api.npmjs.org/downloads/point/last-month/{}",
         package_name
     );
-    let resp = client.get(&url).send().await?;
+    let resp = super::retry_get(client, &url).await?;
     if !resp.status().is_success() {
         return Ok(None);
     }
@@ -124,7 +124,7 @@ impl super::RegistryExistence for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "npm registry", package_name)
     }
 
@@ -145,7 +145,7 @@ impl super::RegistryMetadata for NpmRegistry {
 
         // Fetch registry doc and download counts concurrently
         let (registry_resp, downloads_result) = tokio::join!(
-            self.client.get(&url).send(),
+            super::retry_get(&self.client, &url),
             fetch_downloads(&self.client, package_name)
         );
 

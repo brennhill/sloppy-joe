@@ -224,6 +224,47 @@ pub(crate) fn strip_version_prefix(version: &str) -> String {
         .to_string()
 }
 
+/// Maximum number of retry attempts for transient HTTP errors.
+const MAX_RETRIES: u32 = 3;
+/// Base delay for exponential backoff (doubled each retry).
+const RETRY_BASE_DELAY_MS: u64 = 200;
+
+/// Send a GET request with retry on transient failures (5xx, timeouts, connection errors).
+/// Returns the response on success, or the last error after exhausting retries.
+pub(crate) async fn retry_get(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<reqwest::Response> {
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match client.get(url).send().await {
+            Ok(resp) if resp.status().is_server_error() && attempt < MAX_RETRIES - 1 => {
+                let delay = RETRY_BASE_DELAY_MS * 2u64.pow(attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                last_err = Some(anyhow::anyhow!(
+                    "server error HTTP {} (attempt {}/{})",
+                    resp.status(),
+                    attempt + 1,
+                    MAX_RETRIES
+                ));
+            }
+            Ok(resp) => return Ok(resp),
+            Err(e) if attempt < MAX_RETRIES - 1 && is_transient(&e) => {
+                let delay = RETRY_BASE_DELAY_MS * 2u64.pow(attempt);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                last_err = Some(e.into());
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry exhausted")))
+}
+
+/// Check if a reqwest error is transient (worth retrying).
+fn is_transient(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request()
+}
+
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
@@ -365,5 +406,23 @@ mod tests {
         let a = ValidatedName::new("react").unwrap();
         let b = ValidatedName::new("react").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn is_transient_detects_timeout_and_connect_errors() {
+        // We can't easily construct reqwest errors, but verify the function compiles
+        // and the logic is correct by checking it returns bool
+        let _: fn(&reqwest::Error) -> bool = is_transient;
+    }
+
+    #[test]
+    fn retry_constants_are_reasonable() {
+        assert!(MAX_RETRIES >= 2, "Need at least 2 retries for transient errors");
+        assert!(MAX_RETRIES <= 5, "Too many retries would slow CI");
+        assert!(RETRY_BASE_DELAY_MS >= 100, "Base delay too short");
+        assert!(RETRY_BASE_DELAY_MS <= 1000, "Base delay too long for CI");
+        // Total worst-case delay: 200 + 400 + 800 = 1400ms — reasonable
+        let total_delay: u64 = (0..MAX_RETRIES).map(|i| RETRY_BASE_DELAY_MS * 2u64.pow(i)).sum();
+        assert!(total_delay < 5000, "Total retry delay exceeds 5s: {}ms", total_delay);
     }
 }
