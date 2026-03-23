@@ -4,7 +4,8 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("requirements.txt");
-    let content = std::fs::read_to_string(&path).context("Failed to read requirements.txt")?;
+    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+        .context("Failed to read requirements.txt")?;
 
     let mut deps = Vec::new();
 

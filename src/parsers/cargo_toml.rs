@@ -4,7 +4,8 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("Cargo.toml");
-    let content = std::fs::read_to_string(&path).context("Failed to read Cargo.toml")?;
+    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+        .context("Failed to read Cargo.toml")?;
     let parsed: toml::Value = toml::from_str(&content).context("Failed to parse Cargo.toml")?;
 
     let mut deps = Vec::new();

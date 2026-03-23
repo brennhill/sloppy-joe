@@ -4,7 +4,8 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("composer.json");
-    let content = std::fs::read_to_string(&path).context("Failed to read composer.json")?;
+    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+        .context("Failed to read composer.json")?;
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse composer.json")?;
 

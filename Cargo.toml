@@ -12,7 +12,6 @@ categories = ["command-line-utilities", "development-tools"]
 authors = ["Brenn Hill"]
 
 [dependencies]
-typomania = "0.1.2"
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
 serde = { version = "1", features = ["derive"] }
