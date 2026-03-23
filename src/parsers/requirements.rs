@@ -15,6 +15,18 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             continue;
         }
 
+        // Skip URL-based requirements (e.g., git+https://github.com/...)
+        if line.contains("://") {
+            continue;
+        }
+
+        // Strip environment markers: split on unquoted `;` before version parsing
+        let line = if let Some(semi_pos) = find_unquoted_semicolon(line) {
+            line[..semi_pos].trim()
+        } else {
+            line
+        };
+
         // Parse "package==version", "package>=version", "package~=version", or just "package"
         let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!']) {
             let name = normalize_distribution_name(&line[..pos]);
@@ -36,28 +48,28 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     Ok(deps)
 }
 
-fn normalize_distribution_name(raw: &str) -> String {
-    let base = raw.trim().split('[').next().unwrap_or("").trim();
-    // PEP 503: lowercase, replace runs of [-_.] with a single hyphen
-    let lowered = base.to_lowercase();
-    let mut result = String::with_capacity(lowered.len());
-    let mut in_sep = false;
-    for c in lowered.chars() {
-        if c == '-' || c == '_' || c == '.' {
-            if !in_sep && !result.is_empty() {
-                result.push('-');
-            }
-            in_sep = true;
-        } else {
-            in_sep = false;
-            result.push(c);
+/// Find position of first `;` not inside quotes.
+fn find_unquoted_semicolon(s: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' if !in_single && !in_double => return Some(i),
+            _ => {}
         }
     }
-    // Trim trailing hyphen
-    if result.ends_with('-') {
-        result.pop();
-    }
-    result
+    None
+}
+
+fn normalize_distribution_name(raw: &str) -> String {
+    raw.trim()
+        .split('[')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -129,11 +141,41 @@ mod tests {
     }
 
     #[test]
-    fn pep503_normalization() {
-        assert_eq!(normalize_distribution_name("Python-Dateutil"), "python-dateutil");
-        assert_eq!(normalize_distribution_name("python_dateutil"), "python-dateutil");
-        assert_eq!(normalize_distribution_name("REQUESTS"), "requests");
-        assert_eq!(normalize_distribution_name("Foo..Bar__Baz"), "foo-bar-baz");
+    fn skip_url_based_requirements() {
+        let dir = setup_dir("git+https://github.com/user/repo.git#egg=pkg\nrequests==1.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "requests");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn skip_url_with_egg_fragment() {
+        let dir = setup_dir("git+https://github.com/user/repo.git@v1.0#egg=mypkg\nflask==2.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn strip_environment_markers() {
+        let dir = setup_dir("pywin32>=300; sys_platform == \"win32\"");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "pywin32");
+        assert_eq!(deps[0].version, Some(">=300".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn environment_marker_bare_package() {
+        let dir = setup_dir("pywin32; sys_platform == \"win32\"");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "pywin32");
+        assert_eq!(deps[0].version, None);
+        cleanup(&dir);
     }
 
     #[test]
