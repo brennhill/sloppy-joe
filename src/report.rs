@@ -1,7 +1,7 @@
 use colored::Colorize;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub enum Severity {
     Error,
     Warning,

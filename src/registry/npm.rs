@@ -165,7 +165,14 @@ impl super::Registry for NpmRegistry {
     ) -> Result<Option<super::PackageMetadata>> {
         self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
-        let resp = self.client.get(&url).send().await?;
+
+        // Fetch registry doc and download counts concurrently
+        let (registry_resp, downloads_result) = tokio::join!(
+            self.client.get(&url).send(),
+            fetch_downloads(&self.client, package_name)
+        );
+
+        let resp = registry_resp?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -182,9 +189,7 @@ impl super::Registry for NpmRegistry {
             None => return Ok(None),
         };
 
-        // Fetch download counts from the npm downloads API.
-        // This is a separate service; failures are non-fatal.
-        if let Ok(downloads) = fetch_downloads(&self.client, package_name).await {
+        if let Ok(downloads) = downloads_result {
             meta.downloads = downloads;
         }
 
