@@ -2,7 +2,7 @@ use crate::Dependency;
 use crate::config::SloppyJoeConfig;
 use crate::lockfiles::ResolutionResult;
 use crate::registry::{PackageMetadata, Registry};
-use crate::report::{Issue, Severity};
+use crate::report::Issue;
 use anyhow::Result;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashSet;

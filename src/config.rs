@@ -170,7 +170,14 @@ pub async fn load_config_from_source(
 
 /// Fetch config JSON from a URL.
 async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
-    let response = crate::registry::http_client().get(url).send().await.map_err(|e| {
+    // Use a dedicated client with no redirects to prevent SSRF via redirect chains
+    let client = reqwest::Client::builder()
+        .user_agent("sloppy-joe")
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("failed to build config HTTP client");
+    let response = client.get(url).send().await.map_err(|e| {
         format!(
             "Could not fetch config from URL: {}\n  URL: {}\n  Fix: Check that the URL is reachable and returns valid JSON.\n       For private repos, ensure your CI token has read access.",
             e, url
@@ -185,16 +192,24 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
         ));
     }
 
-    // Limit response body to 1 MB to prevent OOM from malicious URLs
+    // Reject oversized responses BEFORE reading the body into memory.
+    // Check Content-Length header first (fast path), then cap the read.
+    const MAX_CONFIG_BYTES: u64 = 1_024 * 1_024;
+    if let Some(len) = response.content_length()
+        && len > MAX_CONFIG_BYTES {
+            return Err(format!(
+                "Config response too large ({} bytes, max {} bytes)\n  URL: {}",
+                len, MAX_CONFIG_BYTES, url
+            ));
+        }
     let bytes = response
         .bytes()
         .await
         .map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
-    if bytes.len() > 1_024 * 1_024 {
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
         return Err(format!(
-            "Config response too large ({} bytes, max 1 MB)\n  URL: {}",
-            bytes.len(),
-            url
+            "Config response too large ({} bytes, max {} bytes)\n  URL: {}",
+            bytes.len(), MAX_CONFIG_BYTES, url
         ));
     }
     let content = String::from_utf8(bytes.to_vec())

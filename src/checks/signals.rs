@@ -126,19 +126,16 @@ pub(crate) fn check_install_script_risk(
     }
 
     let mut reasons = Vec::new();
-    if is_new_package {
-        if let Some(ref date) = meta.created {
-            if let Some(age_hours) = age_in_hours(date) {
+    if is_new_package
+        && let Some(ref date) = meta.created
+            && let Some(age_hours) = age_in_hours(date) {
                 let age_days = age_hours / 24;
                 reasons.push(format!("was published {} days ago", age_days));
             }
-        }
-    }
-    if let Some(downloads) = meta.downloads {
-        if downloads < 1000 {
+    if let Some(downloads) = meta.downloads
+        && downloads < 1000 {
             reasons.push(format!("with {} downloads", downloads));
         }
-    }
     if has_similarity {
         reasons.push("was flagged for name similarity to a popular package".to_string());
     }

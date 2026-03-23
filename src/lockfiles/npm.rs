@@ -1,6 +1,5 @@
 use crate::Dependency;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::Path;
 
 use super::{
@@ -106,7 +105,12 @@ pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
             if key.is_empty() {
                 continue;
             }
-            let name = key.strip_prefix("node_modules/").unwrap_or(key);
+            // Use the innermost package name for nested deps
+            // e.g., "node_modules/@scope/pkg/node_modules/nested" -> "nested"
+            let name = key
+                .rsplit_once("node_modules/")
+                .map(|(_, name)| name)
+                .unwrap_or(key);
             if name.is_empty() {
                 continue;
             }

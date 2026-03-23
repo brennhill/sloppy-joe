@@ -2,7 +2,6 @@
 
 pub(crate) mod cache;
 pub mod checks;
-pub(crate) mod error_budget;
 pub mod config;
 pub mod lockfiles;
 pub mod parsers;
@@ -14,7 +13,6 @@ use anyhow::Result;
 use checks::malicious::OsvClient;
 use registry::Registry;
 use report::{Issue, ScanReport, Severity};
-use std::collections::HashSet;
 
 /// Run all checks on the detected or specified project type.
 ///
@@ -76,18 +74,7 @@ async fn scan_with_config(
     let client = registry::http_client();
     let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
     let osv_client = checks::malicious::RealOsvClient::with_client(client);
-    scan_with_services(project_dir, config, deps, &*registry, &osv_client, opts).await
-}
-
-async fn scan_with_services(
-    project_dir: &std::path::Path,
-    config: config::SloppyJoeConfig,
-    deps: Vec<Dependency>,
-    registry: &dyn Registry,
-    osv_client: &dyn OsvClient,
-    opts: &ScanOptions<'_>,
-) -> Result<ScanReport> {
-    scan_with_services_inner(project_dir, config, deps, registry, osv_client, opts).await
+    scan_with_services_inner(project_dir, config, deps, &*registry, &osv_client, opts).await
 }
 
 async fn scan_with_services_inner(
@@ -109,7 +96,6 @@ async fn scan_with_services_inner(
 
     // Parse lockfile once
     let lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
-    let error_budget = error_budget::ErrorBudget::new();
 
     // Build context + accumulator, run pipeline on direct deps
     let pipeline = checks::pipeline::default_pipeline();
@@ -120,7 +106,6 @@ async fn scan_with_services_inner(
         registry,
         osv_client,
         resolution: &lockfile_data.resolution,
-        error_budget: &error_budget,
         ecosystem: &ecosystem,
         opts,
     };
@@ -160,7 +145,6 @@ async fn scan_with_services_inner(
             registry,
             osv_client,
             resolution: &trans_resolution,
-            error_budget: &error_budget,
             ecosystem: &ecosystem,
             opts,
         };

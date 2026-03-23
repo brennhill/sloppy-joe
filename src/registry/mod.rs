@@ -43,10 +43,21 @@ pub trait RegistryExistence: Send + Sync {
 
     /// Validate package name before any registry operation.
     /// Returns Err if the name is unsafe for URL construction.
+    /// Ecosystem-aware: rejects `/` and `\` except for ecosystems that use them
+    /// (go, php, jvm use `/` or `:` in package names).
     fn validate_name(&self, package_name: &str) -> Result<()> {
         if !validate_package_name(package_name) {
             anyhow::bail!(
                 "invalid package name for registry query: '{}'",
+                package_name
+            );
+        }
+        // Reject slashes for ecosystems that don't use them in package names
+        let eco = self.ecosystem();
+        if !matches!(eco, "npm" | "go" | "php" | "jvm") && package_name.contains('/') {
+            anyhow::bail!(
+                "invalid package name for {} registry: '{}' (unexpected '/')",
+                eco,
                 package_name
             );
         }
