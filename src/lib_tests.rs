@@ -1,5 +1,6 @@
 use super::*;
 use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
+use crate::report::Severity;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -150,7 +151,7 @@ async fn scan_empty_project_returns_empty_report() {
     )
     .unwrap();
     let registry = FakeRegistry { existing: vec![] };
-    let report = scan_with_services(
+    let report = scan_with_services_inner(
         &dir,
         Default::default(),
         parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
@@ -176,7 +177,7 @@ async fn scan_with_deps_returns_report() {
     let registry = FakeRegistry {
         existing: vec!["react".to_string()],
     };
-    let report = scan_with_services(
+    let report = scan_with_services_inner(
         &dir,
         Default::default(),
         parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
@@ -209,7 +210,7 @@ async fn scan_with_internal_skips_all_checks() {
     let registry = FakeRegistry {
         existing: vec!["react".to_string()],
     };
-    let report = scan_with_services(&dir, config, parsers::parse_dependencies(&dir, Some("npm")).unwrap(), &registry, &FakeOsvClient, &ScanOptions { no_cache: true, ..Default::default() })
+    let report = scan_with_services_inner(&dir, config, parsers::parse_dependencies(&dir, Some("npm")).unwrap(), &registry, &FakeOsvClient, &ScanOptions { no_cache: true, ..Default::default() })
         .await
         .unwrap();
     assert_eq!(report.packages_checked, 2);
@@ -242,7 +243,7 @@ async fn scan_with_canonical_config_flags_alternatives() {
     let registry = FakeRegistry {
         existing: vec!["moment".to_string()],
     };
-    let report = scan_with_services(&dir, config, parsers::parse_dependencies(&dir, Some("npm")).unwrap(), &registry, &FakeOsvClient, &ScanOptions { no_cache: true, ..Default::default() })
+    let report = scan_with_services_inner(&dir, config, parsers::parse_dependencies(&dir, Some("npm")).unwrap(), &registry, &FakeOsvClient, &ScanOptions { no_cache: true, ..Default::default() })
         .await
         .unwrap();
     let canonical_issues: Vec<_> = report

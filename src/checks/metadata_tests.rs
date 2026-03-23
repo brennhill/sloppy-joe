@@ -1,5 +1,6 @@
 use super::*;
 use crate::registry::{RegistryExistence, RegistryMetadata};
+use crate::report::Severity;
 use async_trait::async_trait;
 
 struct FakeRegistry {

@@ -832,9 +832,9 @@ pub async fn check_similarity_with_cache(
             }
         }
     }
-    if !no_cache {
+    if !no_cache && !fresh_results.is_empty() {
         cache.timestamp = cache::now_epoch();
-        cache::atomic_write_json(&cp, &cache)?;
+        let _ = cache::atomic_write_json(&cp, &cache); // non-fatal: cache write failure should not abort scan
     }
 
     // Emit blocking error if registry is unreachable (fail closed)

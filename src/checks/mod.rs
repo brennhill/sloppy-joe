@@ -7,13 +7,11 @@ pub(crate) mod signals;
 pub mod similarity;
 
 use crate::config::SloppyJoeConfig;
-use crate::error_budget::ErrorBudget;
 use crate::lockfiles::ResolutionResult;
 use crate::registry::Registry;
 use crate::report::Issue;
 use crate::{Dependency, ScanOptions};
 use anyhow::Result;
-use async_trait::async_trait;
 use std::collections::HashSet;
 
 /// Immutable context shared by all checks.
@@ -26,7 +24,6 @@ pub struct CheckContext<'a> {
     pub registry: &'a dyn Registry,
     pub osv_client: &'a dyn malicious::OsvClient,
     pub resolution: &'a ResolutionResult,
-    pub error_budget: &'a ErrorBudget,
     pub ecosystem: &'a str,
     pub opts: &'a ScanOptions<'a>,
 }

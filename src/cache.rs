@@ -5,19 +5,16 @@ use std::sync::Mutex;
 
 /// Abstract cache service. Enables disk caching in production and
 /// deterministic in-memory caching in tests.
+/// TTL is the caller's responsibility (check timestamps in the cached data).
 pub trait CacheService: Send + Sync {
-    fn read_raw(&self, key: &str, ttl_secs: u64) -> Option<String>;
+    fn read_raw(&self, key: &str) -> Option<String>;
     fn write_raw(&self, key: &str, data: &str) -> Result<()>;
 }
 
 /// Extension methods for typed cache operations.
 pub trait CacheServiceExt: CacheService {
-    fn read<T: serde::de::DeserializeOwned>(
-        &self,
-        key: &str,
-        ttl_secs: u64,
-    ) -> Option<T> {
-        let raw = self.read_raw(key, ttl_secs)?;
+    fn read<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let raw = self.read_raw(key)?;
         serde_json::from_str(&raw).ok()
     }
 
@@ -40,14 +37,18 @@ impl DiskCacheService {
         Self { base_dir }
     }
 
-    fn path_for(&self, key: &str) -> PathBuf {
-        self.base_dir.join(key)
+    fn path_for(&self, key: &str) -> Option<PathBuf> {
+        // Reject path traversal components before joining
+        if key.contains("..") || key.contains('\0') {
+            return None;
+        }
+        Some(self.base_dir.join(key))
     }
 }
 
 impl CacheService for DiskCacheService {
-    fn read_raw(&self, key: &str, _ttl_secs: u64) -> Option<String> {
-        let path = self.path_for(key);
+    fn read_raw(&self, key: &str) -> Option<String> {
+        let path = self.path_for(key)?;
         if ensure_no_symlink(&path).is_err() {
             return None;
         }
@@ -55,7 +56,9 @@ impl CacheService for DiskCacheService {
     }
 
     fn write_raw(&self, key: &str, data: &str) -> Result<()> {
-        let path = self.path_for(key);
+        let Some(path) = self.path_for(key) else {
+            return Ok(());
+        };
         if ensure_no_symlink(&path).is_err() {
             return Ok(());
         }
@@ -102,7 +105,7 @@ impl Default for InMemoryCacheService {
 }
 
 impl CacheService for InMemoryCacheService {
-    fn read_raw(&self, key: &str, _ttl_secs: u64) -> Option<String> {
+    fn read_raw(&self, key: &str) -> Option<String> {
         self.store.lock().ok()?.get(key).cloned()
     }
 
@@ -147,6 +150,41 @@ fn now_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
+}
+
+/// Convert epoch milliseconds to an approximate ISO 8601 string.
+/// Returns None for negative timestamps. Shared by maven.rs and metadata tests.
+pub fn epoch_millis_to_iso8601(millis: i64) -> Option<String> {
+    if millis < 0 {
+        return None;
+    }
+    let secs = millis / 1000;
+    let days = secs / 86400;
+    let remaining = secs % 86400;
+    let hour = remaining / 3600;
+    let min = (remaining % 3600) / 60;
+    let mut year = 1970i64;
+    let mut rem_days = days;
+    loop {
+        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+        if rem_days < ydays {
+            break;
+        }
+        rem_days -= ydays;
+        year += 1;
+    }
+    let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_per_month = [31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1i64;
+    for &dm in &days_per_month {
+        if rem_days < dm {
+            break;
+        }
+        rem_days -= dm;
+        month += 1;
+    }
+    let day = rem_days + 1;
+    Some(format!("{:04}-{:02}-{:02}T{:02}:{:02}:00Z", year, month, day, hour, min))
 }
 
 /// Reject symlinked cache files to prevent symlink attacks.
@@ -351,9 +389,9 @@ mod tests {
     #[test]
     fn in_memory_cache_round_trips() {
         let cache = InMemoryCacheService::new();
-        assert!(cache.read_raw("key", 3600).is_none());
+        assert!(cache.read_raw("key").is_none());
         cache.write_raw("key", "value").unwrap();
-        assert_eq!(cache.read_raw("key", 3600), Some("value".to_string()));
+        assert_eq!(cache.read_raw("key"), Some("value".to_string()));
     }
 
     #[test]
@@ -364,7 +402,7 @@ mod tests {
             value: "typed".to_string(),
         };
         cache.write("typed-key", &data).unwrap();
-        let loaded: TestCache = cache.read("typed-key", 3600).unwrap();
+        let loaded: TestCache = cache.read("typed-key").unwrap();
         assert_eq!(loaded.value, "typed");
     }
 
@@ -372,12 +410,25 @@ mod tests {
     fn disk_cache_service_round_trips() {
         let dir = unique_dir();
         let cache = DiskCacheService::new(dir.clone());
-        assert!(cache.read_raw("test.json", 3600).is_none());
+        assert!(cache.read_raw("test.json").is_none());
         cache.write_raw("test.json", r#"{"hello":"world"}"#).unwrap();
         assert_eq!(
-            cache.read_raw("test.json", 3600),
+            cache.read_raw("test.json"),
             Some(r#"{"hello":"world"}"#.to_string())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_cache_rejects_path_traversal() {
+        let dir = unique_dir();
+        let cache = DiskCacheService::new(dir.clone());
+        // Attempt to write outside base_dir via path traversal
+        assert!(cache.write_raw("../../etc/evil", "payload").is_ok()); // silently rejected
+        assert!(cache.read_raw("../../etc/evil").is_none());
+        // Normal key still works
+        cache.write_raw("safe.json", "ok").unwrap();
+        assert_eq!(cache.read_raw("safe.json"), Some("ok".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
