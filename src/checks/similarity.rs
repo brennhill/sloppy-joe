@@ -760,7 +760,7 @@ pub async fn check_similarity_with_cache(
     }
 
     // Batch-query registry for uncached candidates only
-    let concurrency = crate::registry::similarity_concurrency(ecosystem);
+    let concurrency = ecosystem.similarity_concurrency();
     let fresh_results: Vec<(String, String, std::result::Result<bool, anyhow::Error>)> =
         stream::iter(uncached)
             .map(|(dep_name, candidate)| async move {
@@ -788,7 +788,7 @@ pub async fn check_similarity_with_cache(
     }
     if !no_cache && !fresh_results.is_empty() {
         cache.timestamp = cache::now_epoch();
-        let _ = cache::atomic_write_json(&cp, &cache); // non-fatal: cache write failure should not abort scan
+        cache::atomic_write_json(&cp, &cache);
     }
 
     // Emit blocking error if registry is unreachable (fail closed)
@@ -930,14 +930,6 @@ pub async fn check_similarity_with_cache(
     }
 
     Ok(issues)
-}
-
-/// Generate cheap mutation candidates for a package name.
-/// Used by the reverse-check in existence.rs to suggest corrections
-/// for non-existent packages. Delegates to generate_mutations with a
-/// neutral ecosystem to get the full set of candidates.
-pub fn generate_candidates(name: &str) -> HashSet<String> {
-    generate_mutations(name, Ecosystem::Npm).into_keys().collect()
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {

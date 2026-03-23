@@ -6,7 +6,7 @@ use anyhow::Result;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use std::path::Path;
-const CACHE_TTL_SECS: u64 = 6 * 3600; // 6 hours
+const CACHE_TTL_SECS: u64 = 3600; // 1 hour — short TTL since OSV re-queries are cheap
 
 /// Cached OSV query result: list of vulnerability IDs (empty = clean).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -113,7 +113,7 @@ impl OsvClient for RealOsvClient {
 }
 
 /// Check all dependencies against the OSV vulnerability database.
-/// Uses a 6-hour disk cache at the default path.
+/// Uses a 1-hour disk cache at the default path.
 pub async fn check_malicious(
     osv_client: &dyn OsvClient,
     deps: &[Dependency],
@@ -210,7 +210,7 @@ pub async fn check_malicious_with_cache(
             timestamp: cache::now_epoch(),
             entries: cache.clone(),
         };
-        cache::atomic_write_json(path, &disk_cache)?;
+        cache::atomic_write_json(path, &disk_cache);
     }
 
     Ok(issues)

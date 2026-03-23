@@ -126,6 +126,9 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
             if name.is_empty() {
                 continue;
             }
+            if !crate::registry::validate_package_name(name) {
+                continue;
+            }
             let version = entry
                 .get("version")
                 .and_then(|v| v.as_str())
@@ -153,4 +156,29 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
     }
 
     Ok(deps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_all_skips_invalid_package_names() {
+        let lockfile = r#"{
+            "packages": {
+                "": { "name": "root" },
+                "node_modules/react": { "version": "18.2.0" },
+                "node_modules/../etc/passwd": { "version": "1.0.0" },
+                "node_modules/evil\u0000pkg": { "version": "1.0.0" },
+                "node_modules/good-pkg": { "version": "2.0.0" }
+            }
+        }"#;
+        let deps = parse_all(lockfile).unwrap();
+        let names: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"react"));
+        assert!(names.contains(&"good-pkg"));
+        assert!(!names.iter().any(|n| n.contains("..")), "path traversal name should be filtered");
+        assert!(!names.iter().any(|n| n.contains('\0')), "null byte name should be filtered");
+        assert_eq!(deps.len(), 2);
+    }
 }
