@@ -104,15 +104,96 @@ async fn scan_with_services_inner(
 
     let ecosystem = deps[0].ecosystem.clone();
 
-    // Split deps into three tiers
+    // Classify deps into three tiers
+    let (checkable, non_internal) = classify_deps(&deps, &config, &ecosystem);
+
+    // Parse lockfile once
+    let lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
+    let error_budget = error_budget::ErrorBudget::new();
+
+    // Build context + accumulator, run pipeline on direct deps
+    let pipeline = checks::pipeline::default_pipeline();
+    let ctx = checks::CheckContext {
+        checkable_deps: &checkable,
+        non_internal_deps: &non_internal,
+        config: &config,
+        registry,
+        osv_client,
+        resolution: &lockfile_data.resolution,
+        error_budget: &error_budget,
+        ecosystem: &ecosystem,
+        opts,
+    };
+    let mut acc = checks::ScanAccumulator::new();
+    for check in &pipeline {
+        check.run(&ctx, &mut acc).await?;
+    }
+    mark_source(&mut acc.issues, "direct");
+
+    // Transitive dependency scanning
+    let mut transitive_deps = lockfile_data.transitive_deps;
+    transitive_deps.retain(|dep| {
+        !config.is_internal(&ecosystem, &dep.name)
+            && !config.is_allowed(&ecosystem, &dep.name)
+    });
+
+    if !transitive_deps.is_empty() {
+        let trans_resolution = lockfiles::resolve_versions(project_dir, &transitive_deps)?;
+
+        // Build transitive pipeline (skip similarity unless --deep)
+        let trans_pipeline: Vec<Box<dyn checks::Check>> = if opts.deep {
+            checks::pipeline::default_pipeline()
+        } else {
+            // All checks except similarity for transitive deps
+            vec![
+                Box::new(checks::pipeline::CanonicalCheck),
+                Box::new(checks::pipeline::MetadataCheck),
+                Box::new(checks::pipeline::ExistenceCheck),
+                Box::new(checks::pipeline::MaliciousCheck),
+            ]
+        };
+
+        let trans_ctx = checks::CheckContext {
+            checkable_deps: &transitive_deps,
+            non_internal_deps: &transitive_deps,
+            config: &config,
+            registry,
+            osv_client,
+            resolution: &trans_resolution,
+            error_budget: &error_budget,
+            ecosystem: &ecosystem,
+            opts,
+        };
+        let mut trans_acc = checks::ScanAccumulator::new();
+        // Carry forward similarity_flagged from direct deps
+        trans_acc.similarity_flagged = acc.similarity_flagged.clone();
+        for check in &trans_pipeline {
+            check.run(&trans_ctx, &mut trans_acc).await?;
+        }
+        mark_source(&mut trans_acc.issues, "transitive");
+        acc.issues.extend(trans_acc.issues);
+    }
+
+    Ok(ScanReport::from_issues(
+        deps.len() + transitive_deps.len(),
+        acc.issues,
+    ))
+}
+
+/// Classify deps into checkable (full checks) and non-internal (canonical + metadata + osv).
+fn classify_deps(
+    deps: &[Dependency],
+    config: &config::SloppyJoeConfig,
+    ecosystem: &str,
+) -> (Vec<Dependency>, Vec<Dependency>) {
     let (internal, rest): (Vec<&Dependency>, Vec<&Dependency>) = deps
         .iter()
-        .partition(|dep| config.is_internal(&ecosystem, &dep.name));
+        .partition(|dep| config.is_internal(ecosystem, &dep.name));
 
     let (allowed, checkable): (Vec<&Dependency>, Vec<&Dependency>) = rest
         .iter()
         .copied()
-        .partition(|dep| config.is_allowed(&ecosystem, &dep.name));
+        .partition(|dep| config.is_allowed(ecosystem, &dep.name));
 
     if !internal.is_empty() {
         let names: Vec<_> = internal.iter().map(|d| d.name.as_str()).collect();
@@ -132,188 +213,20 @@ async fn scan_with_services_inner(
         );
     }
 
-    // Checkable deps get full checks
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
-    let similarity_results =
-        checks::similarity::check_similarity_with_cache(registry, &checkable_owned, &ecosystem, opts.cache_dir, opts.no_cache).await?;
-
-    // Build set of similarity-flagged package names for signal amplifier
-    let similarity_flagged: HashSet<String> = similarity_results
-        .iter()
-        .map(|issue| issue.package.clone())
-        .collect();
-
-    // Canonical check runs on all non-internal deps (allowed + checkable)
     let non_internal: Vec<Dependency> = deps
         .iter()
-        .filter(|dep| !config.is_internal(&ecosystem, &dep.name))
+        .filter(|dep| !config.is_internal(ecosystem, &dep.name))
         .cloned()
         .collect();
-    let canonical_results = checks::canonical::check_canonical(&non_internal, &config, &ecosystem);
-    let lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
-    let resolution = &lockfile_data.resolution;
-    let mut resolution_issues = resolution.issues.clone();
-    resolution_issues.extend(unresolved_version_policy_issues(
-        &non_internal,
-        resolution,
-        &config,
-    ));
 
-    let supports_metadata_registry = matches!(
-        ecosystem.as_str(),
-        "npm" | "pypi" | "cargo" | "ruby" | "jvm"
-    );
+    (checkable_owned, non_internal)
+}
 
-    let (existence_results, metadata_results) = if supports_metadata_registry {
-        let lookups =
-            checks::metadata::fetch_metadata(registry, &non_internal, resolution).await?;
-        let mut metadata_results = resolution_issues;
-        metadata_results.extend(checks::metadata::issues_from_lookups(
-            &lookups,
-            &config,
-            &similarity_flagged,
-        ));
-        (
-            checks::existence::check_existence_from_metadata(
-                &ecosystem,
-                &checkable_owned,
-                &lookups,
-            ),
-            metadata_results,
-        )
-    } else {
-        let mut metadata_results = resolution_issues;
-        metadata_results.extend(
-            checks::metadata::check_metadata(
-                registry,
-                &non_internal,
-                &config,
-                &similarity_flagged,
-                resolution,
-            )
-            .await?,
-        );
-        (
-            checks::existence::check_existence(registry, &checkable_owned).await?,
-            metadata_results,
-        )
-    };
-
-    // Malicious/vulnerability check runs on all non-internal deps
-    let malicious_results = if opts.disable_osv_disk_cache {
-        checks::malicious::check_malicious_with_cache(osv_client, &non_internal, resolution, None)
-            .await?
-    } else {
-        checks::malicious::check_malicious(osv_client, &non_internal, resolution).await?
-    };
-
-    // Mark all direct dep issues with source: "direct"
-    fn mark_source(issues: &mut [Issue], source: &str) {
-        for issue in issues.iter_mut() {
-            issue.source = Some(source.to_string());
-        }
+fn mark_source(issues: &mut [Issue], source: &str) {
+    for issue in issues.iter_mut() {
+        issue.source = Some(source.to_string());
     }
-
-    let mut existence_results = existence_results;
-    let mut similarity_results = similarity_results;
-    let mut canonical_results = canonical_results;
-    let mut metadata_results = metadata_results;
-    let mut malicious_results = malicious_results;
-
-    mark_source(&mut existence_results, "direct");
-    mark_source(&mut similarity_results, "direct");
-    mark_source(&mut canonical_results, "direct");
-    mark_source(&mut metadata_results, "direct");
-    mark_source(&mut malicious_results, "direct");
-
-    // Transitive dependency scanning (uses pre-parsed lockfile data)
-    let mut transitive_deps = lockfile_data.transitive_deps;
-
-    if !transitive_deps.is_empty() {
-        // Filter out internal and allowed transitive deps
-        transitive_deps.retain(|dep| {
-            !config.is_internal(&ecosystem, &dep.name)
-                && !config.is_allowed(&ecosystem, &dep.name)
-        });
-    }
-
-    if !transitive_deps.is_empty() {
-        let trans_resolution = lockfiles::resolve_versions(project_dir, &transitive_deps)?;
-
-        // Existence + metadata checks on transitive deps
-        let (trans_existence, mut trans_metadata) = if supports_metadata_registry {
-            let trans_lookups =
-                checks::metadata::fetch_metadata(registry, &transitive_deps, &trans_resolution)
-                    .await?;
-            let trans_meta = checks::metadata::issues_from_lookups(
-                &trans_lookups,
-                &config,
-                &similarity_flagged,
-            );
-            (
-                checks::existence::check_existence_from_metadata(
-                    &ecosystem,
-                    &transitive_deps,
-                    &trans_lookups,
-                ),
-                trans_meta,
-            )
-        } else {
-            (
-                checks::existence::check_existence(registry, &transitive_deps).await?,
-                checks::metadata::check_metadata(
-                    registry,
-                    &transitive_deps,
-                    &config,
-                    &similarity_flagged,
-                    &trans_resolution,
-                )
-                .await?,
-            )
-        };
-
-        // OSV check on transitive deps
-        let mut trans_malicious = if opts.disable_osv_disk_cache {
-            checks::malicious::check_malicious_with_cache(
-                osv_client,
-                &transitive_deps,
-                &trans_resolution,
-                None,
-            )
-            .await?
-        } else {
-            checks::malicious::check_malicious(osv_client, &transitive_deps, &trans_resolution)
-                .await?
-        };
-
-        // Similarity on transitive deps only if --deep
-        let mut trans_similarity = if opts.deep {
-            checks::similarity::check_similarity(registry, &transitive_deps, &ecosystem).await?
-        } else {
-            vec![]
-        };
-
-        // Mark all transitive issues
-        let mut trans_existence = trans_existence;
-        mark_source(&mut trans_existence, "transitive");
-        mark_source(&mut trans_similarity, "transitive");
-        mark_source(&mut trans_metadata, "transitive");
-        mark_source(&mut trans_malicious, "transitive");
-
-        existence_results.extend(trans_existence);
-        similarity_results.extend(trans_similarity);
-        metadata_results.extend(trans_metadata);
-        malicious_results.extend(trans_malicious);
-    }
-
-    Ok(ScanReport::new(
-        deps.len() + transitive_deps.len(),
-        existence_results,
-        similarity_results,
-        canonical_results,
-        metadata_results,
-        malicious_results,
-    ))
 }
 
 /// Options that control scan behavior.
@@ -345,7 +258,7 @@ impl Dependency {
     }
 }
 
-fn unresolved_version_policy_issues(
+pub(crate) fn unresolved_version_policy_issues(
     deps: &[Dependency],
     resolution: &lockfiles::ResolutionResult,
     config: &config::SloppyJoeConfig,

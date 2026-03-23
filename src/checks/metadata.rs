@@ -72,7 +72,7 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MetadataLookup {
+pub struct MetadataLookup {
     pub package: String,
     pub ecosystem: String,
     pub version: Option<String>,
@@ -87,13 +87,23 @@ pub(crate) async fn fetch_metadata(
     deps: &[Dependency],
     resolution: &ResolutionResult,
 ) -> Result<Vec<MetadataLookup>> {
-    stream::iter(deps)
+    // Pre-compute per-dep data to avoid borrowing deps inside the async stream.
+    // stream::iter(&[T]).map(|item| async { ... }) requires higher-ranked lifetimes
+    // that Rust can't prove when the items are references and the future captures them.
+    let prepared: Vec<_> = deps
+        .iter()
         .map(|dep| {
-            let package = dep.name.clone();
-            let ecosystem = dep.ecosystem.clone();
-            let version = dep.version.clone();
-            let exact_version = resolution.exact_version(dep).map(str::to_string);
-            let unresolved_version = resolution.is_unresolved(dep);
+            (
+                dep.name.clone(),
+                dep.ecosystem.clone(),
+                dep.version.clone(),
+                resolution.exact_version(dep).map(str::to_string),
+                resolution.is_unresolved(dep),
+            )
+        })
+        .collect();
+    stream::iter(prepared)
+        .map(|(package, ecosystem, version, exact_version, unresolved_version)| {
             async move {
                 let metadata = registry
                     .metadata(&package, exact_version.as_deref())

@@ -57,6 +57,13 @@ impl ScanReport {
         }
     }
 
+    pub fn from_issues(packages_checked: usize, issues: Vec<Issue>) -> Self {
+        ScanReport {
+            packages_checked,
+            issues,
+        }
+    }
+
     pub fn has_issues(&self) -> bool {
         !self.issues.is_empty()
     }
