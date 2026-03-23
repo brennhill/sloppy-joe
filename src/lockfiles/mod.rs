@@ -1,5 +1,7 @@
 mod cargo;
 mod npm;
+mod python;
+mod ruby;
 
 use crate::Dependency;
 use crate::Ecosystem;
@@ -64,6 +66,8 @@ enum ParsedLockfile {
         file_name: String,
     },
     Cargo(toml::Value),
+    Ruby(String),
+    Python(toml::Value),
     None,
 }
 
@@ -71,8 +75,11 @@ enum ParsedLockfile {
 /// version resolution, transitive dep extraction, and re-resolution for transitive
 /// deps — all from the same in-memory data.
 pub struct LockfileData {
+    /// Resolved versions for direct dependencies (from lockfile or manifest fallback).
     pub resolution: ResolutionResult,
+    /// Dependencies found in the lockfile but not in the direct dependency list.
     pub transitive_deps: Vec<Dependency>,
+    /// Retained parsed lockfile for re-resolution of transitive deps without re-reading disk.
     parsed: ParsedLockfile,
 }
 
@@ -145,6 +152,18 @@ fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<Par
                 Err(_) => Ok(ParsedLockfile::None),
             }
         }
+        Some(Ecosystem::Ruby) => {
+            match ruby::read_lockfile(project_dir) {
+                Some(content) => Ok(ParsedLockfile::Ruby(content)),
+                None => Ok(ParsedLockfile::None),
+            }
+        }
+        Some(Ecosystem::PyPI) => {
+            match python::read_lockfile(project_dir) {
+                Some(value) => Ok(ParsedLockfile::Python(value)),
+                None => Ok(ParsedLockfile::None),
+            }
+        }
         _ => Ok(ParsedLockfile::None),
     }
 }
@@ -156,6 +175,8 @@ fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<R
             npm::resolve_from_value(value, deps, file_name)
         }
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
+        ParsedLockfile::Ruby(content) => ruby::resolve_from_content(content, deps),
+        ParsedLockfile::Python(value) => python::resolve_from_value(value, deps),
         ParsedLockfile::None => {
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
@@ -169,11 +190,14 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
         ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
+        ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
+        ParsedLockfile::Python(value) => python::parse_all_from_value(value),
         ParsedLockfile::None => Ok(vec![]),
     }
 }
 
-pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
+#[cfg(test)]
+pub(crate) fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let Some(first) = deps.first() else {
         return Ok(ResolutionResult::default());
     };
@@ -181,6 +205,8 @@ pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<Resol
     match first.ecosystem {
         Ecosystem::Npm => npm::resolve(project_dir, deps),
         Ecosystem::Cargo => cargo::resolve(project_dir, deps),
+        Ecosystem::Ruby => ruby::resolve(project_dir, deps),
+        Ecosystem::PyPI => python::resolve(project_dir, deps),
         _ => {
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
@@ -217,75 +243,47 @@ fn add_manifest_exact_fallback(result: &mut ResolutionResult, dep: &Dependency) 
 }
 
 fn parse_failed_issue(lockfile: &str, detail: String) -> Issue {
-    Issue {
-        package: "<lockfile>".to_string(),
-        check: "resolution/parse-failed".to_string(),
-        severity: Severity::Error,
-        message: format!(
+    Issue::new("<lockfile>", crate::checks::names::RESOLUTION_PARSE_FAILED, Severity::Error)
+        .message(format!(
             "Could not parse '{}'. Exact lockfile resolution is unavailable, so version-sensitive checks cannot trust this project state. {}",
             lockfile, detail
-        ),
-        fix: format!(
+        ))
+        .fix(format!(
             "Repair or regenerate '{}', then rerun sloppy-joe.",
             lockfile
-        ),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    }
+        ))
 }
 
 fn missing_entry_issue(dep: &Dependency, lockfile: &str) -> Issue {
-    Issue {
-        package: dep.name.clone(),
-        check: "resolution/missing-lockfile-entry".to_string(),
-        severity: Severity::Error,
-        message: format!(
+    Issue::new(&dep.name, crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY, Severity::Error)
+        .message(format!(
             "'{}' is declared in the manifest but was not found in '{}'. Exact version-sensitive checks cannot trust this lockfile state.",
             dep.name, lockfile
-        ),
-        fix: format!(
+        ))
+        .fix(format!(
             "Regenerate '{}' so it contains the direct dependency '{}', then rerun sloppy-joe.",
             lockfile, dep.name
-        ),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    }
+        ))
 }
 
 fn out_of_sync_issue(dep: &Dependency, resolved_version: &str) -> Issue {
-    Issue {
-        package: dep.name.clone(),
-        check: "resolution/lockfile-out-of-sync".to_string(),
-        severity: Severity::Error,
-        message: format!(
+    Issue::new(&dep.name, crate::checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC, Severity::Error)
+        .message(format!(
             "'{}' is pinned to '{}' in the manifest but resolves to '{}' in the lockfile. Exact version-sensitive checks cannot trust this project state.",
             dep.name,
             dep.version.as_deref().unwrap_or(""),
             resolved_version
-        ),
-        fix: "Update the manifest or regenerate the lockfile so both describe the same direct dependency version.".to_string(),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    }
+        ))
+        .fix("Update the manifest or regenerate the lockfile so both describe the same direct dependency version.")
 }
 
 fn ambiguous_issue(dep: &Dependency) -> Issue {
-    Issue {
-        package: dep.name.clone(),
-        check: "resolution/ambiguous".to_string(),
-        severity: Severity::Error,
-        message: format!(
+    Issue::new(&dep.name, crate::checks::names::RESOLUTION_AMBIGUOUS, Severity::Error)
+        .message(format!(
             "'{}' resolves to multiple locked versions and the direct dependency version cannot be proven exactly from the manifest.",
             dep.name
-        ),
-        fix: "Pin an exact manifest version or regenerate the lockfile so the direct dependency version is unambiguous.".to_string(),
-        suggestion: None,
-        registry_url: None,
-        source: None,
-    }
+        ))
+        .fix("Pin an exact manifest version or regenerate the lockfile so the direct dependency version is unambiguous.")
 }
 
 #[cfg(test)]
@@ -360,7 +358,7 @@ mod tests {
         let deps = vec![npm_dep("react", "18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::ManifestExact);
-        assert!(result.issues.iter().any(|i| i.check == "resolution/lockfile-out-of-sync"));
+        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC));
     }
 
     #[test]
@@ -370,7 +368,7 @@ mod tests {
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == "resolution/missing-lockfile-entry"));
+        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY));
     }
 
     #[test]
@@ -380,7 +378,7 @@ mod tests {
         let deps = vec![npm_dep("react", "18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::ManifestExact);
-        assert!(result.issues.iter().any(|i| i.check == "resolution/parse-failed"));
+        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED));
     }
 
     #[test]
@@ -409,7 +407,7 @@ mod tests {
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == "resolution/ambiguous"));
+        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS));
     }
 
     #[test]
@@ -419,7 +417,7 @@ mod tests {
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == "resolution/missing-lockfile-entry"));
+        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY));
     }
 
     #[test]
@@ -469,7 +467,7 @@ mod tests {
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == "resolution/parse-failed"));
+        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED));
     }
 
     #[test]

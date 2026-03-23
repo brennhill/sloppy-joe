@@ -546,3 +546,20 @@ async fn transitive_internal_deps_are_skipped() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&config_dir);
 }
+
+#[test]
+fn mark_source_does_not_overwrite_existing() {
+    let mut issues = vec![
+        Issue::new("pkg1", "existence", Severity::Error)
+            .message("msg")
+            .fix("fix"),
+        Issue::new("pkg2", "existence", Severity::Error)
+            .message("msg")
+            .fix("fix"),
+    ];
+    // Pre-set source on first issue
+    issues[0].source = Some("already-set".to_string());
+    mark_source(&mut issues, "direct");
+    assert_eq!(issues[0].source.as_deref(), Some("already-set"), "Should not overwrite existing source");
+    assert_eq!(issues[1].source.as_deref(), Some("direct"), "Should set source when None");
+}

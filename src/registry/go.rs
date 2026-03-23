@@ -17,27 +17,7 @@ fn encode_module_path(path: &str) -> String {
     encoded
 }
 
-pub struct GoRegistry {
-    client: reqwest::Client,
-}
-
-impl GoRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for GoRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(GoRegistry);
 
 #[async_trait]
 impl super::RegistryExistence for GoRegistry {
@@ -46,18 +26,7 @@ impl super::RegistryExistence for GoRegistry {
         let encoded = encode_module_path(package_name);
         let url = format!("https://proxy.golang.org/{}/@latest", encoded);
         let resp = self.client.get(&url).send().await?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
-            return Ok(false);
-        }
-        if !status.is_success() {
-            anyhow::bail!(
-                "Go package lookup for '{}' returned HTTP {}",
-                package_name,
-                status
-            );
-        }
-        Ok(true)
+        super::check_existence_status(resp.status(), "Go proxy", package_name)
     }
 
     fn ecosystem(&self) -> &str {

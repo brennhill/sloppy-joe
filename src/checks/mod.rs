@@ -2,6 +2,7 @@ pub mod canonical;
 pub mod existence;
 pub mod malicious;
 pub mod metadata;
+pub mod names;
 pub mod pipeline;
 pub(crate) mod signals;
 pub mod similarity;
@@ -14,17 +15,25 @@ use crate::{Dependency, Ecosystem, ScanOptions};
 use anyhow::Result;
 use std::collections::HashSet;
 
-/// Immutable context shared by all checks.
+/// Immutable context shared by all checks in the pipeline.
 pub struct CheckContext<'a> {
-    /// Checkable deps (not internal, not allowed) — for similarity/existence
+    /// Dependencies subject to full checks (not internal, not allowed).
+    /// Used by similarity and existence checks.
     pub checkable_deps: &'a [Dependency],
-    /// Non-internal deps (allowed + checkable) — for canonical/metadata/malicious
+    /// All non-internal dependencies (allowed + checkable).
+    /// Used by canonical, metadata, and malicious checks.
     pub non_internal_deps: &'a [Dependency],
+    /// User-provided configuration (canonical mappings, internal/allowed lists, thresholds).
     pub config: &'a SloppyJoeConfig,
+    /// Registry client for existence and metadata queries.
     pub registry: &'a dyn Registry,
+    /// OSV client for known-vulnerability lookups.
     pub osv_client: &'a dyn malicious::OsvClient,
+    /// Lockfile-resolved versions for all dependencies.
     pub resolution: &'a ResolutionResult,
+    /// Ecosystem of the project being scanned (determines registry, mutation rules, etc.).
     pub ecosystem: Ecosystem,
+    /// Runtime options (--deep, --no-cache, --cache-dir).
     pub opts: &'a ScanOptions<'a>,
 }
 

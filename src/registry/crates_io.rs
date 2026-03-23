@@ -2,27 +2,7 @@ use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub struct CratesIoRegistry {
-    client: reqwest::Client,
-}
-
-impl CratesIoRegistry {
-    pub fn new() -> Self {
-        Self {
-            client: super::http_client(),
-        }
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl Default for CratesIoRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+super::registry_struct!(CratesIoRegistry);
 
 fn metadata_from_body(
     body: &serde_json::Value,
@@ -33,10 +13,10 @@ fn metadata_from_body(
 
     let versions_arr = body["versions"].as_array()?;
     let selected_index = if let Some(ver) = version {
-        let base_ver = ver.trim_start_matches(['^', '~', '>', '=', '<', ' ']);
+        let base_ver = super::strip_version_prefix(ver);
         versions_arr
             .iter()
-            .position(|v| v["num"].as_str() == Some(base_ver))?
+            .position(|v| v["num"].as_str() == Some(base_ver.as_str()))?
     } else {
         0
     };
@@ -75,17 +55,7 @@ impl super::RegistryExistence for CratesIoRegistry {
         self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(false);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "crates.io lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
-        }
-        Ok(true)
+        super::check_existence_status(resp.status(), "crates.io", package_name)
     }
 
     fn ecosystem(&self) -> &str {

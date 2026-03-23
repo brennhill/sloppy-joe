@@ -24,12 +24,11 @@ impl RegistryMetadata for FakeRegistry {
     }
 }
 
-fn dep(name: &str) -> Dependency {
-    Dependency { name: name.to_string(), version: None, ecosystem: crate::Ecosystem::Npm }
-}
+use crate::test_helpers::npm_dep as dep;
+use crate::test_helpers::dep_with;
 
 fn dep_with_version(name: &str, version: &str) -> Dependency {
-    Dependency { name: name.to_string(), version: Some(version.to_string()), ecosystem: crate::Ecosystem::Npm }
+    dep_with(name, Some(version), crate::Ecosystem::Npm)
 }
 
 fn config_with_age(hours: u64) -> SloppyJoeConfig {
@@ -142,7 +141,7 @@ async fn no_metadata_emits_parse_failed_warning_when_exists() {
 }
 
 #[tokio::test]
-async fn registry_errors_fail_the_check() {
+async fn registry_errors_emit_blocking_issue() {
     struct ErrorRegistry;
     #[async_trait]
     impl RegistryExistence for ErrorRegistry {
@@ -156,8 +155,12 @@ async fn registry_errors_fail_the_check() {
         }
     }
     let deps = vec![dep("some-pkg")];
-    let err = check_metadata(&ErrorRegistry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap_err();
-    assert!(err.to_string().contains("metadata unavailable"));
+    let issues = check_metadata(&ErrorRegistry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.check.contains("registry-unreachable")),
+        "Expected fail-closed blocking issue, got: {:?}",
+        issues.iter().map(|i| &i.check).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

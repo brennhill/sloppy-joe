@@ -1,6 +1,7 @@
 use crate::Dependency;
 use anyhow::Result;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::Path;
 
 use super::{
@@ -9,7 +10,8 @@ use super::{
     ResolutionSource, ResolvedVersion,
 };
 
-/// Read + parse + resolve in one step (used by resolve_versions public API).
+/// Read + parse + resolve in one step (used by resolve_versions test API).
+#[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let path = project_dir.join("Cargo.lock");
     if !path.exists() {

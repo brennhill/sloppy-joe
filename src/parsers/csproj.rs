@@ -81,20 +81,10 @@ fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    use crate::parsers::test_utils::*;
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-csproj-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("test.csproj"), content).unwrap();
-        dir
-    }
-
-    fn cleanup(dir: &Path) {
-        let _ = std::fs::remove_dir_all(dir);
+        setup_test_dir("csproj", "test.csproj", content)
     }
 
     #[test]
@@ -140,12 +130,10 @@ mod tests {
 
     #[test]
     fn handle_no_csproj_file() {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-csproj-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = empty_test_dir("csproj");
         let result = parse(&dir);
         assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]

@@ -94,12 +94,13 @@ impl Check for MetadataCheck {
             // None immediately and exists() is called once as fallback.
             // Either way, ExistenceCheck reads from acc.metadata_lookups
             // instead of making redundant registry calls.
-            let lookups = super::metadata::fetch_metadata(
+            let (lookups, fetch_issues) = super::metadata::fetch_metadata(
                 ctx.registry,
                 ctx.non_internal_deps,
                 ctx.resolution,
             )
-            .await?;
+            .await;
+            acc.issues.extend(fetch_issues);
             acc.issues.extend(super::metadata::issues_from_lookups(
                 &lookups,
                 ctx.config,

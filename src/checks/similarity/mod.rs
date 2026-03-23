@@ -1,3 +1,5 @@
+pub mod generators;
+
 use crate::cache;
 use crate::Ecosystem;
 use crate::registry::Registry;
@@ -7,6 +9,9 @@ use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+pub use generators::{default_generators, MutationGenerator};
+use generators::{extract_scope, known_scopes};
 
 const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
 
@@ -26,465 +31,6 @@ fn cache_path_for(ecosystem: Ecosystem, cache_dir: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
     base.join(format!("similarity-{}.json", ecosystem))
 }
-
-// -- Mutation generator trait ------------------------------------------------
-
-/// A mutation generator produces candidate names from a dependency name.
-/// Implementations are composed into a vector and iterated by generate_mutations.
-pub trait MutationGenerator: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String>;
-}
-
-/// Returns the default set of mutation generators.
-pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
-    vec![
-        Box::new(SeparatorSwapGen),
-        Box::new(CollapseRepeatedGen),
-        Box::new(VersionSuffixGen),
-        Box::new(WordReorderGen),
-        Box::new(AdjacentSwapGen),
-        Box::new(DeleteOneCharGen),
-        Box::new(HomoglyphGen),
-        Box::new(ConfusedFormsGen),
-    ]
-}
-
-struct SeparatorSwapGen;
-impl MutationGenerator for SeparatorSwapGen {
-    fn name(&self) -> &'static str { "separator-swap" }
-    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
-        if ecosystem == Ecosystem::PyPI { return vec![]; }
-        let lower = name.to_lowercase();
-        let mut results = Vec::new();
-        let stripped = normalize_separators(&lower);
-        if stripped != lower { results.push(stripped); }
-        for &sep in &['-', '_', '.'] {
-            let with_sep: String = lower.chars().map(|c| if c == '-' || c == '_' || c == '.' { sep } else { c }).collect();
-            if with_sep != lower { results.push(with_sep); }
-        }
-        results
-    }
-}
-
-struct CollapseRepeatedGen;
-impl MutationGenerator for CollapseRepeatedGen {
-    fn name(&self) -> &'static str { "collapse-repeated" }
-    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
-        collapse_one_repeated(&name.to_lowercase())
-    }
-}
-
-struct VersionSuffixGen;
-impl MutationGenerator for VersionSuffixGen {
-    fn name(&self) -> &'static str { "version-suffix" }
-    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
-        let lower = name.to_lowercase();
-        let stripped = strip_version_suffix(&lower);
-        if stripped != lower { vec![stripped] } else { vec![] }
-    }
-}
-
-struct WordReorderGen;
-impl MutationGenerator for WordReorderGen {
-    fn name(&self) -> &'static str { "word-reorder" }
-    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
-        word_reorderings(&name.to_lowercase())
-    }
-}
-
-struct AdjacentSwapGen;
-impl MutationGenerator for AdjacentSwapGen {
-    fn name(&self) -> &'static str { "char-swap" }
-    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
-        adjacent_swaps(&name.to_lowercase())
-    }
-}
-
-struct DeleteOneCharGen;
-impl MutationGenerator for DeleteOneCharGen {
-    fn name(&self) -> &'static str { "extra-char" }
-    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
-        delete_one_char(&name.to_lowercase()).into_iter().collect()
-    }
-}
-
-struct HomoglyphGen;
-impl MutationGenerator for HomoglyphGen {
-    fn name(&self) -> &'static str { "homoglyph" }
-    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
-        let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
-        if had_homoglyphs { vec![normalized.to_lowercase()] } else { vec![] }
-    }
-}
-
-struct ConfusedFormsGen;
-impl MutationGenerator for ConfusedFormsGen {
-    fn name(&self) -> &'static str { "confused-forms" }
-    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
-        apply_confused_forms(name, ecosystem)
-    }
-}
-
-/// Ecosystem-specific confused forms: terms that are interchangeable
-/// and commonly swapped by AI or humans.
-fn confused_forms(ecosystem: Ecosystem) -> &'static [(&'static str, &'static str)] {
-    match ecosystem {
-        Ecosystem::PyPI => &[("python", "py"), ("python-", "py-"), ("python_", "py_")],
-        Ecosystem::Go => &[
-            ("github.com", "gitlab.com"),
-            ("golang", "go"),
-            ("golang-", "go-"),
-        ],
-        _ => &[],
-    }
-}
-
-// -- Homoglyph detection ---------------------------------------------------
-
-/// Map of common homoglyphs: (lookalike char, Latin equivalent).
-fn homoglyph_map() -> &'static [(char, char)] {
-    &[
-        ('\u{0430}', 'a'), // Cyrillic a -> Latin a
-        ('\u{0435}', 'e'), // Cyrillic e -> Latin e
-        ('\u{043E}', 'o'), // Cyrillic o -> Latin o
-        ('\u{0440}', 'p'), // Cyrillic p -> Latin p
-        ('\u{0441}', 'c'), // Cyrillic c -> Latin c
-        ('\u{0443}', 'y'), // Cyrillic y -> Latin y
-        ('\u{0445}', 'x'), // Cyrillic x -> Latin x
-        ('\u{0455}', 's'), // Cyrillic s -> Latin s
-        ('\u{0456}', 'i'), // Cyrillic i -> Latin i
-        ('\u{0458}', 'j'), // Cyrillic j -> Latin j
-        ('\u{0501}', 'd'), // Cyrillic d -> Latin d
-        ('\u{0261}', 'g'), // Latin g -> Latin g
-        ('\u{2113}', 'l'), // Script l -> Latin l
-        ('\u{FF10}', '0'), // Fullwidth 0
-        ('\u{FF11}', '1'), // Fullwidth 1
-        ('\u{2170}', 'i'), // Roman numeral i -> Latin i
-        ('\u{217C}', 'l'), // Roman numeral l -> Latin l
-    ]
-}
-
-/// Normalize a name by replacing homoglyphs with their Latin equivalents.
-/// Returns the normalized string and whether any replacements were made.
-fn normalize_homoglyphs(name: &str) -> (String, bool) {
-    let map = homoglyph_map();
-    let mut result = String::with_capacity(name.len());
-    let mut replaced = false;
-    for ch in name.chars() {
-        if let Some((_, latin)) = map.iter().find(|(lookalike, _)| *lookalike == ch) {
-            result.push(*latin);
-            replaced = true;
-        } else {
-            result.push(ch);
-        }
-    }
-    (result, replaced)
-}
-
-// -- Scope/namespace squatting detection ------------------------------------
-
-/// Known-good scopes/namespaces per ecosystem.
-fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
-    match ecosystem {
-        Ecosystem::Npm => &[
-            "@types",
-            "@babel",
-            "@angular",
-            "@vue",
-            "@nuxt",
-            "@nestjs",
-            "@react-native",
-            "@emotion",
-            "@mui",
-            "@chakra-ui",
-            "@testing-library",
-            "@storybook",
-            "@typescript-eslint",
-            "@rollup",
-            "@vitejs",
-            "@svelte",
-            "@tanstack",
-            "@aws-sdk",
-            "@azure",
-            "@google-cloud",
-            "@firebase",
-            "@prisma",
-            "@trpc",
-            "@reduxjs",
-            "@apollo",
-            "@eslint",
-            "@prettier",
-            "@jest",
-            "@playwright",
-            "@vercel",
-            "@netlify",
-            "@cloudflare",
-            "@octokit",
-            "@actions",
-            "@github",
-            "@sentry",
-            "@datadog",
-            "@grpc",
-            "@protobuf",
-        ],
-        Ecosystem::Php => &[
-            "laravel",
-            "symfony",
-            "illuminate",
-            "doctrine",
-            "league",
-            "guzzlehttp",
-            "phpunit",
-            "monolog",
-            "spatie",
-            "barryvdh",
-            "filament",
-            "livewire",
-            "intervention",
-            "predis",
-            "ramsey",
-            "vlucas",
-            "phpstan",
-            "mockery",
-            "nikic",
-            "twig",
-            "psr",
-            "composer",
-            "sebastian",
-        ],
-        Ecosystem::Go => &[
-            "github.com/gin-gonic",
-            "github.com/labstack",
-            "github.com/gofiber",
-            "github.com/spf13",
-            "github.com/stretchr",
-            "github.com/gorilla",
-            "github.com/go-chi",
-            "github.com/go-redis",
-            "github.com/sirupsen",
-            "github.com/rs",
-            "github.com/valyala",
-            "github.com/jackc",
-            "github.com/nats-io",
-            "github.com/hashicorp",
-            "github.com/prometheus",
-            "github.com/grpc",
-            "github.com/golang",
-            "github.com/google",
-            "github.com/aws",
-            "github.com/Azure",
-            "github.com/kubernetes",
-            "github.com/docker",
-            "github.com/etcd-io",
-            "github.com/cockroachdb",
-            "go.uber.org",
-            "google.golang.org",
-            "golang.org",
-            "cloud.google.com",
-        ],
-        Ecosystem::Jvm => &[
-            "com.google",
-            "org.springframework",
-            "org.apache",
-            "io.netty",
-            "com.fasterxml",
-            "org.jetbrains",
-            "com.squareup",
-            "io.grpc",
-            "org.slf4j",
-            "ch.qos",
-            "org.mockito",
-            "org.assertj",
-            "junit",
-            "io.micrometer",
-            "com.zaxxer",
-            "org.hibernate",
-            "org.projectlombok",
-        ],
-        _ => &[],
-    }
-}
-
-/// Extract the scope/namespace from a package name for a given ecosystem.
-fn extract_scope(name: &str, ecosystem: Ecosystem) -> Option<String> {
-    match ecosystem {
-        Ecosystem::Npm => {
-            // @scope/package -> @scope
-            if name.starts_with('@') {
-                name.split('/').next().map(|s| s.to_string())
-            } else {
-                None
-            }
-        }
-        Ecosystem::Php => {
-            // vendor/package -> vendor
-            name.split('/')
-                .next()
-                .filter(|_| name.contains('/'))
-                .map(|s| s.to_string())
-        }
-        Ecosystem::Go => {
-            // github.com/org/repo -> github.com/org
-            let parts: Vec<&str> = name.splitn(3, '/').collect();
-            if parts.len() >= 2 {
-                Some(format!("{}/{}", parts[0], parts[1]))
-            } else {
-                None
-            }
-        }
-        Ecosystem::Jvm => {
-            // com.google.guava:guava -> com.google
-            name.split(':').next().and_then(|group| {
-                let parts: Vec<&str> = group.splitn(3, '.').collect();
-                if parts.len() >= 2 {
-                    Some(format!("{}.{}", parts[0], parts[1]))
-                } else {
-                    None
-                }
-            })
-        }
-        _ => None,
-    }
-}
-
-// -- Generative checks ------------------------------------------------------
-// Each function takes a dependency name and returns candidate names
-// that would match a known package if this is a typosquat.
-
-/// Normalize separators: strip `-`, `_`, `.` for comparison.
-/// Catches: "python-dateutil" vs "pythondateutil"
-fn normalize_separators(name: &str) -> String {
-    name.chars()
-        .filter(|c| *c != '-' && *c != '_' && *c != '.')
-        .collect()
-}
-
-/// Generate variants with one repeated character removed at each position.
-/// "expresss" -> ["express"], "reeact" -> ["react"], "llodash" -> ["lodash"]
-/// Returns all variants where a consecutive duplicate is collapsed once.
-fn collapse_one_repeated(name: &str) -> Vec<String> {
-    let chars: Vec<char> = name.chars().collect();
-    let mut results = Vec::new();
-    let mut i = 0;
-    while i < chars.len().saturating_sub(1) {
-        if chars[i] == chars[i + 1] {
-            // Remove one instance of the repeated char
-            let mut variant: Vec<char> = Vec::with_capacity(chars.len() - 1);
-            variant.extend_from_slice(&chars[..i]);
-            variant.extend_from_slice(&chars[i + 1..]);
-            let s: String = variant.into_iter().collect();
-            if !results.contains(&s) {
-                results.push(s);
-            }
-            // Skip past all consecutive duplicates
-            while i < chars.len().saturating_sub(1) && chars[i] == chars[i + 1] {
-                i += 1;
-            }
-        }
-        i += 1;
-    }
-    results
-}
-
-/// Strip trailing version suffixes: "requests2" -> "requests", "lodash-4" -> "lodash"
-fn strip_version_suffix(name: &str) -> String {
-    let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
-    trimmed
-        .trim_end_matches('-')
-        .trim_end_matches('_')
-        .to_string()
-}
-
-/// Generate word-reordered variants: "json-parse" -> "parse-json"
-/// Returns all permutations of segments split on `-`, `_`, `.`
-fn word_reorderings(name: &str) -> Vec<String> {
-    let separators = ['-', '_', '.'];
-    let mut sep_char = None;
-    for s in &separators {
-        if name.contains(*s) {
-            sep_char = Some(*s);
-            break;
-        }
-    }
-    let Some(sep) = sep_char else { return vec![] };
-    let mut segments: Vec<&str> = name.split(sep).collect();
-    if segments.len() < 2 || segments.len() > 3 {
-        return vec![];
-    }
-    // Generate all permutations
-    let mut results = Vec::new();
-    permutations(&mut segments, 0, sep, &mut results);
-    // Remove the original
-    let original = name.to_string();
-    results.retain(|r| r != &original);
-    results
-}
-
-fn permutations(segments: &mut Vec<&str>, start: usize, sep: char, results: &mut Vec<String>) {
-    if start == segments.len() {
-        results.push(segments.join(&sep.to_string()));
-        return;
-    }
-    for i in start..segments.len() {
-        segments.swap(start, i);
-        permutations(segments, start + 1, sep, results);
-        segments.swap(start, i);
-    }
-}
-
-/// Generate ecosystem-specific confused forms.
-/// "python-dateutil" -> "py-dateutil", "py-utils" -> "python-utils"
-fn apply_confused_forms(name: &str, ecosystem: Ecosystem) -> Vec<String> {
-    let forms = confused_forms(ecosystem);
-    let mut results = Vec::new();
-    let lower = name.to_lowercase();
-    for (a, b) in forms {
-        if lower.contains(a) {
-            results.push(lower.replace(a, b));
-        }
-        if lower.contains(b) {
-            results.push(lower.replace(b, a));
-        }
-    }
-    results
-}
-
-/// Delete one character at each position: "expressx" -> ["xpressx", "epressx", ..., "express"]
-/// Catches extra-char typosquats where one letter was added.
-fn delete_one_char(name: &str) -> Vec<String> {
-    let chars: Vec<char> = name.chars().collect();
-    let mut results = HashSet::new();
-    for i in 0..chars.len() {
-        let variant: String = chars
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != i)
-            .map(|(_, c)| c)
-            .collect();
-        if !variant.is_empty() {
-            results.insert(variant);
-        }
-    }
-    results.into_iter().collect()
-}
-
-/// Swap adjacent characters: "reqeust" -> "request"
-fn adjacent_swaps(name: &str) -> Vec<String> {
-    let chars: Vec<char> = name.chars().collect();
-    let mut results = Vec::new();
-    for i in 0..chars.len().saturating_sub(1) {
-        let mut swapped = chars.clone();
-        swapped.swap(i, i + 1);
-        let s: String = swapped.into_iter().collect();
-        if s != name {
-            results.push(s);
-        }
-    }
-    results
-}
-
-// -- Orchestration -----------------------------------------------------------
 
 fn is_case_insensitive(ecosystem: Ecosystem) -> bool {
     ecosystem.is_case_insensitive()
@@ -800,23 +346,17 @@ pub async fn check_similarity_with_cache(
     if error_count > REGISTRY_ERROR_HARD_LIMIT
         || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
     {
-        issues.push(Issue {
-            package: "<registry>".to_string(),
-            check: "similarity/registry-unreachable".to_string(),
-            severity: Severity::Error,
-            message: format!(
-                "Registry queries failed for {} of {} similarity checks ({:.0}%). \
-                 Similarity detection is unreliable. Fix network connectivity or retry.",
-                error_count,
-                total_queries,
-                error_rate * 100.0
-            ),
-            fix: "Ensure the registry is reachable. Use --no-cache to bypass stale cache data."
-                .to_string(),
-            suggestion: None,
-            registry_url: None,
-            source: None,
-        });
+        issues.push(
+            Issue::new("<registry>", crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE, Severity::Error)
+                .message(format!(
+                    "Registry queries failed for {} of {} similarity checks ({:.0}%). \
+                     Similarity detection is unreliable. Fix network connectivity or retry.",
+                    error_count,
+                    total_queries,
+                    error_rate * 100.0
+                ))
+                .fix("Ensure the registry is reachable. Use --no-cache to bypass stale cache data."),
+        );
         return Ok(issues);
     }
 
@@ -933,21 +473,16 @@ pub async fn check_similarity_with_cache(
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
-    Issue {
-        package: package.to_string(),
-        check: format!("similarity/{}", check_type),
-        severity: Severity::Error,
-        message: message.to_string(),
-        fix: fix.to_string(),
-        suggestion: Some(popular.to_string()),
-        registry_url: None,
-        source: None,
-    }
+    Issue::new(package, crate::checks::names::similarity_check_name(check_type), Severity::Error)
+        .message(message)
+        .fix(fix)
+        .suggestion(popular)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::generators::*;
     use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
 
@@ -1004,13 +539,7 @@ mod tests {
         }
     }
 
-    fn dep(name: &str) -> Dependency {
-        Dependency {
-            name: name.to_string(),
-            version: None,
-            ecosystem: Ecosystem::Npm,
-        }
-    }
+    use crate::test_helpers::npm_dep as dep;
 
     fn dep_eco(name: &str, ecosystem: Ecosystem) -> Dependency {
         Dependency {
@@ -1024,7 +553,6 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_chars_caught() {
-        // "expresss" -> mutation "express" exists on registry
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
@@ -1041,8 +569,6 @@ mod tests {
         let deps = vec![dep("react2")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
-        // "react2" matches "react" via both version-suffix and extra-char.
-        // extra-char has higher severity and wins deterministically.
         assert!(
             issues[0].check.contains("extra-char") || issues[0].check.contains("version-suffix"),
             "Expected extra-char or version-suffix, got: {}",
@@ -1067,7 +593,6 @@ mod tests {
 
     #[tokio::test]
     async fn extra_char_caught() {
-        // "expressx" -> delete 'x' -> "express" exists
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expressx")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
@@ -1090,9 +615,8 @@ mod tests {
 
     #[tokio::test]
     async fn any_package_catch() {
-        // Even a non-popular package: if mutation exists on registry, flag it
         let registry = FakeRegistry::with(&["my-lib"]);
-        let deps = vec![dep("myy-lib")]; // repeated 'y' -> "my-lib"
+        let deps = vec![dep("myy-lib")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
     }
@@ -1101,12 +625,10 @@ mod tests {
 
     #[tokio::test]
     async fn intra_manifest_flags_both_present() {
-        // Both "lodash" and "lodahs" in manifest (adjacent swap) -- flag without network
         let registry = FakeRegistry::empty();
         let deps = vec![dep("lodash"), dep("lodahs")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
         assert!(!issues.is_empty());
-        // One of them should be flagged
         assert!(
             issues.iter().any(|i| i.package == "lodahs" || i.package == "lodash"),
             "Expected intra-manifest flag"
@@ -1117,8 +639,6 @@ mod tests {
 
     #[tokio::test]
     async fn pypi_separator_suppressed() {
-        // On PyPI, separator normalization is suppressed (PEP 503 normalizes)
-        // So "python-dateutil" vs "python_dateutil" should NOT be flagged as separator-confusion
         let registry = FakeRegistry::with(&["python_dateutil"]);
         let deps = vec![dep_eco("python-dateutil", Ecosystem::PyPI)];
         let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
@@ -1133,7 +653,6 @@ mod tests {
 
     #[tokio::test]
     async fn npm_separator_flagged() {
-        // On npm, separator variants ARE flagged
         let registry = FakeRegistry::with(&["socket.io"]);
         let deps = vec![dep("socket_io")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
@@ -1170,7 +689,6 @@ mod tests {
 
     #[tokio::test]
     async fn case_variant_flagged_on_case_sensitive_registry() {
-        // Go is case-sensitive; "Github.com/spf13/cobra" differs from "github.com/spf13/cobra"
         let registry = FakeRegistry::with(&["github.com/spf13/cobra"]);
         let deps = vec![dep_eco("Github.com/spf13/cobra", Ecosystem::Go)];
         let issues = check_similarity(&registry, &deps, Ecosystem::Go).await.unwrap();
@@ -1182,7 +700,6 @@ mod tests {
 
     #[tokio::test]
     async fn case_insensitive_registry_no_case_variant() {
-        // npm is case-insensitive; "React" should not trigger case-variant
         let registry = FakeRegistry::with(&["react"]);
         let deps = vec![dep("React")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
@@ -1197,7 +714,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_duplicate_flags_for_same_package() {
-        // "expresss" might match via repeated-chars AND delete-one -- should only report once
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
         let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
@@ -1209,7 +725,6 @@ mod tests {
 
     #[tokio::test]
     async fn homoglyph_caught() {
-        // Cyrillic 'e' in "r\u{0435}quests" -> normalizes to "requests"
         let registry = FakeRegistry::with(&["requests"]);
         let deps = vec![dep_eco("r\u{0435}quests", Ecosystem::PyPI)];
         let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
@@ -1351,16 +866,12 @@ mod tests {
 
     #[tokio::test]
     async fn match_reporting_is_deterministic() {
-        // "expresss" matches "express" via both collapse-repeated AND extra-char.
-        // The reported check type must be deterministic (highest severity wins).
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
 
-        // Run multiple times to prove determinism
         for _ in 0..5 {
             let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
             assert_eq!(issues.len(), 1);
-            // collapse-repeated (severity 4) > extra-char (severity 3)
             assert!(
                 issues[0].check.contains("collapse-repeated"),
                 "Expected deterministic collapse-repeated, got: {}",
@@ -1371,7 +882,6 @@ mod tests {
 
     #[test]
     fn generator_severity_ordering_is_correct() {
-        // Verify the severity ordering: homoglyph > confused > char-swap > collapse > extra > version > word > separator
         assert!(generator_severity("homoglyph") > generator_severity("confused-forms"));
         assert!(generator_severity("confused-forms") > generator_severity("char-swap"));
         assert!(generator_severity("char-swap") > generator_severity("collapse-repeated"));
@@ -1384,10 +894,8 @@ mod tests {
     #[test]
     fn tagged_mutations_include_generator_names() {
         let mutations = generate_mutations("expresss", Ecosystem::Npm);
-        // "express" should be tagged with collapse-repeated (and possibly extra-char)
         let gen_name = mutations.get("express");
         assert!(gen_name.is_some(), "Expected 'express' in mutations");
-        // collapse-repeated has higher severity than extra-char, so it should win
         assert_eq!(*gen_name.unwrap(), "collapse-repeated");
     }
 }

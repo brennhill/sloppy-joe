@@ -102,23 +102,45 @@ fn has_csproj(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Shared test utilities for parser tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
+pub(crate) mod test_utils {
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn unique_dir() -> std::path::PathBuf {
+    /// Create a unique temp directory and write a manifest file into it.
+    pub fn setup_test_dir(prefix: &str, filename: &str, content: &str) -> PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-parsers-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!("sj-{}-{}-{}", prefix, std::process::id(), id));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(filename), content).unwrap();
+        dir
+    }
+
+    /// Create a unique temp directory without writing any file.
+    pub fn empty_test_dir(prefix: &str) -> PathBuf {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("sj-{}-{}-{}", prefix, std::process::id(), id));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
+    /// Clean up a test directory.
+    pub fn cleanup(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_utils::*;
+
     #[test]
     fn parse_dependencies_with_explicit_type() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(
             dir.join("package.json"),
             r#"{"dependencies": {"react": "^18"}}"#,
@@ -127,20 +149,20 @@ mod tests {
         let deps = parse_dependencies(&dir, Some("npm")).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "react");
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn parse_dependencies_unknown_type_errors() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         let result = parse_dependencies(&dir, Some("unknown_type"));
         assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_package_json() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(
             dir.join("package.json"),
             r#"{"dependencies": {"express": "^4"}}"#,
@@ -148,21 +170,21 @@ mod tests {
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::Npm);
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_requirements_txt() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::PyPI);
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_cargo_toml() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(
             dir.join("Cargo.toml"),
             "[package]\nname=\"t\"\nversion=\"0.1.0\"\n\n[dependencies]\nserde = \"1\"",
@@ -170,12 +192,12 @@ mod tests {
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::Cargo);
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_go_mod() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(
             dir.join("go.mod"),
             "module example.com/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9\n)\n",
@@ -183,21 +205,21 @@ mod tests {
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::Go);
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_gemfile() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(dir.join("Gemfile"), "gem 'rails'\n").unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::Ruby);
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_composer_json() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(
             dir.join("composer.json"),
             r#"{"require":{"laravel/framework":"^10"}}"#,
@@ -205,20 +227,20 @@ mod tests {
         .unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::Php);
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_no_project_files_errors() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         let result = parse_dependencies(&dir, None);
         assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn auto_detect_build_gradle_kts() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(
             dir.join("build.gradle.kts"),
             "implementation(\"com.google.guava:guava:31.1-jre\")",
@@ -227,22 +249,22 @@ mod tests {
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::Jvm);
         assert_eq!(deps[0].name, "com.google.guava:guava");
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn has_csproj_finds_file() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         std::fs::write(dir.join("app.csproj"), "<Project></Project>").unwrap();
         assert!(has_csproj(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn has_csproj_no_file() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         assert!(!has_csproj(&dir));
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     // ── extract_xml_value tests ──
@@ -281,23 +303,23 @@ mod tests {
 
     #[test]
     fn read_file_limited_rejects_oversized() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         let path = dir.join("big.txt");
         std::fs::write(&path, "hello world").unwrap();
         // Set limit to 5 bytes - "hello world" is 11
         let result = read_file_limited(&path, 5);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too large"));
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 
     #[test]
     fn read_file_limited_allows_small() {
-        let dir = unique_dir();
+        let dir = empty_test_dir("parsers");
         let path = dir.join("small.txt");
         std::fs::write(&path, "ok").unwrap();
         let result = read_file_limited(&path, 100);
         assert_eq!(result.unwrap(), "ok");
-        let _ = std::fs::remove_dir_all(&dir);
+        cleanup(&dir);
     }
 }

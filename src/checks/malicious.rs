@@ -3,7 +3,7 @@ use crate::Dependency;
 use crate::lockfiles::ResolutionResult;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::path::Path;
 const CACHE_TTL_SECS: u64 = 3600; // 1 hour — short TTL since OSV re-queries are cheap
@@ -156,19 +156,48 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    let fetched = stream::iter(pending.into_iter())
+    // Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
+    const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
+    const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
+
+    let results: Vec<_> = stream::iter(pending.into_iter())
         .map(|(cache_key, (name, ecosystem, version))| async move {
-            let ids = osv_client
+            let result = osv_client
                 .query(&name, ecosystem.as_str(), version.as_deref())
-                .await?;
-            Ok::<_, anyhow::Error>((cache_key, CacheEntry { vuln_ids: ids }))
+                .await;
+            (cache_key, result)
         })
         .buffer_unordered(10)
-        .try_collect::<Vec<_>>()
-        .await?;
+        .collect()
+        .await;
 
-    for (cache_key, entry) in fetched {
-        cache.insert(cache_key, entry);
+    let total_queries = results.len();
+    let mut error_count = 0usize;
+
+    for (cache_key, result) in results {
+        match result {
+            Ok(ids) => { cache.insert(cache_key, CacheEntry { vuln_ids: ids }); }
+            Err(_) => { error_count += 1; }
+        }
+    }
+
+    let error_rate = if total_queries > 0 {
+        error_count as f64 / total_queries as f64
+    } else {
+        0.0
+    };
+    if error_count > REGISTRY_ERROR_HARD_LIMIT
+        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
+    {
+        issues.push(
+            Issue::new("<registry>", crate::checks::names::MALICIOUS_REGISTRY_UNREACHABLE, Severity::Error)
+                .message(format!(
+                    "OSV queries failed for {} of {} vulnerability checks ({:.0}%). \
+                     Vulnerability detection is unreliable. Fix network connectivity or retry.",
+                    error_count, total_queries, error_rate * 100.0
+                ))
+                .fix("Ensure the OSV API is reachable and retry the scan."),
+        );
     }
 
     for dep in deps {
@@ -184,23 +213,18 @@ pub async fn check_malicious_with_cache(
             .unwrap_or_default();
 
         if !vuln_ids.is_empty() {
-            issues.push(Issue {
-                package: dep.name.clone(),
-                check: "malicious/known-vulnerability".to_string(),
-                severity: Severity::Error,
-                message: format!(
-                    "'{}' has known security vulnerabilities in the OSV database. Vulnerability IDs: {}",
-                    dep.name,
-                    vuln_ids.join(", ")
-                ),
-                fix: format!(
-                    "Remove '{}' or update to a non-vulnerable version.",
-                    dep.name
-                ),
-                suggestion: None,
-                registry_url: None,
-                source: None,
-            });
+            issues.push(
+                Issue::new(&dep.name, crate::checks::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
+                    .message(format!(
+                        "'{}' has known security vulnerabilities in the OSV database. Vulnerability IDs: {}",
+                        dep.name,
+                        vuln_ids.join(", ")
+                    ))
+                    .fix(format!(
+                        "Remove '{}' or update to a non-vulnerable version.",
+                        dep.name
+                    )),
+            );
         }
     }
 
@@ -236,13 +260,7 @@ mod tests {
         }
     }
 
-    fn dep(name: &str) -> Dependency {
-        Dependency {
-            name: name.to_string(),
-            version: None,
-            ecosystem: Ecosystem::Npm,
-        }
-    }
+    use crate::test_helpers::npm_dep as dep;
 
     fn dep_with_version(name: &str, version: &str) -> Dependency {
         Dependency {

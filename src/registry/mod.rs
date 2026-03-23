@@ -112,7 +112,7 @@ pub fn registry_for_with_client(
 /// Validate that a package name is safe to use in registry URLs.
 /// Rejects path traversal, null bytes, control characters, percent-encoding,
 /// newlines, and URL-meaningful characters (?#\).
-pub fn validate_package_name(name: &str) -> bool {
+pub(crate) fn validate_package_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
@@ -130,6 +130,98 @@ pub fn validate_package_name(name: &str) -> bool {
         }
     }
     true
+}
+
+/// A package name that has passed basic safety validation.
+/// Guarantees the name is safe for use in registry URLs
+/// (no path traversal, null bytes, control chars, etc.).
+///
+/// Does NOT check ecosystem-specific rules (e.g., slash restrictions).
+/// For full ecosystem-aware validation, use `RegistryExistence::validate_name()`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValidatedName(String);
+
+impl ValidatedName {
+    /// Validate and wrap a package name. Returns Err if the name is unsafe.
+    pub fn new(name: &str) -> Result<Self> {
+        if !validate_package_name(name) {
+            anyhow::bail!("invalid package name: '{}'", name);
+        }
+        Ok(Self(name.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ValidatedName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ValidatedName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Generate the boilerplate `struct`, `new()`, `with_client()`, and `Default` for a registry.
+macro_rules! registry_struct {
+    ($name:ident) => {
+        pub struct $name {
+            client: reqwest::Client,
+        }
+
+        impl $name {
+            pub fn new() -> Self {
+                Self {
+                    client: super::http_client(),
+                }
+            }
+
+            pub fn with_client(client: reqwest::Client) -> Self {
+                Self { client }
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
+pub(crate) use registry_struct;
+
+/// Check an HTTP response status for registry existence queries.
+/// Returns Ok(false) for NOT_FOUND/GONE, Ok(true) for success, Err for other statuses.
+pub(crate) fn check_existence_status(
+    status: reqwest::StatusCode,
+    registry_name: &str,
+    package_name: &str,
+) -> anyhow::Result<bool> {
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+        return Ok(false);
+    }
+    if !status.is_success() {
+        anyhow::bail!(
+            "{} lookup for '{}' returned HTTP {}",
+            registry_name,
+            package_name,
+            status
+        );
+    }
+    Ok(true)
+}
+
+/// Strip semver prefixes like ^, ~, >= from a version string.
+pub(crate) fn strip_version_prefix(version: &str) -> String {
+    version
+        .trim_start_matches(['^', '~', '>', '=', '<', ' '])
+        .to_string()
 }
 
 pub fn http_client() -> reqwest::Client {
@@ -206,5 +298,72 @@ mod tests {
         assert!(registry.validate_name("../etc/passwd").is_err());
         assert!(registry.validate_name("foo\0bar").is_err());
         assert!(registry.validate_name("foo%2fbar").is_err());
+    }
+
+    #[test]
+    fn registry_struct_macro_generates_constructors() {
+        // Test that macro-generated registries have new(), with_client(), and Default
+        let r1 = npm::NpmRegistry::new();
+        assert_eq!(r1.ecosystem(), "npm");
+
+        let client = http_client();
+        let r2 = pypi::PypiRegistry::with_client(client);
+        assert_eq!(r2.ecosystem(), "pypi");
+
+        let r3 = crates_io::CratesIoRegistry::default();
+        assert_eq!(r3.ecosystem(), "cargo");
+    }
+
+    #[test]
+    fn check_response_not_found_returns_false() {
+        assert!(!check_existence_status(reqwest::StatusCode::NOT_FOUND, "test", "pkg").unwrap());
+    }
+
+    #[test]
+    fn check_response_gone_returns_false() {
+        assert!(!check_existence_status(reqwest::StatusCode::GONE, "test", "pkg").unwrap());
+    }
+
+    #[test]
+    fn check_response_success_returns_true() {
+        assert!(check_existence_status(reqwest::StatusCode::OK, "test", "pkg").unwrap());
+    }
+
+    #[test]
+    fn check_response_server_error_returns_err() {
+        assert!(check_existence_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "test", "pkg").is_err());
+    }
+
+    #[test]
+    fn strip_version_prefix_removes_semver_prefixes() {
+        assert_eq!(strip_version_prefix("^1.2.3"), "1.2.3");
+        assert_eq!(strip_version_prefix("~1.0"), "1.0");
+        assert_eq!(strip_version_prefix(">=2.0.0"), "2.0.0");
+        assert_eq!(strip_version_prefix("1.0.0"), "1.0.0");
+        assert_eq!(strip_version_prefix(" 1.0"), "1.0");
+    }
+
+    #[test]
+    fn validated_name_accepts_valid() {
+        let name = ValidatedName::new("react").unwrap();
+        assert_eq!(name.as_str(), "react");
+        assert_eq!(name.to_string(), "react");
+    }
+
+    #[test]
+    fn validated_name_rejects_traversal() {
+        assert!(ValidatedName::new("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validated_name_rejects_null_bytes() {
+        assert!(ValidatedName::new("foo\0bar").is_err());
+    }
+
+    #[test]
+    fn validated_name_equality() {
+        let a = ValidatedName::new("react").unwrap();
+        let b = ValidatedName::new("react").unwrap();
+        assert_eq!(a, b);
     }
 }

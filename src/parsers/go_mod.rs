@@ -55,20 +55,10 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    use crate::parsers::test_utils::*;
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-gomod-{}-{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("go.mod"), content).unwrap();
-        dir
-    }
-
-    fn cleanup(dir: &Path) {
-        let _ = std::fs::remove_dir_all(dir);
+        setup_test_dir("gomod", "go.mod", content)
     }
 
     #[test]
