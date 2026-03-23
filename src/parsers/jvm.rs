@@ -16,7 +16,8 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
-    let content = std::fs::read_to_string(path).context("Failed to read build.gradle")?;
+    let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
+        .context("Failed to read build.gradle")?;
     let mut deps = Vec::new();
     let configs = [
         "implementation",
@@ -59,7 +60,8 @@ fn extract_gradle_dep(line: &str) -> Option<Dependency> {
 }
 
 fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
-    let content = std::fs::read_to_string(path).context("Failed to read pom.xml")?;
+    let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
+        .context("Failed to read pom.xml")?;
     let mut deps = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 

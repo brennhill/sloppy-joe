@@ -69,7 +69,7 @@ pub fn parse_all_lockfile_deps(
             let path = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"]);
             match path {
                 Some(p) => {
-                    let content = std::fs::read_to_string(&p)?;
+                    let content = crate::parsers::read_file_limited(&p, crate::parsers::MAX_MANIFEST_BYTES)?;
                     parse_all_npm(&content)?
                 }
                 None => vec![],
@@ -78,7 +78,7 @@ pub fn parse_all_lockfile_deps(
         "cargo" => {
             let path = project_dir.join("Cargo.lock");
             if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
+                let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
                 parse_all_cargo(&content)?
             } else {
                 vec![]
@@ -129,7 +129,7 @@ fn resolve_npm(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResu
         .and_then(|name| name.to_str())
         .unwrap_or("package-lock.json")
         .to_string();
-    let content = std::fs::read_to_string(&path)?;
+    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
     let parsed: serde_json::Value = match serde_json::from_str(&content) {
         Ok(parsed) => parsed,
         Err(err) => {
@@ -209,7 +209,7 @@ fn resolve_cargo(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionRe
         return Ok(result);
     }
 
-    let content = std::fs::read_to_string(&path)?;
+    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
     let parsed: toml::Value = match toml::from_str(&content) {
         Ok(parsed) => parsed,
         Err(err) => {
