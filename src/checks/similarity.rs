@@ -1,3 +1,4 @@
+use crate::cache;
 use crate::registry::Registry;
 use crate::report::{Issue, Severity};
 use crate::Dependency;
@@ -8,63 +9,21 @@ use std::path::{Path, PathBuf};
 
 const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
 
+/// Registry error tracking threshold: >5 errors OR >10% failure rate triggers blocking issue.
+const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
+const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
 struct SimilarityCache {
     timestamp: u64,
     entries: HashMap<String, bool>,
 }
 
-fn now_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn default_cache_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
-        return path.into();
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join("Library").join("Caches");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join(".cache");
-    }
-    std::env::temp_dir()
-}
-
 fn cache_path_for(ecosystem: &str, cache_dir: Option<&Path>) -> PathBuf {
     let base = cache_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| default_cache_dir().join("sloppy-joe"));
+        .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
     base.join(format!("similarity-{}.json", ecosystem))
-}
-
-fn load_cache(path: &Path) -> SimilarityCache {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return SimilarityCache::default(),
-    };
-    let cache: SimilarityCache = match serde_json::from_str(&content) {
-        Ok(c) => c,
-        Err(_) => return SimilarityCache::default(),
-    };
-    if now_epoch().saturating_sub(cache.timestamp) < SIMILARITY_CACHE_TTL_SECS {
-        cache
-    } else {
-        SimilarityCache::default()
-    }
-}
-
-fn save_cache(path: &Path, cache: &SimilarityCache) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string(cache) {
-        let _ = std::fs::write(path, json);
-    }
 }
 
 /// Test-only hardcoded popular package lists per ecosystem.
@@ -953,9 +912,14 @@ pub async fn check_similarity_with_cache(
         dep_mutations.insert(dep.name.clone(), mutations);
     }
 
-    // Load disk cache (7-day TTL)
+    // Load disk cache (7-day TTL) using shared cache utilities (symlink protection, atomic writes)
     let cp = cache_path_for(ecosystem, cache_dir);
-    let mut cache = if no_cache { SimilarityCache::default() } else { load_cache(&cp) };
+    let mut cache = if no_cache {
+        SimilarityCache::default()
+    } else {
+        cache::read_json_cache(&cp, SIMILARITY_CACHE_TTL_SECS, |c: &SimilarityCache| c.timestamp)
+            .unwrap_or_default()
+    };
 
     // Split queries into cached and uncached
     let mut cached_matches: Vec<(String, String)> = Vec::new();
@@ -972,22 +936,63 @@ pub async fn check_similarity_with_cache(
 
     // Batch-query registry for uncached candidates only
     let concurrency = crate::registry::similarity_concurrency(ecosystem);
-    let fresh_results: Vec<(String, String, bool)> = stream::iter(uncached)
-        .map(|(dep_name, candidate)| async move {
-            let exists = registry.exists(&candidate).await.unwrap_or(false);
-            (dep_name, candidate, exists)
-        })
-        .buffer_unordered(concurrency)
-        .collect()
-        .await;
+    let fresh_results: Vec<(String, String, std::result::Result<bool, anyhow::Error>)> =
+        stream::iter(uncached)
+            .map(|(dep_name, candidate)| async move {
+                let result = registry.exists(&candidate).await;
+                (dep_name, candidate, result)
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
 
-    // Update cache with fresh results
-    for (_, candidate, exists) in &fresh_results {
-        cache.entries.insert(candidate.clone(), *exists);
+    // Track registry errors and fail closed above threshold
+    let total_queries = fresh_results.len();
+    let mut error_count = 0usize;
+
+    // Update cache with fresh results (only cache successes)
+    for (_, candidate, result) in &fresh_results {
+        match result {
+            Ok(exists) => {
+                cache.entries.insert(candidate.clone(), *exists);
+            }
+            Err(_) => {
+                error_count += 1;
+            }
+        }
     }
     if !no_cache {
-        cache.timestamp = now_epoch();
-        save_cache(&cp, &cache);
+        cache.timestamp = cache::now_epoch();
+        cache::atomic_write_json(&cp, &cache)?;
+    }
+
+    // Emit blocking error if registry is unreachable (fail closed)
+    let error_rate = if total_queries > 0 {
+        error_count as f64 / total_queries as f64
+    } else {
+        0.0
+    };
+    if error_count > REGISTRY_ERROR_HARD_LIMIT
+        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
+    {
+        issues.push(Issue {
+            package: "<registry>".to_string(),
+            check: "similarity/registry-unreachable".to_string(),
+            severity: Severity::Error,
+            message: format!(
+                "Registry queries failed for {} of {} similarity checks ({:.0}%). \
+                 Similarity detection is unreliable. Fix network connectivity or retry.",
+                error_count,
+                total_queries,
+                error_rate * 100.0
+            ),
+            fix: "Ensure the registry is reachable. Use --no-cache to bypass stale cache data."
+                .to_string(),
+            suggestion: None,
+            registry_url: None,
+            source: None,
+        });
+        return Ok(issues);
     }
 
     // Collect matches from cached + fresh results
@@ -995,8 +1000,8 @@ pub async fn check_similarity_with_cache(
     for (dep_name, candidate) in cached_matches {
         matches.entry(dep_name).or_default().push(candidate);
     }
-    for (dep_name, candidate, exists) in fresh_results {
-        if exists {
+    for (dep_name, candidate, result) in fresh_results {
+        if matches!(result, Ok(true)) {
             matches.entry(dep_name).or_default().push(candidate);
         }
     }
@@ -1053,7 +1058,7 @@ pub async fn check_similarity_with_cache(
             // On case-sensitive registries, check if the lowercased name exists on registry
             let dep_lower = dep.name.to_lowercase();
             if dep_lower != dep.name {
-                let exists = registry.exists(&dep_lower).await.unwrap_or(false);
+                let exists = registry.exists(&dep_lower).await.unwrap_or(false); // fail-open OK: case-variant is low-severity, main checks already fail-closed above
                 if exists {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(

@@ -1,3 +1,4 @@
+use crate::cache;
 use crate::Dependency;
 use crate::lockfiles::ResolutionResult;
 use crate::report::{Issue, Severity};
@@ -19,123 +20,10 @@ struct DiskCache {
     entries: HashMap<String, CacheEntry>,
 }
 
-fn now_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn now_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-}
-
 fn default_cache_file() -> std::path::PathBuf {
-    user_cache_dir().join("sloppy-joe").join("osv-cache.json")
-}
-
-fn user_cache_dir() -> std::path::PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
-        return path.into();
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join("Library").join("Caches");
-    }
-    #[cfg(target_os = "windows")]
-    if let Some(path) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
-        return path.into();
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join(".cache");
-    }
-    std::env::temp_dir()
-}
-
-fn cache_tmp_path(path: &Path) -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    path.with_extension(format!("tmp-{}-{}-{}", std::process::id(), now_nanos(), id))
-}
-
-fn ensure_safe_cache_path(path: &Path) -> Result<()> {
-    if let Ok(metadata) = std::fs::symlink_metadata(path)
-        && metadata.file_type().is_symlink()
-    {
-        anyhow::bail!(
-            "refusing to use symlinked OSV cache file: {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn load_disk_cache(path: &Path) -> Result<Option<DiskCache>> {
-    if ensure_safe_cache_path(path).is_err() {
-        return Ok(None);
-    }
-    let content = match std::fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(_) => return Ok(None),
-    };
-    let cache: DiskCache = match serde_json::from_str(&content) {
-        Ok(cache) => cache,
-        Err(_) => return Ok(None),
-    };
-    let age = now_epoch().saturating_sub(cache.timestamp);
-    if age < CACHE_TTL_SECS {
-        Ok(Some(cache))
-    } else {
-        Ok(None)
-    }
-}
-
-fn save_disk_cache(path: &Path, entries: &HashMap<String, CacheEntry>) -> Result<()> {
-    if ensure_safe_cache_path(path).is_err() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return Ok(());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let Ok(metadata) = std::fs::metadata(parent) else {
-                return Ok(());
-            };
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o700);
-            let _ = std::fs::set_permissions(parent, perms);
-        }
-    }
-    let cache = DiskCache {
-        timestamp: now_epoch(),
-        entries: entries.clone(),
-    };
-    let Ok(json) = serde_json::to_string(&cache) else {
-        return Ok(());
-    };
-    let tmp_path = cache_tmp_path(path);
-    if std::fs::write(&tmp_path, json).is_err() {
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = std::fs::metadata(&tmp_path) {
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(&tmp_path, perms);
-        }
-    }
-    let _ = std::fs::rename(&tmp_path, path);
-    Ok(())
+    cache::user_cache_dir()
+        .join("sloppy-joe")
+        .join("osv-cache.json")
 }
 
 /// Map ecosystem strings to OSV ecosystem names.
@@ -246,11 +134,9 @@ pub async fn check_malicious_with_cache(
     resolution: &ResolutionResult,
     cache_path: Option<&Path>,
 ) -> Result<Vec<Issue>> {
-    // Load disk cache if fresh
+    // Load disk cache if fresh (using shared cache utilities: symlink protection, atomic writes)
     let initial_entries = cache_path
-        .map(load_disk_cache)
-        .transpose()?
-        .flatten()
+        .and_then(|p| cache::read_json_cache::<DiskCache>(p, CACHE_TTL_SECS, |c| c.timestamp))
         .map(|c| c.entries)
         .unwrap_or_default();
     let mut cache = initial_entries;
@@ -321,9 +207,13 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    // Save cache to disk
+    // Save cache to disk (atomic writes, symlink protection, 0o600 permissions)
     if let Some(path) = cache_path {
-        save_disk_cache(path, &cache)?;
+        let disk_cache = DiskCache {
+            timestamp: cache::now_epoch(),
+            entries: cache.clone(),
+        };
+        cache::atomic_write_json(path, &disk_cache)?;
     }
 
     Ok(issues)
@@ -535,15 +425,7 @@ mod tests {
     fn default_cache_path_uses_user_cache_directory() {
         let path = default_cache_file();
         assert!(path.ends_with("sloppy-joe/osv-cache.json"));
-        assert!(path.starts_with(user_cache_dir()));
-    }
-
-    #[test]
-    fn cache_tmp_path_is_unique_per_call() {
-        let base = Path::new("/tmp/sloppy-joe-test-cache.json");
-        let first = cache_tmp_path(base);
-        let second = cache_tmp_path(base);
-        assert_ne!(first, second);
+        assert!(path.starts_with(cache::user_cache_dir()));
     }
 
     #[cfg(unix)]
@@ -551,7 +433,7 @@ mod tests {
     async fn unwritable_cache_path_is_ignored() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join(format!("sj-cache-ro-{}", now_nanos()));
+        let dir = std::env::temp_dir().join(format!("sj-cache-ro-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut perms = std::fs::metadata(&dir).unwrap().permissions();
         perms.set_mode(0o500);
