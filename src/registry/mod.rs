@@ -34,22 +34,9 @@ pub struct PackageMetadata {
 }
 
 #[async_trait]
-pub trait Registry: Send + Sync {
+pub trait RegistryExistence: Send + Sync {
     /// Check if a package exists on this registry.
-    /// Implementors should use `exists_raw`; callers should use `exists_validated`.
     async fn exists(&self, package_name: &str) -> Result<bool>;
-
-    /// Fetch metadata for a package. Returns None if not supported or not found.
-    /// If `version` is provided, look up that specific version's publish date.
-    async fn metadata(
-        &self,
-        package_name: &str,
-        version: Option<&str>,
-    ) -> Result<Option<PackageMetadata>> {
-        let _ = package_name;
-        let _ = version;
-        Ok(None)
-    }
 
     /// The ecosystem name (e.g. "npm", "pypi", "cargo").
     fn ecosystem(&self) -> &str;
@@ -66,6 +53,27 @@ pub trait Registry: Send + Sync {
         Ok(())
     }
 }
+
+#[async_trait]
+pub trait RegistryMetadata: Send + Sync {
+    /// Fetch metadata for a package. Returns None if not supported or not found.
+    /// If `version` is provided, look up that specific version's publish date.
+    async fn metadata(
+        &self,
+        package_name: &str,
+        version: Option<&str>,
+    ) -> Result<Option<PackageMetadata>> {
+        let _ = package_name;
+        let _ = version;
+        Ok(None)
+    }
+}
+
+/// Combined trait for registries that support both existence checks and metadata lookups.
+/// All existing code using `&dyn Registry` continues to work unchanged.
+pub trait Registry: RegistryExistence + RegistryMetadata {}
+
+impl<T: RegistryExistence + RegistryMetadata> Registry for T {}
 
 pub fn registry_for(ecosystem: &str) -> Result<Box<dyn Registry>> {
     registry_for_with_client(ecosystem, http_client())

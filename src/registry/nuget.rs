@@ -24,7 +24,7 @@ impl Default for NugetRegistry {
 }
 
 #[async_trait]
-impl super::Registry for NugetRegistry {
+impl super::RegistryExistence for NugetRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let lower = package_name.to_lowercase();
@@ -50,3 +50,6 @@ impl super::Registry for NugetRegistry {
         "dotnet"
     }
 }
+
+#[async_trait]
+impl super::RegistryMetadata for NugetRegistry {}

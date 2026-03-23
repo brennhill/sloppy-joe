@@ -1,3 +1,4 @@
+use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -24,7 +25,7 @@ impl Default for PypiRegistry {
 }
 
 #[async_trait]
-impl super::Registry for PypiRegistry {
+impl super::RegistryExistence for PypiRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://pypi.org/pypi/{}/json", package_name);
@@ -42,6 +43,13 @@ impl super::Registry for PypiRegistry {
         Ok(true)
     }
 
+    fn ecosystem(&self) -> &str {
+        "pypi"
+    }
+}
+
+#[async_trait]
+impl super::RegistryMetadata for PypiRegistry {
     async fn metadata(
         &self,
         package_name: &str,
@@ -96,9 +104,5 @@ impl super::Registry for PypiRegistry {
             current_publisher: None,
             previous_publisher: None,
         }))
-    }
-
-    fn ecosystem(&self) -> &str {
-        "pypi"
     }
 }

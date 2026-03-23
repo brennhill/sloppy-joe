@@ -57,7 +57,7 @@ fn escape_solr_term(term: &str) -> String {
 }
 
 #[async_trait]
-impl super::Registry for MavenRegistry {
+impl super::RegistryExistence for MavenRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let parts: Vec<&str> = package_name.splitn(2, ':').collect();
@@ -83,6 +83,13 @@ impl super::Registry for MavenRegistry {
         Ok(found > 0)
     }
 
+    fn ecosystem(&self) -> &str {
+        "jvm"
+    }
+}
+
+#[async_trait]
+impl super::RegistryMetadata for MavenRegistry {
     async fn metadata(
         &self,
         package_name: &str,
@@ -177,10 +184,6 @@ impl super::Registry for MavenRegistry {
             current_publisher: None,
             previous_publisher: None,
         }))
-    }
-
-    fn ecosystem(&self) -> &str {
-        "jvm"
     }
 }
 

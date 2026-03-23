@@ -1,3 +1,4 @@
+use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -35,7 +36,7 @@ impl Default for RubyGemsRegistry {
 }
 
 #[async_trait]
-impl super::Registry for RubyGemsRegistry {
+impl super::RegistryExistence for RubyGemsRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = gem_url(package_name);
@@ -53,6 +54,13 @@ impl super::Registry for RubyGemsRegistry {
         Ok(true)
     }
 
+    fn ecosystem(&self) -> &str {
+        "ruby"
+    }
+}
+
+#[async_trait]
+impl super::RegistryMetadata for RubyGemsRegistry {
     async fn metadata(
         &self,
         package_name: &str,
@@ -112,10 +120,6 @@ impl super::Registry for RubyGemsRegistry {
             current_publisher: None,
             previous_publisher: None,
         }))
-    }
-
-    fn ecosystem(&self) -> &str {
-        "ruby"
     }
 }
 

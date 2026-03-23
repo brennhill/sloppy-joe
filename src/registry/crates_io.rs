@@ -1,3 +1,4 @@
+use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -69,7 +70,7 @@ fn metadata_from_body(
 }
 
 #[async_trait]
-impl super::Registry for CratesIoRegistry {
+impl super::RegistryExistence for CratesIoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
@@ -87,6 +88,13 @@ impl super::Registry for CratesIoRegistry {
         Ok(true)
     }
 
+    fn ecosystem(&self) -> &str {
+        "cargo"
+    }
+}
+
+#[async_trait]
+impl super::RegistryMetadata for CratesIoRegistry {
     async fn metadata(
         &self,
         package_name: &str,
@@ -107,10 +115,6 @@ impl super::Registry for CratesIoRegistry {
         }
         let body: serde_json::Value = resp.json().await?;
         Ok(metadata_from_body(&body, version))
-    }
-
-    fn ecosystem(&self) -> &str {
-        "cargo"
     }
 }
 

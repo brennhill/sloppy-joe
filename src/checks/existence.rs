@@ -120,6 +120,7 @@ pub(crate) fn check_existence_from_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::{RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
 
     struct FakeRegistry {
@@ -128,7 +129,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Registry for FakeRegistry {
+    impl RegistryExistence for FakeRegistry {
         async fn exists(&self, package_name: &str) -> Result<bool> {
             if self.fail {
                 anyhow::bail!("registry unavailable");
@@ -140,6 +141,9 @@ mod tests {
             "npm"
         }
     }
+
+    #[async_trait]
+    impl RegistryMetadata for FakeRegistry {}
 
     fn dep(name: &str) -> Dependency {
         Dependency {

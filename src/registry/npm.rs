@@ -1,3 +1,4 @@
+use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -144,7 +145,7 @@ async fn fetch_downloads(
 }
 
 #[async_trait]
-impl super::Registry for NpmRegistry {
+impl super::RegistryExistence for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
@@ -162,6 +163,13 @@ impl super::Registry for NpmRegistry {
         Ok(true)
     }
 
+    fn ecosystem(&self) -> &str {
+        "npm"
+    }
+}
+
+#[async_trait]
+impl super::RegistryMetadata for NpmRegistry {
     async fn metadata(
         &self,
         package_name: &str,
@@ -198,10 +206,6 @@ impl super::Registry for NpmRegistry {
         }
 
         Ok(Some(meta))
-    }
-
-    fn ecosystem(&self) -> &str {
-        "npm"
     }
 }
 
