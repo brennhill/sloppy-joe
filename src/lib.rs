@@ -161,7 +161,7 @@ async fn scan_with_services_inner(
     }
 
     Ok(ScanReport::from_issues(
-        deps.len() + transitive_deps.len(),
+        non_internal.len() + transitive_deps.len(),
         acc.issues,
     ))
 }
