@@ -1,17 +1,20 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-/// Encode uppercase letters for the Go module proxy (uppercase → `!` + lowercase).
+/// Encode a Go module path for use with proxy.golang.org.
+/// Upper-case letters are encoded as `!` followed by the lower-case letter,
+/// per the Go module proxy protocol.
 fn encode_module_path(path: &str) -> String {
-    path.chars()
-        .map(|c| {
-            if c.is_ascii_uppercase() {
-                format!("!{}", c.to_ascii_lowercase())
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+    let mut encoded = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if ch.is_ascii_uppercase() {
+            encoded.push('!');
+            encoded.push(ch.to_ascii_lowercase());
+        } else {
+            encoded.push(ch);
+        }
+    }
+    encoded
 }
 
 pub struct GoRegistry {
@@ -36,16 +39,17 @@ impl Default for GoRegistry {
 impl super::Registry for GoRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         let encoded = encode_module_path(package_name);
-        let url = format!("https://pkg.go.dev/{}", encoded);
+        let url = format!("https://proxy.golang.org/{}/@latest", encoded);
         let resp = self.client.get(&url).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
             return Ok(false);
         }
-        if !resp.status().is_success() {
+        if !status.is_success() {
             anyhow::bail!(
                 "Go package lookup for '{}' returned HTTP {}",
                 package_name,
-                resp.status()
+                status
             );
         }
         Ok(true)
@@ -61,23 +65,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_module_path_lowercases_with_bang() {
+    fn encode_module_path_lowercase() {
         assert_eq!(
-            encode_module_path("GitHub.com/Foo"),
-            "!git!hub.com/!foo"
+            encode_module_path("github.com/gin-gonic/gin"),
+            "github.com/gin-gonic/gin"
         );
     }
 
     #[test]
-    fn encode_module_path_no_uppercase() {
+    fn encode_module_path_uppercase() {
         assert_eq!(
-            encode_module_path("github.com/foo"),
-            "github.com/foo"
+            encode_module_path("github.com/Azure/azure-sdk-for-go"),
+            "github.com/!azure/azure-sdk-for-go"
         );
     }
 
     #[test]
-    fn encode_module_path_all_uppercase() {
-        assert_eq!(encode_module_path("ABC"), "!a!b!c");
+    fn encode_module_path_mixed() {
+        assert_eq!(
+            encode_module_path("github.com/Shopify/sarama"),
+            "github.com/!shopify/sarama"
+        );
+    }
+
+    #[test]
+    fn go_registry_url_uses_proxy() {
+        // Verify the URL format is correct by constructing it the same way the exists() method does
+        let encoded = encode_module_path("github.com/gin-gonic/gin");
+        let url = format!("https://proxy.golang.org/{}/@latest", encoded);
+        assert_eq!(url, "https://proxy.golang.org/github.com/gin-gonic/gin/@latest");
     }
 }

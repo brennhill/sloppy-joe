@@ -72,7 +72,7 @@ async fn scan_with_config(
         .first()
         .map(|dep| dep.ecosystem.as_str())
         .unwrap_or("npm");
-    let registry = registry::registry_for(ecosystem);
+    let registry = registry::registry_for(ecosystem)?;
     let osv_client = checks::malicious::RealOsvClient::new();
     scan_with_services(project_dir, project_type, config, &*registry, &osv_client, deep, no_cache, cache_dir).await
 }

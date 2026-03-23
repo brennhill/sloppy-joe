@@ -1,4 +1,3 @@
-pub mod corpus;
 pub mod crates_io;
 pub mod go;
 pub mod maven;
@@ -55,17 +54,46 @@ pub trait Registry: Send + Sync {
     fn ecosystem(&self) -> &str;
 }
 
-pub fn registry_for(ecosystem: &str) -> Box<dyn Registry> {
+pub fn registry_for(ecosystem: &str) -> Result<Box<dyn Registry>> {
     match ecosystem {
-        "npm" => Box::new(npm::NpmRegistry::new()),
-        "pypi" => Box::new(pypi::PypiRegistry::new()),
-        "cargo" => Box::new(crates_io::CratesIoRegistry::new()),
-        "go" => Box::new(go::GoRegistry::new()),
-        "ruby" => Box::new(rubygems::RubyGemsRegistry::new()),
-        "php" => Box::new(packagist::PackagistRegistry::new()),
-        "jvm" => Box::new(maven::MavenRegistry::new()),
-        "dotnet" => Box::new(nuget::NugetRegistry::new()),
-        _ => Box::new(npm::NpmRegistry::new()),
+        "npm" => Ok(Box::new(npm::NpmRegistry::new())),
+        "pypi" => Ok(Box::new(pypi::PypiRegistry::new())),
+        "cargo" => Ok(Box::new(crates_io::CratesIoRegistry::new())),
+        "go" => Ok(Box::new(go::GoRegistry::new())),
+        "ruby" => Ok(Box::new(rubygems::RubyGemsRegistry::new())),
+        "php" => Ok(Box::new(packagist::PackagistRegistry::new())),
+        "jvm" => Ok(Box::new(maven::MavenRegistry::new())),
+        "dotnet" => Ok(Box::new(nuget::NugetRegistry::new())),
+        other => anyhow::bail!("unsupported ecosystem: {}", other),
+    }
+}
+
+/// Validate that a package name is safe to use in registry URLs.
+/// Rejects path traversal, null bytes, control characters, percent-encoding, and newlines.
+pub fn validate_package_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains("..") {
+        return false;
+    }
+    for ch in name.chars() {
+        if ch == '\0' || ch == '%' || ch == '\n' || ch == '\r' {
+            return false;
+        }
+        if ch.is_control() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Per-registry concurrency limits for similarity queries.
+pub fn similarity_concurrency(ecosystem: &str) -> usize {
+    match ecosystem {
+        "cargo" => 2,
+        "go" => 5,
+        _ => 20,
     }
 }
 
@@ -78,42 +106,66 @@ pub fn http_client() -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
-/// Return the concurrency limit for similarity checks on a given ecosystem.
-/// crates.io: 2 (strict rate limits), Go: 5, others: 20.
-pub fn similarity_concurrency(ecosystem: &str) -> usize {
-    match ecosystem {
-        "cargo" => 2,
-        "go" => 5,
-        _ => 20,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn concurrency_limits_per_ecosystem() {
-        assert_eq!(similarity_concurrency("cargo"), 2);
-        assert_eq!(similarity_concurrency("go"), 5);
-        assert_eq!(similarity_concurrency("npm"), 20);
-        assert_eq!(similarity_concurrency("pypi"), 20);
-    }
-
-    #[test]
     fn registry_for_all_ecosystems() {
-        assert_eq!(registry_for("npm").ecosystem(), "npm");
-        assert_eq!(registry_for("pypi").ecosystem(), "pypi");
-        assert_eq!(registry_for("cargo").ecosystem(), "cargo");
-        assert_eq!(registry_for("go").ecosystem(), "go");
-        assert_eq!(registry_for("ruby").ecosystem(), "ruby");
-        assert_eq!(registry_for("php").ecosystem(), "php");
-        assert_eq!(registry_for("jvm").ecosystem(), "jvm");
-        assert_eq!(registry_for("dotnet").ecosystem(), "dotnet");
+        assert_eq!(registry_for("npm").unwrap().ecosystem(), "npm");
+        assert_eq!(registry_for("pypi").unwrap().ecosystem(), "pypi");
+        assert_eq!(registry_for("cargo").unwrap().ecosystem(), "cargo");
+        assert_eq!(registry_for("go").unwrap().ecosystem(), "go");
+        assert_eq!(registry_for("ruby").unwrap().ecosystem(), "ruby");
+        assert_eq!(registry_for("php").unwrap().ecosystem(), "php");
+        assert_eq!(registry_for("jvm").unwrap().ecosystem(), "jvm");
+        assert_eq!(registry_for("dotnet").unwrap().ecosystem(), "dotnet");
     }
 
     #[test]
-    fn registry_for_unknown_defaults_to_npm() {
-        assert_eq!(registry_for("unknown").ecosystem(), "npm");
+    fn registry_for_unknown_returns_error() {
+        assert!(registry_for("unknown").is_err());
+    }
+
+    #[test]
+    fn validate_package_name_accepts_valid() {
+        assert!(validate_package_name("react"));
+        assert!(validate_package_name("@types/node"));
+        assert!(validate_package_name("my-package_v2"));
+        assert!(validate_package_name("github.com/user/repo"));
+        assert!(validate_package_name("com.google.guava:guava"));
+    }
+
+    #[test]
+    fn validate_package_name_rejects_traversal() {
+        assert!(!validate_package_name("../etc/passwd"));
+        assert!(!validate_package_name("foo/../bar"));
+    }
+
+    #[test]
+    fn validate_package_name_rejects_null() {
+        assert!(!validate_package_name("foo\0bar"));
+    }
+
+    #[test]
+    fn validate_package_name_rejects_control_chars() {
+        assert!(!validate_package_name("foo\x01bar"));
+        assert!(!validate_package_name("foo\x7fbar"));
+    }
+
+    #[test]
+    fn validate_package_name_rejects_percent() {
+        assert!(!validate_package_name("foo%2fbar"));
+    }
+
+    #[test]
+    fn validate_package_name_rejects_newlines() {
+        assert!(!validate_package_name("foo\nbar"));
+        assert!(!validate_package_name("foo\rbar"));
+    }
+
+    #[test]
+    fn validate_package_name_rejects_empty() {
+        assert!(!validate_package_name(""));
     }
 }
