@@ -8,6 +8,7 @@ use super::{
     ResolutionSource, ResolvedVersion,
 };
 
+/// Read + parse + resolve in one step (used by resolve_versions public API).
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let Some(path) = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
     else {
@@ -34,6 +35,15 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
         }
     };
 
+    resolve_from_value(&parsed, deps, &file_name)
+}
+
+/// Resolve versions from a pre-parsed npm lockfile JSON value.
+pub(super) fn resolve_from_value(
+    parsed: &serde_json::Value,
+    deps: &[Dependency],
+    file_name: &str,
+) -> Result<ResolutionResult> {
     let packages = parsed.get("packages").and_then(|value| value.as_object());
     let dependencies = parsed
         .get("dependencies")
@@ -41,7 +51,7 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
     if packages.is_none() && dependencies.is_none() {
         let mut result = ResolutionResult::default();
         result.issues.push(parse_failed_issue(
-            &file_name,
+            file_name,
             "lockfile did not contain a supported packages or dependencies section".to_string(),
         ));
         add_manifest_exact_fallbacks(&mut result, deps);
@@ -84,7 +94,7 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
                 );
             }
             None => {
-                result.issues.push(missing_entry_issue(dep, &file_name));
+                result.issues.push(missing_entry_issue(dep, file_name));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         }
@@ -93,20 +103,22 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
     Ok(result)
 }
 
-/// Parse ALL npm dependencies (including transitive) from a lockfile.
-/// Fails closed: returns an error on parse failure instead of empty vec.
+/// Parse ALL npm deps from a lockfile string (for tests).
+#[cfg(test)]
 pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
     let parsed: serde_json::Value = serde_json::from_str(lockfile_content)
         .map_err(|e| anyhow::anyhow!("Failed to parse npm lockfile: {}", e))?;
+    parse_all_from_value(&parsed)
+}
 
+/// Parse ALL npm deps from a pre-parsed JSON value.
+pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dependency>> {
     let mut deps = Vec::new();
     if let Some(packages) = parsed.get("packages").and_then(|v| v.as_object()) {
         for (key, entry) in packages {
             if key.is_empty() {
                 continue;
             }
-            // Use the innermost package name for nested deps
-            // e.g., "node_modules/@scope/pkg/node_modules/nested" -> "nested"
             let name = key
                 .rsplit_once("node_modules/")
                 .map(|(_, name)| name)

@@ -9,6 +9,7 @@ use super::{
     ResolutionSource, ResolvedVersion,
 };
 
+/// Read + parse + resolve in one step (used by resolve_versions public API).
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let path = project_dir.join("Cargo.lock");
     if !path.exists() {
@@ -30,6 +31,14 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
         }
     };
 
+    resolve_from_value(&parsed, deps)
+}
+
+/// Resolve versions from a pre-parsed Cargo.lock TOML value.
+pub(super) fn resolve_from_value(
+    parsed: &toml::Value,
+    deps: &[Dependency],
+) -> Result<ResolutionResult> {
     let Some(packages) = parsed.get("package").and_then(|value| value.as_array()) else {
         let mut result = ResolutionResult::default();
         result.issues.push(parse_failed_issue(
@@ -110,12 +119,16 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
     Ok(result)
 }
 
-/// Parse ALL cargo dependencies (including transitive) from a lockfile.
-/// Fails closed: returns an error on parse failure instead of empty vec.
+/// Parse ALL cargo deps from a lockfile string (for tests).
+#[cfg(test)]
 pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
     let parsed: toml::Value = toml::from_str(lockfile_content)
         .map_err(|e| anyhow::anyhow!("Failed to parse Cargo.lock: {}", e))?;
+    parse_all_from_value(&parsed)
+}
 
+/// Parse ALL cargo deps from a pre-parsed TOML value.
+pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependency>> {
     let Some(packages) = parsed.get("package").and_then(|v| v.as_array()) else {
         anyhow::bail!("Cargo.lock has no package array");
     };
