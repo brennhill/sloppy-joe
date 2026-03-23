@@ -1,3 +1,4 @@
+mod confusables;
 pub mod generators;
 
 use crate::cache;

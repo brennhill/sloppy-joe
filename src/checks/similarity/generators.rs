@@ -123,44 +123,10 @@ fn confused_forms(ecosystem: Ecosystem) -> &'static [(&'static str, &'static str
 
 // -- Homoglyph detection ---------------------------------------------------
 
-/// Map of common homoglyphs: (lookalike char, Latin equivalent).
-fn homoglyph_map() -> &'static [(char, char)] {
-    &[
-        ('\u{0430}', 'a'), // Cyrillic a -> Latin a
-        ('\u{0435}', 'e'), // Cyrillic e -> Latin e
-        ('\u{043E}', 'o'), // Cyrillic o -> Latin o
-        ('\u{0440}', 'p'), // Cyrillic p -> Latin p
-        ('\u{0441}', 'c'), // Cyrillic c -> Latin c
-        ('\u{0443}', 'y'), // Cyrillic y -> Latin y
-        ('\u{0445}', 'x'), // Cyrillic x -> Latin x
-        ('\u{0455}', 's'), // Cyrillic s -> Latin s
-        ('\u{0456}', 'i'), // Cyrillic i -> Latin i
-        ('\u{0458}', 'j'), // Cyrillic j -> Latin j
-        ('\u{0501}', 'd'), // Cyrillic d -> Latin d
-        ('\u{0261}', 'g'), // Latin g -> Latin g
-        ('\u{2113}', 'l'), // Script l -> Latin l
-        ('\u{FF10}', '0'), // Fullwidth 0
-        ('\u{FF11}', '1'), // Fullwidth 1
-        ('\u{2170}', 'i'), // Roman numeral i -> Latin i
-        ('\u{217C}', 'l'), // Roman numeral l -> Latin l
-    ]
-}
-
-/// Normalize a name by replacing homoglyphs with their Latin equivalents.
-/// Returns the normalized string and whether any replacements were made.
+/// Normalize a name by replacing Unicode confusables with ASCII equivalents.
+/// Uses the full Unicode confusables table (445 entries) from confusables.rs.
 pub(super) fn normalize_homoglyphs(name: &str) -> (String, bool) {
-    let map = homoglyph_map();
-    let mut result = String::with_capacity(name.len());
-    let mut replaced = false;
-    for ch in name.chars() {
-        if let Some((_, latin)) = map.iter().find(|(lookalike, _)| *lookalike == ch) {
-            result.push(*latin);
-            replaced = true;
-        } else {
-            result.push(ch);
-        }
-    }
-    (result, replaced)
+    super::confusables::normalize(name)
 }
 
 // -- Scope/namespace squatting detection ------------------------------------
