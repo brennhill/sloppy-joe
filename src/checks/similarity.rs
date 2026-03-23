@@ -493,7 +493,7 @@ fn word_reorderings(name: &str) -> Vec<String> {
     }
     let Some(sep) = sep_char else { return vec![] };
     let mut segments: Vec<&str> = name.split(sep).collect();
-    if segments.len() < 2 || segments.len() > 5 {
+    if segments.len() < 2 || segments.len() > 3 {
         return vec![];
     }
     // Generate all permutations
@@ -865,51 +865,56 @@ pub async fn check_similarity_with_cache(
         }
     }
 
+    // ---- Pre-compute mutations once for Phase 1 + Phase 2 ----
+    let mut all_mutations: HashMap<String, HashSet<String>> = HashMap::new();
+    for dep in deps {
+        if !flagged.contains(&dep.name) {
+            all_mutations.insert(dep.name.clone(), generate_mutations(&dep.name, ecosystem));
+        }
+    }
+
     // ---- Phase 1: Intra-manifest comparison (no network) ----
-    // Compare each dep's mutations against other deps in the manifest.
     for dep in deps {
         if flagged.contains(&dep.name) {
             continue;
         }
-        let mutations = generate_mutations(&dep.name, ecosystem);
-        for mutation in &mutations {
-            let mutation_lower = mutation.to_lowercase();
-            // Check if this mutation matches another dep in the manifest
-            if dep_names.contains(&mutation_lower) && mutation_lower != dep.name.to_lowercase() {
-                // Both the dep and its mutation are in the manifest -- flag the suspicious one
-                if flagged.insert(dep.name.clone()) {
-                    let (check_type, message) =
-                        classify_match(&dep.name, &mutation_lower, ecosystem);
-                    issues.push(make_issue(
-                        &dep.name,
-                        &mutation_lower,
-                        check_type,
-                        &format!(
-                            "{} Both '{}' and '{}' are in your manifest.",
-                            message, dep.name, mutation_lower
-                        ),
-                        "Examine both packages and add the intended one to your allowed list.",
-                    ));
+        if let Some(mutations) = all_mutations.get(&dep.name) {
+            for mutation in mutations {
+                let mutation_lower = mutation.to_lowercase();
+                if dep_names.contains(&mutation_lower)
+                    && mutation_lower != dep.name.to_lowercase()
+                {
+                    if flagged.insert(dep.name.clone()) {
+                        let (check_type, message) =
+                            classify_match(&dep.name, &mutation_lower, ecosystem);
+                        issues.push(make_issue(
+                            &dep.name,
+                            &mutation_lower,
+                            check_type,
+                            &format!(
+                                "{} Both '{}' and '{}' are in your manifest.",
+                                message, dep.name, mutation_lower
+                            ),
+                            "Examine both packages and add the intended one to your allowed list.",
+                        ));
+                    }
+                    break;
                 }
-                break;
             }
         }
     }
 
-    // ---- Phase 2: Generate mutations for non-flagged deps, batch-query registry ----
-    // Collect all (dep_name, candidate) pairs to query
+    // ---- Phase 2: Batch-query registry for non-flagged deps ----
     let mut queries: Vec<(String, String)> = Vec::new();
-    let mut dep_mutations: HashMap<String, HashSet<String>> = HashMap::new();
-
     for dep in deps {
         if flagged.contains(&dep.name) {
             continue;
         }
-        let mutations = generate_mutations(&dep.name, ecosystem);
-        for mutation in &mutations {
-            queries.push((dep.name.clone(), mutation.clone()));
+        if let Some(mutations) = all_mutations.get(&dep.name) {
+            for mutation in mutations {
+                queries.push((dep.name.clone(), mutation.clone()));
+            }
         }
-        dep_mutations.insert(dep.name.clone(), mutations);
     }
 
     // Load disk cache (7-day TTL) using shared cache utilities (symlink protection, atomic writes)
@@ -1006,46 +1011,56 @@ pub async fn check_similarity_with_cache(
         }
     }
 
-    // ---- Phase 3: Fetch metadata for matches, build issues ----
-    // For each dep with matches, classify and build issues
-    for dep in deps {
-        if flagged.contains(&dep.name) {
-            continue;
-        }
-        if let Some(matched_candidates) = matches.get(&dep.name) {
-            // Use the first match (most specific generator wins via classify_match ordering)
-            if let Some(candidate) = matched_candidates.first() {
-                if flagged.insert(dep.name.clone()) {
-                    // Try to fetch metadata for evidence
-                    let metadata = registry.metadata(candidate, None).await.ok().flatten();
-                    let (check_type, mut message) =
-                        classify_match(&dep.name, candidate, ecosystem);
+    // ---- Phase 3: Fetch metadata for matches concurrently, build issues ----
+    // Collect all (dep_name, candidate) pairs that need metadata
+    let metadata_queries: Vec<(String, String)> = deps
+        .iter()
+        .filter(|dep| !flagged.contains(&dep.name))
+        .filter_map(|dep| {
+            matches.get(&dep.name).and_then(|candidates| {
+                candidates.first().map(|c| (dep.name.clone(), c.clone()))
+            })
+        })
+        .collect();
 
-                    // Add metadata evidence if available
-                    if let Some(ref meta) = metadata {
-                        let mut evidence_parts = Vec::new();
-                        if let Some(downloads) = meta.downloads {
-                            evidence_parts
-                                .push(format!("{} has {:?} downloads", candidate, downloads));
-                        }
-                        if let Some(ref created) = meta.created {
-                            evidence_parts
-                                .push(format!("was first published {}", created));
-                        }
-                        if !evidence_parts.is_empty() {
-                            message = format!("{} ({})", message, evidence_parts.join("; "));
-                        }
-                    }
+    // Fetch metadata concurrently
+    let metadata_results: Vec<(String, String, Option<crate::registry::PackageMetadata>)> =
+        stream::iter(metadata_queries)
+            .map(|(dep_name, candidate)| async move {
+                let meta = registry.metadata(&candidate, None).await.ok().flatten();
+                (dep_name, candidate, meta)
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
 
-                    issues.push(make_issue(
-                        &dep.name,
-                        candidate,
-                        check_type,
-                        &message,
-                        "Examine both packages and add the intended one to your allowed list.",
-                    ));
+    for (dep_name, candidate, metadata) in metadata_results {
+        if flagged.insert(dep_name.clone()) {
+            let (check_type, mut message) =
+                classify_match(&dep_name, &candidate, ecosystem);
+
+            if let Some(ref meta) = metadata {
+                let mut evidence_parts = Vec::new();
+                if let Some(downloads) = meta.downloads {
+                    evidence_parts
+                        .push(format!("{} has {:?} downloads", candidate, downloads));
+                }
+                if let Some(ref created) = meta.created {
+                    evidence_parts
+                        .push(format!("was first published {}", created));
+                }
+                if !evidence_parts.is_empty() {
+                    message = format!("{} ({})", message, evidence_parts.join("; "));
                 }
             }
+
+            issues.push(make_issue(
+                &dep_name,
+                &candidate,
+                check_type,
+                &message,
+                "Examine both packages and add the intended one to your allowed list.",
+            ));
         }
     }
 
@@ -1058,7 +1073,13 @@ pub async fn check_similarity_with_cache(
             // On case-sensitive registries, check if the lowercased name exists on registry
             let dep_lower = dep.name.to_lowercase();
             if dep_lower != dep.name {
-                let exists = registry.exists(&dep_lower).await.unwrap_or(false); // fail-open OK: case-variant is low-severity, main checks already fail-closed above
+                let exists = match registry.exists(&dep_lower).await {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // Count toward the overall error budget (already checked above)
+                        continue;
+                    }
+                };
                 if exists {
                     if flagged.insert(dep.name.clone()) {
                         issues.push(make_issue(
@@ -1087,59 +1108,11 @@ pub async fn check_similarity_with_cache(
 
 /// Generate cheap mutation candidates for a package name.
 /// Used by the reverse-check in existence.rs to suggest corrections
-/// for non-existent packages.
+/// for non-existent packages. Delegates to generate_mutations with a
+/// neutral ecosystem to get the full set of candidates.
 pub fn generate_candidates(name: &str) -> HashSet<String> {
-    let lower = name.to_lowercase();
-    let mut candidates = HashSet::new();
-
-    // Separator normalization -- generate with different separators
-    let stripped = normalize_separators(&lower);
-    if stripped != lower {
-        candidates.insert(stripped);
-    }
-
-    // Collapsed repeated characters
-    for variant in collapse_one_repeated(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Version suffix stripping
-    let no_suffix = strip_version_suffix(&lower);
-    if no_suffix != lower {
-        candidates.insert(no_suffix);
-    }
-
-    // Word reorderings
-    for variant in word_reorderings(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Adjacent swaps
-    for variant in adjacent_swaps(&lower) {
-        candidates.insert(variant);
-    }
-
-    // Delete one character (catches extra-char typosquats)
-    let chars: Vec<char> = lower.chars().collect();
-    for i in 0..chars.len() {
-        let variant: String = chars
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != i)
-            .map(|(_, c)| c)
-            .collect();
-        candidates.insert(variant);
-    }
-
-    // Homoglyph normalization
-    let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
-    if had_homoglyphs {
-        candidates.insert(normalized.to_lowercase());
-    }
-
-    // Remove the original name
-    candidates.remove(&lower);
-    candidates
+    // Use "npm" as a neutral ecosystem (no separator suppression, includes all generators)
+    generate_mutations(name, "npm")
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
