@@ -68,15 +68,22 @@ pub trait Registry: Send + Sync {
 }
 
 pub fn registry_for(ecosystem: &str) -> Result<Box<dyn Registry>> {
+    registry_for_with_client(ecosystem, http_client())
+}
+
+pub fn registry_for_with_client(
+    ecosystem: &str,
+    client: reqwest::Client,
+) -> Result<Box<dyn Registry>> {
     match ecosystem {
-        "npm" => Ok(Box::new(npm::NpmRegistry::new())),
-        "pypi" => Ok(Box::new(pypi::PypiRegistry::new())),
-        "cargo" => Ok(Box::new(crates_io::CratesIoRegistry::new())),
-        "go" => Ok(Box::new(go::GoRegistry::new())),
-        "ruby" => Ok(Box::new(rubygems::RubyGemsRegistry::new())),
-        "php" => Ok(Box::new(packagist::PackagistRegistry::new())),
-        "jvm" => Ok(Box::new(maven::MavenRegistry::new())),
-        "dotnet" => Ok(Box::new(nuget::NugetRegistry::new())),
+        "npm" => Ok(Box::new(npm::NpmRegistry::with_client(client))),
+        "pypi" => Ok(Box::new(pypi::PypiRegistry::with_client(client))),
+        "cargo" => Ok(Box::new(crates_io::CratesIoRegistry::with_client(client))),
+        "go" => Ok(Box::new(go::GoRegistry::with_client(client))),
+        "ruby" => Ok(Box::new(rubygems::RubyGemsRegistry::with_client(client))),
+        "php" => Ok(Box::new(packagist::PackagistRegistry::with_client(client))),
+        "jvm" => Ok(Box::new(maven::MavenRegistry::with_client(client))),
+        "dotnet" => Ok(Box::new(nuget::NugetRegistry::with_client(client))),
         other => anyhow::bail!("unsupported ecosystem: {}", other),
     }
 }

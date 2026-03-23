@@ -12,7 +12,17 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     for line in content.lines() {
         let line = line.trim();
         // Skip comments and empty lines
-        if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Warn about -r/--requirement includes (deps in referenced files are not scanned)
+        if line.starts_with('-') {
+            if line.starts_with("-r ") || line.starts_with("--requirement") {
+                eprintln!(
+                    "Warning: requirements.txt includes '{}' — referenced file's dependencies are not scanned.",
+                    line
+                );
+            }
             continue;
         }
 

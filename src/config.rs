@@ -185,10 +185,20 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
         ));
     }
 
-    let content = response
-        .text()
+    // Limit response body to 1 MB to prevent OOM from malicious URLs
+    let bytes = response
+        .bytes()
         .await
         .map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
+    if bytes.len() > 1_024 * 1_024 {
+        return Err(format!(
+            "Config response too large ({} bytes, max 1 MB)\n  URL: {}",
+            bytes.len(),
+            url
+        ));
+    }
+    let content = String::from_utf8(bytes.to_vec())
+        .map_err(|e| format!("Config response is not valid UTF-8: {}", e))?;
 
     parse_config_content(&content, url)
 }

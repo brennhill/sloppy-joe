@@ -27,9 +27,13 @@ fn age_in_hours(date_str: &str) -> Option<u64> {
     let day: i64 = date_parts[2].parse().ok()?;
     let hour: i64 = time_parts[0].parse().ok()?;
     let min: i64 = time_parts[1].split('.').next()?.parse().ok()?;
+    let sec: i64 = time_parts
+        .get(2)
+        .and_then(|s| s.split('.').next()?.parse().ok())
+        .unwrap_or(0);
 
     // Rough epoch calculation (good enough for age comparison)
-    let pkg_epoch = rough_epoch(year, month, day, hour, min);
+    let pkg_epoch = rough_epoch(year, month, day, hour, min, sec);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -44,7 +48,7 @@ fn age_in_hours(date_str: &str) -> Option<u64> {
 
 /// Rough seconds-since-epoch. Not perfectly accurate (ignores leap years
 /// in some edge cases) but sufficient for "is this older than 72 hours?"
-fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64) -> i64 {
+fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64 {
     let days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut days: i64 = 0;
     // Years since 1970
@@ -64,7 +68,7 @@ fn rough_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64) -> i64 {
         days += 1;
     }
     days += day - 1;
-    days * 86400 + hour * 3600 + min * 60
+    days * 86400 + hour * 3600 + min * 60 + sec
 }
 
 #[derive(Debug, Clone)]
@@ -1041,22 +1045,38 @@ mod tests {
     }
 
     /// Generate a "now" timestamp without chrono dependency.
+    /// Uses the same leap-year-aware logic as rough_epoch for consistency.
     fn chrono_free_now() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs();
-        // Approximate: good enough for tests
-        let days_since_epoch = secs / 86400;
-        let year = 1970 + days_since_epoch / 365; // rough
-        let month = 3; // close enough for test
-        let day = 21;
-        let hour = (secs % 86400) / 3600;
-        let min = (secs % 3600) / 60;
+            .as_secs() as i64;
+        let days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut rem_days = secs / 86400;
+        let mut year = 1970i64;
+        loop {
+            let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+            if rem_days < ydays { break; }
+            rem_days -= ydays;
+            year += 1;
+        }
+        let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let mut month = 1i64;
+        for (i, &md) in days_per_month.iter().enumerate() {
+            let md = if i == 1 && is_leap { md + 1 } else { md } as i64;
+            if rem_days < md { break; }
+            rem_days -= md;
+            month += 1;
+        }
+        let day = rem_days + 1;
+        let remaining = secs % 86400;
+        let hour = remaining / 3600;
+        let min = (remaining % 3600) / 60;
+        let sec = remaining % 60;
         format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:00Z",
-            year, month, day, hour, min
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            year, month, day, hour, min, sec
         )
     }
 }
