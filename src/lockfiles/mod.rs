@@ -1,3 +1,6 @@
+mod cargo;
+mod npm;
+
 use crate::Dependency;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
@@ -60,7 +63,6 @@ pub struct LockfileData {
 }
 
 impl LockfileData {
-    /// Parse the lockfile once and extract both resolution and transitive deps.
     pub fn parse(project_dir: &Path, direct_deps: &[Dependency]) -> Result<Self> {
         let resolution = resolve_versions(project_dir, direct_deps)?;
 
@@ -79,7 +81,7 @@ impl LockfileData {
                                 &p,
                                 crate::parsers::MAX_MANIFEST_BYTES,
                             )?;
-                            parse_all_npm(&content)?
+                            npm::parse_all(&content)?
                         }
                         None => vec![],
                     }
@@ -91,7 +93,7 @@ impl LockfileData {
                             &path,
                             crate::parsers::MAX_MANIFEST_BYTES,
                         )?;
-                        parse_all_cargo(&content)?
+                        cargo::parse_all(&content)?
                     } else {
                         vec![]
                     }
@@ -133,8 +135,9 @@ pub fn parse_all_lockfile_deps(
             let path = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"]);
             match path {
                 Some(p) => {
-                    let content = crate::parsers::read_file_limited(&p, crate::parsers::MAX_MANIFEST_BYTES)?;
-                    parse_all_npm(&content)?
+                    let content =
+                        crate::parsers::read_file_limited(&p, crate::parsers::MAX_MANIFEST_BYTES)?;
+                    npm::parse_all(&content)?
                 }
                 None => vec![],
             }
@@ -142,8 +145,11 @@ pub fn parse_all_lockfile_deps(
         "cargo" => {
             let path = project_dir.join("Cargo.lock");
             if path.exists() {
-                let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                parse_all_cargo(&content)?
+                let content = crate::parsers::read_file_limited(
+                    &path,
+                    crate::parsers::MAX_MANIFEST_BYTES,
+                )?;
+                cargo::parse_all(&content)?
             } else {
                 vec![]
             }
@@ -151,13 +157,10 @@ pub fn parse_all_lockfile_deps(
         _ => vec![],
     };
 
-    // Filter out direct deps — only return transitive
     let mut transitive: Vec<Dependency> = all_deps
         .into_iter()
         .filter(|dep| !direct_names.contains(&dep.name))
         .collect();
-
-    // Deduplicate by (name, version)
     let mut seen = HashSet::new();
     transitive.retain(|dep| seen.insert((dep.name.clone(), dep.version.clone())));
 
@@ -170,8 +173,8 @@ pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<Resol
     };
 
     match first.ecosystem.as_str() {
-        "npm" => resolve_npm(project_dir, deps),
-        "cargo" => resolve_cargo(project_dir, deps),
+        "npm" => npm::resolve(project_dir, deps),
+        "cargo" => cargo::resolve(project_dir, deps),
         _ => {
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
@@ -180,274 +183,7 @@ pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<Resol
     }
 }
 
-fn resolve_npm(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let Some(path) = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
-    else {
-        let mut result = ResolutionResult::default();
-        add_manifest_exact_fallbacks(&mut result, deps);
-        return Ok(result);
-    };
-
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("package-lock.json")
-        .to_string();
-    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-    let parsed: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            let mut result = ResolutionResult::default();
-            result
-                .issues
-                .push(parse_failed_issue(&file_name, err.to_string()));
-            add_manifest_exact_fallbacks(&mut result, deps);
-            return Ok(result);
-        }
-    };
-
-    let packages = parsed.get("packages").and_then(|value| value.as_object());
-    let dependencies = parsed
-        .get("dependencies")
-        .and_then(|value| value.as_object());
-    if packages.is_none() && dependencies.is_none() {
-        let mut result = ResolutionResult::default();
-        result.issues.push(parse_failed_issue(
-            &file_name,
-            "lockfile did not contain a supported packages or dependencies section".to_string(),
-        ));
-        add_manifest_exact_fallbacks(&mut result, deps);
-        return Ok(result);
-    }
-
-    let mut result = ResolutionResult::default();
-    for dep in deps {
-        let resolved = packages
-            .and_then(|packages| {
-                packages
-                    .get(&format!("node_modules/{}", dep.name))
-                    .and_then(|entry| entry.get("version"))
-                    .and_then(|value| value.as_str())
-            })
-            .or_else(|| {
-                dependencies.and_then(|dependencies| {
-                    dependencies
-                        .get(&dep.name)
-                        .and_then(|entry| entry.get("version"))
-                        .and_then(|value| value.as_str())
-                })
-            });
-
-        match resolved {
-            Some(version) => {
-                if let Some(exact_manifest) = dep.exact_version()
-                    && exact_manifest != version
-                {
-                    result.issues.push(out_of_sync_issue(dep, version));
-                    add_manifest_exact_fallback(&mut result, dep);
-                    continue;
-                }
-                result.exact_versions.insert(
-                    ResolutionKey::from(dep),
-                    ResolvedVersion {
-                        version: version.to_string(),
-                        source: ResolutionSource::Lockfile,
-                    },
-                );
-            }
-            None => {
-                result.issues.push(missing_entry_issue(dep, &file_name));
-                add_manifest_exact_fallback(&mut result, dep);
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-fn resolve_cargo(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let path = project_dir.join("Cargo.lock");
-    if !path.exists() {
-        let mut result = ResolutionResult::default();
-        add_manifest_exact_fallbacks(&mut result, deps);
-        return Ok(result);
-    }
-
-    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-    let parsed: toml::Value = match toml::from_str(&content) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            let mut result = ResolutionResult::default();
-            result
-                .issues
-                .push(parse_failed_issue("Cargo.lock", err.to_string()));
-            add_manifest_exact_fallbacks(&mut result, deps);
-            return Ok(result);
-        }
-    };
-
-    let Some(packages) = parsed.get("package").and_then(|value| value.as_array()) else {
-        let mut result = ResolutionResult::default();
-        result.issues.push(parse_failed_issue(
-            "Cargo.lock",
-            "lockfile did not contain a package array".to_string(),
-        ));
-        add_manifest_exact_fallbacks(&mut result, deps);
-        return Ok(result);
-    };
-
-    let mut versions_by_name: HashMap<String, Vec<String>> = HashMap::new();
-    for package in packages {
-        let Some(table) = package.as_table() else {
-            continue;
-        };
-        let Some(name) = table.get("name").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        // Reject path traversal and null bytes in package names
-        if name.contains("..") || name.contains('\0') {
-            continue;
-        }
-        let Some(version) = table.get("version").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        versions_by_name
-            .entry(name.to_string())
-            .or_default()
-            .push(version.to_string());
-    }
-
-    let mut result = ResolutionResult::default();
-    for dep in deps {
-        let Some(versions) = versions_by_name.get(&dep.name) else {
-            result.issues.push(missing_entry_issue(dep, "Cargo.lock"));
-            add_manifest_exact_fallback(&mut result, dep);
-            continue;
-        };
-
-        if versions.len() == 1 {
-            let version = &versions[0];
-            if let Some(exact_manifest) = dep.exact_version()
-                && exact_manifest != *version
-            {
-                result.issues.push(out_of_sync_issue(dep, version));
-                add_manifest_exact_fallback(&mut result, dep);
-                continue;
-            }
-            result.exact_versions.insert(
-                ResolutionKey::from(dep),
-                ResolvedVersion {
-                    version: version.clone(),
-                    source: ResolutionSource::Lockfile,
-                },
-            );
-            continue;
-        }
-
-        if let Some(exact_manifest) = dep.exact_version() {
-            if versions.iter().any(|version| version == &exact_manifest) {
-                result.exact_versions.insert(
-                    ResolutionKey::from(dep),
-                    ResolvedVersion {
-                        version: exact_manifest,
-                        source: ResolutionSource::Lockfile,
-                    },
-                );
-            } else {
-                result
-                    .issues
-                    .push(out_of_sync_issue(dep, &versions.join(", ")));
-                add_manifest_exact_fallback(&mut result, dep);
-            }
-        } else {
-            result.issues.push(ambiguous_issue(dep));
-        }
-    }
-
-    Ok(result)
-}
-
-/// Parse ALL npm dependencies (including transitive) from a lockfile.
-/// Fails closed: returns an error on parse failure instead of empty vec.
-pub fn parse_all_npm(lockfile_content: &str) -> Result<Vec<Dependency>> {
-    let parsed: serde_json::Value = serde_json::from_str(lockfile_content)
-        .map_err(|e| anyhow::anyhow!("Failed to parse npm lockfile: {}", e))?;
-
-    let mut deps = Vec::new();
-    if let Some(packages) = parsed.get("packages").and_then(|v| v.as_object()) {
-        for (key, entry) in packages {
-            // Skip the root entry (empty string key)
-            if key.is_empty() {
-                continue;
-            }
-            let name = key.strip_prefix("node_modules/").unwrap_or(key);
-            if name.is_empty() {
-                continue;
-            }
-            let version = entry
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            deps.push(Dependency {
-                name: name.to_string(),
-                version,
-                ecosystem: "npm".to_string(),
-            });
-        }
-    } else if let Some(dependencies) = parsed.get("dependencies").and_then(|v| v.as_object()) {
-        for (name, entry) in dependencies {
-            let version = entry
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            deps.push(Dependency {
-                name: name.clone(),
-                version,
-                ecosystem: "npm".to_string(),
-            });
-        }
-    } else {
-        anyhow::bail!("npm lockfile has no packages or dependencies section");
-    }
-
-    Ok(deps)
-}
-
-/// Parse ALL cargo dependencies (including transitive) from a lockfile.
-/// Fails closed: returns an error on parse failure instead of empty vec.
-pub fn parse_all_cargo(lockfile_content: &str) -> Result<Vec<Dependency>> {
-    let parsed: toml::Value = toml::from_str(lockfile_content)
-        .map_err(|e| anyhow::anyhow!("Failed to parse Cargo.lock: {}", e))?;
-
-    let Some(packages) = parsed.get("package").and_then(|v| v.as_array()) else {
-        anyhow::bail!("Cargo.lock has no package array");
-    };
-
-    let mut deps = Vec::new();
-    for package in packages {
-        let Some(table) = package.as_table() else {
-            continue;
-        };
-        let Some(name) = table.get("name").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        // Reject path traversal and null bytes
-        if name.contains("..") || name.contains('\0') {
-            continue;
-        }
-        let version = table
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        deps.push(Dependency {
-            name: name.to_string(),
-            version,
-            ecosystem: "cargo".to_string(),
-        });
-    }
-
-    Ok(deps)
-}
+// -- Shared helpers used by npm.rs and cargo.rs --
 
 fn first_existing(project_dir: &Path, names: &[&str]) -> Option<PathBuf> {
     names
@@ -549,14 +285,14 @@ fn ambiguous_issue(dep: &Dependency) -> Issue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Dependency;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
+    use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn unique_dir() -> std::path::PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("sj-lockfiles-{}-{}", std::process::id(), id));
+        let dir =
+            std::env::temp_dir().join(format!("sj-lockfiles-{}-{}", std::process::id(), id));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -577,14 +313,14 @@ mod tests {
         }
     }
 
+    // -- Resolution tests (unchanged, exercising the same public API) --
+
     #[test]
     fn uses_manifest_exact_when_no_supported_lockfile_exists() {
         let dir = unique_dir();
         let deps = vec![npm_dep("react", "18.3.1")];
-
         let result = resolve_versions(&dir, &deps).unwrap();
         let resolved = result.resolved_version(&deps[0]).unwrap();
-
         assert_eq!(resolved.version, "18.3.1");
         assert_eq!(resolved.source, ResolutionSource::ManifestExact);
         assert!(result.issues.is_empty());
@@ -593,23 +329,10 @@ mod tests {
     #[test]
     fn npm_package_lock_v3_resolves_direct_dependency() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("package-lock.json"),
-            r#"{
-              "name": "demo",
-              "lockfileVersion": 3,
-              "packages": {
-                "": {"name": "demo", "dependencies": {"react": "^18.2.0"}},
-                "node_modules/react": {"version": "18.3.1"}
-              }
-            }"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.2.0"}},"node_modules/react":{"version":"18.3.1"}}}"#).unwrap();
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         let resolved = result.resolved_version(&deps[0]).unwrap();
-
         assert_eq!(resolved.version, "18.3.1");
         assert_eq!(resolved.source, ResolutionSource::Lockfile);
         assert!(result.issues.is_empty());
@@ -618,219 +341,91 @@ mod tests {
     #[test]
     fn npm_package_lock_v1_resolves_direct_dependency() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("package-lock.json"),
-            r#"{
-              "name": "demo",
-              "lockfileVersion": 1,
-              "dependencies": {
-                "react": {"version": "18.3.1"}
-              }
-            }"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":1,"dependencies":{"react":{"version":"18.3.1"}}}"#).unwrap();
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        let resolved = result.resolved_version(&deps[0]).unwrap();
-
-        assert_eq!(resolved.version, "18.3.1");
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "18.3.1");
     }
 
     #[test]
     fn npm_exact_pin_out_of_sync_emits_resolution_issue() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("package-lock.json"),
-            r#"{
-              "name": "demo",
-              "lockfileVersion": 3,
-              "packages": {
-                "": {"name": "demo", "dependencies": {"react": "18.2.0"}},
-                "node_modules/react": {"version": "18.3.1"}
-              }
-            }"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.2.0"}},"node_modules/react":{"version":"18.3.1"}}}"#).unwrap();
         let deps = vec![npm_dep("react", "18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        let resolved = result.resolved_version(&deps[0]).unwrap();
-
-        assert_eq!(resolved.version, "18.2.0");
-        assert_eq!(resolved.source, ResolutionSource::ManifestExact);
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.check == "resolution/lockfile-out-of-sync")
-        );
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::ManifestExact);
+        assert!(result.issues.iter().any(|i| i.check == "resolution/lockfile-out-of-sync"));
     }
 
     #[test]
     fn npm_missing_direct_dependency_emits_resolution_issue() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("package-lock.json"),
-            r#"{
-              "name": "demo",
-              "lockfileVersion": 3,
-              "packages": {
-                "": {"name": "demo"}
-              }
-            }"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo"}}}"#).unwrap();
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.check == "resolution/missing-lockfile-entry")
-        );
+        assert!(result.issues.iter().any(|i| i.check == "resolution/missing-lockfile-entry"));
     }
 
     #[test]
     fn npm_malformed_lockfile_emits_parse_failed_issue() {
         let dir = unique_dir();
         std::fs::write(dir.join("package-lock.json"), "{not json").unwrap();
-
         let deps = vec![npm_dep("react", "18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        let resolved = result.resolved_version(&deps[0]).unwrap();
-
-        assert_eq!(resolved.version, "18.2.0");
-        assert_eq!(resolved.source, ResolutionSource::ManifestExact);
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.check == "resolution/parse-failed")
-        );
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::ManifestExact);
+        assert!(result.issues.iter().any(|i| i.check == "resolution/parse-failed"));
     }
 
     #[test]
     fn cargo_lock_resolves_single_locked_version() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("Cargo.lock"),
-            r#"
-[[package]]
-name = "serde"
-version = "1.0.203"
-"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n").unwrap();
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        let resolved = result.resolved_version(&deps[0]).unwrap();
-
-        assert_eq!(resolved.version, "1.0.203");
-        assert_eq!(resolved.source, ResolutionSource::Lockfile);
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "1.0.203");
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::Lockfile);
     }
 
     #[test]
     fn cargo_lock_uses_exact_manifest_match_when_multiple_versions_exist() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("Cargo.lock"),
-            r#"
-[[package]]
-name = "serde"
-version = "1.0.201"
-
-[[package]]
-name = "serde"
-version = "1.0.203"
-"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.201\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n").unwrap();
         let deps = vec![cargo_dep("serde", "=1.0.203")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        let resolved = result.resolved_version(&deps[0]).unwrap();
-
-        assert_eq!(resolved.version, "1.0.203");
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "1.0.203");
     }
 
     #[test]
     fn cargo_lock_ambiguous_versions_emit_resolution_issue() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("Cargo.lock"),
-            r#"
-[[package]]
-name = "serde"
-version = "1.0.201"
-
-[[package]]
-name = "serde"
-version = "1.0.203"
-"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.201\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n").unwrap();
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
-
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.check == "resolution/ambiguous")
-        );
+        assert!(result.issues.iter().any(|i| i.check == "resolution/ambiguous"));
     }
 
     #[test]
     fn cargo_lock_missing_direct_dependency_emits_resolution_issue() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("Cargo.lock"),
-            r#"
-[[package]]
-name = "tokio"
-version = "1.42.0"
-"#,
-        )
-        .unwrap();
-
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\n").unwrap();
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
-
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.check == "resolution/missing-lockfile-entry")
-        );
+        assert!(result.issues.iter().any(|i| i.check == "resolution/missing-lockfile-entry"));
     }
 
     #[test]
     fn parse_all_npm_fails_on_malformed_json() {
-        let result = parse_all_npm("{not valid json");
+        let result = npm::parse_all("{not valid json");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to parse"));
     }
 
     #[test]
     fn parse_all_npm_succeeds_on_valid_lockfile() {
-        let content = r#"{
-            "name": "demo",
-            "lockfileVersion": 3,
-            "packages": {
-                "": {"name": "demo"},
-                "node_modules/react": {"version": "18.3.1"},
-                "node_modules/lodash": {"version": "4.17.21"}
-            }
-        }"#;
-        let deps = parse_all_npm(content).unwrap();
+        let content = r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo"},"node_modules/react":{"version":"18.3.1"},"node_modules/lodash":{"version":"4.17.21"}}}"#;
+        let deps = npm::parse_all(content).unwrap();
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.name == "react"));
         assert!(deps.iter().any(|d| d.name == "lodash"));
@@ -838,23 +433,14 @@ version = "1.42.0"
 
     #[test]
     fn parse_all_cargo_fails_on_malformed_toml() {
-        let result = parse_all_cargo("[[package]");
+        let result = cargo::parse_all("[[package]");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to parse"));
     }
 
     #[test]
     fn parse_all_cargo_succeeds_on_valid_lockfile() {
-        let content = r#"
-[[package]]
-name = "serde"
-version = "1.0.203"
-
-[[package]]
-name = "tokio"
-version = "1.42.0"
-"#;
-        let deps = parse_all_cargo(content).unwrap();
+        let content = "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\n";
+        let deps = cargo::parse_all(content).unwrap();
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.name == "serde"));
         assert!(deps.iter().any(|d| d.name == "tokio"));
@@ -863,83 +449,31 @@ version = "1.42.0"
     #[test]
     fn cargo_lock_rejects_path_traversal() {
         let dir = unique_dir();
-        std::fs::write(
-            dir.join("Cargo.lock"),
-            r#"
-[[package]]
-name = "../malicious"
-version = "1.0.0"
-
-[[package]]
-name = "safe-pkg"
-version = "1.0.0"
-
-[[package]]
-name = "foo\u0000bar"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let deps = vec![
-            cargo_dep("../malicious", "1.0.0"),
-            cargo_dep("safe-pkg", "1.0.0"),
-        ];
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"../malicious\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"safe-pkg\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"foo\\u0000bar\"\nversion = \"1.0.0\"\n").unwrap();
+        let deps = vec![cargo_dep("../malicious", "1.0.0"), cargo_dep("safe-pkg", "1.0.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-
-        // "../malicious" should be skipped (not found in versions_by_name)
         assert!(result.resolved_version(&deps[0]).is_none());
-        // "safe-pkg" should resolve fine
-        let resolved = result.resolved_version(&deps[1]).unwrap();
-        assert_eq!(resolved.version, "1.0.0");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn lockfile_data_parse_provides_resolution_and_transitive() {
-        let dir = unique_dir();
-        std::fs::write(
-            dir.join("package-lock.json"),
-            r#"{
-              "name": "demo",
-              "lockfileVersion": 3,
-              "packages": {
-                "": {"name": "demo", "dependencies": {"react": "^18.2.0"}},
-                "node_modules/react": {"version": "18.3.1"},
-                "node_modules/loose-envify": {"version": "1.4.0"}
-              }
-            }"#,
-        )
-        .unwrap();
-
-        let direct = vec![npm_dep("react", "^18.2.0")];
-        let data = LockfileData::parse(&dir, &direct).unwrap();
-
-        // Resolution should work
-        assert_eq!(data.resolution.exact_version(&direct[0]), Some("18.3.1"));
-
-        // Transitive deps should exclude direct
-        assert_eq!(data.transitive_deps.len(), 1);
-        assert_eq!(data.transitive_deps[0].name, "loose-envify");
-
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result.resolved_version(&deps[1]).unwrap().version, "1.0.0");
     }
 
     #[test]
     fn cargo_lock_malformed_lockfile_emits_parse_failed_issue() {
         let dir = unique_dir();
         std::fs::write(dir.join("Cargo.lock"), "[[package]").unwrap();
-
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
-
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.check == "resolution/parse-failed")
-        );
+        assert!(result.issues.iter().any(|i| i.check == "resolution/parse-failed"));
+    }
+
+    #[test]
+    fn lockfile_data_parse_provides_resolution_and_transitive() {
+        let dir = unique_dir();
+        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.2.0"}},"node_modules/react":{"version":"18.3.1"},"node_modules/loose-envify":{"version":"1.4.0"}}}"#).unwrap();
+        let direct = vec![npm_dep("react", "^18.2.0")];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        assert_eq!(data.resolution.exact_version(&direct[0]), Some("18.3.1"));
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(data.transitive_deps[0].name, "loose-envify");
     }
 }

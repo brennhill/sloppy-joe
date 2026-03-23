@@ -3,6 +3,7 @@ pub mod existence;
 pub mod malicious;
 pub mod metadata;
 pub mod pipeline;
+pub(crate) mod signals;
 pub mod similarity;
 
 use crate::config::SloppyJoeConfig;
