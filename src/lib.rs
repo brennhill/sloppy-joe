@@ -97,7 +97,7 @@ async fn scan_with_services_inner(
     let (checkable, non_internal) = classify_deps(&deps, &config, ecosystem);
 
     // Parse lockfile once
-    let lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
+    let mut lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
 
     // Build context + accumulator, run pipeline on direct deps
     let pipeline = checks::pipeline::default_pipeline();
@@ -118,14 +118,14 @@ async fn scan_with_services_inner(
     mark_source(&mut acc.issues, "direct");
 
     // Transitive dependency scanning
-    let mut transitive_deps = lockfile_data.transitive_deps;
+    let mut transitive_deps = std::mem::take(&mut lockfile_data.transitive_deps);
     transitive_deps.retain(|dep| {
         !config.is_internal(ecosystem.as_str(), &dep.name)
             && !config.is_allowed(ecosystem.as_str(), &dep.name)
     });
 
     if !transitive_deps.is_empty() {
-        let trans_resolution = lockfiles::resolve_versions(project_dir, &transitive_deps)?;
+        let trans_resolution = lockfile_data.resolve_transitive(&transitive_deps)?;
 
         // Build transitive pipeline (skip similarity unless --deep)
         let trans_pipeline: Vec<Box<dyn checks::Check>> = if opts.deep {

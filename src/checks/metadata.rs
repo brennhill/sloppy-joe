@@ -26,6 +26,10 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     let year: i64 = date_parts[0].parse().ok()?;
     let month: i64 = date_parts[1].parse().ok()?;
     let day: i64 = date_parts[2].parse().ok()?;
+    // Guard against malformed dates that would cause loops in rough_epoch
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1970 {
+        return None;
+    }
     let hour: i64 = time_parts[0].parse().ok()?;
     let min: i64 = time_parts[1].split('.').next()?.parse().ok()?;
     let sec: i64 = time_parts

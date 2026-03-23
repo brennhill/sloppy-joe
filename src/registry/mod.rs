@@ -110,7 +110,8 @@ pub fn registry_for_with_client(
 }
 
 /// Validate that a package name is safe to use in registry URLs.
-/// Rejects path traversal, null bytes, control characters, percent-encoding, and newlines.
+/// Rejects path traversal, null bytes, control characters, percent-encoding,
+/// newlines, and URL-meaningful characters (?#@\).
 pub fn validate_package_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -119,7 +120,9 @@ pub fn validate_package_name(name: &str) -> bool {
         return false;
     }
     for ch in name.chars() {
-        if ch == '\0' || ch == '%' || ch == '\n' || ch == '\r' {
+        if ch == '\0' || ch == '%' || ch == '\n' || ch == '\r'
+            || ch == '?' || ch == '#' || ch == '\\'
+        {
             return false;
         }
         if ch.is_control() {

@@ -56,55 +56,41 @@ impl ResolutionResult {
     }
 }
 
+/// In-memory representation of a parsed lockfile.
+/// Parsed once, used for both version resolution and transitive dep extraction.
+enum ParsedLockfile {
+    Npm {
+        value: serde_json::Value,
+        file_name: String,
+    },
+    Cargo(toml::Value),
+    None,
+}
+
 /// Pre-parsed lockfile data. Reads and parses the lockfile once, then provides
-/// both version resolution and transitive dep extraction from the same in-memory data.
+/// version resolution, transitive dep extraction, and re-resolution for transitive
+/// deps — all from the same in-memory data.
 pub struct LockfileData {
     pub resolution: ResolutionResult,
     pub transitive_deps: Vec<Dependency>,
+    parsed: ParsedLockfile,
 }
 
 impl LockfileData {
     pub fn parse(project_dir: &Path, direct_deps: &[Dependency]) -> Result<Self> {
-        let resolution = resolve_versions(project_dir, direct_deps)?;
+        let ecosystem = direct_deps.first().map(|d| d.ecosystem);
 
+        // Read and parse the lockfile once
+        let parsed = read_lockfile(project_dir, ecosystem)?;
+
+        // Resolve direct dep versions from the parsed data
+        let resolution = resolve_from_parsed(&parsed, direct_deps)?;
+
+        // Extract all deps from the parsed data
+        let all_deps = parse_all_from_parsed(&parsed)?;
+
+        // Filter to transitive only
         let direct_names: HashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
-
-        let all_deps = if let Some(first) = direct_deps.first() {
-            match first.ecosystem {
-                Ecosystem::Npm => {
-                    let path = first_existing(
-                        project_dir,
-                        &["package-lock.json", "npm-shrinkwrap.json"],
-                    );
-                    match path {
-                        Some(p) => {
-                            let content = crate::parsers::read_file_limited(
-                                &p,
-                                crate::parsers::MAX_MANIFEST_BYTES,
-                            )?;
-                            npm::parse_all(&content)?
-                        }
-                        None => vec![],
-                    }
-                }
-                Ecosystem::Cargo => {
-                    let path = project_dir.join("Cargo.lock");
-                    if path.exists() {
-                        let content = crate::parsers::read_file_limited(
-                            &path,
-                            crate::parsers::MAX_MANIFEST_BYTES,
-                        )?;
-                        cargo::parse_all(&content)?
-                    } else {
-                        vec![]
-                    }
-                }
-                _ => vec![],
-            }
-        } else {
-            vec![]
-        };
-
         let mut transitive: Vec<Dependency> = all_deps
             .into_iter()
             .filter(|dep| !direct_names.contains(&dep.name))
@@ -115,57 +101,76 @@ impl LockfileData {
         Ok(Self {
             resolution,
             transitive_deps: transitive,
+            parsed,
         })
+    }
+
+    /// Resolve versions for transitive deps from the already-parsed lockfile.
+    /// Eliminates the redundant disk read that `resolve_versions()` would do.
+    pub fn resolve_transitive(&self, deps: &[Dependency]) -> Result<ResolutionResult> {
+        resolve_from_parsed(&self.parsed, deps)
     }
 }
 
-/// Parse all transitive dependencies from the lockfile.
-/// Returns deps NOT in the direct dependency list.
-pub fn parse_all_lockfile_deps(
-    project_dir: &Path,
-    direct_deps: &[Dependency],
-) -> Result<Vec<Dependency>> {
-    let Some(first) = direct_deps.first() else {
-        return Ok(vec![]);
-    };
-
-    let direct_names: HashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
-
-    let all_deps = match first.ecosystem.as_str() {
-        "npm" => {
-            let path = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"]);
-            match path {
-                Some(p) => {
-                    let content =
-                        crate::parsers::read_file_limited(&p, crate::parsers::MAX_MANIFEST_BYTES)?;
-                    npm::parse_all(&content)?
-                }
-                None => vec![],
+/// Read and parse the lockfile from disk (once).
+fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<ParsedLockfile> {
+    match ecosystem {
+        Some(Ecosystem::Npm) => {
+            let Some(path) =
+                first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
+            else {
+                return Ok(ParsedLockfile::None);
+            };
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("package-lock.json")
+                .to_string();
+            let content =
+                crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+            match serde_json::from_str(&content) {
+                Ok(value) => Ok(ParsedLockfile::Npm { value, file_name }),
+                Err(_) => Ok(ParsedLockfile::None), // parse error handled in resolve
             }
         }
-        "cargo" => {
+        Some(Ecosystem::Cargo) => {
             let path = project_dir.join("Cargo.lock");
-            if path.exists() {
-                let content = crate::parsers::read_file_limited(
-                    &path,
-                    crate::parsers::MAX_MANIFEST_BYTES,
-                )?;
-                cargo::parse_all(&content)?
-            } else {
-                vec![]
+            if !path.exists() {
+                return Ok(ParsedLockfile::None);
+            }
+            let content =
+                crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+            match toml::from_str(&content) {
+                Ok(value) => Ok(ParsedLockfile::Cargo(value)),
+                Err(_) => Ok(ParsedLockfile::None),
             }
         }
-        _ => vec![],
-    };
+        _ => Ok(ParsedLockfile::None),
+    }
+}
 
-    let mut transitive: Vec<Dependency> = all_deps
-        .into_iter()
-        .filter(|dep| !direct_names.contains(&dep.name))
-        .collect();
-    let mut seen = HashSet::new();
-    transitive.retain(|dep| seen.insert((dep.name.clone(), dep.version.clone())));
+/// Resolve versions from a pre-parsed lockfile.
+fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<ResolutionResult> {
+    match parsed {
+        ParsedLockfile::Npm { value, file_name } => {
+            npm::resolve_from_value(value, deps, file_name)
+        }
+        ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
+        ParsedLockfile::None => {
+            let mut result = ResolutionResult::default();
+            add_manifest_exact_fallbacks(&mut result, deps);
+            Ok(result)
+        }
+    }
+}
 
-    Ok(transitive)
+/// Extract all deps from a pre-parsed lockfile.
+fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
+    match parsed {
+        ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
+        ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
+        ParsedLockfile::None => Ok(vec![]),
+    }
 }
 
 pub fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
