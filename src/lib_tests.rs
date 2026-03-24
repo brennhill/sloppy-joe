@@ -552,29 +552,32 @@ async fn transitive_internal_deps_are_skipped() {
 }
 
 #[test]
-fn deps_hash_is_deterministic() {
+fn scan_hash_is_deterministic() {
+    let dir = std::env::temp_dir();
     let deps = vec![
         Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
         Dependency { name: "lodash".to_string(), version: Some("^4.0".to_string()), ecosystem: Ecosystem::Npm },
     ];
-    let hash1 = deps_hash(&deps);
-    let hash2 = deps_hash(&deps);
+    let hash1 = scan_hash(&dir, &deps);
+    let hash2 = scan_hash(&dir, &deps);
     assert_eq!(hash1, hash2);
 }
 
 #[test]
-fn deps_hash_changes_with_different_deps() {
+fn scan_hash_changes_with_different_deps() {
+    let dir = std::env::temp_dir();
     let deps1 = vec![
         Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
     ];
     let deps2 = vec![
         Dependency { name: "react".to_string(), version: Some("^19.0".to_string()), ecosystem: Ecosystem::Npm },
     ];
-    assert_ne!(deps_hash(&deps1), deps_hash(&deps2));
+    assert_ne!(scan_hash(&dir, &deps1), scan_hash(&dir, &deps2));
 }
 
 #[test]
-fn deps_hash_order_independent() {
+fn scan_hash_order_independent() {
+    let dir = std::env::temp_dir();
     let deps1 = vec![
         Dependency { name: "a".to_string(), version: None, ecosystem: Ecosystem::Npm },
         Dependency { name: "b".to_string(), version: None, ecosystem: Ecosystem::Npm },
@@ -583,7 +586,36 @@ fn deps_hash_order_independent() {
         Dependency { name: "b".to_string(), version: None, ecosystem: Ecosystem::Npm },
         Dependency { name: "a".to_string(), version: None, ecosystem: Ecosystem::Npm },
     ];
-    assert_eq!(deps_hash(&deps1), deps_hash(&deps2));
+    assert_eq!(scan_hash(&dir, &deps1), scan_hash(&dir, &deps2));
+}
+
+#[test]
+fn scan_hash_changes_with_lockfile() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let id = CTR.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("sj-hash-test-{}-{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let deps = vec![
+        Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+
+    // Hash without lockfile
+    let hash_no_lock = scan_hash(&dir, &deps);
+
+    // Write a lockfile
+    std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3}"#).unwrap();
+    let hash_with_lock = scan_hash(&dir, &deps);
+
+    // Change lockfile content
+    std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3,"packages":{"node_modules/react":{"version":"18.999.0"}}}"#).unwrap();
+    let hash_changed_lock = scan_hash(&dir, &deps);
+
+    assert_ne!(hash_no_lock, hash_with_lock, "Adding lockfile should change hash");
+    assert_ne!(hash_with_lock, hash_changed_lock, "Changing lockfile content should change hash");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

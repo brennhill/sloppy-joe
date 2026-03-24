@@ -87,16 +87,34 @@ pub async fn scan(
     scan_with_config(project_dir, project_type, config, &ScanOptions::default()).await
 }
 
-/// Compute a hash of sorted dependency tuples for change detection.
-fn deps_hash(deps: &[Dependency]) -> u64 {
+/// Compute a hash of dependency tuples + lockfile content for change detection.
+/// Includes lockfile so that resolved version changes (e.g., a compromised upstream
+/// version satisfying the same range) invalidate the cache even when the manifest
+/// is unchanged.
+fn scan_hash(project_dir: &std::path::Path, deps: &[Dependency]) -> u64 {
     use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    // Hash sorted dep tuples (manifest content)
     let mut tuples: Vec<(&str, Option<&str>, &str)> = deps
         .iter()
         .map(|d| (d.name.as_str(), d.version.as_deref(), d.ecosystem.as_str()))
         .collect();
     tuples.sort();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
     tuples.hash(&mut hasher);
+
+    // Hash lockfile content (resolved versions) — catches upstream version changes
+    for lockfile in &[
+        "package-lock.json", "npm-shrinkwrap.json",
+        "Cargo.lock", "Gemfile.lock", "poetry.lock",
+    ] {
+        let path = project_dir.join(lockfile);
+        if let Ok(content) = std::fs::read(&path) {
+            lockfile.hash(&mut hasher);
+            content.hash(&mut hasher);
+        }
+    }
+
     hasher.finish()
 }
 
@@ -117,7 +135,7 @@ async fn scan_with_config(
 
     // Skip scan if deps haven't changed (manifest hash check)
     if !opts.no_cache && !opts.skip_hash_check && !deps.is_empty() {
-        let hash = deps_hash(&deps);
+        let hash = scan_hash(project_dir, &deps);
         let cache_base = opts.cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
@@ -143,7 +161,7 @@ async fn scan_with_config(
 
     // Save hash after successful scan
     if !opts.no_cache && !deps.is_empty() {
-        let hash = deps_hash(&deps);
+        let hash = scan_hash(project_dir, &deps);
         let cache_base = opts.cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
