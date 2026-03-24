@@ -500,3 +500,7 @@ cargo test
 ## License
 
 Apache 2.0
+
+## Links
+
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/sloppy-joe)
