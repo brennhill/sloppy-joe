@@ -552,6 +552,41 @@ async fn transitive_internal_deps_are_skipped() {
 }
 
 #[test]
+fn deps_hash_is_deterministic() {
+    let deps = vec![
+        Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
+        Dependency { name: "lodash".to_string(), version: Some("^4.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+    let hash1 = deps_hash(&deps);
+    let hash2 = deps_hash(&deps);
+    assert_eq!(hash1, hash2);
+}
+
+#[test]
+fn deps_hash_changes_with_different_deps() {
+    let deps1 = vec![
+        Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+    let deps2 = vec![
+        Dependency { name: "react".to_string(), version: Some("^19.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+    assert_ne!(deps_hash(&deps1), deps_hash(&deps2));
+}
+
+#[test]
+fn deps_hash_order_independent() {
+    let deps1 = vec![
+        Dependency { name: "a".to_string(), version: None, ecosystem: Ecosystem::Npm },
+        Dependency { name: "b".to_string(), version: None, ecosystem: Ecosystem::Npm },
+    ];
+    let deps2 = vec![
+        Dependency { name: "b".to_string(), version: None, ecosystem: Ecosystem::Npm },
+        Dependency { name: "a".to_string(), version: None, ecosystem: Ecosystem::Npm },
+    ];
+    assert_eq!(deps_hash(&deps1), deps_hash(&deps2));
+}
+
+#[test]
 fn mark_source_does_not_overwrite_existing() {
     let mut issues = vec![
         Issue::new("pkg1", "existence", Severity::Error)

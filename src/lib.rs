@@ -63,6 +63,26 @@ pub async fn scan(
     scan_with_config(project_dir, project_type, config, &ScanOptions::default()).await
 }
 
+/// Compute a hash of sorted dependency tuples for change detection.
+fn deps_hash(deps: &[Dependency]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut tuples: Vec<(&str, Option<&str>, &str)> = deps
+        .iter()
+        .map(|d| (d.name.as_str(), d.version.as_deref(), d.ecosystem.as_str()))
+        .collect();
+    tuples.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tuples.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Cache entry for manifest hash skip.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ScanHashCache {
+    timestamp: u64,
+    hash: u64,
+}
+
 async fn scan_with_config(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
@@ -70,6 +90,24 @@ async fn scan_with_config(
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
+
+    // Skip scan if deps haven't changed (manifest hash check)
+    if !opts.no_cache && !deps.is_empty() {
+        let hash = deps_hash(&deps);
+        let cache_base = opts.cache_dir
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
+        let hash_path = cache_base.join("scan-hash.json");
+        if let Some(cached) = cache::read_json_cache::<ScanHashCache>(
+            &hash_path, 7 * 24 * 3600, |c| c.timestamp,
+        )
+            && cached.hash == hash
+        {
+            eprintln!("Dependencies unchanged, skipping scan.");
+            return Ok(ScanReport::empty());
+        }
+    }
+
     let ecosystem = deps
         .first()
         .map(|dep| dep.ecosystem)
@@ -77,7 +115,22 @@ async fn scan_with_config(
     let client = registry::http_client();
     let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
     let osv_client = checks::malicious::RealOsvClient::with_client(client);
-    scan_with_services_inner(project_dir, config, deps, &*registry, &osv_client, opts).await
+    let report = scan_with_services_inner(project_dir, config, deps.clone(), &*registry, &osv_client, opts).await?;
+
+    // Save hash after successful scan
+    if !opts.no_cache && !deps.is_empty() {
+        let hash = deps_hash(&deps);
+        let cache_base = opts.cache_dir
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
+        let hash_path = cache_base.join("scan-hash.json");
+        cache::atomic_write_json(&hash_path, &ScanHashCache {
+            timestamp: cache::now_epoch(),
+            hash,
+        });
+    }
+
+    Ok(report)
 }
 
 async fn scan_with_services_inner(
