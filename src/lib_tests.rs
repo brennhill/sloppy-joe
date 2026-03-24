@@ -38,6 +38,7 @@ impl RegistryMetadata for FakeRegistry {
                 previous_dependency_count: None,
                 current_publisher: None,
                 previous_publisher: None,
+                repository_url: None,
             }))
         } else {
             Ok(None)
@@ -96,6 +97,7 @@ impl RegistryMetadata for RecordingRegistry {
                 previous_dependency_count: None,
                 current_publisher: None,
                 previous_publisher: None,
+                repository_url: None,
             }))
         } else {
             Ok(None)
@@ -344,7 +346,8 @@ async fn scan_versionless_dependency_blocks_by_default() {
     assert_eq!(issue.severity, report::Severity::Error);
     assert!(report.has_issues());
     assert!(report.has_errors());
-    assert!(osv_versions.lock().unwrap().is_empty());
+    // Unresolved deps now DO query OSV (with version: None) — fail-closed, not fail-open
+    assert_eq!(osv_versions.lock().unwrap().as_slice(), &[None::<String>]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -435,10 +438,12 @@ async fn non_metadata_ecosystem_makes_one_registry_call_per_dep() {
     // We can't know exact similarity mutation count, but we can verify exists()
     // is NOT called for the 2 original dep names beyond what fetch_metadata does.
     // Since acc.metadata_lookups is now always set, ExistenceCheck should add 0 calls.
-    // A rough upper bound: each dep generates ~50 mutations, so ~100 from similarity + 2 from metadata fallback.
+    // Each dep generates ~200+ mutations (10 generators: bitflip ~150 per dep,
+    // keyboard ~25, others ~50), so ~500 from similarity + 2 from metadata fallback.
+    // The test verifies ExistenceCheck doesn't add redundant calls on top of similarity.
     assert!(
-        total_exists <= 110,
-        "Expected at most ~102 exists() calls (similarity mutations + metadata fallback), got {} — ExistenceCheck may be making redundant calls",
+        total_exists <= 600,
+        "Expected at most ~500 exists() calls (similarity mutations + metadata fallback), got {} — ExistenceCheck may be making redundant calls",
         total_exists
     );
 
@@ -545,6 +550,122 @@ async fn transitive_internal_deps_are_skipped() {
     assert!(internal_issues.is_empty(), "Internal transitive deps should be skipped");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&config_dir);
+}
+
+#[tokio::test]
+async fn internal_packages_still_get_osv_checked() {
+    // Internal packages should skip similarity/existence/canonical/metadata
+    // but still get vulnerability (OSV) checks
+
+    struct VulnOsvClient;
+    #[async_trait]
+    impl OsvClient for VulnOsvClient {
+        async fn query(&self, name: &str, _ecosystem: &str, _version: Option<&str>) -> Result<Vec<String>> {
+            if name == "@myorg/vulnerable-pkg" {
+                Ok(vec!["GHSA-1234-abcd".to_string()])
+            } else {
+                Ok(vec![])
+            }
+        }
+    }
+
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"@myorg/vulnerable-pkg":"1.0.0","react":"^18.0"}}"#,
+    ).unwrap();
+
+    let config_dir = unique_dir();
+    let config_path = config_dir.join("config.json");
+    std::fs::write(&config_path, r#"{"canonical":{},"internal":{"npm":["@myorg/*"]},"allowed":{}}"#).unwrap();
+    let config = config::load_config(Some(config_path.as_path())).unwrap();
+
+    let registry = FakeRegistry { existing: vec!["react".to_string()] };
+    let report = scan_with_services_inner(
+        &dir, config,
+        parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
+        &registry, &VulnOsvClient,
+        &ScanOptions { no_cache: true, disable_osv_disk_cache: true, ..Default::default() },
+    ).await.unwrap();
+
+    let vuln_issues: Vec<_> = report.issues.iter()
+        .filter(|i| i.package == "@myorg/vulnerable-pkg" && i.check.contains("malicious"))
+        .collect();
+    assert!(
+        !vuln_issues.is_empty(),
+        "Internal packages should still be checked for known vulnerabilities. Issues: {:?}",
+        report.issues.iter().map(|i| format!("{}: {}", i.package, i.check)).collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&config_dir);
+}
+
+#[test]
+fn scan_hash_is_deterministic() {
+    let dir = std::env::temp_dir();
+    let deps = vec![
+        Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
+        Dependency { name: "lodash".to_string(), version: Some("^4.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+    let hash1 = scan_hash(&dir, &deps);
+    let hash2 = scan_hash(&dir, &deps);
+    assert_eq!(hash1, hash2);
+}
+
+#[test]
+fn scan_hash_changes_with_different_deps() {
+    let dir = std::env::temp_dir();
+    let deps1 = vec![
+        Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+    let deps2 = vec![
+        Dependency { name: "react".to_string(), version: Some("^19.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+    assert_ne!(scan_hash(&dir, &deps1), scan_hash(&dir, &deps2));
+}
+
+#[test]
+fn scan_hash_order_independent() {
+    let dir = std::env::temp_dir();
+    let deps1 = vec![
+        Dependency { name: "a".to_string(), version: None, ecosystem: Ecosystem::Npm },
+        Dependency { name: "b".to_string(), version: None, ecosystem: Ecosystem::Npm },
+    ];
+    let deps2 = vec![
+        Dependency { name: "b".to_string(), version: None, ecosystem: Ecosystem::Npm },
+        Dependency { name: "a".to_string(), version: None, ecosystem: Ecosystem::Npm },
+    ];
+    assert_eq!(scan_hash(&dir, &deps1), scan_hash(&dir, &deps2));
+}
+
+#[test]
+fn scan_hash_changes_with_lockfile() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let id = CTR.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("sj-hash-test-{}-{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let deps = vec![
+        Dependency { name: "react".to_string(), version: Some("^18.0".to_string()), ecosystem: Ecosystem::Npm },
+    ];
+
+    // Hash without lockfile
+    let hash_no_lock = scan_hash(&dir, &deps);
+
+    // Write a lockfile
+    std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3}"#).unwrap();
+    let hash_with_lock = scan_hash(&dir, &deps);
+
+    // Change lockfile content
+    std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3,"packages":{"node_modules/react":{"version":"18.999.0"}}}"#).unwrap();
+    let hash_changed_lock = scan_hash(&dir, &deps);
+
+    assert_ne!(hash_no_lock, hash_with_lock, "Adding lockfile should change hash");
+    assert_ne!(hash_with_lock, hash_changed_lock, "Changing lockfile content should change hash");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -8,7 +8,7 @@ impl super::RegistryExistence for PackagistRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://repo.packagist.org/p2/{}.json", package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "Packagist", package_name)
     }
 

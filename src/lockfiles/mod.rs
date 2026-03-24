@@ -401,6 +401,31 @@ mod tests {
     }
 
     #[test]
+    fn cargo_lock_resolves_lockfile_extracted_version_against_multiple() {
+        // Transitive deps from parse_all have version "0.52.0" (no = prefix).
+        // When re-resolved against a lockfile with multiple versions of the same
+        // package, the version should match directly — not emit ambiguous.
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "[[package]]\nname = \"windows-sys\"\nversion = \"0.52.0\"\n\n[[package]]\nname = \"windows-sys\"\nversion = \"0.59.0\"\n",
+        ).unwrap();
+        // This is what parse_all_from_value produces: version without = prefix
+        let deps = vec![cargo_dep("windows-sys", "0.52.0")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        // Should resolve successfully — the version matches exactly
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().version,
+            "0.52.0",
+            "Lockfile-extracted version should resolve against multiple versions"
+        );
+        assert!(
+            !result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS),
+            "Should not emit ambiguous issue when version matches"
+        );
+    }
+
+    #[test]
     fn cargo_lock_ambiguous_versions_emit_resolution_issue() {
         let dir = unique_dir();
         std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.201\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n").unwrap();

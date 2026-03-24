@@ -1,0 +1,127 @@
+//! Static lists of top packages per ecosystem for segment overlap detection.
+//! These lists are used by SegmentOverlapGen to detect combo-squatting attacks
+//! where an attacker adds segments to a popular package name (e.g., react-hooks-utils).
+
+use crate::Ecosystem;
+
+/// Return the top packages for an ecosystem, segmented for overlap detection.
+/// Only ecosystems where combo-squatting is a realistic attack vector are covered.
+pub fn top_packages(ecosystem: Ecosystem) -> &'static [&'static str] {
+    match ecosystem {
+        Ecosystem::Npm => NPM_TOP,
+        Ecosystem::PyPI => PYPI_TOP,
+        Ecosystem::Cargo => CARGO_TOP,
+        _ => &[],
+    }
+}
+
+static NPM_TOP: &[&str] = &[
+    "react", "react-dom", "react-router", "react-router-dom", "react-redux",
+    "react-hook-form", "react-query", "react-icons", "react-select", "react-table",
+    "next", "express", "axios", "lodash", "moment", "dayjs",
+    "webpack", "vite", "rollup", "esbuild", "parcel",
+    "typescript", "eslint", "prettier", "jest", "mocha", "vitest",
+    "tailwindcss", "bootstrap", "styled-components", "emotion",
+    "redux", "zustand", "mobx", "recoil", "jotai",
+    "graphql", "apollo-client", "urql", "relay",
+    "prisma", "sequelize", "typeorm", "knex", "mongoose",
+    "socket-io", "ws", "express-validator", "cors", "helmet",
+    "chalk", "commander", "yargs", "inquirer", "ora",
+    "uuid", "nanoid", "date-fns", "luxon",
+    "dotenv", "cross-env", "nodemon", "concurrently",
+    "babel", "postcss", "autoprefixer", "sass", "less",
+    "storybook", "cypress", "playwright", "puppeteer",
+    "next-auth", "passport", "jsonwebtoken", "bcrypt",
+    "aws-sdk", "firebase", "stripe", "twilio",
+    "three", "d3", "chart-js", "echarts",
+    "electron", "tauri",
+    "fastify", "koa", "hapi", "nest",
+    "formik", "yup", "zod", "joi",
+    "rxjs", "immer", "ramda", "underscore",
+    "pm2", "nodemailer", "bull", "agenda",
+    "sharp", "jimp", "multer",
+    "winston", "pino", "bunyan", "morgan",
+    "supertest", "nock", "sinon", "chai",
+    "body-parser", "cookie-parser", "compression",
+    "http-proxy", "http-proxy-middleware",
+];
+
+static PYPI_TOP: &[&str] = &[
+    "requests", "flask", "django", "fastapi", "uvicorn",
+    "numpy", "pandas", "scipy", "matplotlib", "seaborn",
+    "scikit-learn", "tensorflow", "pytorch", "keras", "xgboost",
+    "pillow", "opencv-python", "imageio",
+    "sqlalchemy", "alembic", "psycopg2", "pymongo",
+    "celery", "redis", "kombu",
+    "boto3", "botocore", "awscli",
+    "click", "typer", "argparse", "rich",
+    "pytest", "unittest", "tox", "coverage", "hypothesis",
+    "black", "flake8", "mypy", "pylint", "ruff",
+    "pydantic", "marshmallow", "attrs", "dataclasses",
+    "aiohttp", "httpx", "urllib3", "certifi",
+    "jinja2", "mako", "chameleon",
+    "cryptography", "pyjwt", "paramiko",
+    "gunicorn", "waitress", "daphne",
+    "beautifulsoup4", "scrapy", "lxml", "selenium",
+    "setuptools", "wheel", "pip", "twine",
+    "pyyaml", "toml", "configparser",
+    "loguru", "structlog",
+    "tqdm", "alive-progress",
+    "poetry", "pipenv", "virtualenv",
+    "transformers", "tokenizers", "datasets",
+    "openai", "anthropic", "langchain",
+    "streamlit", "gradio", "dash",
+    "networkx", "igraph",
+    "arrow", "pendulum",
+];
+
+static CARGO_TOP: &[&str] = &[
+    "serde", "serde-json", "tokio", "async-std",
+    "reqwest", "hyper", "actix-web", "axum", "rocket", "warp",
+    "clap", "structopt",
+    "log", "env-logger", "tracing", "tracing-subscriber",
+    "anyhow", "thiserror", "eyre",
+    "rand", "uuid", "chrono", "time",
+    "regex", "glob", "walkdir",
+    "toml", "serde-yaml", "config",
+    "diesel", "sqlx", "sea-orm", "rusqlite",
+    "tonic", "prost",
+    "rayon", "crossbeam", "parking-lot",
+    "bytes", "memmap2",
+    "rustls", "native-tls", "ring",
+    "indicatif", "console", "dialoguer",
+    "assert-cmd", "predicates", "tempfile",
+    "criterion", "proptest",
+    "image", "imageproc",
+    "itertools", "num", "bitflags",
+    "lazy-static", "once-cell",
+    "futures", "pin-project",
+    "tower", "tower-http",
+    "semver", "url",
+    "proc-macro2", "syn", "quote",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npm_top_is_populated() {
+        assert!(top_packages(Ecosystem::Npm).len() >= 50);
+    }
+
+    #[test]
+    fn pypi_top_is_populated() {
+        assert!(top_packages(Ecosystem::PyPI).len() >= 50);
+    }
+
+    #[test]
+    fn cargo_top_is_populated() {
+        assert!(top_packages(Ecosystem::Cargo).len() >= 30);
+    }
+
+    #[test]
+    fn go_returns_empty() {
+        assert!(top_packages(Ecosystem::Go).is_empty());
+    }
+}

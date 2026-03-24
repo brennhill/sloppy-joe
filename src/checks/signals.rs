@@ -106,8 +106,11 @@ pub(crate) fn check_install_script_risk(
 
     let has_similarity = similarity_flagged.contains(&lookup.package);
     let has_low_downloads = meta.downloads.is_some_and(|d| d < 1000);
+    let has_no_repository = meta.repository_url.as_deref()
+        .map(|url| !is_plausible_repo_url(url))
+        .unwrap_or(true);
 
-    if !is_new_package && !is_low_downloads && !has_low_downloads && !has_similarity {
+    if !is_new_package && !is_low_downloads && !has_low_downloads && !has_similarity && !has_no_repository {
         return None;
     }
 
@@ -124,6 +127,9 @@ pub(crate) fn check_install_script_risk(
         }
     if has_similarity {
         reasons.push("was flagged for name similarity to a popular package".to_string());
+    }
+    if has_no_repository {
+        reasons.push("has no source repository URL".to_string());
     }
     let reason_str = reasons.join(" and ");
 
@@ -206,6 +212,61 @@ pub(crate) fn check_parse_failed(lookup: &MetadataLookup) -> Option<Issue> {
             ))
             .fix(format!(
                 "This may be a transient registry issue. Retry later. If it persists, check '{}' manually.",
+                lookup.package
+            )),
+    )
+}
+
+/// Known code hosting domains. A repository URL pointing elsewhere is suspicious.
+const KNOWN_CODE_HOSTS: &[&str] = &[
+    "github.com", "gitlab.com", "bitbucket.org",
+    "codeberg.org", "sr.ht", "gitea.com",
+    "dev.azure.com", "ssh.dev.azure.com",
+];
+
+/// Check if a repository URL is plausible (points to a known code host).
+fn is_plausible_repo_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    KNOWN_CODE_HOSTS.iter().any(|host| lower.contains(host))
+}
+
+/// Package has no valid repository URL and is either new or low-download.
+pub(crate) fn check_no_repository(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+    is_new_package: bool,
+    is_low_downloads: bool,
+) -> Option<Issue> {
+    // Only flag if repo URL is missing or doesn't point to a known code host
+    if let Some(ref url) = meta.repository_url
+        && is_plausible_repo_url(url)
+    {
+        return None;
+    }
+    // Only flag if also new or low-download — lots of legitimate old packages lack repo links
+    if !is_new_package && !is_low_downloads {
+        return None;
+    }
+
+    let mut reasons = Vec::new();
+    if is_new_package {
+        reasons.push("is a new package (< 30 days old)");
+    }
+    if is_low_downloads {
+        reasons.push("has low downloads (< 100)");
+    }
+
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_NO_REPOSITORY, Severity::Warning)
+            .message(format!(
+                "'{}' has no source repository URL and {}. \
+                 Legitimate packages almost always link to their source code. \
+                 The absence of a repository link on a new or low-download package is a supply chain risk indicator.",
+                lookup.package,
+                reasons.join(" and ")
+            ))
+            .fix(format!(
+                "Verify '{}' at its registry page. If it's legitimate, add it to the 'allowed' list.",
                 lookup.package
             )),
     )

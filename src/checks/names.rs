@@ -14,6 +14,7 @@ pub const METADATA_INSTALL_SCRIPT_RISK: &str = "metadata/install-script-risk";
 pub const METADATA_DEPENDENCY_EXPLOSION: &str = "metadata/dependency-explosion";
 pub const METADATA_MAINTAINER_CHANGE: &str = "metadata/maintainer-change";
 pub const METADATA_PARSE_FAILED: &str = "metadata/parse-failed";
+pub const METADATA_NO_REPOSITORY: &str = "metadata/no-repository";
 
 // -- Similarity --
 pub const SIMILARITY_REGISTRY_UNREACHABLE: &str = "similarity/registry-unreachable";
@@ -27,6 +28,9 @@ pub const SIMILARITY_CHAR_SWAP: &str = "similarity/char-swap";
 pub const SIMILARITY_EXTRA_CHAR: &str = "similarity/extra-char";
 pub const SIMILARITY_HOMOGLYPH: &str = "similarity/homoglyph";
 pub const SIMILARITY_CONFUSED_FORMS: &str = "similarity/confused-forms";
+pub const SIMILARITY_BITFLIP: &str = "similarity/bitflip";
+pub const SIMILARITY_KEYBOARD_PROXIMITY: &str = "similarity/keyboard-proximity";
+pub const SIMILARITY_SEGMENT_OVERLAP: &str = "similarity/segment-overlap";
 pub const SIMILARITY_MUTATION_MATCH: &str = "similarity/mutation-match";
 
 /// Map a generator name (from MutationGenerator::name()) to its check name constant.
@@ -40,6 +44,9 @@ pub fn similarity_check_name(generator_name: &str) -> &'static str {
         "extra-char" => SIMILARITY_EXTRA_CHAR,
         "homoglyph" => SIMILARITY_HOMOGLYPH,
         "confused-forms" => SIMILARITY_CONFUSED_FORMS,
+        "bitflip" => SIMILARITY_BITFLIP,
+        "keyboard-proximity" => SIMILARITY_KEYBOARD_PROXIMITY,
+        "segment-overlap" => SIMILARITY_SEGMENT_OVERLAP,
         "scope-squatting" => SIMILARITY_SCOPE_SQUATTING,
         "case-variant" => SIMILARITY_CASE_VARIANT,
         _ => SIMILARITY_MUTATION_MATCH,
@@ -70,12 +77,14 @@ mod tests {
             CANONICAL, EXISTENCE, EXISTENCE_REGISTRY_UNREACHABLE,
             METADATA_VERSION_AGE, METADATA_NEW_PACKAGE, METADATA_LOW_DOWNLOADS,
             METADATA_INSTALL_SCRIPT_RISK, METADATA_DEPENDENCY_EXPLOSION,
-            METADATA_MAINTAINER_CHANGE, METADATA_PARSE_FAILED,
+            METADATA_MAINTAINER_CHANGE, METADATA_PARSE_FAILED, METADATA_NO_REPOSITORY,
             SIMILARITY_REGISTRY_UNREACHABLE, SIMILARITY_SCOPE_SQUATTING,
             SIMILARITY_CASE_VARIANT, SIMILARITY_SEPARATOR_SWAP,
             SIMILARITY_COLLAPSE_REPEATED, SIMILARITY_VERSION_SUFFIX,
             SIMILARITY_WORD_REORDER, SIMILARITY_CHAR_SWAP, SIMILARITY_EXTRA_CHAR,
-            SIMILARITY_HOMOGLYPH, SIMILARITY_CONFUSED_FORMS, SIMILARITY_MUTATION_MATCH,
+            SIMILARITY_HOMOGLYPH, SIMILARITY_CONFUSED_FORMS,
+            SIMILARITY_BITFLIP, SIMILARITY_KEYBOARD_PROXIMITY,
+            SIMILARITY_SEGMENT_OVERLAP, SIMILARITY_MUTATION_MATCH,
             METADATA_REGISTRY_UNREACHABLE,
             MALICIOUS_KNOWN_VULNERABILITY, MALICIOUS_REGISTRY_UNREACHABLE,
             RESOLUTION_PARSE_FAILED, RESOLUTION_MISSING_LOCKFILE_ENTRY,

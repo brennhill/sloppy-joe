@@ -57,6 +57,50 @@ pub fn parse_dependencies(
     }
 }
 
+/// Detect ALL ecosystems present in a project directory.
+/// Returns one Vec<Dependency> per detected ecosystem.
+/// Used by monorepo scanning to ensure no ecosystem is missed.
+pub fn parse_all_ecosystems(project_dir: &Path) -> Vec<Vec<Dependency>> {
+    type Parser = (&'static str, fn(&Path) -> Result<Vec<Dependency>>);
+    let parsers: Vec<Parser> = vec![
+        ("package.json", package_json::parse),
+        ("requirements.txt", requirements::parse),
+        ("Cargo.toml", cargo_toml::parse),
+        ("go.mod", go_mod::parse),
+        ("Gemfile", gemfile::parse),
+        ("composer.json", composer_json::parse),
+    ];
+
+    let mut results = Vec::new();
+    for (manifest, parser) in parsers {
+        if project_dir.join(manifest).exists()
+            && let Ok(deps) = parser(project_dir)
+            && !deps.is_empty()
+        {
+            results.push(deps);
+        }
+    }
+
+    // JVM and csproj need special detection
+    let has_jvm = project_dir.join("build.gradle").exists()
+        || project_dir.join("build.gradle.kts").exists()
+        || project_dir.join("pom.xml").exists();
+    if has_jvm
+        && let Ok(deps) = jvm::parse(project_dir)
+        && !deps.is_empty()
+    {
+        results.push(deps);
+    }
+    if has_csproj(project_dir)
+        && let Ok(deps) = csproj::parse(project_dir)
+        && !deps.is_empty()
+    {
+        results.push(deps);
+    }
+
+    results
+}
+
 fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
     if project_dir.join("package.json").exists() {
         return package_json::parse(project_dir);

@@ -12,6 +12,8 @@
 
 ---
 
+> **The [LiteLLM supply chain attack](https://thehackernews.com/2026/03/teampcp-backdoors-litellm-versions.html) (March 2026) compromised a package with 97M monthly downloads. Attackers stole publishing credentials, pushed malicious versions that harvested SSH keys, cloud credentials, and K8s secrets. sloppy-joe's default 72-hour version age gate would have blocked both poisoned versions — they were discovered within hours, well before the gate would have opened. If you run `sloppy-joe check` in CI, this attack fails.**
+
 AI code generators hallucinate package names [~20% of the time](https://arxiv.org/abs/2406.10279). Attackers register those names and wait. sloppy-joe catches them in CI before `npm install` or `pip install` runs.
 
 ## How to Use
@@ -312,18 +314,18 @@ ERROR requsets [metadata/low-downloads]
 
 ## Supported Ecosystems
 
-| Ecosystem | Manifest | Existence | Metadata | Age Gate |
-|-----------|----------|:---------:|:--------:|:--------:|
-| npm | package.json | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PyPI | requirements.txt | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Cargo | Cargo.toml | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Go | go.mod | :white_check_mark: | :x: | :x: |
-| Ruby | Gemfile | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PHP | composer.json | :white_check_mark: | :x: | :x: |
-| JVM | build.gradle / pom.xml | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| .NET | *.csproj | :white_check_mark: | :x: | :x: |
+| Ecosystem | Manifest | Lockfile | Existence | Metadata | Age Gate |
+|-----------|----------|----------|:---------:|:--------:|:--------:|
+| npm | package.json | package-lock.json | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PyPI | requirements.txt | poetry.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Cargo | Cargo.toml | Cargo.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Go | go.mod | — | :white_check_mark: | :x: | :x: |
+| Ruby | Gemfile | Gemfile.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PHP | composer.json | — | :white_check_mark: | :x: | :x: |
+| JVM | build.gradle / pom.xml | — | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| .NET | *.csproj | — | :white_check_mark: | :x: | :x: |
 
-All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes.
+All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes. Lockfile support enables transitive dependency scanning and exact version resolution.
 
 ## Quick Start
 
@@ -439,37 +441,61 @@ sloppy-joe check || exit 1
 
 ## Architecture
 
-sloppy-joe uses a **generative-first** approach to similarity detection, inspired by the [Rust Foundation's Typomania](https://github.com/rustfoundation/typomania) library. Instead of comparing every dependency against every popular package with edit distance (which produces false positives), it generates specific mutations of each dependency name and checks if any mutation matches a known package.
+sloppy-joe uses a **registry-based generative** approach to similarity detection. Instead of comparing every dependency against a static corpus with edit distance (which produces false positives), it generates specific mutations of each dependency name, queries the registry to check if the mutation exists, and flags exact matches.
 
 ```
-For each dependency:
-  1. Homoglyph normalization     → check against corpus
-  2. Separator normalization     → check against corpus
-  3. Repeated character collapse → check against corpus
-  4. Version suffix stripping    → check against corpus
-  5. Word reordering            → check against corpus
-  6. Adjacent character swaps    → check against corpus
-  7. Omitted character insertion → check against corpus
-  8. Ecosystem confused forms    → check against corpus
-  9. Case-variant detection      → check against corpus
-  10. Scope squatting detection   → check scope against known-good scopes
-  11. Levenshtein distance       → fallback for novel mutations
+Pipeline (in order):
+  1. Canonical check         — flag deps that violate org standards
+  2. Similarity check        — 8 mutation generators + scope squatting
+  3. Metadata check          — version age, new package, downloads, install scripts, dep explosion, maintainer change
+  4. Existence check         — flag packages that don't exist on the registry
+  5. Malicious check         — query OSV.dev for known vulnerabilities
 ```
 
-Generative checks fire only when a mutation produces an **exact match** to a known package — zero false positives. Levenshtein runs last as a safety net for mutations nobody anticipated.
+Similarity runs 4 phases:
+- **Phase 0: Scope squatting** — local check, no network. Compares scope/namespace against known-good scopes via Levenshtein distance.
+- **Phase 1: Intra-manifest** — local check. Flags when two deps in the same manifest are mutations of each other.
+- **Phase 2: Registry query** — generates mutations, batch-queries the registry for existence, caches results (7-day TTL).
+- **Phase 3: Metadata enrichment** — fetches download counts and publish dates for matches to add evidence to reports.
 
-## Built On
+Each mutation generator tags its output, so the reported check type (e.g., `similarity/homoglyph`) is deterministic — the highest-severity generator wins when multiple generators produce the same candidate.
 
-- [typomania](https://crates.io/crates/typomania) — Rust Foundation's typosquatting detection primitives
-- [strsim](https://crates.io/crates/strsim) — String similarity metrics
+## CI Reliability
+
+sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
+
+**Retry with backoff.** All registry HTTP calls retry 3 times with exponential backoff (200ms, 400ms, 800ms) on transient failures (5xx, timeouts, connection errors). A single network blip won't fail your build.
+
+**Fail-closed with thresholds.** If too many registry queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The thresholds are ecosystem-aware:
+
+| Ecosystem | Error rate threshold | Hard error limit |
+|-----------|---------------------|-----------------|
+| npm, PyPI, Cargo, Ruby, PHP, .NET | 10% | 5 |
+| Maven/JVM | 20% | 5 |
+| Go | 25% | 10 |
+
+Go and Maven have higher thresholds because their proxies are inherently slower and more error-prone.
+
+**Minimum sample size.** The rate-based threshold requires at least 5 queries before it applies. This prevents false `registry-unreachable` errors when most queries are served from cache, leaving only 2-3 uncached queries that happen to fail.
+
+**Similarity cache.** Mutation existence results are cached for 7 days. After the first scan, most queries are served from cache with zero network calls. Only new dependencies trigger registry queries.
+
+**Lockfile-aware resolution.** When a lockfile is present (package-lock.json, Cargo.lock, Gemfile.lock, poetry.lock), sloppy-joe resolves exact versions from it — eliminating `no-exact-version` warnings for range-based version requirements.
 
 ## Tests
 
-167 tests. Covers all similarity checks (including scope squatting), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing, all 8 parsers, and report formatting.
+296 tests covering all similarity checks (scope squatting, 8 mutation types, deterministic classification), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing + validation, lockfile resolution (npm, Cargo, Ruby, Python), all 8 parsers, report formatting, error threshold behavior, and HTTP retry logic.
 
 ```bash
 cargo test
 ```
+
+## Built On
+
+- [Typomania](https://github.com/rustfoundation/typomania) — Rust Foundation's typosquatting library, which inspired the generative mutation approach (sloppy-joe implements its own generators rather than using the crate directly)
+- [strsim](https://crates.io/crates/strsim) — Levenshtein distance, used for scope squatting detection
+- [reqwest](https://crates.io/crates/reqwest) — Async HTTP client with retry for registry queries
+- [OSV.dev](https://osv.dev) — Known vulnerability database for malicious package detection
 
 ## License
 

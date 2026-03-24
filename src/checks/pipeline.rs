@@ -53,6 +53,8 @@ impl Check for SimilarityCheck {
                 ctx.ecosystem,
                 ctx.opts.cache_dir,
                 ctx.opts.no_cache,
+                ctx.opts.paranoid,
+                acc.metadata_lookups.as_deref(),
             )
             .await?;
 
