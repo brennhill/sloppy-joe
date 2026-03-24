@@ -14,6 +14,7 @@ pub trait MutationGenerator: Send + Sync {
 }
 
 /// Returns the default set of mutation generators.
+/// Use `paranoid_generators()` for the full set including bitflip.
 pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
     vec![
         Box::new(SeparatorSwapGen),
@@ -24,7 +25,17 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
         Box::new(DeleteOneCharGen),
         Box::new(HomoglyphGen),
         Box::new(ConfusedFormsGen),
+        Box::new(KeyboardProximityGen),
+        Box::new(SegmentOverlapGen),
     ]
+}
+
+/// Returns all generators including expensive ones (bitflip).
+/// Activated by --paranoid. Produces ~10x more mutations than default.
+pub fn paranoid_generators() -> Vec<Box<dyn MutationGenerator>> {
+    let mut gens = default_generators();
+    gens.push(Box::new(BitflipGen));
+    gens
 }
 
 // -- Generator implementations -----------------------------------------------
@@ -105,6 +116,30 @@ impl MutationGenerator for ConfusedFormsGen {
     }
 }
 
+struct SegmentOverlapGen;
+impl MutationGenerator for SegmentOverlapGen {
+    fn name(&self) -> &'static str { "segment-overlap" }
+    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
+        segment_overlap_variants(&name.to_lowercase(), ecosystem)
+    }
+}
+
+struct BitflipGen;
+impl MutationGenerator for BitflipGen {
+    fn name(&self) -> &'static str { "bitflip" }
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
+        bitflip_variants(&name.to_lowercase())
+    }
+}
+
+struct KeyboardProximityGen;
+impl MutationGenerator for KeyboardProximityGen {
+    fn name(&self) -> &'static str { "keyboard-proximity" }
+    fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
+        keyboard_proximity_variants(&name.to_lowercase())
+    }
+}
+
 // -- Helper functions --------------------------------------------------------
 
 /// Ecosystem-specific confused forms: terms that are interchangeable
@@ -123,44 +158,10 @@ fn confused_forms(ecosystem: Ecosystem) -> &'static [(&'static str, &'static str
 
 // -- Homoglyph detection ---------------------------------------------------
 
-/// Map of common homoglyphs: (lookalike char, Latin equivalent).
-fn homoglyph_map() -> &'static [(char, char)] {
-    &[
-        ('\u{0430}', 'a'), // Cyrillic a -> Latin a
-        ('\u{0435}', 'e'), // Cyrillic e -> Latin e
-        ('\u{043E}', 'o'), // Cyrillic o -> Latin o
-        ('\u{0440}', 'p'), // Cyrillic p -> Latin p
-        ('\u{0441}', 'c'), // Cyrillic c -> Latin c
-        ('\u{0443}', 'y'), // Cyrillic y -> Latin y
-        ('\u{0445}', 'x'), // Cyrillic x -> Latin x
-        ('\u{0455}', 's'), // Cyrillic s -> Latin s
-        ('\u{0456}', 'i'), // Cyrillic i -> Latin i
-        ('\u{0458}', 'j'), // Cyrillic j -> Latin j
-        ('\u{0501}', 'd'), // Cyrillic d -> Latin d
-        ('\u{0261}', 'g'), // Latin g -> Latin g
-        ('\u{2113}', 'l'), // Script l -> Latin l
-        ('\u{FF10}', '0'), // Fullwidth 0
-        ('\u{FF11}', '1'), // Fullwidth 1
-        ('\u{2170}', 'i'), // Roman numeral i -> Latin i
-        ('\u{217C}', 'l'), // Roman numeral l -> Latin l
-    ]
-}
-
-/// Normalize a name by replacing homoglyphs with their Latin equivalents.
-/// Returns the normalized string and whether any replacements were made.
+/// Normalize a name by replacing Unicode confusables with ASCII equivalents.
+/// Uses the full Unicode confusables table (445 entries) from confusables.rs.
 pub(super) fn normalize_homoglyphs(name: &str) -> (String, bool) {
-    let map = homoglyph_map();
-    let mut result = String::with_capacity(name.len());
-    let mut replaced = false;
-    for ch in name.chars() {
-        if let Some((_, latin)) = map.iter().find(|(lookalike, _)| *lookalike == ch) {
-            result.push(*latin);
-            replaced = true;
-        } else {
-            result.push(ch);
-        }
-    }
-    (result, replaced)
+    super::confusables::normalize(name)
 }
 
 // -- Scope/namespace squatting detection ------------------------------------
@@ -169,45 +170,47 @@ pub(super) fn normalize_homoglyphs(name: &str) -> (String, bool) {
 pub(super) fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
     match ecosystem {
         Ecosystem::Npm => &[
-            "@types",
-            "@babel",
-            "@angular",
-            "@vue",
-            "@nuxt",
-            "@nestjs",
-            "@react-native",
-            "@emotion",
-            "@mui",
-            "@chakra-ui",
-            "@testing-library",
-            "@storybook",
-            "@typescript-eslint",
-            "@rollup",
-            "@vitejs",
-            "@svelte",
-            "@tanstack",
-            "@aws-sdk",
-            "@azure",
-            "@google-cloud",
-            "@firebase",
-            "@prisma",
-            "@trpc",
-            "@reduxjs",
-            "@apollo",
-            "@eslint",
-            "@prettier",
-            "@jest",
-            "@playwright",
-            "@vercel",
-            "@netlify",
-            "@cloudflare",
-            "@octokit",
-            "@actions",
-            "@github",
-            "@sentry",
-            "@datadog",
-            "@grpc",
-            "@protobuf",
+            // Build tools & frameworks
+            "@types", "@babel", "@angular", "@vue", "@nuxt", "@nestjs",
+            "@react-native", "@svelte", "@solidjs", "@qwik",
+            "@nextjs", "@remix-run", "@astrojs", "@gatsbyjs",
+            // UI libraries
+            "@emotion", "@mui", "@chakra-ui", "@radix-ui", "@headlessui",
+            "@shadcn", "@mantine", "@ant-design",
+            // Testing
+            "@testing-library", "@storybook", "@jest", "@playwright",
+            "@vitest", "@cypress",
+            // Linting & formatting
+            "@typescript-eslint", "@eslint", "@prettier",
+            // Bundlers
+            "@rollup", "@vitejs", "@parcel", "@swc", "@esbuild",
+            // State management
+            "@reduxjs", "@tanstack", "@trpc", "@apollo",
+            // Database & ORM
+            "@prisma", "@drizzle-team", "@supabase", "@neon",
+            // Cloud providers
+            "@aws-sdk", "@azure", "@google-cloud", "@firebase",
+            "@pulumi", "@terraform",
+            // Hosting & edge
+            "@vercel", "@netlify", "@cloudflare", "@fly",
+            // DevOps & CI
+            "@octokit", "@actions", "@github", "@gitlab",
+            // Observability
+            "@sentry", "@datadog", "@opentelemetry", "@grafana",
+            // Protocols
+            "@grpc", "@protobuf", "@bufbuild", "@connectrpc",
+            // Auth
+            "@auth", "@clerk", "@auth0",
+            // Monorepo tools
+            "@nx", "@lerna", "@changesets", "@turbo",
+            // Package managers
+            "@pnpm", "@yarnpkg", "@npmcli",
+            // AI/ML
+            "@huggingface", "@langchain", "@anthropic",
+            // Other major orgs
+            "@stripe", "@twilio", "@sendgrid", "@mapbox",
+            "@elastic", "@mongodb", "@redis",
+            "@hono", "@fastify", "@express",
         ],
         Ecosystem::Php => &[
             "laravel",
@@ -235,34 +238,34 @@ pub(super) fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
             "sebastian",
         ],
         Ecosystem::Go => &[
-            "github.com/gin-gonic",
-            "github.com/labstack",
-            "github.com/gofiber",
-            "github.com/spf13",
-            "github.com/stretchr",
-            "github.com/gorilla",
-            "github.com/go-chi",
-            "github.com/go-redis",
-            "github.com/sirupsen",
-            "github.com/rs",
+            // Web frameworks
+            "github.com/gin-gonic", "github.com/labstack", "github.com/gofiber",
+            "github.com/gorilla", "github.com/go-chi", "github.com/julienschmidt",
+            // CLI & config
+            "github.com/spf13", "github.com/urfave", "github.com/alecthomas",
+            // Testing
+            "github.com/stretchr", "github.com/onsi",
+            // Database
+            "github.com/go-redis", "github.com/jackc", "github.com/go-sql-driver",
+            "github.com/jmoiron", "github.com/go-gorm",
+            // Logging
+            "github.com/sirupsen", "github.com/rs", "github.com/uber-go",
+            // HTTP
             "github.com/valyala",
-            "github.com/jackc",
-            "github.com/nats-io",
-            "github.com/hashicorp",
-            "github.com/prometheus",
-            "github.com/grpc",
-            "github.com/golang",
-            "github.com/google",
-            "github.com/aws",
-            "github.com/Azure",
-            "github.com/kubernetes",
-            "github.com/docker",
-            "github.com/etcd-io",
-            "github.com/cockroachdb",
-            "go.uber.org",
-            "google.golang.org",
-            "golang.org",
-            "cloud.google.com",
+            // Messaging
+            "github.com/nats-io", "github.com/segmentio", "github.com/confluentinc",
+            // Infrastructure
+            "github.com/hashicorp", "github.com/prometheus", "github.com/grafana",
+            "github.com/grpc", "github.com/envoyproxy",
+            // Standard org scopes
+            "github.com/golang", "github.com/google", "github.com/aws",
+            "github.com/Azure", "github.com/kubernetes", "github.com/docker",
+            "github.com/etcd-io", "github.com/cockroachdb",
+            "github.com/containerd", "github.com/opencontainers",
+            "github.com/cncf", "github.com/open-telemetry",
+            // Module hosts
+            "go.uber.org", "google.golang.org", "golang.org",
+            "cloud.google.com", "go.opentelemetry.io",
         ],
         Ecosystem::Jvm => &[
             "com.google",
@@ -451,4 +454,132 @@ pub(super) fn adjacent_swaps(name: &str) -> Vec<String> {
         }
     }
     results
+}
+
+/// Generate bitflip variants: flip each bit in each ASCII character.
+/// Only flips bits that produce another printable ASCII letter/digit.
+/// "express" → "dxpress" (e XOR 1 = d), "gxpress" (e XOR 2 = g), etc.
+pub(super) fn bitflip_variants(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = HashSet::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        if !ch.is_ascii() {
+            continue;
+        }
+        let byte = ch as u8;
+        for bit in 0..8 {
+            let flipped = byte ^ (1 << bit);
+            let flipped_char = flipped as char;
+            // Only keep if result is a valid package-name character
+            if (flipped_char.is_ascii_alphanumeric() || flipped_char == '-' || flipped_char == '_')
+                && flipped_char != ch
+            {
+                let mut variant = chars.clone();
+                variant[i] = flipped_char;
+                let s: String = variant.into_iter().collect();
+                results.insert(s);
+            }
+        }
+    }
+    results.into_iter().collect()
+}
+
+/// QWERTY keyboard adjacency map for common package-name characters.
+fn keyboard_neighbors() -> &'static [(char, &'static [char])] {
+    &[
+        ('q', &['w', 'a']),
+        ('w', &['q', 'e', 'a', 's']),
+        ('e', &['w', 'r', 's', 'd']),
+        ('r', &['e', 't', 'd', 'f']),
+        ('t', &['r', 'y', 'f', 'g']),
+        ('y', &['t', 'u', 'g', 'h']),
+        ('u', &['y', 'i', 'h', 'j']),
+        ('i', &['u', 'o', 'j', 'k']),
+        ('o', &['i', 'p', 'k', 'l']),
+        ('p', &['o', 'l']),
+        ('a', &['q', 'w', 's', 'z']),
+        ('s', &['w', 'e', 'a', 'd', 'z', 'x']),
+        ('d', &['e', 'r', 's', 'f', 'x', 'c']),
+        ('f', &['r', 't', 'd', 'g', 'c', 'v']),
+        ('g', &['t', 'y', 'f', 'h', 'v', 'b']),
+        ('h', &['y', 'u', 'g', 'j', 'b', 'n']),
+        ('j', &['u', 'i', 'h', 'k', 'n', 'm']),
+        ('k', &['i', 'o', 'j', 'l', 'm']),
+        ('l', &['o', 'p', 'k']),
+        ('z', &['a', 's', 'x']),
+        ('x', &['z', 's', 'd', 'c']),
+        ('c', &['x', 'd', 'f', 'v']),
+        ('v', &['c', 'f', 'g', 'b']),
+        ('b', &['v', 'g', 'h', 'n']),
+        ('n', &['b', 'h', 'j', 'm']),
+        ('m', &['n', 'j', 'k']),
+        ('1', &['2', 'q']),
+        ('2', &['1', '3', 'q', 'w']),
+        ('3', &['2', '4', 'w', 'e']),
+        ('4', &['3', '5', 'e', 'r']),
+        ('5', &['4', '6', 'r', 't']),
+        ('6', &['5', '7', 't', 'y']),
+        ('7', &['6', '8', 'y', 'u']),
+        ('8', &['7', '9', 'u', 'i']),
+        ('9', &['8', '0', 'i', 'o']),
+        ('0', &['9', 'o', 'p']),
+    ]
+}
+
+/// Check if dep name is a popular package name with extra segments (combo-squatting).
+/// "react-hooks-utils" → checks if "react-hooks" is a top package.
+/// "react" → no segments to remove, skipped.
+/// Also checks if dep segments are a superset of a popular package's segments.
+pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<String> {
+    let top = super::popular::top_packages(ecosystem);
+    if top.is_empty() {
+        return vec![];
+    }
+
+    let separators = ['-', '_', '.'];
+    let sep = separators.iter().find(|&&s| name.contains(s)).copied().unwrap_or('-');
+    let segments: Vec<&str> = name.split(['-', '_', '.']).collect();
+
+    if segments.len() < 2 {
+        return vec![];
+    }
+
+    let mut results = Vec::new();
+
+    // Strategy 1: remove one segment at a time and check if result is a top package
+    for i in 0..segments.len() {
+        let reduced: Vec<&str> = segments.iter().enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, s)| *s)
+            .collect();
+        let candidate = reduced.join(&sep.to_string());
+        let candidate_normalized = candidate.replace(['_', '.'], "-");
+        if top.iter().any(|&pkg| {
+            let pkg_normalized = pkg.replace(['_', '.'], "-");
+            pkg_normalized == candidate_normalized
+        }) {
+            results.push(candidate);
+        }
+    }
+
+    results
+}
+
+/// Generate keyboard proximity variants: replace each character with its
+/// QWERTY neighbors. "react" → "eeact", "rwact", "resct", etc.
+pub(super) fn keyboard_proximity_variants(name: &str) -> Vec<String> {
+    let neighbors = keyboard_neighbors();
+    let chars: Vec<char> = name.chars().collect();
+    let mut results = HashSet::new();
+    for (i, &ch) in chars.iter().enumerate() {
+        if let Some((_, adjacents)) = neighbors.iter().find(|(k, _)| *k == ch) {
+            for &neighbor in *adjacents {
+                let mut variant = chars.clone();
+                variant[i] = neighbor;
+                let s: String = variant.into_iter().collect();
+                results.insert(s);
+            }
+        }
+    }
+    results.into_iter().collect()
 }

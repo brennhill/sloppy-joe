@@ -20,7 +20,7 @@ impl super::RegistryExistence for RubyGemsRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = gem_url(package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "RubyGems", package_name)
     }
 
@@ -40,10 +40,10 @@ impl super::RegistryMetadata for RubyGemsRegistry {
         let url = gem_url(package_name);
 
         // Fetch gem info and version-specific endpoints concurrently when a version is provided
-        let gem_fut = self.client.get(&url).send();
+        let gem_fut = super::retry_get(&self.client, &url);
         let version_fut = async {
             if let Some(ver) = version {
-                Some(self.client.get(gem_version_url(package_name, ver)).send().await)
+                Some(super::retry_get(&self.client, &gem_version_url(package_name, ver)).await)
             } else {
                 None
             }
@@ -88,6 +88,12 @@ impl super::RegistryMetadata for RubyGemsRegistry {
             body["version_created_at"].as_str().map(|s| s.to_string())
         };
 
+        let repository_url = body["source_code_uri"]
+            .as_str()
+            .or_else(|| body["homepage_uri"].as_str()
+                .filter(|u| u.contains("github.com") || u.contains("gitlab.com")))
+            .map(|s| s.to_string());
+
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
@@ -97,6 +103,7 @@ impl super::RegistryMetadata for RubyGemsRegistry {
             previous_dependency_count: None,
             current_publisher: None,
             previous_publisher: None,
+            repository_url,
         }))
     }
 }

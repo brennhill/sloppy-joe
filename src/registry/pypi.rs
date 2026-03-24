@@ -9,7 +9,7 @@ impl super::RegistryExistence for PypiRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
         let url = format!("https://pypi.org/pypi/{}/json", package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "PyPI", package_name)
     }
 
@@ -27,7 +27,7 @@ impl super::RegistryMetadata for PypiRegistry {
     ) -> Result<Option<super::PackageMetadata>> {
         self.validate_name(package_name)?;
         let url = format!("https://pypi.org/pypi/{}/json", package_name);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -63,6 +63,17 @@ impl super::RegistryMetadata for PypiRegistry {
             body["info"]["upload_time"].as_str().map(|s| s.to_string())
         };
 
+        // PyPI project_urls or home_page for repository link
+        let repository_url = body["info"]["project_urls"]["Repository"]
+            .as_str()
+            .or_else(|| body["info"]["project_urls"]["Source"]
+                .as_str())
+            .or_else(|| body["info"]["project_urls"]["Source Code"]
+                .as_str())
+            .or_else(|| body["info"]["home_page"].as_str()
+                .filter(|u| u.contains("github.com") || u.contains("gitlab.com") || u.contains("bitbucket.org")))
+            .map(|s| s.to_string());
+
         // PyPI main API doesn't expose download counts
         Ok(Some(super::PackageMetadata {
             created,
@@ -73,6 +84,7 @@ impl super::RegistryMetadata for PypiRegistry {
             previous_dependency_count: None,
             current_publisher: None,
             previous_publisher: None,
+            repository_url,
         }))
     }
 }

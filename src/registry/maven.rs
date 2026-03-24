@@ -47,7 +47,7 @@ impl super::RegistryExistence for MavenRegistry {
         let (group, artifact) = (parts[0], parts[1]);
         // Use quoted values in the Solr query for exact matching
         let url = search_url(group, artifact, None);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         if !super::check_existence_status(resp.status(), "Maven", package_name)? {
             return Ok(false);
         }
@@ -74,7 +74,7 @@ impl super::RegistryMetadata for MavenRegistry {
         }
         let (group, artifact) = (parts[0], parts[1]);
         let url = search_url(group, artifact, version);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -104,6 +104,7 @@ impl super::RegistryMetadata for MavenRegistry {
             previous_dependency_count: None,
             current_publisher: None,
             previous_publisher: None,
+            repository_url: None,
         }))
     }
 }

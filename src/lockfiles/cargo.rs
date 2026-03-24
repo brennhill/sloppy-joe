@@ -98,21 +98,27 @@ pub(super) fn resolve_from_value(
             continue;
         }
 
-        if let Some(exact_manifest) = dep.exact_version() {
-            if versions.iter().any(|version| version == &exact_manifest) {
-                result.exact_versions.insert(
-                    ResolutionKey::from(dep),
-                    ResolvedVersion {
-                        version: exact_manifest,
-                        source: ResolutionSource::Lockfile,
-                    },
-                );
-            } else {
-                result
-                    .issues
-                    .push(out_of_sync_issue(dep, &versions.join(", ")));
-                add_manifest_exact_fallback(&mut result, dep);
-            }
+        // Try exact_version first (manifest with = prefix),
+        // then fall back to raw version string (lockfile-extracted versions
+        // like "0.52.0" don't have = prefix but ARE exact).
+        let exact = dep.exact_version()
+            .or_else(|| dep.version.clone())
+            .filter(|v| versions.iter().any(|lv| lv == v));
+
+        if let Some(matched) = exact {
+            result.exact_versions.insert(
+                ResolutionKey::from(dep),
+                ResolvedVersion {
+                    version: matched,
+                    source: ResolutionSource::Lockfile,
+                },
+            );
+        } else if let Some(exact_manifest) = dep.exact_version() {
+            result
+                .issues
+                .push(out_of_sync_issue(dep, &versions.join(", ")));
+            add_manifest_exact_fallback(&mut result, dep);
+            let _ = exact_manifest; // used for the branch condition
         } else {
             result.issues.push(ambiguous_issue(dep));
         }

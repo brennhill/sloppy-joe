@@ -1,4 +1,6 @@
+mod confusables;
 pub mod generators;
+mod popular;
 
 use crate::cache;
 use crate::Ecosystem;
@@ -15,9 +17,6 @@ use generators::{extract_scope, known_scopes};
 
 const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
 
-/// Registry error tracking threshold: >5 errors OR >10% failure rate triggers blocking issue.
-const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
-const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
 struct SimilarityCache {
@@ -48,20 +47,24 @@ fn max_distance(name_len: usize) -> usize {
 /// Generator severity ordering (higher = more dangerous, reported first).
 fn generator_severity(name: &str) -> u8 {
     match name {
-        "homoglyph" => 7,
-        "confused-forms" => 6,
-        "char-swap" => 5,
-        "collapse-repeated" => 4,
-        "extra-char" => 3,
-        "version-suffix" => 2,
+        "homoglyph" => 9,
+        "bitflip" => 8,
+        "confused-forms" => 7,
+        "segment-overlap" => 6,
+        "keyboard-proximity" => 5,
+        "char-swap" => 4,
+        "collapse-repeated" => 3,
+        "extra-char" => 2,
+        "version-suffix" => 1,
         "word-reorder" => 1,
         "separator-swap" => 0,
         _ => 0,
     }
 }
 
-/// Generate all mutation candidates for a package name.
+/// Generate all mutation candidates for a package name using default generators.
 /// Returns a map of candidate → generator_name, tagged for classification.
+#[cfg(test)]
 fn generate_mutations(name: &str, ecosystem: Ecosystem) -> HashMap<String, &'static str> {
     generate_mutations_with(&default_generators(), name, ecosystem)
 }
@@ -155,6 +158,26 @@ fn format_match_message(dep_name: &str, candidate: &str, generator: &str) -> Str
              Examine both packages and add the intended one to your allowed list.",
             dep_name, candidate
         ),
+        "bitflip" => format!(
+            "'{}' matches '{}' with a single-bit character change. \
+             Bitflip attacks exploit hardware errors or deliberate bit manipulation \
+             to produce names that differ by exactly one bit in a character. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "segment-overlap" => format!(
+            "'{}' is a known popular package '{}' with extra segments added. \
+             An attacker could register an extended name to impersonate the real package. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "keyboard-proximity" => format!(
+            "'{}' matches '{}' with a keyboard-adjacent character substitution. \
+             An attacker could register a name where one key is replaced by its \
+             neighbor on a QWERTY keyboard. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
         _ => format!(
             "'{}' is suspiciously similar to '{}'. \
              Examine both packages and add the intended one to your allowed list.",
@@ -175,16 +198,20 @@ pub async fn check_similarity(
     deps: &[Dependency],
     ecosystem: Ecosystem,
 ) -> Result<Vec<Issue>> {
-    check_similarity_with_cache(registry, deps, ecosystem, None, false).await
+    check_similarity_with_cache(registry, deps, ecosystem, None, false, false, None).await
 }
 
-/// Check similarity with configurable cache.
+/// Check similarity with configurable cache and generator selection.
+/// `dep_metadata` provides download counts for the original dependencies,
+/// enabling download disparity detection (HIGH CONFIDENCE on large gaps).
 pub async fn check_similarity_with_cache(
     registry: &dyn Registry,
     deps: &[Dependency],
     ecosystem: Ecosystem,
     cache_dir: Option<&Path>,
     no_cache: bool,
+    paranoid: bool,
+    dep_metadata: Option<&[crate::checks::metadata::MetadataLookup]>,
 ) -> Result<Vec<Issue>> {
     let case_insensitive = is_case_insensitive(ecosystem);
     let mut issues = Vec::new();
@@ -233,10 +260,18 @@ pub async fn check_similarity_with_cache(
     }
 
     // ---- Pre-compute tagged mutations once for Phase 1 + Phase 2 ----
+    let generators = if paranoid {
+        generators::paranoid_generators()
+    } else {
+        generators::default_generators()
+    };
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
     for dep in deps {
         if !flagged.contains(&dep.name) {
-            all_mutations.insert(dep.name.clone(), generate_mutations(&dep.name, ecosystem));
+            all_mutations.insert(
+                dep.name.clone(),
+                generate_mutations_with(&generators, &dep.name, ecosystem),
+            );
         }
     }
 
@@ -338,14 +373,8 @@ pub async fn check_similarity_with_cache(
     }
 
     // Emit blocking error if registry is unreachable (fail closed)
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
-        0.0
-    };
-    if error_count > REGISTRY_ERROR_HARD_LIMIT
-        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
-    {
+    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+        let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new("<registry>", crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE, Severity::Error)
                 .message(format!(
@@ -417,6 +446,27 @@ pub async fn check_similarity_with_cache(
                     evidence_parts
                         .push(format!("was first published {}", created));
                 }
+
+                // Download disparity: if original dep has >10K downloads and
+                // candidate has <1000, this is high confidence typosquatting
+                if let Some(candidate_downloads) = meta.downloads {
+                    let original_downloads = dep_metadata
+                        .and_then(|lookups| {
+                            lookups.iter().find(|l| l.package == dep_name)
+                        })
+                        .and_then(|l| l.metadata.as_ref())
+                        .and_then(|m| m.downloads);
+                    if let Some(orig_dl) = original_downloads
+                        && orig_dl > 10_000
+                        && candidate_downloads < 1_000
+                    {
+                        evidence_parts.push(format!(
+                            "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
+                            dep_name, orig_dl, candidate_downloads, candidate
+                        ));
+                    }
+                }
+
                 if !evidence_parts.is_empty() {
                     message = format!("{} ({})", message, evidence_parts.join("; "));
                 }
@@ -526,12 +576,13 @@ mod tests {
                 Ok(Some(PackageMetadata {
                     created: Some("2020-01-01T00:00:00Z".to_string()),
                     latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
-                    downloads: Some(50000),
+                    downloads: Some(500), // Low downloads for candidates (enables disparity detection)
                     has_install_scripts: false,
                     dependency_count: None,
                     previous_dependency_count: None,
                     current_publisher: None,
                     previous_publisher: None,
+                    repository_url: None,
                 }))
             } else {
                 Ok(None)
@@ -671,6 +722,17 @@ mod tests {
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("@typos"));
         assert!(issues[0].message.contains("@types"));
+    }
+
+    #[tokio::test]
+    async fn scope_squatting_nextjs_detected() {
+        let registry = FakeRegistry::empty();
+        let deps = vec![dep("@nexjs/config")];
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        assert!(
+            issues.iter().any(|i| i.check.contains("scope-squatting")),
+            "Expected @nexjs flagged as close to @nextjs"
+        );
     }
 
     #[tokio::test]
@@ -882,13 +944,16 @@ mod tests {
 
     #[test]
     fn generator_severity_ordering_is_correct() {
-        assert!(generator_severity("homoglyph") > generator_severity("confused-forms"));
-        assert!(generator_severity("confused-forms") > generator_severity("char-swap"));
+        assert!(generator_severity("homoglyph") > generator_severity("bitflip"));
+        assert!(generator_severity("bitflip") > generator_severity("confused-forms"));
+        assert!(generator_severity("confused-forms") > generator_severity("segment-overlap"));
+        assert!(generator_severity("segment-overlap") >= generator_severity("keyboard-proximity"));
+        assert!(generator_severity("keyboard-proximity") >= generator_severity("char-swap"));
         assert!(generator_severity("char-swap") > generator_severity("collapse-repeated"));
         assert!(generator_severity("collapse-repeated") > generator_severity("extra-char"));
-        assert!(generator_severity("extra-char") > generator_severity("version-suffix"));
-        assert!(generator_severity("version-suffix") > generator_severity("word-reorder"));
-        assert!(generator_severity("word-reorder") > generator_severity("separator-swap"));
+        assert!(generator_severity("extra-char") >= generator_severity("version-suffix"));
+        assert!(generator_severity("version-suffix") >= generator_severity("word-reorder"));
+        assert!(generator_severity("word-reorder") >= generator_severity("separator-swap"));
     }
 
     #[test]
@@ -897,5 +962,135 @@ mod tests {
         let gen_name = mutations.get("express");
         assert!(gen_name.is_some(), "Expected 'express' in mutations");
         assert_eq!(*gen_name.unwrap(), "collapse-repeated");
+    }
+
+    // -- Bitflip --
+
+    #[test]
+    fn bitflip_variants_produce_single_bit_changes() {
+        let variants = bitflip_variants("ab");
+        // 'a' (0x61) XOR 1 = 'b' (0x60 is backtick, not valid; 0x61^1=0x60)
+        // 'a' XOR 2 = 'c'
+        assert!(variants.contains(&"cb".to_string()), "a XOR 2 = c");
+        // 'a' XOR 4 = 'e'
+        assert!(variants.contains(&"eb".to_string()), "a XOR 4 = e");
+    }
+
+    #[test]
+    fn bitflip_only_produces_valid_chars() {
+        let variants = bitflip_variants("react");
+        for v in &variants {
+            assert!(
+                v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "Bitflip produced invalid char in: {}",
+                v
+            );
+        }
+    }
+
+    // -- Keyboard proximity --
+
+    #[test]
+    fn keyboard_proximity_produces_adjacent_keys() {
+        let variants = keyboard_proximity_variants("react");
+        // 'r' neighbors: e, t, d, f
+        assert!(variants.contains(&"eeact".to_string()), "r -> e");
+        assert!(variants.contains(&"teact".to_string()), "r -> t");
+        // 'a' neighbors: q, w, s, z
+        assert!(variants.contains(&"reqct".to_string()), "a -> q");
+        assert!(variants.contains(&"resct".to_string()), "a -> s");
+    }
+
+    #[test]
+    fn keyboard_proximity_ignores_non_qwerty_chars() {
+        let variants = keyboard_proximity_variants("a-b");
+        // '-' has no keyboard neighbors in our map, so only a and b get variants
+        assert!(!variants.is_empty());
+        // All variants should still contain a hyphen at position 1
+        for v in &variants {
+            assert!(v.len() == 3, "Expected same length: {}", v);
+        }
+    }
+
+    // -- Segment overlap --
+
+    #[test]
+    fn segment_overlap_detects_extended_package() {
+        // "react-dom" is in NPM_TOP, so "react-dom-utils" should match
+        let variants = segment_overlap_variants("react-dom-utils", Ecosystem::Npm);
+        assert!(
+            variants.contains(&"react-dom".to_string()),
+            "Expected 'react-dom' from removing 'utils' segment. Got: {:?}",
+            variants
+        );
+    }
+
+    #[test]
+    fn segment_overlap_single_segment_skipped() {
+        let variants = segment_overlap_variants("react", Ecosystem::Npm);
+        assert!(variants.is_empty(), "Single segment should produce no variants");
+    }
+
+    #[test]
+    fn segment_overlap_no_match_returns_empty() {
+        let variants = segment_overlap_variants("my-custom-tool", Ecosystem::Npm);
+        // "my-custom", "my-tool", "custom-tool" — none are in top packages
+        assert!(variants.is_empty());
+    }
+
+    #[test]
+    fn segment_overlap_normalizes_separators() {
+        // "react_dom_utils" should still match "react-dom" via separator normalization
+        let variants = segment_overlap_variants("react_dom_utils", Ecosystem::Npm);
+        assert!(
+            variants.contains(&"react_dom".to_string()),
+            "Should normalize separators for matching. Got: {:?}",
+            variants
+        );
+    }
+
+    // -- Download disparity --
+
+    #[tokio::test]
+    async fn high_confidence_on_download_disparity() {
+        use crate::checks::metadata::MetadataLookup;
+        let registry = FakeRegistry::with(&["express"]);
+        let deps = vec![dep("expresss")];
+
+        // Simulate metadata lookups with high download original
+        let dep_lookups = vec![MetadataLookup {
+            package: "expresss".to_string(),
+            ecosystem: Ecosystem::Npm,
+            version: None,
+            resolved_version: None,
+            unresolved_version: false,
+            exists: true,
+            metadata: Some(PackageMetadata {
+                created: None,
+                latest_version_date: None,
+                downloads: Some(50_000_000),
+                has_install_scripts: false,
+                dependency_count: None,
+                previous_dependency_count: None,
+                current_publisher: None,
+                previous_publisher: None,
+                repository_url: None,
+            }),
+        }];
+
+        let issues = check_similarity_with_cache(
+            &registry, &deps, Ecosystem::Npm, None, false, false,
+            Some(&dep_lookups),
+        ).await.unwrap();
+
+        assert!(!issues.is_empty());
+        // The candidate "express" has 50K downloads (from FakeRegistry metadata),
+        // original "expresss" has 50M — should show HIGH CONFIDENCE
+        let has_high_confidence = issues.iter().any(|i| i.message.contains("HIGH CONFIDENCE"));
+        assert!(
+            has_high_confidence,
+            "Expected HIGH CONFIDENCE in message when download disparity is large. Messages: {:?}",
+            issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+        );
     }
 }

@@ -25,7 +25,7 @@ impl super::RegistryExistence for GoRegistry {
         self.validate_name(package_name)?;
         let encoded = encode_module_path(package_name);
         let url = format!("https://proxy.golang.org/{}/@latest", encoded);
-        let resp = self.client.get(&url).send().await?;
+        let resp = super::retry_get(&self.client, &url).await?;
         super::check_existence_status(resp.status(), "Go proxy", package_name)
     }
 

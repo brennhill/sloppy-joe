@@ -142,10 +142,8 @@ pub async fn check_malicious_with_cache(
     let mut pending = HashMap::new();
 
     for dep in deps {
-        if resolution.is_unresolved(dep) {
-            continue;
-        }
-
+        // Query OSV even for unresolved deps — OSV supports name-only queries
+        // and will return all known vulnerabilities for the package.
         let exact_version = resolution.exact_version(dep).map(str::to_string);
         let version_suffix = exact_version.clone().unwrap_or_default();
         let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
@@ -155,10 +153,6 @@ pub async fn check_malicious_with_cache(
                 .or_insert_with(|| (dep.name.clone(), dep.ecosystem, exact_version));
         }
     }
-
-    // Registry error tracking: >5 errors OR >10% failure rate triggers blocking issue.
-    const REGISTRY_ERROR_HARD_LIMIT: usize = 5;
-    const REGISTRY_ERROR_RATE_THRESHOLD: f64 = 0.10;
 
     let results: Vec<_> = stream::iter(pending.into_iter())
         .map(|(cache_key, (name, ecosystem, version))| async move {
@@ -181,14 +175,9 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    let error_rate = if total_queries > 0 {
-        error_count as f64 / total_queries as f64
-    } else {
-        0.0
-    };
-    if error_count > REGISTRY_ERROR_HARD_LIMIT
-        || (total_queries > 0 && error_rate > REGISTRY_ERROR_RATE_THRESHOLD)
-    {
+    let ecosystem = deps.first().map(|d| d.ecosystem).unwrap_or(crate::Ecosystem::Npm);
+    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+        let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new("<registry>", crate::checks::names::MALICIOUS_REGISTRY_UNREACHABLE, Severity::Error)
                 .message(format!(
@@ -201,10 +190,7 @@ pub async fn check_malicious_with_cache(
     }
 
     for dep in deps {
-        if resolution.is_unresolved(dep) {
-            continue;
-        }
-
+        // Check cache for results (including unresolved deps which now get queried)
         let version_suffix = resolution.exact_version(dep).unwrap_or_default();
         let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
         let vuln_ids = cache
@@ -306,6 +292,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unresolved_version_still_queries_osv() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            "vulnerable-pkg".to_string(),
+            vec!["CVE-2024-9999".to_string()],
+        );
+        let client = MockOsvClient { responses };
+
+        // Dep with no version (unresolved) — should still query OSV
+        let deps = vec![Dependency {
+            name: "vulnerable-pkg".to_string(),
+            version: None,
+            ecosystem: crate::Ecosystem::Npm,
+        }];
+        let issues =
+            check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
+                .await
+                .unwrap();
+
+        assert!(
+            issues.iter().any(|i| i.package == "vulnerable-pkg"
+                && i.check.contains("known-vulnerability")),
+            "Unresolved deps should still get OSV checks. Issues: {:?}",
+            issues.iter().map(|i| &i.check).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
     async fn cache_used_when_fresh() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -379,7 +393,8 @@ mod tests {
             .unwrap();
 
         assert!(issues.is_empty());
-        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+        // Non-exact versions now DO query OSV (with version: None) — fail-closed, not fail-open
+        assert_eq!(call_count.load(Ordering::SeqCst), 1, "Unresolved deps should still query OSV");
     }
 
     #[tokio::test]
