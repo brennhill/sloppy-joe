@@ -155,4 +155,54 @@ mod tests {
         // 11 errors — exceeds Go (10)
         assert!(exceeds_error_threshold(11, 100, Ecosystem::Go));
     }
+
+    // ── Edge cases for exceeds_error_threshold (lines 63-64) ──
+
+    #[test]
+    fn exactly_at_hard_limit_does_not_trigger() {
+        // Exactly 5 errors for npm (hard limit is 5) — > not >= so should NOT trigger
+        assert!(!exceeds_error_threshold(5, 100, Ecosystem::Npm));
+        // Exactly 10 errors for Go (hard limit is 10) — should NOT trigger
+        assert!(!exceeds_error_threshold(10, 100, Ecosystem::Go));
+    }
+
+    #[test]
+    fn one_above_hard_limit_triggers() {
+        assert!(exceeds_error_threshold(6, 100, Ecosystem::Npm));
+        assert!(exceeds_error_threshold(11, 100, Ecosystem::Go));
+    }
+
+    #[test]
+    fn rate_exactly_at_threshold_does_not_trigger() {
+        // npm threshold is 0.10. 1/10 = 0.10 exactly — > not >= so should NOT trigger
+        assert!(!exceeds_error_threshold(1, 10, Ecosystem::Npm));
+    }
+
+    #[test]
+    fn rate_just_above_threshold_triggers() {
+        // 2/10 = 0.20 > 0.10 npm threshold — triggers
+        assert!(exceeds_error_threshold(2, 10, Ecosystem::Npm));
+    }
+
+    #[test]
+    fn jvm_rate_threshold() {
+        // Jvm threshold is 0.20. 2/10 = 0.20 exactly — should NOT trigger
+        assert!(!exceeds_error_threshold(2, 10, Ecosystem::Jvm));
+        // 3/10 = 0.30 > 0.20 — triggers
+        assert!(exceeds_error_threshold(3, 10, Ecosystem::Jvm));
+    }
+
+    #[test]
+    fn single_error_below_min_queries_does_not_trigger() {
+        // 1 error out of 4 queries — below min queries for rate, below hard limit
+        assert!(!exceeds_error_threshold(1, 4, Ecosystem::Npm));
+    }
+
+    #[test]
+    fn accumulator_default_is_empty() {
+        let acc = ScanAccumulator::default();
+        assert!(acc.issues.is_empty());
+        assert!(acc.similarity_flagged.is_empty());
+        assert!(acc.metadata_lookups.is_none());
+    }
 }

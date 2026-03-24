@@ -505,4 +505,147 @@ mod tests {
         assert_eq!(data.transitive_deps.len(), 1);
         assert_eq!(data.transitive_deps[0].name, "loose-envify");
     }
+
+    // ── Ruby lockfile path tests ──
+
+    fn ruby_dep(name: &str, version: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: Some(version.to_string()),
+            ecosystem: Ecosystem::Ruby,
+        }
+    }
+
+    fn pypi_dep(name: &str, version: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: Some(version.to_string()),
+            ecosystem: Ecosystem::PyPI,
+        }
+    }
+
+    fn go_dep(name: &str, version: &str) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: Some(version.to_string()),
+            ecosystem: Ecosystem::Go,
+        }
+    }
+
+    #[test]
+    fn ruby_lockfile_resolves_versions() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Gemfile.lock"),
+            "GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.0.4)\n    pg (1.4.5)\n\nPLATFORMS\n  ruby\n",
+        )
+        .unwrap();
+        let deps = vec![ruby_dep("rails", "~> 7.0"), ruby_dep("pg", "1.4.5")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "7.0.4");
+        assert_eq!(result.resolved_version(&deps[1]).unwrap().version, "1.4.5");
+    }
+
+    #[test]
+    fn ruby_no_lockfile_uses_manifest_fallback() {
+        let dir = unique_dir();
+        // No Gemfile.lock — should fall back to manifest exact
+        let deps = vec![ruby_dep("rails", "7.0.4")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        // "7.0.4" is exact for Ruby ecosystem
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
+        );
+    }
+
+    #[test]
+    fn python_lockfile_resolves_versions() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("poetry.lock"),
+            "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
+        )
+        .unwrap();
+        let deps = vec![pypi_dep("requests", "==2.31.0")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "2.31.0");
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::Lockfile
+        );
+    }
+
+    #[test]
+    fn python_no_lockfile_uses_manifest_fallback() {
+        let dir = unique_dir();
+        let deps = vec![pypi_dep("requests", "==2.31.0")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
+        );
+    }
+
+    #[test]
+    fn go_no_lockfile_uses_manifest_fallback() {
+        let dir = unique_dir();
+        let deps = vec![go_dep("github.com/gin-gonic/gin", "v1.9.0")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        // Go ecosystem uses the "other" fallback path
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
+        );
+    }
+
+    #[test]
+    fn lockfile_data_parse_ruby_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Gemfile.lock"),
+            "GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.0.4)\n    actioncable (7.0.4)\n    pg (1.4.5)\n\nPLATFORMS\n  ruby\n",
+        )
+        .unwrap();
+        let direct = vec![ruby_dep("rails", "~> 7.0")];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        assert_eq!(data.resolution.exact_version(&direct[0]), Some("7.0.4"));
+        // actioncable and pg are transitive
+        assert!(data.transitive_deps.len() >= 2);
+        let names: Vec<&str> = data.transitive_deps.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"actioncable"));
+        assert!(names.contains(&"pg"));
+    }
+
+    #[test]
+    fn lockfile_data_parse_python_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("poetry.lock"),
+            "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[[package]]\nname = \"urllib3\"\nversion = \"2.1.0\"\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
+        )
+        .unwrap();
+        let direct = vec![pypi_dep("requests", "==2.31.0")];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        assert_eq!(data.resolution.exact_version(&direct[0]), Some("2.31.0"));
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(data.transitive_deps[0].name, "urllib3");
+    }
+
+    #[test]
+    fn lockfile_data_parse_no_lockfile_returns_empty_transitive() {
+        let dir = unique_dir();
+        let direct = vec![npm_dep("react", "18.3.1")];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        assert!(data.transitive_deps.is_empty());
+    }
+
+    #[test]
+    fn resolve_versions_empty_deps_returns_default() {
+        let dir = unique_dir();
+        let deps: Vec<Dependency> = vec![];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        assert!(result.exact_versions.is_empty());
+        assert!(result.issues.is_empty());
+    }
 }

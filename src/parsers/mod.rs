@@ -366,4 +366,163 @@ mod tests {
         assert_eq!(result.unwrap(), "ok");
         cleanup(&dir);
     }
+
+    // ── parse_all_ecosystems tests ──
+
+    #[test]
+    fn parse_all_ecosystems_empty_dir() {
+        let dir = empty_test_dir("parsers-all");
+        let results = parse_all_ecosystems(&dir);
+        assert!(results.is_empty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_single_npm() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "^18"}}"#,
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Npm);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_multiple_ecosystems() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies": {"react": "^18"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 2);
+        let ecosystems: Vec<crate::Ecosystem> = results.iter().map(|r| r[0].ecosystem).collect();
+        assert!(ecosystems.contains(&crate::Ecosystem::Npm));
+        assert!(ecosystems.contains(&crate::Ecosystem::PyPI));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_cargo() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname=\"t\"\nversion=\"0.1.0\"\n\n[dependencies]\nserde = \"1\"",
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Cargo);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_go_mod() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("go.mod"),
+            "module example.com/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9\n)\n",
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Go);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_gemfile() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(dir.join("Gemfile"), "gem 'rails'\n").unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Ruby);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_composer() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("composer.json"),
+            r#"{"require":{"laravel/framework":"^10"}}"#,
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Php);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_jvm_gradle() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("build.gradle"),
+            "implementation 'com.google.guava:guava:31.1-jre'",
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Jvm);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_jvm_gradle_kts() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("build.gradle.kts"),
+            "implementation(\"com.google.guava:guava:31.1-jre\")",
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Jvm);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_jvm_pom() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("pom.xml"),
+            "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.google.guava</groupId>\n      <artifactId>guava</artifactId>\n      <version>31.1-jre</version>\n    </dependency>\n  </dependencies>\n</project>",
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Jvm);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_csproj() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::write(
+            dir.join("app.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+        )
+        .unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Dotnet);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_skips_empty_manifests() {
+        let dir = empty_test_dir("parsers-all");
+        // An empty package.json with no deps should not produce a result
+        std::fs::write(dir.join("package.json"), r#"{}"#).unwrap();
+        let results = parse_all_ecosystems(&dir);
+        assert!(results.is_empty());
+        cleanup(&dir);
+    }
 }

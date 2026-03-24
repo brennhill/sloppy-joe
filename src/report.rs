@@ -402,4 +402,117 @@ mod tests {
         assert!(!json.contains("registry_url"));
         assert!(!json.contains("source"));
     }
+
+    #[test]
+    fn print_human_warnings_only_no_errors() {
+        // Exercises lines 140-144 (warnings section) and 167-170 (WARN footer)
+        let report = ScanReport::from_issues(
+            5,
+            vec![
+                Issue::new("slow-pkg", "metadata/version-age", Severity::Warning)
+                    .message("Version published recently")
+                    .fix("Wait 72 hours"),
+                Issue::new("old-pkg", "metadata/version-age", Severity::Warning)
+                    .message("Another warning")
+                    .fix("Check it"),
+            ],
+        );
+        assert!(report.has_issues());
+        assert!(!report.has_errors());
+        // Should not panic; exercises the warnings-only path
+        report.print_human();
+    }
+
+    #[test]
+    fn print_human_mixed_errors_and_warnings() {
+        // Exercises both error and warning sections, plus the summary pluralization
+        let report = ScanReport::from_issues(
+            10,
+            vec![
+                Issue::new("bad-pkg", "existence", Severity::Error)
+                    .message("not found")
+                    .fix("remove it"),
+                Issue::new("warn-pkg", "metadata/version-age", Severity::Warning)
+                    .message("recently published")
+                    .fix("wait"),
+            ],
+        );
+        assert!(report.has_errors());
+        report.print_human();
+    }
+
+    #[test]
+    fn print_human_single_error_singular_grammar() {
+        // 1 error, 0 warnings — exercises "error" singular at line 154/156
+        let report = ScanReport::from_issues(
+            3,
+            vec![
+                Issue::new("only-err", "existence", Severity::Error)
+                    .message("msg")
+                    .fix("fix"),
+            ],
+        );
+        report.print_human();
+    }
+
+    #[test]
+    fn print_human_single_warning_singular_grammar() {
+        // 0 errors, 1 warning — exercises "warning" singular at line 156-159
+        let report = ScanReport::from_issues(
+            3,
+            vec![
+                Issue::new("only-warn", "metadata/version-age", Severity::Warning)
+                    .message("msg")
+                    .fix("fix"),
+            ],
+        );
+        report.print_human();
+    }
+
+    #[test]
+    fn print_issue_with_transitive_source() {
+        // Exercises line 183 (source_label for transitive)
+        let mut i = Issue::new("transitive-pkg", "existence", Severity::Error)
+            .message("not found on registry")
+            .fix("remove it")
+            .suggestion("real-pkg")
+            .registry_url("https://example.com");
+        i.source = Some("transitive".to_string());
+        let report = ScanReport::from_issues(5, vec![i]);
+        report.print_human();
+    }
+
+    #[test]
+    fn print_issue_warning_with_transitive_source() {
+        // Exercises line 179 (Warning label/color) combined with transitive source
+        let mut i = Issue::new("transitive-warn", "metadata/version-age", Severity::Warning)
+            .message("recently published")
+            .fix("wait for it");
+        i.source = Some("transitive".to_string());
+        let report = ScanReport::from_issues(5, vec![i]);
+        report.print_human();
+    }
+
+    #[test]
+    fn print_issue_direct_source_no_label() {
+        // source = "direct" should not show [transitive] label
+        let mut i = Issue::new("direct-pkg", "existence", Severity::Error)
+            .message("msg")
+            .fix("fix");
+        i.source = Some("direct".to_string());
+        let report = ScanReport::from_issues(1, vec![i]);
+        report.print_human();
+    }
+
+    #[test]
+    fn print_issue_no_suggestion_no_url() {
+        // Exercises the paths where suggestion and registry_url are None
+        let i = Issue::new("bare-pkg", "existence", Severity::Error)
+            .message("msg")
+            .fix("fix");
+        assert!(i.suggestion.is_none());
+        assert!(i.registry_url.is_none());
+        let report = ScanReport::from_issues(1, vec![i]);
+        report.print_human();
+    }
 }

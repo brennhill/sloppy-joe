@@ -242,4 +242,83 @@ mod tests {
                 "Error hard limit for {} should be between 3 and 20", eco);
         }
     }
+
+    // ── osv_name exhaustive tests (lines 57-66) ──
+
+    #[test]
+    fn osv_name_npm() {
+        assert_eq!(Ecosystem::Npm.osv_name(), "npm");
+    }
+
+    #[test]
+    fn osv_name_pypi() {
+        assert_eq!(Ecosystem::PyPI.osv_name(), "PyPI");
+    }
+
+    #[test]
+    fn osv_name_cargo() {
+        assert_eq!(Ecosystem::Cargo.osv_name(), "crates.io");
+    }
+
+    #[test]
+    fn osv_name_go() {
+        assert_eq!(Ecosystem::Go.osv_name(), "Go");
+    }
+
+    #[test]
+    fn osv_name_ruby() {
+        assert_eq!(Ecosystem::Ruby.osv_name(), "RubyGems");
+    }
+
+    #[test]
+    fn osv_name_jvm() {
+        assert_eq!(Ecosystem::Jvm.osv_name(), "Maven");
+    }
+
+    #[test]
+    fn osv_name_dotnet() {
+        assert_eq!(Ecosystem::Dotnet.osv_name(), "NuGet");
+    }
+
+    #[test]
+    fn osv_name_php() {
+        assert_eq!(Ecosystem::Php.osv_name(), "Packagist");
+    }
+
+    // ── registry_url_for Jvm edge cases (line 90) ──
+
+    #[test]
+    fn registry_url_for_jvm_with_colon() {
+        let url = Ecosystem::Jvm.registry_url_for("com.google.guava:guava");
+        assert_eq!(url, "https://search.maven.org/artifact/com.google.guava/guava");
+    }
+
+    #[test]
+    fn registry_url_for_jvm_without_colon() {
+        // When there's no colon, falls back to search URL (line 90)
+        let url = Ecosystem::Jvm.registry_url_for("guava");
+        assert_eq!(url, "https://search.maven.org/search?q=guava");
+    }
+
+    // ── is_case_insensitive exhaustive ──
+
+    #[test]
+    fn is_case_insensitive_correct() {
+        assert!(Ecosystem::Npm.is_case_insensitive());
+        assert!(Ecosystem::PyPI.is_case_insensitive());
+        assert!(Ecosystem::Cargo.is_case_insensitive());
+        assert!(Ecosystem::Dotnet.is_case_insensitive());
+        assert!(Ecosystem::Php.is_case_insensitive());
+        assert!(!Ecosystem::Go.is_case_insensitive());
+        assert!(!Ecosystem::Ruby.is_case_insensitive());
+        assert!(!Ecosystem::Jvm.is_case_insensitive());
+    }
+
+    // ── Jvm error thresholds ──
+
+    #[test]
+    fn jvm_has_higher_rate_threshold_than_default() {
+        assert!(Ecosystem::Jvm.error_rate_threshold() > Ecosystem::Npm.error_rate_threshold());
+        assert_eq!(Ecosystem::Jvm.error_rate_threshold(), 0.20);
+    }
 }

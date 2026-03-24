@@ -691,4 +691,88 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("must use HTTPS"));
     }
+
+    // ── parse_config_content edge cases ──
+
+    #[test]
+    fn parse_config_content_trailing_comma_hint() {
+        let content = r#"{
+  "canonical": {},
+  "internal": {},
+}"#;
+        let err = parse_config_content(content, "test.json").unwrap_err();
+        assert!(err.contains("Trailing commas"));
+    }
+
+    #[test]
+    fn parse_config_content_not_object_hint() {
+        let content = r#"["not", "an", "object"]"#;
+        let err = parse_config_content(content, "test.json").unwrap_err();
+        assert!(err.contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn parse_config_content_empty_string() {
+        let err = parse_config_content("", "test.json").unwrap_err();
+        assert!(err.contains("Config is empty"));
+    }
+
+    #[test]
+    fn parse_config_content_whitespace_only() {
+        let err = parse_config_content("   \n  ", "test.json").unwrap_err();
+        assert!(err.contains("Config is empty"));
+    }
+
+    #[test]
+    fn parse_config_content_comment_hint() {
+        let content = r#"{ // comment
+  "canonical": {}
+}"#;
+        let err = parse_config_content(content, "test.json").unwrap_err();
+        assert!(err.contains("comments"));
+    }
+
+    #[test]
+    fn parse_config_content_valid_minimal() {
+        let content = r#"{}"#;
+        let config = parse_config_content(content, "test.json").unwrap();
+        assert!(config.canonical.is_empty());
+        assert_eq!(config.min_version_age_hours, 72);
+    }
+
+    #[test]
+    fn parse_config_content_validation_fails() {
+        let content = r#"{"internal":{"nodejs":["pkg"]}}"#;
+        let err = parse_config_content(content, "test.json").unwrap_err();
+        assert!(err.contains("nodejs"));
+        assert!(err.contains("validation failed"));
+    }
+
+    #[test]
+    fn parse_config_content_valid_full() {
+        let content = r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48}"#;
+        let config = parse_config_content(content, "test.json").unwrap();
+        assert!(config.canonical.contains_key("npm"));
+        assert_eq!(config.min_version_age_hours, 48);
+    }
+
+    #[tokio::test]
+    async fn load_config_from_source_none_returns_default() {
+        let config = load_config_from_source(None, None).await.unwrap();
+        assert!(config.canonical.is_empty());
+        assert_eq!(config.min_version_age_hours, 72);
+    }
+
+    #[tokio::test]
+    async fn load_config_from_source_file_path() {
+        let dir = std::env::temp_dir().join("sloppy-joe-test-source-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"canonical":{}}"#).unwrap();
+        let config = load_config_from_source(Some(path.to_str().unwrap()), None)
+            .await
+            .unwrap();
+        assert!(config.canonical.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

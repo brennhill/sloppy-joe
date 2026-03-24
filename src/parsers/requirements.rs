@@ -204,4 +204,137 @@ mod tests {
         assert_eq!(deps[0].version, Some("==2.28.0".to_string()));
         cleanup(&dir);
     }
+
+    // ── Environment marker edge cases ──
+
+    #[test]
+    fn environment_marker_with_single_quotes() {
+        let dir = setup_dir("pywin32>=300; sys_platform == 'win32'");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "pywin32");
+        assert_eq!(deps[0].version, Some(">=300".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn environment_marker_semicolon_inside_quotes_not_stripped() {
+        // A semicolon inside quotes should NOT be treated as a marker delimiter
+        // "pkg>=1.0; extra == \"foo;bar\"" — the ; inside quotes should be ignored
+        let dir = setup_dir("pkg>=1.0; extra == \"foo;bar\"");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "pkg");
+        assert_eq!(deps[0].version, Some(">=1.0".to_string()));
+        cleanup(&dir);
+    }
+
+    // ── -r / --requirement include lines ──
+
+    #[test]
+    fn skip_r_include_flag() {
+        let dir = setup_dir("-r base.txt\nflask==2.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn skip_requirement_long_flag() {
+        let dir = setup_dir("--requirement base.txt\nflask==2.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn skip_other_flags() {
+        // Other flags like -i, -e, --index-url should also be skipped (they start with -)
+        let dir = setup_dir("-i https://pypi.org/simple\n-e .\nflask==2.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        cleanup(&dir);
+    }
+
+    // ── PEP 503 normalization edge cases ──
+
+    #[test]
+    fn normalize_underscores_and_dots() {
+        let dir = setup_dir("My_Package.Name==1.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps[0].name, "my-package-name");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn normalize_consecutive_separators() {
+        let dir = setup_dir("my__package..name==1.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps[0].name, "my-package-name");
+        cleanup(&dir);
+    }
+
+    // ── Tilde-equals version specifier ──
+
+    #[test]
+    fn parse_tilde_equals_version() {
+        let dir = setup_dir("Django~=4.2");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps[0].name, "django");
+        assert_eq!(deps[0].version, Some("~=4.2".to_string()));
+        cleanup(&dir);
+    }
+
+    // ── Not-equals version specifier ──
+
+    #[test]
+    fn parse_not_equals_version() {
+        let dir = setup_dir("requests!=2.28.0");
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps[0].name, "requests");
+        assert_eq!(deps[0].version, Some("!=2.28.0".to_string()));
+        cleanup(&dir);
+    }
+
+    // ── find_unquoted_semicolon unit tests ──
+
+    #[test]
+    fn find_unquoted_semicolon_basic() {
+        assert_eq!(find_unquoted_semicolon("foo; bar"), Some(3));
+    }
+
+    #[test]
+    fn find_unquoted_semicolon_none() {
+        assert_eq!(find_unquoted_semicolon("foo bar"), None);
+    }
+
+    #[test]
+    fn find_unquoted_semicolon_in_double_quotes() {
+        assert_eq!(find_unquoted_semicolon(r#"foo "a;b" ; bar"#), Some(10));
+    }
+
+    #[test]
+    fn find_unquoted_semicolon_in_single_quotes() {
+        assert_eq!(find_unquoted_semicolon("foo 'a;b' ; bar"), Some(10));
+    }
+
+    // ── normalize_distribution_name unit tests ──
+
+    #[test]
+    fn normalize_distribution_name_strips_extras() {
+        assert_eq!(normalize_distribution_name("requests[socks]"), "requests");
+    }
+
+    #[test]
+    fn normalize_distribution_name_lowercases() {
+        assert_eq!(normalize_distribution_name("Flask"), "flask");
+    }
+
+    #[test]
+    fn normalize_distribution_name_empty_input() {
+        assert_eq!(normalize_distribution_name(""), "");
+    }
 }
