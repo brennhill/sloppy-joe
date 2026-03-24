@@ -37,6 +37,10 @@ fn metadata_from_body(
         .and_then(|v| v["published_by"]["login"].as_str())
         .map(|s| s.to_string());
 
+    let repository_url = body["crate"]["repository"]
+        .as_str()
+        .map(|s| s.to_string());
+
     Some(super::PackageMetadata {
         created,
         latest_version_date,
@@ -46,6 +50,7 @@ fn metadata_from_body(
         previous_dependency_count: None,
         current_publisher,
         previous_publisher,
+        repository_url,
     })
 }
 

@@ -32,6 +32,8 @@ pub struct PackageMetadata {
     pub current_publisher: Option<String>,
     /// Publisher of the previous version
     pub previous_publisher: Option<String>,
+    /// Source repository URL (GitHub, GitLab, etc.)
+    pub repository_url: Option<String>,
 }
 
 #[async_trait]

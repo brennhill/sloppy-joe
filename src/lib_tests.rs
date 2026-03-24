@@ -38,6 +38,7 @@ impl RegistryMetadata for FakeRegistry {
                 previous_dependency_count: None,
                 current_publisher: None,
                 previous_publisher: None,
+                repository_url: None,
             }))
         } else {
             Ok(None)
@@ -96,6 +97,7 @@ impl RegistryMetadata for RecordingRegistry {
                 previous_dependency_count: None,
                 current_publisher: None,
                 previous_publisher: None,
+                repository_url: None,
             }))
         } else {
             Ok(None)

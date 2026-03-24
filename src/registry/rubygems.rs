@@ -88,6 +88,12 @@ impl super::RegistryMetadata for RubyGemsRegistry {
             body["version_created_at"].as_str().map(|s| s.to_string())
         };
 
+        let repository_url = body["source_code_uri"]
+            .as_str()
+            .or_else(|| body["homepage_uri"].as_str()
+                .filter(|u| u.contains("github.com") || u.contains("gitlab.com")))
+            .map(|s| s.to_string());
+
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
@@ -97,6 +103,7 @@ impl super::RegistryMetadata for RubyGemsRegistry {
             previous_dependency_count: None,
             current_publisher: None,
             previous_publisher: None,
+            repository_url,
         }))
     }
 }

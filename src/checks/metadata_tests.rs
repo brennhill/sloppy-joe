@@ -45,6 +45,7 @@ fn default_meta() -> PackageMetadata {
         previous_dependency_count: None,
         current_publisher: None,
         previous_publisher: None,
+        repository_url: Some("https://github.com/example/pkg".to_string()),
     }
 }
 
@@ -255,6 +256,57 @@ async fn same_maintainer_not_flagged() {
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(&registry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap();
     assert!(!issues.iter().any(|i| i.check == "metadata/maintainer-change"));
+}
+
+#[tokio::test]
+async fn no_repository_on_new_package_flagged() {
+    use crate::cache;
+    let meta = PackageMetadata {
+        created: Some(cache::now_iso8601()),
+        downloads: Some(50),
+        repository_url: None,
+        ..default_meta()
+    };
+    let registry = FakeRegistry { metadata_response: Some(meta) };
+    let deps = vec![dep_with_version("suspicious-pkg", "0.1.0")];
+    let issues = check_metadata(&registry, &deps, &config_with_age(0), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+        "Expected no-repository warning for new+low-download package without repo URL"
+    );
+}
+
+#[tokio::test]
+async fn has_repository_not_flagged() {
+    use crate::cache;
+    let meta = PackageMetadata {
+        created: Some(cache::now_iso8601()),
+        downloads: Some(50),
+        repository_url: Some("https://github.com/example/pkg".to_string()),
+        ..default_meta()
+    };
+    let registry = FakeRegistry { metadata_response: Some(meta) };
+    let deps = vec![dep_with_version("ok-pkg", "0.1.0")];
+    let issues = check_metadata(&registry, &deps, &config_with_age(0), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        !issues.iter().any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+        "Should not flag package with repository URL"
+    );
+}
+
+#[tokio::test]
+async fn no_repository_on_old_popular_package_not_flagged() {
+    let meta = PackageMetadata {
+        repository_url: None,
+        ..default_meta() // old (2020), 50K downloads
+    };
+    let registry = FakeRegistry { metadata_response: Some(meta) };
+    let deps = vec![dep_with_version("old-pkg", "5.0.0")];
+    let issues = check_metadata(&registry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        !issues.iter().any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+        "Should not flag old popular package even without repo URL"
+    );
 }
 
 #[tokio::test]

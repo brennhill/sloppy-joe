@@ -173,6 +173,12 @@ pub(crate) fn issues_from_lookups(
         ));
         issues.extend(signals::check_dependency_explosion(lookup, meta));
         issues.extend(signals::check_maintainer_change(lookup, meta));
+        issues.extend(signals::check_no_repository(
+            lookup,
+            meta,
+            is_new_package.is_some(),
+            is_low_downloads.is_some(),
+        ));
     }
 
     issues

@@ -104,6 +104,7 @@ impl super::RegistryMetadata for MavenRegistry {
             previous_dependency_count: None,
             current_publisher: None,
             previous_publisher: None,
+            repository_url: None,
         }))
     }
 }

@@ -74,6 +74,11 @@ fn metadata_from_body(
             .map(|s| s.to_string())
     });
 
+    let repository_url = body["repository"]["url"]
+        .as_str()
+        .or_else(|| body["repository"].as_str())
+        .map(|s| s.to_string());
+
     Some(super::PackageMetadata {
         created,
         latest_version_date,
@@ -83,6 +88,7 @@ fn metadata_from_body(
         previous_dependency_count,
         current_publisher,
         previous_publisher,
+        repository_url,
     })
 }
 
