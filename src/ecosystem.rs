@@ -70,7 +70,7 @@ impl Ecosystem {
     /// Whether this ecosystem's registry supports metadata lookups
     /// (version history, download counts, install scripts, publisher info).
     pub fn supports_metadata(&self) -> bool {
-        matches!(self, Self::Npm | Self::PyPI | Self::Cargo | Self::Ruby | Self::Jvm)
+        matches!(self, Self::Npm | Self::PyPI | Self::Cargo | Self::Ruby | Self::Jvm | Self::Go | Self::Dotnet | Self::Php)
     }
 
     /// User-facing registry URL for a package in this ecosystem.
@@ -206,9 +206,9 @@ mod tests {
         assert!(Ecosystem::Cargo.supports_metadata());
         assert!(Ecosystem::Ruby.supports_metadata());
         assert!(Ecosystem::Jvm.supports_metadata());
-        assert!(!Ecosystem::Go.supports_metadata());
-        assert!(!Ecosystem::Php.supports_metadata());
-        assert!(!Ecosystem::Dotnet.supports_metadata());
+        assert!(Ecosystem::Go.supports_metadata());
+        assert!(Ecosystem::Php.supports_metadata());
+        assert!(Ecosystem::Dotnet.supports_metadata());
     }
 
     #[test]
