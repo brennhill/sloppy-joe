@@ -259,6 +259,38 @@ async fn same_maintainer_not_flagged() {
 }
 
 #[tokio::test]
+async fn install_script_with_no_repo_flagged() {
+    let meta = PackageMetadata {
+        has_install_scripts: true,
+        repository_url: None,
+        ..default_meta()
+    };
+    let registry = FakeRegistry { metadata_response: Some(meta) };
+    let deps = vec![dep_with_version("sketchy-pkg", "1.0.0")];
+    let issues = check_metadata(&registry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.check == crate::checks::names::METADATA_INSTALL_SCRIPT_RISK),
+        "Expected install-script-risk when install scripts + no repo URL"
+    );
+}
+
+#[tokio::test]
+async fn install_script_with_repo_not_amplified() {
+    let meta = PackageMetadata {
+        has_install_scripts: true,
+        repository_url: Some("https://github.com/example/pkg".to_string()),
+        ..default_meta() // old, 50K downloads
+    };
+    let registry = FakeRegistry { metadata_response: Some(meta) };
+    let deps = vec![dep_with_version("legit-pkg", "5.0.0")];
+    let issues = check_metadata(&registry, &deps, &config_with_age(72), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        !issues.iter().any(|i| i.check == crate::checks::names::METADATA_INSTALL_SCRIPT_RISK),
+        "Should not flag install scripts on old popular package WITH repo"
+    );
+}
+
+#[tokio::test]
 async fn no_repository_on_new_package_flagged() {
     use crate::cache;
     let meta = PackageMetadata {

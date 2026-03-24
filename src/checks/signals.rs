@@ -106,8 +106,9 @@ pub(crate) fn check_install_script_risk(
 
     let has_similarity = similarity_flagged.contains(&lookup.package);
     let has_low_downloads = meta.downloads.is_some_and(|d| d < 1000);
+    let has_no_repository = meta.repository_url.is_none();
 
-    if !is_new_package && !is_low_downloads && !has_low_downloads && !has_similarity {
+    if !is_new_package && !is_low_downloads && !has_low_downloads && !has_similarity && !has_no_repository {
         return None;
     }
 
@@ -124,6 +125,9 @@ pub(crate) fn check_install_script_risk(
         }
     if has_similarity {
         reasons.push("was flagged for name similarity to a popular package".to_string());
+    }
+    if has_no_repository {
+        reasons.push("has no source repository URL".to_string());
     }
     let reason_str = reasons.join(" and ");
 
