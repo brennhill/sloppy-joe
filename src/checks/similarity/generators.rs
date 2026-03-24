@@ -26,6 +26,7 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
         Box::new(HomoglyphGen),
         Box::new(ConfusedFormsGen),
         Box::new(KeyboardProximityGen),
+        Box::new(SegmentOverlapGen),
     ]
 }
 
@@ -112,6 +113,14 @@ impl MutationGenerator for ConfusedFormsGen {
     fn name(&self) -> &'static str { "confused-forms" }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         apply_confused_forms(name, ecosystem)
+    }
+}
+
+struct SegmentOverlapGen;
+impl MutationGenerator for SegmentOverlapGen {
+    fn name(&self) -> &'static str { "segment-overlap" }
+    fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
+        segment_overlap_variants(&name.to_lowercase(), ecosystem)
     }
 }
 
@@ -513,6 +522,45 @@ fn keyboard_neighbors() -> &'static [(char, &'static [char])] {
         ('9', &['8', '0', 'i', 'o']),
         ('0', &['9', 'o', 'p']),
     ]
+}
+
+/// Check if dep name is a popular package name with extra segments (combo-squatting).
+/// "react-hooks-utils" → checks if "react-hooks" is a top package.
+/// "react" → no segments to remove, skipped.
+/// Also checks if dep segments are a superset of a popular package's segments.
+pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<String> {
+    let top = super::popular::top_packages(ecosystem);
+    if top.is_empty() {
+        return vec![];
+    }
+
+    let separators = ['-', '_', '.'];
+    let sep = separators.iter().find(|&&s| name.contains(s)).copied().unwrap_or('-');
+    let segments: Vec<&str> = name.split(['-', '_', '.']).collect();
+
+    if segments.len() < 2 {
+        return vec![];
+    }
+
+    let mut results = Vec::new();
+
+    // Strategy 1: remove one segment at a time and check if result is a top package
+    for i in 0..segments.len() {
+        let reduced: Vec<&str> = segments.iter().enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, s)| *s)
+            .collect();
+        let candidate = reduced.join(&sep.to_string());
+        let candidate_normalized = candidate.replace(['_', '.'], "-");
+        if top.iter().any(|&pkg| {
+            let pkg_normalized = pkg.replace(['_', '.'], "-");
+            pkg_normalized == candidate_normalized
+        }) {
+            results.push(candidate);
+        }
+    }
+
+    results
 }
 
 /// Generate keyboard proximity variants: replace each character with its

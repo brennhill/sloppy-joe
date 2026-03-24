@@ -30,6 +30,7 @@ pub const SIMILARITY_HOMOGLYPH: &str = "similarity/homoglyph";
 pub const SIMILARITY_CONFUSED_FORMS: &str = "similarity/confused-forms";
 pub const SIMILARITY_BITFLIP: &str = "similarity/bitflip";
 pub const SIMILARITY_KEYBOARD_PROXIMITY: &str = "similarity/keyboard-proximity";
+pub const SIMILARITY_SEGMENT_OVERLAP: &str = "similarity/segment-overlap";
 pub const SIMILARITY_MUTATION_MATCH: &str = "similarity/mutation-match";
 
 /// Map a generator name (from MutationGenerator::name()) to its check name constant.
@@ -45,6 +46,7 @@ pub fn similarity_check_name(generator_name: &str) -> &'static str {
         "confused-forms" => SIMILARITY_CONFUSED_FORMS,
         "bitflip" => SIMILARITY_BITFLIP,
         "keyboard-proximity" => SIMILARITY_KEYBOARD_PROXIMITY,
+        "segment-overlap" => SIMILARITY_SEGMENT_OVERLAP,
         "scope-squatting" => SIMILARITY_SCOPE_SQUATTING,
         "case-variant" => SIMILARITY_CASE_VARIANT,
         _ => SIMILARITY_MUTATION_MATCH,
@@ -81,7 +83,8 @@ mod tests {
             SIMILARITY_COLLAPSE_REPEATED, SIMILARITY_VERSION_SUFFIX,
             SIMILARITY_WORD_REORDER, SIMILARITY_CHAR_SWAP, SIMILARITY_EXTRA_CHAR,
             SIMILARITY_HOMOGLYPH, SIMILARITY_CONFUSED_FORMS,
-            SIMILARITY_BITFLIP, SIMILARITY_KEYBOARD_PROXIMITY, SIMILARITY_MUTATION_MATCH,
+            SIMILARITY_BITFLIP, SIMILARITY_KEYBOARD_PROXIMITY,
+            SIMILARITY_SEGMENT_OVERLAP, SIMILARITY_MUTATION_MATCH,
             METADATA_REGISTRY_UNREACHABLE,
             MALICIOUS_KNOWN_VULNERABILITY, MALICIOUS_REGISTRY_UNREACHABLE,
             RESOLUTION_PARSE_FAILED, RESOLUTION_MISSING_LOCKFILE_ENTRY,

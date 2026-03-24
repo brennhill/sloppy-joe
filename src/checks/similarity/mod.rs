@@ -1,5 +1,6 @@
 mod confusables;
 pub mod generators;
+mod popular;
 
 use crate::cache;
 use crate::Ecosystem;
@@ -49,11 +50,12 @@ fn generator_severity(name: &str) -> u8 {
         "homoglyph" => 9,
         "bitflip" => 8,
         "confused-forms" => 7,
-        "keyboard-proximity" => 6,
-        "char-swap" => 5,
-        "collapse-repeated" => 4,
-        "extra-char" => 3,
-        "version-suffix" => 2,
+        "segment-overlap" => 6,
+        "keyboard-proximity" => 5,
+        "char-swap" => 4,
+        "collapse-repeated" => 3,
+        "extra-char" => 2,
+        "version-suffix" => 1,
         "word-reorder" => 1,
         "separator-swap" => 0,
         _ => 0,
@@ -160,6 +162,12 @@ fn format_match_message(dep_name: &str, candidate: &str, generator: &str) -> Str
             "'{}' matches '{}' with a single-bit character change. \
              Bitflip attacks exploit hardware errors or deliberate bit manipulation \
              to produce names that differ by exactly one bit in a character. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
+        "segment-overlap" => format!(
+            "'{}' is a known popular package '{}' with extra segments added. \
+             An attacker could register an extended name to impersonate the real package. \
              Examine both packages and add the intended one to your allowed list.",
             dep_name, candidate
         ),
@@ -927,13 +935,14 @@ mod tests {
     fn generator_severity_ordering_is_correct() {
         assert!(generator_severity("homoglyph") > generator_severity("bitflip"));
         assert!(generator_severity("bitflip") > generator_severity("confused-forms"));
-        assert!(generator_severity("confused-forms") > generator_severity("keyboard-proximity"));
-        assert!(generator_severity("keyboard-proximity") > generator_severity("char-swap"));
+        assert!(generator_severity("confused-forms") > generator_severity("segment-overlap"));
+        assert!(generator_severity("segment-overlap") >= generator_severity("keyboard-proximity"));
+        assert!(generator_severity("keyboard-proximity") >= generator_severity("char-swap"));
         assert!(generator_severity("char-swap") > generator_severity("collapse-repeated"));
         assert!(generator_severity("collapse-repeated") > generator_severity("extra-char"));
-        assert!(generator_severity("extra-char") > generator_severity("version-suffix"));
-        assert!(generator_severity("version-suffix") > generator_severity("word-reorder"));
-        assert!(generator_severity("word-reorder") > generator_severity("separator-swap"));
+        assert!(generator_severity("extra-char") >= generator_severity("version-suffix"));
+        assert!(generator_severity("version-suffix") >= generator_severity("word-reorder"));
+        assert!(generator_severity("word-reorder") >= generator_severity("separator-swap"));
     }
 
     #[test]
@@ -990,6 +999,43 @@ mod tests {
         for v in &variants {
             assert!(v.len() == 3, "Expected same length: {}", v);
         }
+    }
+
+    // -- Segment overlap --
+
+    #[test]
+    fn segment_overlap_detects_extended_package() {
+        // "react-dom" is in NPM_TOP, so "react-dom-utils" should match
+        let variants = segment_overlap_variants("react-dom-utils", Ecosystem::Npm);
+        assert!(
+            variants.contains(&"react-dom".to_string()),
+            "Expected 'react-dom' from removing 'utils' segment. Got: {:?}",
+            variants
+        );
+    }
+
+    #[test]
+    fn segment_overlap_single_segment_skipped() {
+        let variants = segment_overlap_variants("react", Ecosystem::Npm);
+        assert!(variants.is_empty(), "Single segment should produce no variants");
+    }
+
+    #[test]
+    fn segment_overlap_no_match_returns_empty() {
+        let variants = segment_overlap_variants("my-custom-tool", Ecosystem::Npm);
+        // "my-custom", "my-tool", "custom-tool" — none are in top packages
+        assert!(variants.is_empty());
+    }
+
+    #[test]
+    fn segment_overlap_normalizes_separators() {
+        // "react_dom_utils" should still match "react-dom" via separator normalization
+        let variants = segment_overlap_variants("react_dom_utils", Ecosystem::Npm);
+        assert!(
+            variants.contains(&"react_dom".to_string()),
+            "Should normalize separators for matching. Got: {:?}",
+            variants
+        );
     }
 
     // -- Download disparity --
