@@ -37,6 +37,30 @@ pub async fn scan_with_source(
     scan_with_source_full(project_dir, project_type, config_source, deep, false, false, None).await
 }
 
+/// Warm the cache by running a full scan without the manifest hash skip.
+/// Returns the report so callers can show how many packages were indexed.
+pub async fn warm_cache(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config_source: Option<&str>,
+    deep: bool,
+    paranoid: bool,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<ScanReport> {
+    let config = config::load_config_from_source(config_source, Some(project_dir))
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let opts = ScanOptions {
+        deep,
+        paranoid,
+        no_cache: false,
+        cache_dir,
+        disable_osv_disk_cache: false,
+        skip_hash_check: true,
+    };
+    scan_with_config(project_dir, project_type, config, &opts).await
+}
+
 pub async fn scan_with_source_full(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
@@ -49,7 +73,7 @@ pub async fn scan_with_source_full(
     let config = config::load_config_from_source(config_source, Some(project_dir))
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    let opts = ScanOptions { deep, paranoid, no_cache, cache_dir, disable_osv_disk_cache: false };
+    let opts = ScanOptions { deep, paranoid, no_cache, cache_dir, disable_osv_disk_cache: false, skip_hash_check: false };
     scan_with_config(project_dir, project_type, config, &opts).await
 }
 
@@ -92,7 +116,7 @@ async fn scan_with_config(
     let deps = parsers::parse_dependencies(project_dir, project_type)?;
 
     // Skip scan if deps haven't changed (manifest hash check)
-    if !opts.no_cache && !deps.is_empty() {
+    if !opts.no_cache && !opts.skip_hash_check && !deps.is_empty() {
         let hash = deps_hash(&deps);
         let cache_base = opts.cache_dir
             .map(std::path::PathBuf::from)
@@ -281,6 +305,8 @@ pub struct ScanOptions<'a> {
     pub cache_dir: Option<&'a std::path::Path>,
     /// Disable OSV disk cache entirely (for testing).
     pub disable_osv_disk_cache: bool,
+    /// Skip the manifest hash check (used by `cache` command to always run).
+    pub skip_hash_check: bool,
 }
 
 /// A dependency parsed from a project manifest file (package.json, Cargo.toml, etc.).

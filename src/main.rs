@@ -88,6 +88,39 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
     },
+    /// Warm the cache by running all network queries without reporting issues.
+    ///
+    /// Run locally before pushing so CI benefits from warm cache.
+    /// Always exits 0 — this is a preparation step, not a gate.
+    ///
+    ///   sloppy-joe cache
+    ///   sloppy-joe cache --dir ./my-project
+    ///   sloppy-joe cache --deep --paranoid   # warm everything
+    Cache {
+        /// Project type: npm, pypi, cargo, go, ruby, php, jvm, dotnet
+        #[arg(long = "type", value_name = "ECOSYSTEM")]
+        project_type: Option<String>,
+
+        /// Project directory to scan [default: current directory]
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+
+        /// Config file path or URL.
+        #[arg(long, env = "SLOPPY_JOE_CONFIG", value_name = "PATH_OR_URL")]
+        config: Option<String>,
+
+        /// Also warm transitive dependency caches
+        #[arg(long)]
+        deep: bool,
+
+        /// Also warm bitflip mutation caches (expensive)
+        #[arg(long)]
+        paranoid: bool,
+
+        /// Directory to store cache files.
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<PathBuf>,
+    },
     /// Print a template config to stdout
     ///
     /// Pipe to a file OUTSIDE the project directory:
@@ -127,6 +160,39 @@ async fn main() {
                 Err(e) => {
                     eprintln!("Error: {:#}", e);
                     process::exit(2);
+                }
+            }
+        }
+        Commands::Cache {
+            project_type,
+            dir,
+            config,
+            deep,
+            paranoid,
+            cache_dir,
+        } => {
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+            eprintln!("Warming cache for {} ...", dir.display());
+            match sloppy_joe::warm_cache(
+                &dir,
+                project_type.as_deref(),
+                config.as_deref(),
+                deep,
+                paranoid,
+                cache_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(report) => {
+                    eprintln!(
+                        "Cache warmed. {} packages indexed.",
+                        report.packages_checked
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Warning: cache warming encountered errors: {:#}", e);
+                    eprintln!("Partial cache may have been written. CI will retry failed queries.");
+                    // Always exit 0 — cache warming is best-effort
                 }
             }
         }
