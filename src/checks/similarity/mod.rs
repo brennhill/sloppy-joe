@@ -190,10 +190,12 @@ pub async fn check_similarity(
     deps: &[Dependency],
     ecosystem: Ecosystem,
 ) -> Result<Vec<Issue>> {
-    check_similarity_with_cache(registry, deps, ecosystem, None, false, false).await
+    check_similarity_with_cache(registry, deps, ecosystem, None, false, false, None).await
 }
 
 /// Check similarity with configurable cache and generator selection.
+/// `dep_metadata` provides download counts for the original dependencies,
+/// enabling download disparity detection (HIGH CONFIDENCE on large gaps).
 pub async fn check_similarity_with_cache(
     registry: &dyn Registry,
     deps: &[Dependency],
@@ -201,6 +203,7 @@ pub async fn check_similarity_with_cache(
     cache_dir: Option<&Path>,
     no_cache: bool,
     paranoid: bool,
+    dep_metadata: Option<&[crate::checks::metadata::MetadataLookup]>,
 ) -> Result<Vec<Issue>> {
     let case_insensitive = is_case_insensitive(ecosystem);
     let mut issues = Vec::new();
@@ -435,6 +438,27 @@ pub async fn check_similarity_with_cache(
                     evidence_parts
                         .push(format!("was first published {}", created));
                 }
+
+                // Download disparity: if original dep has >10K downloads and
+                // candidate has <1000, this is high confidence typosquatting
+                if let Some(candidate_downloads) = meta.downloads {
+                    let original_downloads = dep_metadata
+                        .and_then(|lookups| {
+                            lookups.iter().find(|l| l.package == dep_name)
+                        })
+                        .and_then(|l| l.metadata.as_ref())
+                        .and_then(|m| m.downloads);
+                    if let Some(orig_dl) = original_downloads
+                        && orig_dl > 10_000
+                        && candidate_downloads < 1_000
+                    {
+                        evidence_parts.push(format!(
+                            "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
+                            dep_name, orig_dl, candidate_downloads, candidate
+                        ));
+                    }
+                }
+
                 if !evidence_parts.is_empty() {
                     message = format!("{} ({})", message, evidence_parts.join("; "));
                 }
@@ -544,7 +568,7 @@ mod tests {
                 Ok(Some(PackageMetadata {
                     created: Some("2020-01-01T00:00:00Z".to_string()),
                     latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
-                    downloads: Some(50000),
+                    downloads: Some(500), // Low downloads for candidates (enables disparity detection)
                     has_install_scripts: false,
                     dependency_count: None,
                     previous_dependency_count: None,
@@ -966,5 +990,50 @@ mod tests {
         for v in &variants {
             assert!(v.len() == 3, "Expected same length: {}", v);
         }
+    }
+
+    // -- Download disparity --
+
+    #[tokio::test]
+    async fn high_confidence_on_download_disparity() {
+        use crate::checks::metadata::MetadataLookup;
+        let registry = FakeRegistry::with(&["express"]);
+        let deps = vec![dep("expresss")];
+
+        // Simulate metadata lookups with high download original
+        let dep_lookups = vec![MetadataLookup {
+            package: "expresss".to_string(),
+            ecosystem: Ecosystem::Npm,
+            version: None,
+            resolved_version: None,
+            unresolved_version: false,
+            exists: true,
+            metadata: Some(PackageMetadata {
+                created: None,
+                latest_version_date: None,
+                downloads: Some(50_000_000),
+                has_install_scripts: false,
+                dependency_count: None,
+                previous_dependency_count: None,
+                current_publisher: None,
+                previous_publisher: None,
+                repository_url: None,
+            }),
+        }];
+
+        let issues = check_similarity_with_cache(
+            &registry, &deps, Ecosystem::Npm, None, false, false,
+            Some(&dep_lookups),
+        ).await.unwrap();
+
+        assert!(!issues.is_empty());
+        // The candidate "express" has 50K downloads (from FakeRegistry metadata),
+        // original "expresss" has 50M — should show HIGH CONFIDENCE
+        let has_high_confidence = issues.iter().any(|i| i.message.contains("HIGH CONFIDENCE"));
+        assert!(
+            has_high_confidence,
+            "Expected HIGH CONFIDENCE in message when download disparity is large. Messages: {:?}",
+            issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+        );
     }
 }
