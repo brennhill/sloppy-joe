@@ -309,6 +309,24 @@ async fn no_repository_on_new_package_flagged() {
 }
 
 #[tokio::test]
+async fn spoofed_repo_url_still_flagged() {
+    use crate::cache;
+    let meta = PackageMetadata {
+        created: Some(cache::now_iso8601()),
+        downloads: Some(50),
+        repository_url: Some("https://evil-site.com/fake-repo".to_string()),
+        ..default_meta()
+    };
+    let registry = FakeRegistry { metadata_response: Some(meta) };
+    let deps = vec![dep_with_version("spoofed-pkg", "0.1.0")];
+    let issues = check_metadata(&registry, &deps, &config_with_age(0), &empty_similarity(), &no_resolution()).await.unwrap();
+    assert!(
+        issues.iter().any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+        "Non-code-host repo URL should still trigger no-repository warning"
+    );
+}
+
+#[tokio::test]
 async fn has_repository_not_flagged() {
     use crate::cache;
     let meta = PackageMetadata {

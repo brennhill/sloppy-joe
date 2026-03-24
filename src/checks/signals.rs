@@ -106,7 +106,9 @@ pub(crate) fn check_install_script_risk(
 
     let has_similarity = similarity_flagged.contains(&lookup.package);
     let has_low_downloads = meta.downloads.is_some_and(|d| d < 1000);
-    let has_no_repository = meta.repository_url.is_none();
+    let has_no_repository = meta.repository_url.as_deref()
+        .map(|url| !is_plausible_repo_url(url))
+        .unwrap_or(true);
 
     if !is_new_package && !is_low_downloads && !has_low_downloads && !has_similarity && !has_no_repository {
         return None;
@@ -215,15 +217,30 @@ pub(crate) fn check_parse_failed(lookup: &MetadataLookup) -> Option<Issue> {
     )
 }
 
-/// Package has no repository URL and is either new or low-download.
+/// Known code hosting domains. A repository URL pointing elsewhere is suspicious.
+const KNOWN_CODE_HOSTS: &[&str] = &[
+    "github.com", "gitlab.com", "bitbucket.org",
+    "codeberg.org", "sr.ht", "gitea.com",
+    "dev.azure.com", "ssh.dev.azure.com",
+];
+
+/// Check if a repository URL is plausible (points to a known code host).
+fn is_plausible_repo_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    KNOWN_CODE_HOSTS.iter().any(|host| lower.contains(host))
+}
+
+/// Package has no valid repository URL and is either new or low-download.
 pub(crate) fn check_no_repository(
     lookup: &MetadataLookup,
     meta: &PackageMetadata,
     is_new_package: bool,
     is_low_downloads: bool,
 ) -> Option<Issue> {
-    // Only flag if repo URL is missing
-    if meta.repository_url.is_some() {
+    // Only flag if repo URL is missing or doesn't point to a known code host
+    if let Some(ref url) = meta.repository_url
+        && is_plausible_repo_url(url)
+    {
         return None;
     }
     // Only flag if also new or low-download — lots of legitimate old packages lack repo links
