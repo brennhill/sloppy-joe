@@ -217,7 +217,7 @@ async fn scan_with_services_inner(
     let ecosystem = deps[0].ecosystem;
 
     // Classify deps into three tiers
-    let (checkable, non_internal) = classify_deps(&deps, &config, ecosystem);
+    let (checkable, non_internal, internal) = classify_deps(&deps, &config, ecosystem);
 
     // Parse lockfile once
     let mut lockfile_data = lockfiles::LockfileData::parse(project_dir, &non_internal)?;
@@ -239,6 +239,28 @@ async fn scan_with_services_inner(
         check.run(&ctx, &mut acc).await?;
     }
     mark_source(&mut acc.issues, "direct");
+
+    // Run OSV on internal packages (they skip all other checks but still need vuln scanning)
+    if !internal.is_empty() {
+        let internal_resolution = lockfiles::LockfileData::parse(project_dir, &internal)
+            .map(|ld| ld.resolution)
+            .unwrap_or_default();
+        let internal_ctx = checks::CheckContext {
+            checkable_deps: &[],
+            non_internal_deps: &internal,
+            config: &config,
+            registry,
+            osv_client,
+            resolution: &internal_resolution,
+            ecosystem,
+            opts,
+        };
+        let mut internal_acc = checks::ScanAccumulator::new();
+        let osv_check: Box<dyn checks::Check> = Box::new(checks::pipeline::MaliciousCheck);
+        osv_check.run(&internal_ctx, &mut internal_acc).await?;
+        mark_source(&mut internal_acc.issues, "direct");
+        acc.issues.extend(internal_acc.issues);
+    }
 
     // Transitive dependency scanning
     let mut transitive_deps = std::mem::take(&mut lockfile_data.transitive_deps);
@@ -289,12 +311,15 @@ async fn scan_with_services_inner(
     ))
 }
 
-/// Classify deps into checkable (full checks) and non-internal (canonical + metadata + osv).
+/// Classify deps into three tiers. Returns (checkable, non_internal, internal).
+/// - checkable: full checks (similarity, existence, canonical, metadata, osv)
+/// - non_internal: allowed + checkable (canonical, metadata, osv)
+/// - internal: OSV only (skip similarity, existence, canonical, metadata)
 fn classify_deps(
     deps: &[Dependency],
     config: &config::SloppyJoeConfig,
     ecosystem: Ecosystem,
-) -> (Vec<Dependency>, Vec<Dependency>) {
+) -> (Vec<Dependency>, Vec<Dependency>, Vec<Dependency>) {
     let eco_str = ecosystem.as_str();
     let (internal, rest): (Vec<&Dependency>, Vec<&Dependency>) = deps
         .iter()
@@ -308,7 +333,7 @@ fn classify_deps(
     if !internal.is_empty() {
         let names: Vec<_> = internal.iter().map(|d| d.name.as_str()).collect();
         eprintln!(
-            "Skipping {} internal package(s): {}",
+            "Running OSV-only on {} internal package(s): {}",
             names.len(),
             names.join(", ")
         );
@@ -325,8 +350,9 @@ fn classify_deps(
 
     let checkable_owned: Vec<Dependency> = checkable.into_iter().cloned().collect();
     let non_internal: Vec<Dependency> = rest.into_iter().cloned().collect();
+    let internal_owned: Vec<Dependency> = internal.into_iter().cloned().collect();
 
-    (checkable_owned, non_internal)
+    (checkable_owned, non_internal, internal_owned)
 }
 
 fn mark_source(issues: &mut [Issue], source: &str) {

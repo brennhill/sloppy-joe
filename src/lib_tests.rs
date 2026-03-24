@@ -551,6 +551,55 @@ async fn transitive_internal_deps_are_skipped() {
     let _ = std::fs::remove_dir_all(&config_dir);
 }
 
+#[tokio::test]
+async fn internal_packages_still_get_osv_checked() {
+    // Internal packages should skip similarity/existence/canonical/metadata
+    // but still get vulnerability (OSV) checks
+
+    struct VulnOsvClient;
+    #[async_trait]
+    impl OsvClient for VulnOsvClient {
+        async fn query(&self, name: &str, _ecosystem: &str, _version: Option<&str>) -> Result<Vec<String>> {
+            if name == "@myorg/vulnerable-pkg" {
+                Ok(vec!["GHSA-1234-abcd".to_string()])
+            } else {
+                Ok(vec![])
+            }
+        }
+    }
+
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"@myorg/vulnerable-pkg":"1.0.0","react":"^18.0"}}"#,
+    ).unwrap();
+
+    let config_dir = unique_dir();
+    let config_path = config_dir.join("config.json");
+    std::fs::write(&config_path, r#"{"canonical":{},"internal":{"npm":["@myorg/*"]},"allowed":{}}"#).unwrap();
+    let config = config::load_config(Some(config_path.as_path())).unwrap();
+
+    let registry = FakeRegistry { existing: vec!["react".to_string()] };
+    let report = scan_with_services_inner(
+        &dir, config,
+        parsers::parse_dependencies(&dir, Some("npm")).unwrap(),
+        &registry, &VulnOsvClient,
+        &ScanOptions { no_cache: true, disable_osv_disk_cache: true, ..Default::default() },
+    ).await.unwrap();
+
+    let vuln_issues: Vec<_> = report.issues.iter()
+        .filter(|i| i.package == "@myorg/vulnerable-pkg" && i.check.contains("malicious"))
+        .collect();
+    assert!(
+        !vuln_issues.is_empty(),
+        "Internal packages should still be checked for known vulnerabilities. Issues: {:?}",
+        report.issues.iter().map(|i| format!("{}: {}", i.package, i.check)).collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&config_dir);
+}
+
 #[test]
 fn scan_hash_is_deterministic() {
     let dir = std::env::temp_dir();
