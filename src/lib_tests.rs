@@ -346,7 +346,8 @@ async fn scan_versionless_dependency_blocks_by_default() {
     assert_eq!(issue.severity, report::Severity::Error);
     assert!(report.has_issues());
     assert!(report.has_errors());
-    assert!(osv_versions.lock().unwrap().is_empty());
+    // Unresolved deps now DO query OSV (with version: None) — fail-closed, not fail-open
+    assert_eq!(osv_versions.lock().unwrap().as_slice(), &[None::<String>]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
