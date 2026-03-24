@@ -12,7 +12,7 @@
 
 ---
 
-> **The [LiteLLM supply chain attack](https://thehackernews.com/2026/03/teampcp-backdoors-litellm-versions.html) (March 2026) compromised a package with 97M monthly downloads. Attackers stole publishing credentials, pushed malicious versions that harvested SSH keys, cloud credentials, and K8s secrets. sloppy-joe's default 72-hour version age gate would have blocked both poisoned versions — they were discovered within hours, well before the gate would have opened. If you run `sloppy-joe check` in CI, this attack fails.**
+> **The [LiteLLM supply chain attack](https://thehackernews.com/2026/03/teampcp-backdoors-litellm-versions.html) (March 2026) compromised a package with 97M monthly downloads. Attackers stole publishing credentials, pushed malicious versions that harvested SSH keys, cloud credentials, and K8s secrets. sloppy-joe's default 72-hour version age gate would have blocked both poisoned versions — they were discovered within hours, well before the gate would have opened. If you run `sloppy-joe check` in CI, this attack fails.** [Full analysis](docs/blog/2026-03-24-litellm-attack-blocked.md)
 
 AI code generators hallucinate package names [~20% of the time](https://arxiv.org/abs/2406.10279). Attackers register those names and wait. sloppy-joe catches them in CI before `npm install` or `pip install` runs.
 
