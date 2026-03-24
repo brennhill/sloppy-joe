@@ -131,11 +131,26 @@ async fn scan_with_config(
     config: config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
-    let deps = parsers::parse_dependencies(project_dir, project_type)?;
+    // When project_type is specified, scan only that ecosystem (original behavior).
+    // When auto-detecting, scan ALL ecosystems found in the project.
+    let dep_sets: Vec<Vec<Dependency>> = if project_type.is_some() {
+        vec![parsers::parse_dependencies(project_dir, project_type)?]
+    } else {
+        let all = parsers::parse_all_ecosystems(project_dir);
+        if all.is_empty() {
+            // Fall back to parse_dependencies for the error message
+            vec![parsers::parse_dependencies(project_dir, None)?]
+        } else {
+            all
+        }
+    };
 
-    // Skip scan if deps haven't changed (manifest hash check)
-    if !opts.no_cache && !opts.skip_hash_check && !deps.is_empty() {
-        let hash = scan_hash(project_dir, &deps);
+    // Flatten all deps for hash check
+    let all_deps: Vec<Dependency> = dep_sets.iter().flatten().cloned().collect();
+
+    // Skip scan if deps haven't changed (manifest + lockfile hash check)
+    if !opts.no_cache && !opts.skip_hash_check && !all_deps.is_empty() {
+        let hash = scan_hash(project_dir, &all_deps);
         let cache_base = opts.cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
@@ -150,18 +165,30 @@ async fn scan_with_config(
         }
     }
 
-    let ecosystem = deps
-        .first()
-        .map(|dep| dep.ecosystem)
-        .unwrap_or(Ecosystem::Npm);
+    // Scan each ecosystem separately, merge reports
     let client = registry::http_client();
-    let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
-    let osv_client = checks::malicious::RealOsvClient::with_client(client);
-    let report = scan_with_services_inner(project_dir, config, deps.clone(), &*registry, &osv_client, opts).await?;
+    let osv_client = checks::malicious::RealOsvClient::with_client(client.clone());
+    let mut total_packages = 0;
+    let mut all_issues = Vec::new();
+
+    for deps in &dep_sets {
+        if deps.is_empty() {
+            continue;
+        }
+        let ecosystem = deps[0].ecosystem;
+        let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
+        let report = scan_with_services_inner(
+            project_dir, config.clone(), deps.clone(), &*registry, &osv_client, opts,
+        ).await?;
+        total_packages += report.packages_checked;
+        all_issues.extend(report.issues);
+    }
+
+    let report = ScanReport::from_issues(total_packages, all_issues);
 
     // Save hash after successful scan
-    if !opts.no_cache && !deps.is_empty() {
-        let hash = scan_hash(project_dir, &deps);
+    if !opts.no_cache && !all_deps.is_empty() {
+        let hash = scan_hash(project_dir, &all_deps);
         let cache_base = opts.cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
