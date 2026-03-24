@@ -725,6 +725,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scope_squatting_nextjs_detected() {
+        let registry = FakeRegistry::empty();
+        let deps = vec![dep("@nexjs/config")];
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        assert!(
+            issues.iter().any(|i| i.check.contains("scope-squatting")),
+            "Expected @nexjs flagged as close to @nextjs"
+        );
+    }
+
+    #[tokio::test]
     async fn scope_exact_match_no_flag() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("@types/lodash")];

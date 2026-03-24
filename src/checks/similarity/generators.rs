@@ -170,45 +170,47 @@ pub(super) fn normalize_homoglyphs(name: &str) -> (String, bool) {
 pub(super) fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
     match ecosystem {
         Ecosystem::Npm => &[
-            "@types",
-            "@babel",
-            "@angular",
-            "@vue",
-            "@nuxt",
-            "@nestjs",
-            "@react-native",
-            "@emotion",
-            "@mui",
-            "@chakra-ui",
-            "@testing-library",
-            "@storybook",
-            "@typescript-eslint",
-            "@rollup",
-            "@vitejs",
-            "@svelte",
-            "@tanstack",
-            "@aws-sdk",
-            "@azure",
-            "@google-cloud",
-            "@firebase",
-            "@prisma",
-            "@trpc",
-            "@reduxjs",
-            "@apollo",
-            "@eslint",
-            "@prettier",
-            "@jest",
-            "@playwright",
-            "@vercel",
-            "@netlify",
-            "@cloudflare",
-            "@octokit",
-            "@actions",
-            "@github",
-            "@sentry",
-            "@datadog",
-            "@grpc",
-            "@protobuf",
+            // Build tools & frameworks
+            "@types", "@babel", "@angular", "@vue", "@nuxt", "@nestjs",
+            "@react-native", "@svelte", "@solidjs", "@qwik",
+            "@nextjs", "@remix-run", "@astrojs", "@gatsbyjs",
+            // UI libraries
+            "@emotion", "@mui", "@chakra-ui", "@radix-ui", "@headlessui",
+            "@shadcn", "@mantine", "@ant-design",
+            // Testing
+            "@testing-library", "@storybook", "@jest", "@playwright",
+            "@vitest", "@cypress",
+            // Linting & formatting
+            "@typescript-eslint", "@eslint", "@prettier",
+            // Bundlers
+            "@rollup", "@vitejs", "@parcel", "@swc", "@esbuild",
+            // State management
+            "@reduxjs", "@tanstack", "@trpc", "@apollo",
+            // Database & ORM
+            "@prisma", "@drizzle-team", "@supabase", "@neon",
+            // Cloud providers
+            "@aws-sdk", "@azure", "@google-cloud", "@firebase",
+            "@pulumi", "@terraform",
+            // Hosting & edge
+            "@vercel", "@netlify", "@cloudflare", "@fly",
+            // DevOps & CI
+            "@octokit", "@actions", "@github", "@gitlab",
+            // Observability
+            "@sentry", "@datadog", "@opentelemetry", "@grafana",
+            // Protocols
+            "@grpc", "@protobuf", "@bufbuild", "@connectrpc",
+            // Auth
+            "@auth", "@clerk", "@auth0",
+            // Monorepo tools
+            "@nx", "@lerna", "@changesets", "@turbo",
+            // Package managers
+            "@pnpm", "@yarnpkg", "@npmcli",
+            // AI/ML
+            "@huggingface", "@langchain", "@anthropic",
+            // Other major orgs
+            "@stripe", "@twilio", "@sendgrid", "@mapbox",
+            "@elastic", "@mongodb", "@redis",
+            "@hono", "@fastify", "@express",
         ],
         Ecosystem::Php => &[
             "laravel",
@@ -236,34 +238,34 @@ pub(super) fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
             "sebastian",
         ],
         Ecosystem::Go => &[
-            "github.com/gin-gonic",
-            "github.com/labstack",
-            "github.com/gofiber",
-            "github.com/spf13",
-            "github.com/stretchr",
-            "github.com/gorilla",
-            "github.com/go-chi",
-            "github.com/go-redis",
-            "github.com/sirupsen",
-            "github.com/rs",
+            // Web frameworks
+            "github.com/gin-gonic", "github.com/labstack", "github.com/gofiber",
+            "github.com/gorilla", "github.com/go-chi", "github.com/julienschmidt",
+            // CLI & config
+            "github.com/spf13", "github.com/urfave", "github.com/alecthomas",
+            // Testing
+            "github.com/stretchr", "github.com/onsi",
+            // Database
+            "github.com/go-redis", "github.com/jackc", "github.com/go-sql-driver",
+            "github.com/jmoiron", "github.com/go-gorm",
+            // Logging
+            "github.com/sirupsen", "github.com/rs", "github.com/uber-go",
+            // HTTP
             "github.com/valyala",
-            "github.com/jackc",
-            "github.com/nats-io",
-            "github.com/hashicorp",
-            "github.com/prometheus",
-            "github.com/grpc",
-            "github.com/golang",
-            "github.com/google",
-            "github.com/aws",
-            "github.com/Azure",
-            "github.com/kubernetes",
-            "github.com/docker",
-            "github.com/etcd-io",
-            "github.com/cockroachdb",
-            "go.uber.org",
-            "google.golang.org",
-            "golang.org",
-            "cloud.google.com",
+            // Messaging
+            "github.com/nats-io", "github.com/segmentio", "github.com/confluentinc",
+            // Infrastructure
+            "github.com/hashicorp", "github.com/prometheus", "github.com/grafana",
+            "github.com/grpc", "github.com/envoyproxy",
+            // Standard org scopes
+            "github.com/golang", "github.com/google", "github.com/aws",
+            "github.com/Azure", "github.com/kubernetes", "github.com/docker",
+            "github.com/etcd-io", "github.com/cockroachdb",
+            "github.com/containerd", "github.com/opencontainers",
+            "github.com/cncf", "github.com/open-telemetry",
+            // Module hosts
+            "go.uber.org", "google.golang.org", "golang.org",
+            "cloud.google.com", "go.opentelemetry.io",
         ],
         Ecosystem::Jvm => &[
             "com.google",
