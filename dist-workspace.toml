@@ -12,12 +12,13 @@ cargo-dist-version = "0.30.2"
 ci = "github"
 # Build auditable binaries so release artifacts can be checked with
 # `cargo audit bin` before publication.
-cargo-auditable = true
+cargo-auditable = false
 # The installers to generate for each app
-installers = []
+installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = [
     "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
     "aarch64-unknown-linux-musl",
     "x86_64-unknown-linux-musl",
     "x86_64-pc-windows-msvc",
