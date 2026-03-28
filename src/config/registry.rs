@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Return the platform-appropriate config home directory for sloppy-joe.
@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 /// 1. `XDG_CONFIG_HOME/sloppy-joe/` if XDG_CONFIG_HOME is set
 /// 2. Platform default (macOS: ~/Library/Application Support/sloppy-joe/, Linux: ~/.config/sloppy-joe/)
 /// 3. Legacy fallback: `~/.sloppy-joe/` if it exists and the XDG location doesn't
-pub fn config_home() -> PathBuf {
+pub fn config_home() -> Result<PathBuf, String> {
     config_home_inner()
 }
 
-fn config_home_inner() -> PathBuf {
+fn config_home_inner() -> Result<PathBuf, String> {
     // 1. XDG_CONFIG_HOME if set
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Path::new(&xdg).join("sloppy-joe");
+        return Ok(Path::new(&xdg).join("sloppy-joe"));
     }
 
     // 2. Platform default
@@ -37,11 +37,13 @@ fn config_home_inner() -> PathBuf {
             && !pd.exists()
             && legacy.exists()
         {
-            return legacy;
+            return Ok(legacy);
         }
     }
 
-    platform_default.unwrap_or_else(|| PathBuf::from("/tmp/sloppy-joe"))
+    platform_default.ok_or_else(|| {
+        "Could not determine config home directory.\n  Error: HOME environment variable is not set.\n  Fix: Set HOME or XDG_CONFIG_HOME.".to_string()
+    })
 }
 
 /// Walk up from `dir` looking for a `.git` directory. Returns the canonicalized
@@ -49,7 +51,7 @@ fn config_home_inner() -> PathBuf {
 pub fn find_git_root(dir: &Path) -> Option<PathBuf> {
     let mut current = std::fs::canonicalize(dir).ok()?;
     loop {
-        if current.join(".git").is_dir() {
+        if current.join(".git").exists() {
             return Some(current);
         }
         if !current.pop() {
@@ -61,12 +63,19 @@ pub fn find_git_root(dir: &Path) -> Option<PathBuf> {
 /// Read and parse `{config_home}/registry.json`.
 /// Returns an empty map if the file doesn't exist.
 /// Returns a blocking error on malformed JSON.
-pub fn load_registry() -> Result<HashMap<String, String>, String> {
-    let path = config_home().join("registry.json");
+pub fn load_registry() -> Result<BTreeMap<String, String>, String> {
+    let path = config_home()?.join("registry.json");
     load_registry_from(&path)
 }
 
-fn load_registry_from(path: &Path) -> Result<HashMap<String, String>, String> {
+fn load_registry_from(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    crate::cache::ensure_no_symlink(path).map_err(|e| {
+        format!(
+            "Refusing to read symlinked registry file.\n  Path: {}\n  Error: {}\n  Fix: Remove the symlink.",
+            path.display(),
+            e
+        )
+    })?;
     match std::fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content).map_err(|e| {
             format!(
@@ -75,7 +84,7 @@ fn load_registry_from(path: &Path) -> Result<HashMap<String, String>, String> {
                 e
             )
         }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
         Err(e) => Err(format!(
             "Could not read registry file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
             path.display(),
@@ -85,25 +94,21 @@ fn load_registry_from(path: &Path) -> Result<HashMap<String, String>, String> {
 }
 
 /// Atomically write the registry map to `{config_home}/registry.json`.
-/// Uses `cache::atomic_write_json` for safe writes.
-pub fn save_registry(entries: &HashMap<String, String>) -> Result<(), String> {
-    let path = config_home().join("registry.json");
+/// Uses `cache::atomic_write_json_checked` for safe writes with error reporting.
+pub fn save_registry(entries: &BTreeMap<String, String>) -> Result<(), String> {
+    let path = config_home()?.join("registry.json");
     save_registry_to(&path, entries)
 }
 
-fn save_registry_to(path: &Path, entries: &HashMap<String, String>) -> Result<(), String> {
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "Could not create config directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
-                parent.display(),
-                e
-            )
-        })?;
-    }
-    crate::cache::atomic_write_json(path, entries);
-    Ok(())
+fn save_registry_to(path: &Path, entries: &BTreeMap<String, String>) -> Result<(), String> {
+    crate::cache::ensure_no_symlink(path).map_err(|e| {
+        format!(
+            "Refusing to write symlinked registry file.\n  Path: {}\n  Error: {}\n  Fix: Remove the symlink.",
+            path.display(),
+            e
+        )
+    })?;
+    crate::cache::atomic_write_json_checked(path, entries)
 }
 
 /// Register a repo root → config path mapping.
@@ -170,14 +175,26 @@ pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
         let entries = load_registry()?;
         let root_str = root.to_string_lossy().to_string();
         if let Some(config_path) = entries.get(&root_str) {
-            return Ok(Some(config_path.clone()));
+            let canon = std::fs::canonicalize(config_path).map_err(|e| {
+                format!(
+                    "Registry entry points to missing config file.\n  Path: {}\n  Error: {}\n  Fix: Re-register the project with `sloppy-joe register` or remove the stale entry.",
+                    config_path, e
+                )
+            })?;
+            return Ok(Some(canon.to_string_lossy().to_string()));
         }
     }
 
     // Check global default
-    let default_config = config_home().join("default").join("config.json");
+    let default_config = config_home()?.join("default").join("config.json");
     if default_config.exists() {
-        return Ok(Some(default_config.to_string_lossy().to_string()));
+        let canon = std::fs::canonicalize(&default_config).map_err(|e| {
+            format!(
+                "Could not resolve default config path.\n  Path: {}\n  Error: {}\n  Fix: Check that the default config file is accessible.",
+                default_config.display(), e
+            )
+        })?;
+        return Ok(Some(canon.to_string_lossy().to_string()));
     }
 
     Ok(None)
@@ -203,13 +220,13 @@ mod tests {
     fn config_home_with_xdg_set() {
         // We can't safely set env vars in parallel tests, so just verify
         // the function returns a non-empty path
-        let home = config_home();
+        let home = config_home().unwrap();
         assert!(!home.as_os_str().is_empty());
     }
 
     #[test]
     fn config_home_returns_sloppy_joe_suffix() {
-        let home = config_home();
+        let home = config_home().unwrap();
         assert!(
             home.to_string_lossy().contains("sloppy-joe"),
             "config_home should contain 'sloppy-joe': {:?}",
@@ -226,17 +243,23 @@ mod tests {
         let root = find_git_root(&cwd);
         assert!(root.is_some(), "Should find git root in current repo");
         let root = root.unwrap();
-        assert!(root.join(".git").is_dir());
+        assert!(root.join(".git").exists());
     }
 
     #[test]
     fn find_git_root_in_non_git_dir() {
-        let dir = unique_dir();
-        let root = find_git_root(&dir);
-        // temp dir might be inside a git repo on some systems, but our unique
-        // temp dir itself should not have .git
-        // Just verify it doesn't panic
-        let _ = root;
+        // Create a deeply nested temp dir that cannot be inside a git repo.
+        // /tmp itself should not have a .git anywhere in its ancestry.
+        let base = unique_dir();
+        let deep = base.join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep).unwrap();
+        let root = find_git_root(&deep);
+        assert!(
+            root.is_none(),
+            "Temp dir should not be inside a git repo: {:?}",
+            root
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -247,7 +270,7 @@ mod tests {
             let root = find_git_root(&src_dir);
             assert!(root.is_some());
             let root = root.unwrap();
-            assert!(root.join(".git").is_dir());
+            assert!(root.join(".git").exists());
         }
     }
 
@@ -260,6 +283,7 @@ mod tests {
         let result = load_registry_from(&path);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -271,6 +295,7 @@ mod tests {
         assert!(result.is_ok());
         let map = result.unwrap();
         assert_eq!(map.get("/foo/bar"), Some(&"/baz/config.json".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -291,6 +316,7 @@ mod tests {
             "Error should contain Fix hint: {}",
             err
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- save_registry tests --
@@ -299,14 +325,35 @@ mod tests {
     fn save_registry_creates_file() {
         let dir = unique_dir();
         let path = dir.join("registry.json");
-        let mut entries = HashMap::new();
+        let mut entries = BTreeMap::new();
         entries.insert("/repo".to_string(), "/config.json".to_string());
         let result = save_registry_to(&path, &entries);
         assert!(result.is_ok());
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
-        let loaded: HashMap<String, String> = serde_json::from_str(&content).unwrap();
+        let loaded: BTreeMap<String, String> = serde_json::from_str(&content).unwrap();
         assert_eq!(loaded.get("/repo"), Some(&"/config.json".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_registry_returns_error_on_symlink() {
+        let dir = unique_dir();
+        let real = dir.join("real.json");
+        std::fs::write(&real, "{}").unwrap();
+        let link = dir.join("registry.json");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let entries = BTreeMap::new();
+            let result = save_registry_to(&link, &entries);
+            assert!(result.is_err());
+            assert!(
+                result.unwrap_err().contains("symlink"),
+                "Error should mention symlink"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- register / unregister round-trip --
@@ -318,6 +365,7 @@ mod tests {
         let result = register(&dir, &fake_config);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("config file exists"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -332,6 +380,7 @@ mod tests {
                 .unwrap_err()
                 .contains("outside the project directory")
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- lookup tests --
@@ -345,6 +394,7 @@ mod tests {
         let result = lookup(&dir);
         // Should not error (registry file missing -> empty map is fine)
         assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- integration: register + lookup round-trip using isolated registry --
@@ -385,5 +435,9 @@ mod tests {
         // Verify it's gone
         let entries = load_registry_from(&registry_path).unwrap();
         assert!(!entries.contains_key(&canon_repo.to_string_lossy().to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&repo_dir);
+        let _ = std::fs::remove_dir_all(&config_dir);
     }
 }

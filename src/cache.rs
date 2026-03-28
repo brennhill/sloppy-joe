@@ -194,6 +194,68 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) {
     }
 }
 
+/// Atomically write JSON to a file, returning errors instead of swallowing them.
+/// Same logic as `atomic_write_json` but with actionable error messages.
+pub fn atomic_write_json_checked<T: serde::Serialize>(path: &Path, data: &T) -> Result<(), String> {
+    ensure_no_symlink(path).map_err(|e| {
+        format!(
+            "Refusing to write symlinked file.\n  Path: {}\n  Error: {}\n  Fix: Remove the symlink.",
+            path.display(),
+            e
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Could not create parent directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
+                parent.display(),
+                e
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(parent) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o700);
+                let _ = std::fs::set_permissions(parent, perms);
+            }
+        }
+    }
+    let json = serde_json::to_string(data).map_err(|e| {
+        format!(
+            "Could not serialize data to JSON.\n  Path: {}\n  Error: {}",
+            path.display(),
+            e
+        )
+    })?;
+    let tmp_path = cache_tmp_path(path);
+    std::fs::write(&tmp_path, json).map_err(|e| {
+        format!(
+            "Could not write temporary file.\n  Path: {}\n  Error: {}\n  Fix: Check disk space and permissions.",
+            tmp_path.display(),
+            e
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&tmp_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&tmp_path, perms);
+        }
+    }
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!(
+            "Could not rename temporary file to target.\n  Path: {}\n  Error: {}\n  Fix: Check filesystem permissions.",
+            path.display(),
+            e
+        )
+    })
+}
+
 /// Read and deserialize a JSON cache file, returning None if expired, missing,
 /// symlinked, or unparseable.
 pub fn read_json_cache<T: serde::de::DeserializeOwned>(
