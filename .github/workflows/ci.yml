@@ -69,3 +69,24 @@ jobs:
 
       - name: Check dependency policy
         run: cargo deny check
+
+  sloppy-joe:
+    name: sloppy-joe self-check
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build sloppy-joe
+        run: cargo build --release
+
+      - name: Check own dependencies
+        run: ./target/release/sloppy-joe check --no-cache
