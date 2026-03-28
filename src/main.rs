@@ -144,8 +144,16 @@ async fn main() {
             cache_dir,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            match sloppy_joe::scan_with_source_full(&dir, project_type.as_deref(), config.as_deref(), deep, paranoid, no_cache, cache_dir.as_deref())
-                .await
+            match sloppy_joe::scan_with_source_full(
+                &dir,
+                project_type.as_deref(),
+                config.as_deref(),
+                deep,
+                paranoid,
+                no_cache,
+                cache_dir.as_deref(),
+            )
+            .await
             {
                 Ok(report) => {
                     if json {

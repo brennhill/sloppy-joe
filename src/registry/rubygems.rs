@@ -90,8 +90,11 @@ impl super::RegistryMetadata for RubyGemsRegistry {
 
         let repository_url = body["source_code_uri"]
             .as_str()
-            .or_else(|| body["homepage_uri"].as_str()
-                .filter(|u| u.contains("github.com") || u.contains("gitlab.com")))
+            .or_else(|| {
+                body["homepage_uri"]
+                    .as_str()
+                    .filter(|u| u.contains("github.com") || u.contains("gitlab.com"))
+            })
             .map(|s| s.to_string());
 
         Ok(Some(super::PackageMetadata {

@@ -77,7 +77,6 @@ fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
     super::extract_xml_value(line, tag)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

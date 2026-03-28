@@ -118,6 +118,9 @@ mod tests {
     fn go_registry_url_uses_proxy() {
         let encoded = encode_module_path("github.com/gin-gonic/gin");
         let url = format!("https://proxy.golang.org/{}/@latest", encoded);
-        assert_eq!(url, "https://proxy.golang.org/github.com/gin-gonic/gin/@latest");
+        assert_eq!(
+            url,
+            "https://proxy.golang.org/github.com/gin-gonic/gin/@latest"
+        );
     }
 }

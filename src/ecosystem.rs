@@ -41,7 +41,10 @@ impl Ecosystem {
 
     /// Whether the registry treats package names case-insensitively.
     pub fn is_case_insensitive(&self) -> bool {
-        matches!(self, Self::Npm | Self::PyPI | Self::Cargo | Self::Dotnet | Self::Php)
+        matches!(
+            self,
+            Self::Npm | Self::PyPI | Self::Cargo | Self::Dotnet | Self::Php
+        )
     }
 
     /// Max concurrent registry queries for similarity checks.
@@ -70,7 +73,17 @@ impl Ecosystem {
     /// Whether this ecosystem's registry supports metadata lookups
     /// (version history, download counts, install scripts, publisher info).
     pub fn supports_metadata(&self) -> bool {
-        matches!(self, Self::Npm | Self::PyPI | Self::Cargo | Self::Ruby | Self::Jvm | Self::Go | Self::Dotnet | Self::Php)
+        matches!(
+            self,
+            Self::Npm
+                | Self::PyPI
+                | Self::Cargo
+                | Self::Ruby
+                | Self::Jvm
+                | Self::Go
+                | Self::Dotnet
+                | Self::Php
+        )
     }
 
     /// User-facing registry URL for a package in this ecosystem.
@@ -85,7 +98,10 @@ impl Ecosystem {
             Self::Jvm => {
                 let parts: Vec<&str> = name.splitn(2, ':').collect();
                 if parts.len() == 2 {
-                    format!("https://search.maven.org/artifact/{}/{}", parts[0], parts[1])
+                    format!(
+                        "https://search.maven.org/artifact/{}/{}",
+                        parts[0], parts[1]
+                    )
                 } else {
                     format!("https://search.maven.org/search?q={}", name)
                 }
@@ -97,17 +113,17 @@ impl Ecosystem {
     /// Go proxy is slower/flakier, so it gets a more lenient threshold.
     pub fn error_rate_threshold(&self) -> f64 {
         match self {
-            Self::Go => 0.25,     // Go proxy is flaky — 25% threshold
-            Self::Jvm => 0.20,    // Maven Solr can be slow — 20% threshold
-            _ => 0.10,            // Default: 10%
+            Self::Go => 0.25,  // Go proxy is flaky — 25% threshold
+            Self::Jvm => 0.20, // Maven Solr can be slow — 20% threshold
+            _ => 0.10,         // Default: 10%
         }
     }
 
     /// Hard error count limit for fail-closed behavior.
     pub fn error_hard_limit(&self) -> usize {
         match self {
-            Self::Go => 10,       // Go proxy is flaky — higher limit
-            _ => 5,               // Default: 5 errors
+            Self::Go => 10, // Go proxy is flaky — higher limit
+            _ => 5,         // Default: 5 errors
         }
     }
 }
@@ -174,18 +190,26 @@ mod tests {
 
     #[test]
     fn display_matches_as_str() {
-        for eco in [Ecosystem::Npm, Ecosystem::PyPI, Ecosystem::Cargo, Ecosystem::Go,
-                     Ecosystem::Ruby, Ecosystem::Php, Ecosystem::Jvm, Ecosystem::Dotnet] {
+        for eco in [
+            Ecosystem::Npm,
+            Ecosystem::PyPI,
+            Ecosystem::Cargo,
+            Ecosystem::Go,
+            Ecosystem::Ruby,
+            Ecosystem::Php,
+            Ecosystem::Jvm,
+            Ecosystem::Dotnet,
+        ] {
             assert_eq!(format!("{}", eco), eco.as_str());
         }
     }
 
     #[test]
     fn allows_slashes_correct() {
-        assert!(Ecosystem::Npm.allows_slashes());   // @scope/pkg
-        assert!(Ecosystem::Go.allows_slashes());    // github.com/org/repo
-        assert!(Ecosystem::Php.allows_slashes());   // vendor/package
-        assert!(Ecosystem::Jvm.allows_slashes());   // group has dots, artifact uses :
+        assert!(Ecosystem::Npm.allows_slashes()); // @scope/pkg
+        assert!(Ecosystem::Go.allows_slashes()); // github.com/org/repo
+        assert!(Ecosystem::Php.allows_slashes()); // vendor/package
+        assert!(Ecosystem::Jvm.allows_slashes()); // group has dots, artifact uses :
         assert!(!Ecosystem::PyPI.allows_slashes());
         assert!(!Ecosystem::Cargo.allows_slashes());
         assert!(!Ecosystem::Ruby.allows_slashes());
@@ -213,14 +237,46 @@ mod tests {
 
     #[test]
     fn registry_url_for_all_ecosystems() {
-        assert!(Ecosystem::Npm.registry_url_for("react").contains("npmjs.com"));
-        assert!(Ecosystem::PyPI.registry_url_for("flask").contains("pypi.org"));
-        assert!(Ecosystem::Cargo.registry_url_for("serde").contains("crates.io"));
-        assert!(Ecosystem::Go.registry_url_for("github.com/gin-gonic/gin").contains("pkg.go.dev"));
-        assert!(Ecosystem::Ruby.registry_url_for("rails").contains("rubygems.org"));
-        assert!(Ecosystem::Php.registry_url_for("laravel/framework").contains("packagist.org"));
-        assert!(Ecosystem::Jvm.registry_url_for("com.google.guava:guava").contains("maven.org"));
-        assert!(Ecosystem::Dotnet.registry_url_for("Newtonsoft.Json").contains("nuget.org"));
+        assert!(
+            Ecosystem::Npm
+                .registry_url_for("react")
+                .contains("npmjs.com")
+        );
+        assert!(
+            Ecosystem::PyPI
+                .registry_url_for("flask")
+                .contains("pypi.org")
+        );
+        assert!(
+            Ecosystem::Cargo
+                .registry_url_for("serde")
+                .contains("crates.io")
+        );
+        assert!(
+            Ecosystem::Go
+                .registry_url_for("github.com/gin-gonic/gin")
+                .contains("pkg.go.dev")
+        );
+        assert!(
+            Ecosystem::Ruby
+                .registry_url_for("rails")
+                .contains("rubygems.org")
+        );
+        assert!(
+            Ecosystem::Php
+                .registry_url_for("laravel/framework")
+                .contains("packagist.org")
+        );
+        assert!(
+            Ecosystem::Jvm
+                .registry_url_for("com.google.guava:guava")
+                .contains("maven.org")
+        );
+        assert!(
+            Ecosystem::Dotnet
+                .registry_url_for("Newtonsoft.Json")
+                .contains("nuget.org")
+        );
     }
 
     #[test]
@@ -232,14 +288,25 @@ mod tests {
     #[test]
     fn error_thresholds_are_reasonable() {
         for eco in [
-            Ecosystem::Npm, Ecosystem::PyPI, Ecosystem::Cargo,
-            Ecosystem::Go, Ecosystem::Ruby, Ecosystem::Php,
-            Ecosystem::Jvm, Ecosystem::Dotnet,
+            Ecosystem::Npm,
+            Ecosystem::PyPI,
+            Ecosystem::Cargo,
+            Ecosystem::Go,
+            Ecosystem::Ruby,
+            Ecosystem::Php,
+            Ecosystem::Jvm,
+            Ecosystem::Dotnet,
         ] {
-            assert!(eco.error_rate_threshold() > 0.0 && eco.error_rate_threshold() <= 0.5,
-                "Error rate threshold for {} should be between 0 and 50%", eco);
-            assert!(eco.error_hard_limit() >= 3 && eco.error_hard_limit() <= 20,
-                "Error hard limit for {} should be between 3 and 20", eco);
+            assert!(
+                eco.error_rate_threshold() > 0.0 && eco.error_rate_threshold() <= 0.5,
+                "Error rate threshold for {} should be between 0 and 50%",
+                eco
+            );
+            assert!(
+                eco.error_hard_limit() >= 3 && eco.error_hard_limit() <= 20,
+                "Error hard limit for {} should be between 3 and 20",
+                eco
+            );
         }
     }
 
@@ -290,7 +357,10 @@ mod tests {
     #[test]
     fn registry_url_for_jvm_with_colon() {
         let url = Ecosystem::Jvm.registry_url_for("com.google.guava:guava");
-        assert_eq!(url, "https://search.maven.org/artifact/com.google.guava/guava");
+        assert_eq!(
+            url,
+            "https://search.maven.org/artifact/com.google.guava/guava"
+        );
     }
 
     #[test]

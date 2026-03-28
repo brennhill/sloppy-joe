@@ -109,10 +109,7 @@ fn ordered_versions(time: &serde_json::Value) -> Vec<String> {
 
 /// Fetch last-month download count from the npm downloads API.
 /// Returns Ok(Some(count)) on success, Ok(None) if unavailable.
-async fn fetch_downloads(
-    client: &reqwest::Client,
-    package_name: &str,
-) -> Result<Option<u64>> {
+async fn fetch_downloads(client: &reqwest::Client, package_name: &str) -> Result<Option<u64>> {
     let url = format!(
         "https://api.npmjs.org/downloads/point/last-month/{}",
         package_name

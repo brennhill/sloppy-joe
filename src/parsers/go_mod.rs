@@ -37,7 +37,10 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         if in_require
             && !line.is_empty()
             && !line.starts_with("//")
-            && line.split("//").nth(1).is_none_or(|comment| comment.trim() != "indirect")
+            && line
+                .split("//")
+                .nth(1)
+                .is_none_or(|comment| comment.trim() != "indirect")
             && let Some(name) = line.split_whitespace().next()
         {
             let version = line.split_whitespace().nth(1).map(String::from);

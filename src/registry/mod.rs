@@ -122,8 +122,13 @@ pub(crate) fn validate_package_name(name: &str) -> bool {
         return false;
     }
     for ch in name.chars() {
-        if ch == '\0' || ch == '%' || ch == '\n' || ch == '\r'
-            || ch == '?' || ch == '#' || ch == '\\'
+        if ch == '\0'
+            || ch == '%'
+            || ch == '\n'
+            || ch == '\r'
+            || ch == '?'
+            || ch == '#'
+            || ch == '\\'
         {
             return false;
         }
@@ -233,10 +238,7 @@ const RETRY_BASE_DELAY_MS: u64 = 200;
 
 /// Send a GET request with retry on transient failures (5xx, timeouts, connection errors).
 /// Returns the response on success, or the last error after exhausting retries.
-pub(crate) async fn retry_get(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<reqwest::Response> {
+pub(crate) async fn retry_get(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
     let mut last_err = None;
     for attempt in 0..MAX_RETRIES {
         match client.get(url).send().await {
@@ -289,7 +291,10 @@ mod tests {
         assert_eq!(registry_for(Ecosystem::Ruby).unwrap().ecosystem(), "ruby");
         assert_eq!(registry_for(Ecosystem::Php).unwrap().ecosystem(), "php");
         assert_eq!(registry_for(Ecosystem::Jvm).unwrap().ecosystem(), "jvm");
-        assert_eq!(registry_for(Ecosystem::Dotnet).unwrap().ecosystem(), "dotnet");
+        assert_eq!(
+            registry_for(Ecosystem::Dotnet).unwrap().ecosystem(),
+            "dotnet"
+        );
     }
 
     #[test]
@@ -374,7 +379,10 @@ mod tests {
 
     #[test]
     fn check_response_server_error_returns_err() {
-        assert!(check_existence_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "test", "pkg").is_err());
+        assert!(
+            check_existence_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "test", "pkg")
+                .is_err()
+        );
     }
 
     #[test]
@@ -419,12 +427,21 @@ mod tests {
 
     #[test]
     fn retry_constants_are_reasonable() {
-        assert!(MAX_RETRIES >= 2, "Need at least 2 retries for transient errors");
+        assert!(
+            MAX_RETRIES >= 2,
+            "Need at least 2 retries for transient errors"
+        );
         assert!(MAX_RETRIES <= 5, "Too many retries would slow CI");
         assert!(RETRY_BASE_DELAY_MS >= 100, "Base delay too short");
         assert!(RETRY_BASE_DELAY_MS <= 1000, "Base delay too long for CI");
         // Total worst-case delay: 200 + 400 + 800 = 1400ms — reasonable
-        let total_delay: u64 = (0..MAX_RETRIES).map(|i| RETRY_BASE_DELAY_MS * 2u64.pow(i)).sum();
-        assert!(total_delay < 5000, "Total retry delay exceeds 5s: {}ms", total_delay);
+        let total_delay: u64 = (0..MAX_RETRIES)
+            .map(|i| RETRY_BASE_DELAY_MS * 2u64.pow(i))
+            .sum();
+        assert!(
+            total_delay < 5000,
+            "Total retry delay exceeds 5s: {}ms",
+            total_delay
+        );
     }
 }

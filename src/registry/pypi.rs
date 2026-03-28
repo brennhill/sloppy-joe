@@ -66,12 +66,15 @@ impl super::RegistryMetadata for PypiRegistry {
         // PyPI project_urls or home_page for repository link
         let repository_url = body["info"]["project_urls"]["Repository"]
             .as_str()
-            .or_else(|| body["info"]["project_urls"]["Source"]
-                .as_str())
-            .or_else(|| body["info"]["project_urls"]["Source Code"]
-                .as_str())
-            .or_else(|| body["info"]["home_page"].as_str()
-                .filter(|u| u.contains("github.com") || u.contains("gitlab.com") || u.contains("bitbucket.org")))
+            .or_else(|| body["info"]["project_urls"]["Source"].as_str())
+            .or_else(|| body["info"]["project_urls"]["Source Code"].as_str())
+            .or_else(|| {
+                body["info"]["home_page"].as_str().filter(|u| {
+                    u.contains("github.com")
+                        || u.contains("gitlab.com")
+                        || u.contains("bitbucket.org")
+                })
+            })
             .map(|s| s.to_string());
 
         // PyPI main API doesn't expose download counts

@@ -73,12 +73,14 @@ impl super::RegistryMetadata for PackagistRegistry {
 
         // If no specific version matched, use the first entry (latest)
         if latest_version_date.is_none() {
-            latest_version_date = versions.first()
+            latest_version_date = versions
+                .first()
                 .and_then(|v| v["time"].as_str())
                 .map(|s| s.to_string());
         }
 
-        let repository_url = versions.first()
+        let repository_url = versions
+            .first()
             .and_then(|v| v["source"]["url"].as_str())
             .map(|s| s.to_string());
 

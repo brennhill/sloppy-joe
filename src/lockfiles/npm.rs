@@ -3,13 +3,13 @@ use anyhow::Result;
 #[cfg(test)]
 use std::path::Path;
 
-use super::{
-    add_manifest_exact_fallback, add_manifest_exact_fallbacks, missing_entry_issue,
-    out_of_sync_issue, parse_failed_issue, ResolutionKey, ResolutionResult, ResolutionSource,
-    ResolvedVersion,
-};
 #[cfg(test)]
 use super::first_existing;
+use super::{
+    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, add_manifest_exact_fallbacks, missing_entry_issue,
+    out_of_sync_issue, parse_failed_issue,
+};
 
 /// Read + parse + resolve in one step (used by resolve_versions test API).
 #[cfg(test)]
@@ -181,8 +181,14 @@ mod tests {
         let names: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"react"));
         assert!(names.contains(&"good-pkg"));
-        assert!(!names.iter().any(|n| n.contains("..")), "path traversal name should be filtered");
-        assert!(!names.iter().any(|n| n.contains('\0')), "null byte name should be filtered");
+        assert!(
+            !names.iter().any(|n| n.contains("..")),
+            "path traversal name should be filtered"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains('\0')),
+            "null byte name should be filtered"
+        );
         assert_eq!(deps.len(), 2);
     }
 }

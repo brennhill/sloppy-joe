@@ -2,18 +2,15 @@ use crate::Dependency;
 use anyhow::Result;
 use std::path::Path;
 
-use super::{
-    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue, ResolutionKey,
-    ResolutionResult, ResolutionSource, ResolvedVersion,
-};
 #[cfg(test)]
 use super::add_manifest_exact_fallbacks;
+use super::{
+    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue,
+};
 
 /// Resolve versions from a pre-read Gemfile.lock content string.
-pub(super) fn resolve_from_content(
-    content: &str,
-    deps: &[Dependency],
-) -> Result<ResolutionResult> {
+pub(super) fn resolve_from_content(content: &str, deps: &[Dependency]) -> Result<ResolutionResult> {
     let versions = parse_gem_versions(content);
     let mut result = ResolutionResult::default();
 
@@ -23,9 +20,7 @@ pub(super) fn resolve_from_content(
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != *version
                 {
-                    result
-                        .issues
-                        .push(out_of_sync_issue(dep, version));
+                    result.issues.push(out_of_sync_issue(dep, version));
                     add_manifest_exact_fallback(&mut result, dep);
                     continue;
                 }
@@ -38,9 +33,7 @@ pub(super) fn resolve_from_content(
                 );
             }
             None => {
-                result
-                    .issues
-                    .push(missing_entry_issue(dep, "Gemfile.lock"));
+                result.issues.push(missing_entry_issue(dep, "Gemfile.lock"));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         }

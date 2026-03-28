@@ -42,16 +42,33 @@ pub fn paranoid_generators() -> Vec<Box<dyn MutationGenerator>> {
 
 struct SeparatorSwapGen;
 impl MutationGenerator for SeparatorSwapGen {
-    fn name(&self) -> &'static str { "separator-swap" }
+    fn name(&self) -> &'static str {
+        "separator-swap"
+    }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
-        if ecosystem == Ecosystem::PyPI { return vec![]; }
+        if ecosystem == Ecosystem::PyPI {
+            return vec![];
+        }
         let lower = name.to_lowercase();
         let mut results = Vec::new();
         let stripped = normalize_separators(&lower);
-        if stripped != lower { results.push(stripped); }
+        if stripped != lower {
+            results.push(stripped);
+        }
         for &sep in &['-', '_', '.'] {
-            let with_sep: String = lower.chars().map(|c| if c == '-' || c == '_' || c == '.' { sep } else { c }).collect();
-            if with_sep != lower { results.push(with_sep); }
+            let with_sep: String = lower
+                .chars()
+                .map(|c| {
+                    if c == '-' || c == '_' || c == '.' {
+                        sep
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            if with_sep != lower {
+                results.push(with_sep);
+            }
         }
         results
     }
@@ -59,7 +76,9 @@ impl MutationGenerator for SeparatorSwapGen {
 
 struct CollapseRepeatedGen;
 impl MutationGenerator for CollapseRepeatedGen {
-    fn name(&self) -> &'static str { "collapse-repeated" }
+    fn name(&self) -> &'static str {
+        "collapse-repeated"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         collapse_one_repeated(&name.to_lowercase())
     }
@@ -67,17 +86,25 @@ impl MutationGenerator for CollapseRepeatedGen {
 
 struct VersionSuffixGen;
 impl MutationGenerator for VersionSuffixGen {
-    fn name(&self) -> &'static str { "version-suffix" }
+    fn name(&self) -> &'static str {
+        "version-suffix"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         let lower = name.to_lowercase();
         let stripped = strip_version_suffix(&lower);
-        if stripped != lower { vec![stripped] } else { vec![] }
+        if stripped != lower {
+            vec![stripped]
+        } else {
+            vec![]
+        }
     }
 }
 
 struct WordReorderGen;
 impl MutationGenerator for WordReorderGen {
-    fn name(&self) -> &'static str { "word-reorder" }
+    fn name(&self) -> &'static str {
+        "word-reorder"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         word_reorderings(&name.to_lowercase())
     }
@@ -85,7 +112,9 @@ impl MutationGenerator for WordReorderGen {
 
 struct AdjacentSwapGen;
 impl MutationGenerator for AdjacentSwapGen {
-    fn name(&self) -> &'static str { "char-swap" }
+    fn name(&self) -> &'static str {
+        "char-swap"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         adjacent_swaps(&name.to_lowercase())
     }
@@ -93,7 +122,9 @@ impl MutationGenerator for AdjacentSwapGen {
 
 struct DeleteOneCharGen;
 impl MutationGenerator for DeleteOneCharGen {
-    fn name(&self) -> &'static str { "extra-char" }
+    fn name(&self) -> &'static str {
+        "extra-char"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         delete_one_char(&name.to_lowercase()).into_iter().collect()
     }
@@ -101,16 +132,24 @@ impl MutationGenerator for DeleteOneCharGen {
 
 struct HomoglyphGen;
 impl MutationGenerator for HomoglyphGen {
-    fn name(&self) -> &'static str { "homoglyph" }
+    fn name(&self) -> &'static str {
+        "homoglyph"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         let (normalized, had_homoglyphs) = normalize_homoglyphs(name);
-        if had_homoglyphs { vec![normalized.to_lowercase()] } else { vec![] }
+        if had_homoglyphs {
+            vec![normalized.to_lowercase()]
+        } else {
+            vec![]
+        }
     }
 }
 
 struct ConfusedFormsGen;
 impl MutationGenerator for ConfusedFormsGen {
-    fn name(&self) -> &'static str { "confused-forms" }
+    fn name(&self) -> &'static str {
+        "confused-forms"
+    }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         apply_confused_forms(name, ecosystem)
     }
@@ -118,7 +157,9 @@ impl MutationGenerator for ConfusedFormsGen {
 
 struct SegmentOverlapGen;
 impl MutationGenerator for SegmentOverlapGen {
-    fn name(&self) -> &'static str { "segment-overlap" }
+    fn name(&self) -> &'static str {
+        "segment-overlap"
+    }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
         segment_overlap_variants(&name.to_lowercase(), ecosystem)
     }
@@ -126,7 +167,9 @@ impl MutationGenerator for SegmentOverlapGen {
 
 struct BitflipGen;
 impl MutationGenerator for BitflipGen {
-    fn name(&self) -> &'static str { "bitflip" }
+    fn name(&self) -> &'static str {
+        "bitflip"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         bitflip_variants(&name.to_lowercase())
     }
@@ -134,7 +177,9 @@ impl MutationGenerator for BitflipGen {
 
 struct KeyboardProximityGen;
 impl MutationGenerator for KeyboardProximityGen {
-    fn name(&self) -> &'static str { "keyboard-proximity" }
+    fn name(&self) -> &'static str {
+        "keyboard-proximity"
+    }
     fn generate(&self, name: &str, _ecosystem: Ecosystem) -> Vec<String> {
         keyboard_proximity_variants(&name.to_lowercase())
     }
@@ -171,46 +216,111 @@ pub(super) fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
     match ecosystem {
         Ecosystem::Npm => &[
             // Build tools & frameworks
-            "@types", "@babel", "@angular", "@vue", "@nuxt", "@nestjs",
-            "@react-native", "@svelte", "@solidjs", "@qwik",
-            "@nextjs", "@remix-run", "@astrojs", "@gatsbyjs",
+            "@types",
+            "@babel",
+            "@angular",
+            "@vue",
+            "@nuxt",
+            "@nestjs",
+            "@react-native",
+            "@svelte",
+            "@solidjs",
+            "@qwik",
+            "@nextjs",
+            "@remix-run",
+            "@astrojs",
+            "@gatsbyjs",
             // UI libraries
-            "@emotion", "@mui", "@chakra-ui", "@radix-ui", "@headlessui",
-            "@shadcn", "@mantine", "@ant-design",
+            "@emotion",
+            "@mui",
+            "@chakra-ui",
+            "@radix-ui",
+            "@headlessui",
+            "@shadcn",
+            "@mantine",
+            "@ant-design",
             // Testing
-            "@testing-library", "@storybook", "@jest", "@playwright",
-            "@vitest", "@cypress",
+            "@testing-library",
+            "@storybook",
+            "@jest",
+            "@playwright",
+            "@vitest",
+            "@cypress",
             // Linting & formatting
-            "@typescript-eslint", "@eslint", "@prettier",
+            "@typescript-eslint",
+            "@eslint",
+            "@prettier",
             // Bundlers
-            "@rollup", "@vitejs", "@parcel", "@swc", "@esbuild",
+            "@rollup",
+            "@vitejs",
+            "@parcel",
+            "@swc",
+            "@esbuild",
             // State management
-            "@reduxjs", "@tanstack", "@trpc", "@apollo",
+            "@reduxjs",
+            "@tanstack",
+            "@trpc",
+            "@apollo",
             // Database & ORM
-            "@prisma", "@drizzle-team", "@supabase", "@neon",
+            "@prisma",
+            "@drizzle-team",
+            "@supabase",
+            "@neon",
             // Cloud providers
-            "@aws-sdk", "@azure", "@google-cloud", "@firebase",
-            "@pulumi", "@terraform",
+            "@aws-sdk",
+            "@azure",
+            "@google-cloud",
+            "@firebase",
+            "@pulumi",
+            "@terraform",
             // Hosting & edge
-            "@vercel", "@netlify", "@cloudflare", "@fly",
+            "@vercel",
+            "@netlify",
+            "@cloudflare",
+            "@fly",
             // DevOps & CI
-            "@octokit", "@actions", "@github", "@gitlab",
+            "@octokit",
+            "@actions",
+            "@github",
+            "@gitlab",
             // Observability
-            "@sentry", "@datadog", "@opentelemetry", "@grafana",
+            "@sentry",
+            "@datadog",
+            "@opentelemetry",
+            "@grafana",
             // Protocols
-            "@grpc", "@protobuf", "@bufbuild", "@connectrpc",
+            "@grpc",
+            "@protobuf",
+            "@bufbuild",
+            "@connectrpc",
             // Auth
-            "@auth", "@clerk", "@auth0",
+            "@auth",
+            "@clerk",
+            "@auth0",
             // Monorepo tools
-            "@nx", "@lerna", "@changesets", "@turbo",
+            "@nx",
+            "@lerna",
+            "@changesets",
+            "@turbo",
             // Package managers
-            "@pnpm", "@yarnpkg", "@npmcli",
+            "@pnpm",
+            "@yarnpkg",
+            "@npmcli",
             // AI/ML
-            "@huggingface", "@langchain", "@anthropic",
+            "@huggingface",
+            "@langchain",
+            "@anthropic",
             // Other major orgs
-            "@stripe", "@twilio", "@sendgrid", "@mapbox",
-            "@elastic", "@mongodb", "@redis",
-            "@hono", "@fastify", "@express",
+            "@stripe",
+            "@twilio",
+            "@sendgrid",
+            "@mapbox",
+            "@elastic",
+            "@mongodb",
+            "@redis",
+            "@hono",
+            "@fastify",
+            "@express",
         ],
         Ecosystem::Php => &[
             "laravel",
@@ -239,33 +349,60 @@ pub(super) fn known_scopes(ecosystem: Ecosystem) -> &'static [&'static str] {
         ],
         Ecosystem::Go => &[
             // Web frameworks
-            "github.com/gin-gonic", "github.com/labstack", "github.com/gofiber",
-            "github.com/gorilla", "github.com/go-chi", "github.com/julienschmidt",
+            "github.com/gin-gonic",
+            "github.com/labstack",
+            "github.com/gofiber",
+            "github.com/gorilla",
+            "github.com/go-chi",
+            "github.com/julienschmidt",
             // CLI & config
-            "github.com/spf13", "github.com/urfave", "github.com/alecthomas",
+            "github.com/spf13",
+            "github.com/urfave",
+            "github.com/alecthomas",
             // Testing
-            "github.com/stretchr", "github.com/onsi",
+            "github.com/stretchr",
+            "github.com/onsi",
             // Database
-            "github.com/go-redis", "github.com/jackc", "github.com/go-sql-driver",
-            "github.com/jmoiron", "github.com/go-gorm",
+            "github.com/go-redis",
+            "github.com/jackc",
+            "github.com/go-sql-driver",
+            "github.com/jmoiron",
+            "github.com/go-gorm",
             // Logging
-            "github.com/sirupsen", "github.com/rs", "github.com/uber-go",
+            "github.com/sirupsen",
+            "github.com/rs",
+            "github.com/uber-go",
             // HTTP
             "github.com/valyala",
             // Messaging
-            "github.com/nats-io", "github.com/segmentio", "github.com/confluentinc",
+            "github.com/nats-io",
+            "github.com/segmentio",
+            "github.com/confluentinc",
             // Infrastructure
-            "github.com/hashicorp", "github.com/prometheus", "github.com/grafana",
-            "github.com/grpc", "github.com/envoyproxy",
+            "github.com/hashicorp",
+            "github.com/prometheus",
+            "github.com/grafana",
+            "github.com/grpc",
+            "github.com/envoyproxy",
             // Standard org scopes
-            "github.com/golang", "github.com/google", "github.com/aws",
-            "github.com/Azure", "github.com/kubernetes", "github.com/docker",
-            "github.com/etcd-io", "github.com/cockroachdb",
-            "github.com/containerd", "github.com/opencontainers",
-            "github.com/cncf", "github.com/open-telemetry",
+            "github.com/golang",
+            "github.com/google",
+            "github.com/aws",
+            "github.com/Azure",
+            "github.com/kubernetes",
+            "github.com/docker",
+            "github.com/etcd-io",
+            "github.com/cockroachdb",
+            "github.com/containerd",
+            "github.com/opencontainers",
+            "github.com/cncf",
+            "github.com/open-telemetry",
             // Module hosts
-            "go.uber.org", "google.golang.org", "golang.org",
-            "cloud.google.com", "go.opentelemetry.io",
+            "go.uber.org",
+            "google.golang.org",
+            "golang.org",
+            "cloud.google.com",
+            "go.opentelemetry.io",
         ],
         Ecosystem::Jvm => &[
             "com.google",
@@ -537,7 +674,11 @@ pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<
     }
 
     let separators = ['-', '_', '.'];
-    let sep = separators.iter().find(|&&s| name.contains(s)).copied().unwrap_or('-');
+    let sep = separators
+        .iter()
+        .find(|&&s| name.contains(s))
+        .copied()
+        .unwrap_or('-');
     let segments: Vec<&str> = name.split(['-', '_', '.']).collect();
 
     if segments.len() < 2 {
@@ -548,7 +689,9 @@ pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<
 
     // Strategy 1: remove one segment at a time and check if result is a top package
     for i in 0..segments.len() {
-        let reduced: Vec<&str> = segments.iter().enumerate()
+        let reduced: Vec<&str> = segments
+            .iter()
+            .enumerate()
             .filter(|(j, _)| *j != i)
             .map(|(_, s)| *s)
             .collect();

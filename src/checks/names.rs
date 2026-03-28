@@ -74,21 +74,39 @@ mod tests {
     // Collect all constants for validation tests
     fn all_constants() -> Vec<&'static str> {
         vec![
-            CANONICAL, EXISTENCE, EXISTENCE_REGISTRY_UNREACHABLE,
-            METADATA_VERSION_AGE, METADATA_NEW_PACKAGE, METADATA_LOW_DOWNLOADS,
-            METADATA_INSTALL_SCRIPT_RISK, METADATA_DEPENDENCY_EXPLOSION,
-            METADATA_MAINTAINER_CHANGE, METADATA_PARSE_FAILED, METADATA_NO_REPOSITORY,
-            SIMILARITY_REGISTRY_UNREACHABLE, SIMILARITY_SCOPE_SQUATTING,
-            SIMILARITY_CASE_VARIANT, SIMILARITY_SEPARATOR_SWAP,
-            SIMILARITY_COLLAPSE_REPEATED, SIMILARITY_VERSION_SUFFIX,
-            SIMILARITY_WORD_REORDER, SIMILARITY_CHAR_SWAP, SIMILARITY_EXTRA_CHAR,
-            SIMILARITY_HOMOGLYPH, SIMILARITY_CONFUSED_FORMS,
-            SIMILARITY_BITFLIP, SIMILARITY_KEYBOARD_PROXIMITY,
-            SIMILARITY_SEGMENT_OVERLAP, SIMILARITY_MUTATION_MATCH,
+            CANONICAL,
+            EXISTENCE,
+            EXISTENCE_REGISTRY_UNREACHABLE,
+            METADATA_VERSION_AGE,
+            METADATA_NEW_PACKAGE,
+            METADATA_LOW_DOWNLOADS,
+            METADATA_INSTALL_SCRIPT_RISK,
+            METADATA_DEPENDENCY_EXPLOSION,
+            METADATA_MAINTAINER_CHANGE,
+            METADATA_PARSE_FAILED,
+            METADATA_NO_REPOSITORY,
+            SIMILARITY_REGISTRY_UNREACHABLE,
+            SIMILARITY_SCOPE_SQUATTING,
+            SIMILARITY_CASE_VARIANT,
+            SIMILARITY_SEPARATOR_SWAP,
+            SIMILARITY_COLLAPSE_REPEATED,
+            SIMILARITY_VERSION_SUFFIX,
+            SIMILARITY_WORD_REORDER,
+            SIMILARITY_CHAR_SWAP,
+            SIMILARITY_EXTRA_CHAR,
+            SIMILARITY_HOMOGLYPH,
+            SIMILARITY_CONFUSED_FORMS,
+            SIMILARITY_BITFLIP,
+            SIMILARITY_KEYBOARD_PROXIMITY,
+            SIMILARITY_SEGMENT_OVERLAP,
+            SIMILARITY_MUTATION_MATCH,
             METADATA_REGISTRY_UNREACHABLE,
-            MALICIOUS_KNOWN_VULNERABILITY, MALICIOUS_REGISTRY_UNREACHABLE,
-            RESOLUTION_PARSE_FAILED, RESOLUTION_MISSING_LOCKFILE_ENTRY,
-            RESOLUTION_LOCKFILE_OUT_OF_SYNC, RESOLUTION_AMBIGUOUS,
+            MALICIOUS_KNOWN_VULNERABILITY,
+            MALICIOUS_REGISTRY_UNREACHABLE,
+            RESOLUTION_PARSE_FAILED,
+            RESOLUTION_MISSING_LOCKFILE_ENTRY,
+            RESOLUTION_LOCKFILE_OUT_OF_SYNC,
+            RESOLUTION_AMBIGUOUS,
             RESOLUTION_NO_EXACT_VERSION,
         ]
     }
@@ -113,14 +131,35 @@ mod tests {
     fn similarity_check_name_maps_all_generators() {
         assert_eq!(similarity_check_name("homoglyph"), SIMILARITY_HOMOGLYPH);
         assert_eq!(similarity_check_name("char-swap"), SIMILARITY_CHAR_SWAP);
-        assert_eq!(similarity_check_name("separator-swap"), SIMILARITY_SEPARATOR_SWAP);
-        assert_eq!(similarity_check_name("collapse-repeated"), SIMILARITY_COLLAPSE_REPEATED);
-        assert_eq!(similarity_check_name("version-suffix"), SIMILARITY_VERSION_SUFFIX);
-        assert_eq!(similarity_check_name("word-reorder"), SIMILARITY_WORD_REORDER);
+        assert_eq!(
+            similarity_check_name("separator-swap"),
+            SIMILARITY_SEPARATOR_SWAP
+        );
+        assert_eq!(
+            similarity_check_name("collapse-repeated"),
+            SIMILARITY_COLLAPSE_REPEATED
+        );
+        assert_eq!(
+            similarity_check_name("version-suffix"),
+            SIMILARITY_VERSION_SUFFIX
+        );
+        assert_eq!(
+            similarity_check_name("word-reorder"),
+            SIMILARITY_WORD_REORDER
+        );
         assert_eq!(similarity_check_name("extra-char"), SIMILARITY_EXTRA_CHAR);
-        assert_eq!(similarity_check_name("confused-forms"), SIMILARITY_CONFUSED_FORMS);
-        assert_eq!(similarity_check_name("scope-squatting"), SIMILARITY_SCOPE_SQUATTING);
-        assert_eq!(similarity_check_name("case-variant"), SIMILARITY_CASE_VARIANT);
+        assert_eq!(
+            similarity_check_name("confused-forms"),
+            SIMILARITY_CONFUSED_FORMS
+        );
+        assert_eq!(
+            similarity_check_name("scope-squatting"),
+            SIMILARITY_SCOPE_SQUATTING
+        );
+        assert_eq!(
+            similarity_check_name("case-variant"),
+            SIMILARITY_CASE_VARIANT
+        );
         assert_eq!(similarity_check_name("unknown"), SIMILARITY_MUTATION_MATCH);
     }
 }

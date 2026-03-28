@@ -68,7 +68,10 @@ mod tests {
 
     #[test]
     fn npm_exact_versions_require_a_literal_release() {
-        assert_eq!(exact_version("1.2.3", Ecosystem::Npm), Some("1.2.3".to_string()));
+        assert_eq!(
+            exact_version("1.2.3", Ecosystem::Npm),
+            Some("1.2.3".to_string())
+        );
         assert_eq!(exact_version("^1.2.3", Ecosystem::Npm), None);
         assert_eq!(exact_version("1", Ecosystem::Npm), None);
     }
@@ -85,7 +88,10 @@ mod tests {
 
     #[test]
     fn cargo_requires_explicit_equals_for_exact_versions() {
-        assert_eq!(exact_version("=1.2.3", Ecosystem::Cargo), Some("1.2.3".to_string()));
+        assert_eq!(
+            exact_version("=1.2.3", Ecosystem::Cargo),
+            Some("1.2.3".to_string())
+        );
         assert_eq!(exact_version("1.2.3", Ecosystem::Cargo), None);
     }
 
@@ -167,7 +173,10 @@ mod tests {
     #[test]
     fn pypi_rejects_double_equals_with_semicolon() {
         // Contains ';' — rejected
-        assert_eq!(exact_version("==2.31.0; python_version >= '3.8'", Ecosystem::PyPI), None);
+        assert_eq!(
+            exact_version("==2.31.0; python_version >= '3.8'", Ecosystem::PyPI),
+            None
+        );
     }
 
     #[test]

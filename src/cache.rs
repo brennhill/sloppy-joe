@@ -47,17 +47,40 @@ fn epoch_secs_to_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
     let mut year = 1970i64;
     let mut rem_days = days;
     loop {
-        if year > 2200 { break; } // safety cap
-        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-        if rem_days < ydays { break; }
+        if year > 2200 {
+            break;
+        } // safety cap
+        let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if rem_days < ydays {
+            break;
+        }
         rem_days -= ydays;
         year += 1;
     }
     let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days_per_month = [31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let days_per_month = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1i64;
     for &dm in &days_per_month {
-        if rem_days < dm { break; }
+        if rem_days < dm {
+            break;
+        }
         rem_days -= dm;
         month += 1;
     }
@@ -71,7 +94,11 @@ pub fn date_to_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: 
     let days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut days: i64 = 0;
     for y in 1970..year {
-        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
     }
     for m in 0..((month - 1) as usize) {
         days += days_per_month.get(m).copied().unwrap_or(30) as i64;
@@ -85,9 +112,14 @@ pub fn date_to_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: 
 
 /// Convert epoch milliseconds to ISO 8601 string. Returns None for negative timestamps.
 pub fn epoch_millis_to_iso8601(millis: i64) -> Option<String> {
-    if millis < 0 { return None; }
+    if millis < 0 {
+        return None;
+    }
     let (year, month, day, hour, min, _sec) = epoch_secs_to_parts(millis / 1000);
-    Some(format!("{:04}-{:02}-{:02}T{:02}:{:02}:00Z", year, month, day, hour, min))
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:00Z",
+        year, month, day, hour, min
+    ))
 }
 
 /// Convert current time to ISO 8601 string. Used by test helpers.
@@ -98,7 +130,10 @@ pub fn now_iso8601() -> String {
         .unwrap_or_default()
         .as_secs() as i64;
     let (year, month, day, hour, min, sec) = epoch_secs_to_parts(secs);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hour, min, sec)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, min, sec
+    )
 }
 
 /// Reject symlinked cache files to prevent symlink attacks.
@@ -106,10 +141,7 @@ pub fn ensure_no_symlink(path: &Path) -> Result<()> {
     if let Ok(metadata) = std::fs::symlink_metadata(path)
         && metadata.file_type().is_symlink()
     {
-        anyhow::bail!(
-            "refusing to use symlinked cache file: {}",
-            path.display()
-        );
+        anyhow::bail!("refusing to use symlinked cache file: {}", path.display());
     }
     Ok(())
 }
@@ -175,11 +207,7 @@ pub fn read_json_cache<T: serde::de::DeserializeOwned>(
     let content = std::fs::read_to_string(path).ok()?;
     let data: T = serde_json::from_str(&content).ok()?;
     let age = now_epoch().saturating_sub(timestamp_extractor(&data));
-    if age < ttl_secs {
-        Some(data)
-    } else {
-        None
-    }
+    if age < ttl_secs { Some(data) } else { None }
 }
 
 #[cfg(test)]
@@ -191,8 +219,7 @@ mod tests {
 
     fn unique_dir() -> PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir =
-            std::env::temp_dir().join(format!("sj-cache-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!("sj-cache-{}-{}", std::process::id(), id));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -298,5 +325,4 @@ mod tests {
         let b = cache_tmp_path(base);
         assert_ne!(a, b);
     }
-
 }

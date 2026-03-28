@@ -34,7 +34,16 @@ pub async fn scan_with_source(
     config_source: Option<&str>,
     deep: bool,
 ) -> Result<ScanReport> {
-    scan_with_source_full(project_dir, project_type, config_source, deep, false, false, None).await
+    scan_with_source_full(
+        project_dir,
+        project_type,
+        config_source,
+        deep,
+        false,
+        false,
+        None,
+    )
+    .await
 }
 
 /// Warm the cache by running a full scan without the manifest hash skip.
@@ -73,7 +82,14 @@ pub async fn scan_with_source_full(
     let config = config::load_config_from_source(config_source, Some(project_dir))
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    let opts = ScanOptions { deep, paranoid, no_cache, cache_dir, disable_osv_disk_cache: false, skip_hash_check: false };
+    let opts = ScanOptions {
+        deep,
+        paranoid,
+        no_cache,
+        cache_dir,
+        disable_osv_disk_cache: false,
+        skip_hash_check: false,
+    };
     scan_with_config(project_dir, project_type, config, &opts).await
 }
 
@@ -105,8 +121,11 @@ fn scan_hash(project_dir: &std::path::Path, deps: &[Dependency]) -> u64 {
 
     // Hash lockfile content (resolved versions) — catches upstream version changes
     for lockfile in &[
-        "package-lock.json", "npm-shrinkwrap.json",
-        "Cargo.lock", "Gemfile.lock", "poetry.lock",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "Cargo.lock",
+        "Gemfile.lock",
+        "poetry.lock",
     ] {
         let path = project_dir.join(lockfile);
         if let Ok(content) = std::fs::read(&path) {
@@ -151,13 +170,13 @@ async fn scan_with_config(
     // Skip scan if deps haven't changed (manifest + lockfile hash check)
     if !opts.no_cache && !opts.skip_hash_check && !all_deps.is_empty() {
         let hash = scan_hash(project_dir, &all_deps);
-        let cache_base = opts.cache_dir
+        let cache_base = opts
+            .cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
         let hash_path = cache_base.join("scan-hash.json");
-        if let Some(cached) = cache::read_json_cache::<ScanHashCache>(
-            &hash_path, 7 * 24 * 3600, |c| c.timestamp,
-        )
+        if let Some(cached) =
+            cache::read_json_cache::<ScanHashCache>(&hash_path, 7 * 24 * 3600, |c| c.timestamp)
             && cached.hash == hash
         {
             eprintln!("Dependencies unchanged, skipping scan.");
@@ -178,8 +197,14 @@ async fn scan_with_config(
         let ecosystem = deps[0].ecosystem;
         let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
         let report = scan_with_services_inner(
-            project_dir, config.clone(), deps.clone(), &*registry, &osv_client, opts,
-        ).await?;
+            project_dir,
+            config.clone(),
+            deps.clone(),
+            &*registry,
+            &osv_client,
+            opts,
+        )
+        .await?;
         total_packages += report.packages_checked;
         all_issues.extend(report.issues);
     }
@@ -189,14 +214,18 @@ async fn scan_with_config(
     // Save hash after successful scan
     if !opts.no_cache && !all_deps.is_empty() {
         let hash = scan_hash(project_dir, &all_deps);
-        let cache_base = opts.cache_dir
+        let cache_base = opts
+            .cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
         let hash_path = cache_base.join("scan-hash.json");
-        cache::atomic_write_json(&hash_path, &ScanHashCache {
-            timestamp: cache::now_epoch(),
-            hash,
-        });
+        cache::atomic_write_json(
+            &hash_path,
+            &ScanHashCache {
+                timestamp: cache::now_epoch(),
+                hash,
+            },
+        );
     }
 
     Ok(report)
@@ -463,4 +492,3 @@ pub(crate) mod test_helpers {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
-

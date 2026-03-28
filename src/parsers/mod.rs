@@ -15,11 +15,7 @@ use std::path::Path;
 pub(crate) fn read_file_limited(path: &std::path::Path, max_bytes: u64) -> Result<String> {
     let meta = std::fs::metadata(path)?;
     if meta.len() > max_bytes {
-        anyhow::bail!(
-            "File too large: {} bytes (max {})",
-            meta.len(),
-            max_bytes
-        );
+        anyhow::bail!("File too large: {} bytes (max {})", meta.len(), max_bytes);
     }
     Ok(std::fs::read_to_string(path)?)
 }
@@ -179,8 +175,8 @@ pub(crate) mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_utils::*;
+    use super::*;
 
     #[test]
     fn parse_dependencies_with_explicit_type() {
@@ -337,10 +333,7 @@ mod tests {
 
     #[test]
     fn extract_xml_value_no_close_tag() {
-        assert_eq!(
-            extract_xml_value("<Version>1.2.3", "Version"),
-            None
-        );
+        assert_eq!(extract_xml_value("<Version>1.2.3", "Version"), None);
     }
 
     // ── read_file_limited tests ──

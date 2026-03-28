@@ -21,11 +21,8 @@ impl Check for CanonicalCheck {
         acc: &'a mut ScanAccumulator,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            let results = super::canonical::check_canonical(
-                ctx.non_internal_deps,
-                ctx.config,
-                ctx.ecosystem,
-            );
+            let results =
+                super::canonical::check_canonical(ctx.non_internal_deps, ctx.config, ctx.ecosystem);
             acc.issues.extend(results);
             Ok(())
         })

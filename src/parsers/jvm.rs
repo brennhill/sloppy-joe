@@ -231,7 +231,11 @@ mod tests {
 
     #[test]
     fn parse_gradle_kts() {
-        let dir = setup_test_dir("jvm", "build.gradle.kts", "implementation(\"com.google.guava:guava:31.1-jre\")");
+        let dir = setup_test_dir(
+            "jvm",
+            "build.gradle.kts",
+            "implementation(\"com.google.guava:guava:31.1-jre\")",
+        );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "com.google.guava:guava");

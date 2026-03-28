@@ -152,18 +152,14 @@ fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<Par
                 Err(_) => Ok(ParsedLockfile::None),
             }
         }
-        Some(Ecosystem::Ruby) => {
-            match ruby::read_lockfile(project_dir) {
-                Some(content) => Ok(ParsedLockfile::Ruby(content)),
-                None => Ok(ParsedLockfile::None),
-            }
-        }
-        Some(Ecosystem::PyPI) => {
-            match python::read_lockfile(project_dir) {
-                Some(value) => Ok(ParsedLockfile::Python(value)),
-                None => Ok(ParsedLockfile::None),
-            }
-        }
+        Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir) {
+            Some(content) => Ok(ParsedLockfile::Ruby(content)),
+            None => Ok(ParsedLockfile::None),
+        },
+        Some(Ecosystem::PyPI) => match python::read_lockfile(project_dir) {
+            Some(value) => Ok(ParsedLockfile::Python(value)),
+            None => Ok(ParsedLockfile::None),
+        },
         _ => Ok(ParsedLockfile::None),
     }
 }
@@ -171,9 +167,7 @@ fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<Par
 /// Resolve versions from a pre-parsed lockfile.
 fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<ResolutionResult> {
     match parsed {
-        ParsedLockfile::Npm { value, file_name } => {
-            npm::resolve_from_value(value, deps, file_name)
-        }
+        ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
         ParsedLockfile::Ruby(content) => ruby::resolve_from_content(content, deps),
         ParsedLockfile::Python(value) => python::resolve_from_value(value, deps),
@@ -197,7 +191,10 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
 }
 
 #[cfg(test)]
-pub(crate) fn resolve_versions(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
+pub(crate) fn resolve_versions(
+    project_dir: &Path,
+    deps: &[Dependency],
+) -> Result<ResolutionResult> {
     let Some(first) = deps.first() else {
         return Ok(ResolutionResult::default());
     };
@@ -295,8 +292,7 @@ mod tests {
 
     fn unique_dir() -> std::path::PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir =
-            std::env::temp_dir().join(format!("sj-lockfiles-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!("sj-lockfiles-{}-{}", std::process::id(), id));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -345,7 +341,11 @@ mod tests {
     #[test]
     fn npm_package_lock_v1_resolves_direct_dependency() {
         let dir = unique_dir();
-        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":1,"dependencies":{"react":{"version":"18.3.1"}}}"#).unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"demo","lockfileVersion":1,"dependencies":{"react":{"version":"18.3.1"}}}"#,
+        )
+        .unwrap();
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "18.3.1");
@@ -357,18 +357,35 @@ mod tests {
         std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.2.0"}},"node_modules/react":{"version":"18.3.1"}}}"#).unwrap();
         let deps = vec![npm_dep("react", "18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::ManifestExact);
-        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC));
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC)
+        );
     }
 
     #[test]
     fn npm_missing_direct_dependency_emits_resolution_issue() {
         let dir = unique_dir();
-        std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo"}}}"#).unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo"}}}"#,
+        )
+        .unwrap();
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
+        );
     }
 
     #[test]
@@ -377,18 +394,36 @@ mod tests {
         std::fs::write(dir.join("package-lock.json"), "{not json").unwrap();
         let deps = vec![npm_dep("react", "18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::ManifestExact);
-        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED));
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED)
+        );
     }
 
     #[test]
     fn cargo_lock_resolves_single_locked_version() {
         let dir = unique_dir();
-        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n",
+        )
+        .unwrap();
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "1.0.203");
-        assert_eq!(result.resolved_version(&deps[0]).unwrap().source, ResolutionSource::Lockfile);
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().version,
+            "1.0.203"
+        );
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::Lockfile
+        );
     }
 
     #[test]
@@ -397,7 +432,10 @@ mod tests {
         std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"serde\"\nversion = \"1.0.201\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n").unwrap();
         let deps = vec![cargo_dep("serde", "=1.0.203")];
         let result = resolve_versions(&dir, &deps).unwrap();
-        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "1.0.203");
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().version,
+            "1.0.203"
+        );
     }
 
     #[test]
@@ -420,7 +458,10 @@ mod tests {
             "Lockfile-extracted version should resolve against multiple versions"
         );
         assert!(
-            !result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS),
+            !result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS),
             "Should not emit ambiguous issue when version matches"
         );
     }
@@ -432,17 +473,31 @@ mod tests {
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS)
+        );
     }
 
     #[test]
     fn cargo_lock_missing_direct_dependency_emits_resolution_issue() {
         let dir = unique_dir();
-        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\n",
+        )
+        .unwrap();
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
+        );
     }
 
     #[test]
@@ -479,7 +534,10 @@ mod tests {
     fn cargo_lock_rejects_path_traversal() {
         let dir = unique_dir();
         std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"../malicious\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"safe-pkg\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"foo\\u0000bar\"\nversion = \"1.0.0\"\n").unwrap();
-        let deps = vec![cargo_dep("../malicious", "1.0.0"), cargo_dep("safe-pkg", "1.0.0")];
+        let deps = vec![
+            cargo_dep("../malicious", "1.0.0"),
+            cargo_dep("safe-pkg", "1.0.0"),
+        ];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
         assert_eq!(result.resolved_version(&deps[1]).unwrap().version, "1.0.0");
@@ -492,7 +550,12 @@ mod tests {
         let deps = vec![cargo_dep("serde", "1")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert!(result.resolved_version(&deps[0]).is_none());
-        assert!(result.issues.iter().any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED)
+        );
     }
 
     #[test]
@@ -612,7 +675,11 @@ mod tests {
         assert_eq!(data.resolution.exact_version(&direct[0]), Some("7.0.4"));
         // actioncable and pg are transitive
         assert!(data.transitive_deps.len() >= 2);
-        let names: Vec<&str> = data.transitive_deps.iter().map(|d| d.name.as_str()).collect();
+        let names: Vec<&str> = data
+            .transitive_deps
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
         assert!(names.contains(&"actioncable"));
         assert!(names.contains(&"pg"));
     }

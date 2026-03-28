@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::{
+    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
     add_manifest_exact_fallback, add_manifest_exact_fallbacks, ambiguous_issue,
-    missing_entry_issue, out_of_sync_issue, parse_failed_issue, ResolutionKey, ResolutionResult,
-    ResolutionSource, ResolvedVersion,
+    missing_entry_issue, out_of_sync_issue, parse_failed_issue,
 };
 
 /// Read + parse + resolve in one step (used by resolve_versions test API).
@@ -101,7 +101,8 @@ pub(super) fn resolve_from_value(
         // Try exact_version first (manifest with = prefix),
         // then fall back to raw version string (lockfile-extracted versions
         // like "0.52.0" don't have = prefix but ARE exact).
-        let exact = dep.exact_version()
+        let exact = dep
+            .exact_version()
             .or_else(|| dep.version.clone())
             .filter(|v| versions.iter().any(|lv| lv == v));
 

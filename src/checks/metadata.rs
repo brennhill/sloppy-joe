@@ -58,7 +58,6 @@ pub struct MetadataLookup {
     pub metadata: Option<PackageMetadata>,
 }
 
-
 pub(crate) async fn fetch_metadata(
     registry: &dyn Registry,
     deps: &[Dependency],
@@ -79,8 +78,8 @@ pub(crate) async fn fetch_metadata(
         .collect();
 
     let results: Vec<_> = stream::iter(prepared)
-        .map(|(package, ecosystem, version, exact_version, unresolved_version)| {
-            async move {
+        .map(
+            |(package, ecosystem, version, exact_version, unresolved_version)| async move {
                 let result: std::result::Result<MetadataLookup, anyhow::Error> = async {
                     let metadata = registry
                         .metadata(&package, exact_version.as_deref())
@@ -99,10 +98,11 @@ pub(crate) async fn fetch_metadata(
                         exists,
                         metadata,
                     })
-                }.await;
+                }
+                .await;
                 (package, result)
-            }
-        })
+            },
+        )
         .buffer_unordered(10)
         .collect()
         .await;
@@ -115,21 +115,32 @@ pub(crate) async fn fetch_metadata(
     for (_package, result) in results {
         match result {
             Ok(lookup) => lookups.push(lookup),
-            Err(_) => { error_count += 1; }
+            Err(_) => {
+                error_count += 1;
+            }
         }
     }
 
-    let ecosystem = deps.first().map(|d| d.ecosystem).unwrap_or(crate::Ecosystem::Npm);
+    let ecosystem = deps
+        .first()
+        .map(|d| d.ecosystem)
+        .unwrap_or(crate::Ecosystem::Npm);
     if super::exceeds_error_threshold(error_count, total_queries, ecosystem) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
-            Issue::new("<registry>", super::names::METADATA_REGISTRY_UNREACHABLE, Severity::Error)
-                .message(format!(
-                    "Registry queries failed for {} of {} metadata checks ({:.0}%). \
+            Issue::new(
+                "<registry>",
+                super::names::METADATA_REGISTRY_UNREACHABLE,
+                Severity::Error,
+            )
+            .message(format!(
+                "Registry queries failed for {} of {} metadata checks ({:.0}%). \
                      Metadata detection is unreliable. Fix network connectivity or retry.",
-                    error_count, total_queries, error_rate * 100.0
-                ))
-                .fix("Ensure the registry is reachable and retry the scan."),
+                error_count,
+                total_queries,
+                error_rate * 100.0
+            ))
+            .fix("Ensure the registry is reachable and retry the scan."),
         );
     }
 
@@ -205,4 +216,3 @@ pub async fn check_metadata(
 #[cfg(test)]
 #[path = "metadata_tests.rs"]
 mod tests;
-

@@ -89,9 +89,7 @@ impl SloppyJoeConfig {
 
     /// Validate config at load time. Returns a list of errors.
     pub fn validate(&self) -> Vec<String> {
-        let valid_ecosystems = [
-            "npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet",
-        ];
+        let valid_ecosystems = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
         let mut errors = Vec::new();
 
         // Check ecosystem names in all sections
@@ -255,19 +253,21 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     // Check Content-Length header first (fast path), then cap the read.
     const MAX_CONFIG_BYTES: u64 = 1_024 * 1_024;
     if let Some(len) = response.content_length()
-        && len > MAX_CONFIG_BYTES {
-            return Err(format!(
-                "Config response too large ({} bytes, max {} bytes)\n  URL: {}",
-                len, MAX_CONFIG_BYTES, url
-            ));
-        }
+        && len > MAX_CONFIG_BYTES
+    {
+        return Err(format!(
+            "Config response too large ({} bytes, max {} bytes)\n  URL: {}",
+            len, MAX_CONFIG_BYTES, url
+        ));
+    }
     // Read body in chunks with a hard size cap to prevent OOM from chunked responses
     // that bypass Content-Length (the header check above only works when the server sends it).
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
     use futures::StreamExt;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
+        let chunk =
+            chunk.map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
         body.extend_from_slice(&chunk);
         if body.len() as u64 > MAX_CONFIG_BYTES {
             return Err(format!(
@@ -673,10 +673,7 @@ mod tests {
         let dir = std::env::temp_dir().join("sloppy-joe-test-validate");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
-        std::fs::write(
-            &path,
-            r#"{"internal":{"nodejs":["pkg"]}}"#,
-        ).unwrap();
+        std::fs::write(&path, r#"{"internal":{"nodejs":["pkg"]}}"#).unwrap();
         let result = load_config(Some(&path));
         assert!(result.is_err());
         let err = result.unwrap_err();

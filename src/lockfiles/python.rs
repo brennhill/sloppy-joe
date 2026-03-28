@@ -2,12 +2,12 @@ use crate::Dependency;
 use anyhow::Result;
 use std::path::Path;
 
-use super::{
-    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue, ResolutionKey,
-    ResolutionResult, ResolutionSource, ResolvedVersion,
-};
 #[cfg(test)]
 use super::add_manifest_exact_fallbacks;
+use super::{
+    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue,
+};
 
 /// Resolve versions from a pre-parsed poetry.lock TOML value.
 pub(super) fn resolve_from_value(
@@ -20,7 +20,10 @@ pub(super) fn resolve_from_value(
     for dep in deps {
         // PEP 503 normalize: lowercase, replace [-_.] with -
         let normalized = normalize_name(&dep.name);
-        match packages.iter().find(|(n, _)| normalize_name(n) == normalized) {
+        match packages
+            .iter()
+            .find(|(n, _)| normalize_name(n) == normalized)
+        {
             Some((_, version)) => {
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != *version
@@ -38,9 +41,7 @@ pub(super) fn resolve_from_value(
                 );
             }
             None => {
-                result
-                    .issues
-                    .push(missing_entry_issue(dep, "poetry.lock"));
+                result.issues.push(missing_entry_issue(dep, "poetry.lock"));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         }
@@ -153,9 +154,17 @@ python-versions = "^3.8"
         let parsed: toml::Value = toml::from_str(POETRY_LOCK).unwrap();
         let packages = extract_packages(&parsed);
         assert_eq!(packages.len(), 3);
-        assert!(packages.iter().any(|(n, v)| n == "requests" && v == "2.31.0"));
+        assert!(
+            packages
+                .iter()
+                .any(|(n, v)| n == "requests" && v == "2.31.0")
+        );
         assert!(packages.iter().any(|(n, v)| n == "urllib3" && v == "2.1.0"));
-        assert!(packages.iter().any(|(n, v)| n == "certifi" && v == "2023.11.17"));
+        assert!(
+            packages
+                .iter()
+                .any(|(n, v)| n == "certifi" && v == "2023.11.17")
+        );
     }
 
     #[test]

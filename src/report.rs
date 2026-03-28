@@ -270,9 +270,11 @@ mod tests {
     fn has_issues_returns_true_when_issues_exist() {
         let report = ScanReport::from_issues(
             1,
-            vec![Issue::new("foo", "existence", Severity::Error)
-                .message("not found")
-                .fix("remove it")],
+            vec![
+                Issue::new("foo", "existence", Severity::Error)
+                    .message("not found")
+                    .fix("remove it"),
+            ],
         );
         assert!(report.has_issues());
     }
@@ -325,29 +327,22 @@ mod tests {
 
     #[test]
     fn print_json_does_not_panic() {
-        let report = ScanReport::from_issues(
-            1,
-            vec![issue("foo", "existence", Severity::Error)],
-        );
+        let report = ScanReport::from_issues(1, vec![issue("foo", "existence", Severity::Error)]);
         report.print_json();
     }
 
     #[test]
     fn print_human_errors_only() {
-        let report = ScanReport::from_issues(
-            2,
-            vec![issue("bad-pkg", "existence", Severity::Error)],
-        );
+        let report =
+            ScanReport::from_issues(2, vec![issue("bad-pkg", "existence", Severity::Error)]);
         report.print_human();
         assert!(report.has_issues());
     }
 
     #[test]
     fn print_human_similarity_errors() {
-        let report = ScanReport::from_issues(
-            2,
-            vec![issue("typo-pkg", "similarity", Severity::Error)],
-        );
+        let report =
+            ScanReport::from_issues(2, vec![issue("typo-pkg", "similarity", Severity::Error)]);
         report.print_human();
         assert!(report.has_issues());
     }

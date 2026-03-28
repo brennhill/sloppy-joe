@@ -2,21 +2,20 @@ mod confusables;
 pub mod generators;
 mod popular;
 
-use crate::cache;
+use crate::Dependency;
 use crate::Ecosystem;
+use crate::cache;
 use crate::registry::Registry;
 use crate::report::{Issue, Severity};
-use crate::Dependency;
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub use generators::{default_generators, MutationGenerator};
+pub use generators::{MutationGenerator, default_generators};
 use generators::{extract_scope, known_scopes};
 
 const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
-
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
 struct SimilarityCache {
@@ -283,8 +282,7 @@ pub async fn check_similarity_with_cache(
         if let Some(mutations) = all_mutations.get(&dep.name) {
             for (mutation, gen_name) in mutations {
                 let mutation_lower = mutation.to_lowercase();
-                if dep_names.contains(&mutation_lower)
-                    && mutation_lower != dep.name.to_lowercase()
+                if dep_names.contains(&mutation_lower) && mutation_lower != dep.name.to_lowercase()
                 {
                     if flagged.insert(dep.name.clone()) {
                         let message = format_match_message(&dep.name, &mutation_lower, gen_name);
@@ -323,8 +321,10 @@ pub async fn check_similarity_with_cache(
     let mut cache = if no_cache {
         SimilarityCache::default()
     } else {
-        cache::read_json_cache(&cp, SIMILARITY_CACHE_TTL_SECS, |c: &SimilarityCache| c.timestamp)
-            .unwrap_or_default()
+        cache::read_json_cache(&cp, SIMILARITY_CACHE_TTL_SECS, |c: &SimilarityCache| {
+            c.timestamp
+        })
+        .unwrap_or_default()
     };
 
     // Split queries into cached and uncached
@@ -376,15 +376,19 @@ pub async fn check_similarity_with_cache(
     if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
-            Issue::new("<registry>", crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE, Severity::Error)
-                .message(format!(
-                    "Registry queries failed for {} of {} similarity checks ({:.0}%). \
+            Issue::new(
+                "<registry>",
+                crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE,
+                Severity::Error,
+            )
+            .message(format!(
+                "Registry queries failed for {} of {} similarity checks ({:.0}%). \
                      Similarity detection is unreliable. Fix network connectivity or retry.",
-                    error_count,
-                    total_queries,
-                    error_rate * 100.0
-                ))
-                .fix("Ensure the registry is reachable. Use --no-cache to bypass stale cache data."),
+                error_count,
+                total_queries,
+                error_rate * 100.0
+            ))
+            .fix("Ensure the registry is reachable. Use --no-cache to bypass stale cache data."),
         );
         return Ok(issues);
     }
@@ -410,7 +414,10 @@ pub async fn check_similarity_with_cache(
             let dep_mutations = all_mutations.get(&dep.name)?;
             // Pick the candidate with the highest generator severity
             let best = dep_matches.iter().max_by_key(|c| {
-                dep_mutations.get(c.as_str()).map(|g| generator_severity(g)).unwrap_or(0)
+                dep_mutations
+                    .get(c.as_str())
+                    .map(|g| generator_severity(g))
+                    .unwrap_or(0)
             })?;
             Some((dep.name.clone(), best.clone()))
         })
@@ -439,21 +446,17 @@ pub async fn check_similarity_with_cache(
             if let Some(ref meta) = metadata {
                 let mut evidence_parts = Vec::new();
                 if let Some(downloads) = meta.downloads {
-                    evidence_parts
-                        .push(format!("{} has {} downloads", candidate, downloads));
+                    evidence_parts.push(format!("{} has {} downloads", candidate, downloads));
                 }
                 if let Some(ref created) = meta.created {
-                    evidence_parts
-                        .push(format!("was first published {}", created));
+                    evidence_parts.push(format!("was first published {}", created));
                 }
 
                 // Download disparity: if original dep has >10K downloads and
                 // candidate has <1000, this is high confidence typosquatting
                 if let Some(candidate_downloads) = meta.downloads {
                     let original_downloads = dep_metadata
-                        .and_then(|lookups| {
-                            lookups.iter().find(|l| l.package == dep_name)
-                        })
+                        .and_then(|lookups| lookups.iter().find(|l| l.package == dep_name))
                         .and_then(|l| l.metadata.as_ref())
                         .and_then(|m| m.downloads);
                     if let Some(orig_dl) = original_downloads
@@ -523,16 +526,20 @@ pub async fn check_similarity_with_cache(
 }
 
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
-    Issue::new(package, crate::checks::names::similarity_check_name(check_type), Severity::Error)
-        .message(message)
-        .fix(fix)
-        .suggestion(popular)
+    Issue::new(
+        package,
+        crate::checks::names::similarity_check_name(check_type),
+        Severity::Error,
+    )
+    .message(message)
+    .fix(fix)
+    .suggestion(popular)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::generators::*;
+    use super::*;
     use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
 
@@ -606,7 +613,9 @@ mod tests {
     async fn repeated_chars_caught() {
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("repeated"));
         assert_eq!(issues[0].suggestion, Some("express".to_string()));
@@ -618,7 +627,9 @@ mod tests {
     async fn version_suffix_caught() {
         let registry = FakeRegistry::with(&["react"]);
         let deps = vec![dep("react2")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(
             issues[0].check.contains("extra-char") || issues[0].check.contains("version-suffix"),
@@ -634,7 +645,9 @@ mod tests {
     async fn adjacent_swap_caught() {
         let registry = FakeRegistry::with(&["requests"]);
         let deps = vec![dep_eco("reqeusts", Ecosystem::PyPI)];
-        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("char-swap"));
         assert_eq!(issues[0].suggestion, Some("requests".to_string()));
@@ -646,7 +659,9 @@ mod tests {
     async fn extra_char_caught() {
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expressx")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("extra-char"));
         assert_eq!(issues[0].suggestion, Some("express".to_string()));
@@ -658,7 +673,9 @@ mod tests {
     async fn no_match_produces_no_issue() {
         let registry = FakeRegistry::with(&["react", "express"]);
         let deps = vec![dep("zzzzzzzzzzzzz")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(issues.is_empty());
     }
 
@@ -668,7 +685,9 @@ mod tests {
     async fn any_package_catch() {
         let registry = FakeRegistry::with(&["my-lib"]);
         let deps = vec![dep("myy-lib")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
     }
 
@@ -678,10 +697,14 @@ mod tests {
     async fn intra_manifest_flags_both_present() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("lodash"), dep("lodahs")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(
-            issues.iter().any(|i| i.package == "lodahs" || i.package == "lodash"),
+            issues
+                .iter()
+                .any(|i| i.package == "lodahs" || i.package == "lodash"),
             "Expected intra-manifest flag"
         );
     }
@@ -692,12 +715,17 @@ mod tests {
     async fn pypi_separator_suppressed() {
         let registry = FakeRegistry::with(&["python_dateutil"]);
         let deps = vec![dep_eco("python-dateutil", Ecosystem::PyPI)];
-        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI)
+            .await
+            .unwrap();
         let sep_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("separator"))
             .collect();
-        assert!(sep_issues.is_empty(), "PyPI should suppress separator-confusion");
+        assert!(
+            sep_issues.is_empty(),
+            "PyPI should suppress separator-confusion"
+        );
     }
 
     // -- npm separator flagged --
@@ -706,7 +734,9 @@ mod tests {
     async fn npm_separator_flagged() {
         let registry = FakeRegistry::with(&["socket.io"]);
         let deps = vec![dep("socket_io")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("separator"));
     }
@@ -717,7 +747,9 @@ mod tests {
     async fn scope_squatting_flagged() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("@typos/lodash")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("scope-squatting"));
         assert!(issues[0].message.contains("@typos"));
@@ -728,7 +760,9 @@ mod tests {
     async fn scope_squatting_nextjs_detected() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("@nexjs/config")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         assert!(
             issues.iter().any(|i| i.check.contains("scope-squatting")),
             "Expected @nexjs flagged as close to @nextjs"
@@ -739,7 +773,9 @@ mod tests {
     async fn scope_exact_match_no_flag() {
         let registry = FakeRegistry::empty();
         let deps = vec![dep("@types/lodash")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         let scope_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("scope-squatting"))
@@ -753,7 +789,9 @@ mod tests {
     async fn case_variant_flagged_on_case_sensitive_registry() {
         let registry = FakeRegistry::with(&["github.com/spf13/cobra"]);
         let deps = vec![dep_eco("Github.com/spf13/cobra", Ecosystem::Go)];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Go).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Go)
+            .await
+            .unwrap();
         assert!(
             issues.iter().any(|i| i.check.contains("case-variant")),
             "Expected case-variant issue on case-sensitive registry"
@@ -764,7 +802,9 @@ mod tests {
     async fn case_insensitive_registry_no_case_variant() {
         let registry = FakeRegistry::with(&["react"]);
         let deps = vec![dep("React")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         let case_issues: Vec<_> = issues
             .iter()
             .filter(|i| i.check.contains("case-variant"))
@@ -778,7 +818,9 @@ mod tests {
     async fn no_duplicate_flags_for_same_package() {
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+            .await
+            .unwrap();
         let count = issues.iter().filter(|i| i.package == "expresss").count();
         assert_eq!(count, 1);
     }
@@ -789,7 +831,9 @@ mod tests {
     async fn homoglyph_caught() {
         let registry = FakeRegistry::with(&["requests"]);
         let deps = vec![dep_eco("r\u{0435}quests", Ecosystem::PyPI)];
-        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI).await.unwrap();
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI)
+            .await
+            .unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].check.contains("homoglyph"));
     }
@@ -902,7 +946,12 @@ mod tests {
 
     #[test]
     fn test_known_scopes_populated() {
-        for eco in [Ecosystem::Npm, Ecosystem::Php, Ecosystem::Go, Ecosystem::Jvm] {
+        for eco in [
+            Ecosystem::Npm,
+            Ecosystem::Php,
+            Ecosystem::Go,
+            Ecosystem::Jvm,
+        ] {
             assert!(
                 !known_scopes(eco).is_empty(),
                 "known_scopes empty for {}",
@@ -932,7 +981,9 @@ mod tests {
         let deps = vec![dep("expresss")];
 
         for _ in 0..5 {
-            let issues = check_similarity(&registry, &deps, Ecosystem::Npm).await.unwrap();
+            let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+                .await
+                .unwrap();
             assert_eq!(issues.len(), 1);
             assert!(
                 issues[0].check.contains("collapse-repeated"),
@@ -981,7 +1032,8 @@ mod tests {
         let variants = bitflip_variants("react");
         for v in &variants {
             assert!(
-                v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
                 "Bitflip produced invalid char in: {}",
                 v
             );
@@ -1028,7 +1080,10 @@ mod tests {
     #[test]
     fn segment_overlap_single_segment_skipped() {
         let variants = segment_overlap_variants("react", Ecosystem::Npm);
-        assert!(variants.is_empty(), "Single segment should produce no variants");
+        assert!(
+            variants.is_empty(),
+            "Single segment should produce no variants"
+        );
     }
 
     #[test]
@@ -1079,9 +1134,16 @@ mod tests {
         }];
 
         let issues = check_similarity_with_cache(
-            &registry, &deps, Ecosystem::Npm, None, false, false,
+            &registry,
+            &deps,
+            Ecosystem::Npm,
+            None,
+            false,
+            false,
             Some(&dep_lookups),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         assert!(!issues.is_empty());
         // The candidate "express" has 50K downloads (from FakeRegistry metadata),

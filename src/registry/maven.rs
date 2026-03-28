@@ -92,8 +92,9 @@ impl super::RegistryMetadata for MavenRegistry {
         }
 
         // timestamp is epoch millis — use shared converter (handles negative values)
-        let latest_version_date =
-            doc["timestamp"].as_i64().and_then(crate::cache::epoch_millis_to_iso8601);
+        let latest_version_date = doc["timestamp"]
+            .as_i64()
+            .and_then(crate::cache::epoch_millis_to_iso8601);
 
         Ok(Some(super::PackageMetadata {
             created: None, // Maven search API doesn't easily expose first publish date

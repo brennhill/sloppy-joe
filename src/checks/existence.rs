@@ -59,13 +59,19 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
     if super::exceeds_error_threshold(error_count, total_queries, ecosystem) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
-            Issue::new("<registry>", super::names::EXISTENCE_REGISTRY_UNREACHABLE, Severity::Error)
-                .message(format!(
-                    "Registry queries failed for {} of {} existence checks ({:.0}%). \
+            Issue::new(
+                "<registry>",
+                super::names::EXISTENCE_REGISTRY_UNREACHABLE,
+                Severity::Error,
+            )
+            .message(format!(
+                "Registry queries failed for {} of {} existence checks ({:.0}%). \
                      Existence detection is unreliable. Fix network connectivity or retry.",
-                    error_count, total_queries, error_rate * 100.0
-                ))
-                .fix("Ensure the registry is reachable and retry the scan."),
+                error_count,
+                total_queries,
+                error_rate * 100.0
+            ))
+            .fix("Ensure the registry is reachable and retry the scan."),
         );
     }
 
@@ -202,7 +208,9 @@ mod tests {
         let deps: Vec<_> = (0..10).map(|i| dep(&format!("pkg-{}", i))).collect();
         let issues = check_existence(&registry, &deps).await.unwrap();
         assert!(
-            issues.iter().any(|i| i.check.contains("registry-unreachable")),
+            issues
+                .iter()
+                .any(|i| i.check.contains("registry-unreachable")),
             "Expected fail-closed blocking issue, got: {:?}",
             issues.iter().map(|i| &i.check).collect::<Vec<_>>()
         );
@@ -219,7 +227,9 @@ mod tests {
         let deps = vec![dep("react")];
         let issues = check_existence(&registry, &deps).await.unwrap();
         assert!(
-            !issues.iter().any(|i| i.check.contains("registry-unreachable")),
+            !issues
+                .iter()
+                .any(|i| i.check.contains("registry-unreachable")),
             "Few errors should not trigger fail-closed"
         );
     }

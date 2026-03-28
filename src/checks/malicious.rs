@@ -1,5 +1,5 @@
-use crate::cache;
 use crate::Dependency;
+use crate::cache;
 use crate::lockfiles::ResolutionResult;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
@@ -170,22 +170,35 @@ pub async fn check_malicious_with_cache(
 
     for (cache_key, result) in results {
         match result {
-            Ok(ids) => { cache.insert(cache_key, CacheEntry { vuln_ids: ids }); }
-            Err(_) => { error_count += 1; }
+            Ok(ids) => {
+                cache.insert(cache_key, CacheEntry { vuln_ids: ids });
+            }
+            Err(_) => {
+                error_count += 1;
+            }
         }
     }
 
-    let ecosystem = deps.first().map(|d| d.ecosystem).unwrap_or(crate::Ecosystem::Npm);
+    let ecosystem = deps
+        .first()
+        .map(|d| d.ecosystem)
+        .unwrap_or(crate::Ecosystem::Npm);
     if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
-            Issue::new("<registry>", crate::checks::names::MALICIOUS_REGISTRY_UNREACHABLE, Severity::Error)
-                .message(format!(
-                    "OSV queries failed for {} of {} vulnerability checks ({:.0}%). \
+            Issue::new(
+                "<registry>",
+                crate::checks::names::MALICIOUS_REGISTRY_UNREACHABLE,
+                Severity::Error,
+            )
+            .message(format!(
+                "OSV queries failed for {} of {} vulnerability checks ({:.0}%). \
                      Vulnerability detection is unreliable. Fix network connectivity or retry.",
-                    error_count, total_queries, error_rate * 100.0
-                ))
-                .fix("Ensure the OSV API is reachable and retry the scan."),
+                error_count,
+                total_queries,
+                error_rate * 100.0
+            ))
+            .fix("Ensure the OSV API is reachable and retry the scan."),
         );
     }
 
@@ -306,14 +319,14 @@ mod tests {
             version: None,
             ecosystem: crate::Ecosystem::Npm,
         }];
-        let issues =
-            check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
-                .await
-                .unwrap();
+        let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
+            .await
+            .unwrap();
 
         assert!(
-            issues.iter().any(|i| i.package == "vulnerable-pkg"
-                && i.check.contains("known-vulnerability")),
+            issues
+                .iter()
+                .any(|i| i.package == "vulnerable-pkg" && i.check.contains("known-vulnerability")),
             "Unresolved deps should still get OSV checks. Issues: {:?}",
             issues.iter().map(|i| &i.check).collect::<Vec<_>>()
         );
@@ -394,7 +407,11 @@ mod tests {
 
         assert!(issues.is_empty());
         // Non-exact versions now DO query OSV (with version: None) — fail-closed, not fail-open
-        assert_eq!(call_count.load(Ordering::SeqCst), 1, "Unresolved deps should still query OSV");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "Unresolved deps should still query OSV"
+        );
     }
 
     #[tokio::test]

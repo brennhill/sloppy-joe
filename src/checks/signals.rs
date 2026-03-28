@@ -6,7 +6,7 @@ use crate::registry::PackageMetadata;
 use crate::report::{Issue, Severity};
 use std::collections::HashSet;
 
-use super::metadata::{age_in_hours, MetadataLookup};
+use super::metadata::{MetadataLookup, age_in_hours};
 
 /// Version published too recently.
 pub(crate) fn check_version_age(
@@ -44,10 +44,7 @@ pub(crate) fn check_version_age(
 }
 
 /// Package created less than 30 days ago.
-pub(crate) fn check_new_package(
-    lookup: &MetadataLookup,
-    meta: &PackageMetadata,
-) -> Option<Issue> {
+pub(crate) fn check_new_package(lookup: &MetadataLookup, meta: &PackageMetadata) -> Option<Issue> {
     let date = meta.created.as_ref()?;
     let age_hours = age_in_hours(date)?;
     if age_hours >= 720 {
@@ -106,25 +103,34 @@ pub(crate) fn check_install_script_risk(
 
     let has_similarity = similarity_flagged.contains(&lookup.package);
     let has_low_downloads = meta.downloads.is_some_and(|d| d < 1000);
-    let has_no_repository = meta.repository_url.as_deref()
+    let has_no_repository = meta
+        .repository_url
+        .as_deref()
         .map(|url| !is_plausible_repo_url(url))
         .unwrap_or(true);
 
-    if !is_new_package && !is_low_downloads && !has_low_downloads && !has_similarity && !has_no_repository {
+    if !is_new_package
+        && !is_low_downloads
+        && !has_low_downloads
+        && !has_similarity
+        && !has_no_repository
+    {
         return None;
     }
 
     let mut reasons = Vec::new();
     if is_new_package
         && let Some(ref date) = meta.created
-            && let Some(age_hours) = age_in_hours(date) {
-                let age_days = age_hours / 24;
-                reasons.push(format!("was published {} days ago", age_days));
-            }
+        && let Some(age_hours) = age_in_hours(date)
+    {
+        let age_days = age_hours / 24;
+        reasons.push(format!("was published {} days ago", age_days));
+    }
     if let Some(downloads) = meta.downloads
-        && downloads < 1000 {
-            reasons.push(format!("with {} downloads", downloads));
-        }
+        && downloads < 1000
+    {
+        reasons.push(format!("with {} downloads", downloads));
+    }
     if has_similarity {
         reasons.push("was flagged for name similarity to a popular package".to_string());
     }
@@ -178,11 +184,10 @@ pub(crate) fn check_maintainer_change(
     if lookup.unresolved_version {
         return None;
     }
-    let (current_pub, previous_pub) =
-        match (&meta.current_publisher, &meta.previous_publisher) {
-            (Some(c), Some(p)) => (c, p),
-            _ => return None,
-        };
+    let (current_pub, previous_pub) = match (&meta.current_publisher, &meta.previous_publisher) {
+        (Some(c), Some(p)) => (c, p),
+        _ => return None,
+    };
     if current_pub == previous_pub {
         return None;
     }
@@ -219,9 +224,14 @@ pub(crate) fn check_parse_failed(lookup: &MetadataLookup) -> Option<Issue> {
 
 /// Known code hosting domains. A repository URL pointing elsewhere is suspicious.
 const KNOWN_CODE_HOSTS: &[&str] = &[
-    "github.com", "gitlab.com", "bitbucket.org",
-    "codeberg.org", "sr.ht", "gitea.com",
-    "dev.azure.com", "ssh.dev.azure.com",
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "codeberg.org",
+    "sr.ht",
+    "gitea.com",
+    "dev.azure.com",
+    "ssh.dev.azure.com",
 ];
 
 /// Check if a repository URL is plausible (points to a known code host).
