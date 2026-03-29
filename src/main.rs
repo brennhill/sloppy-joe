@@ -172,6 +172,47 @@ enum Commands {
     List,
 }
 
+/// Resolve config source, exiting with an error if none is found.
+fn require_config(config: Option<&str>, dir: &std::path::Path) -> Option<String> {
+    match sloppy_joe::config::resolve_config_source(config, Some(dir)) {
+        Ok(Some(source)) => Some(source),
+        Ok(None) => {
+            eprintln!(
+                "Error: No config found for {}.\n  Fix: Run `sloppy-joe register` to set up per-project config, or pass `--config`.",
+                dir.display()
+            );
+            process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(2);
+        }
+    }
+}
+
+/// Extract the directory name from a path, defaulting to "project".
+fn repo_dirname(git_root: &std::path::Path) -> String {
+    git_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "project".to_string())
+}
+
+/// Write the template config to a path, exiting on error.
+fn write_template_config(config_path: &std::path::Path) {
+    let template = sloppy_joe::config::template_json();
+    let template_value: serde_json::Value =
+        serde_json::from_str(&template).expect("template_json produces valid JSON");
+    if let Err(e) = sloppy_joe::cache::atomic_write_json_checked(config_path, &template_value) {
+        eprintln!(
+            "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
+            config_path.display(),
+            e
+        );
+        process::exit(2);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -188,23 +229,7 @@ async fn main() {
             cache_dir,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let config_source = match sloppy_joe::config::resolve_config_source(
-                config.as_deref(),
-                Some(&dir),
-            ) {
-                Ok(Some(source)) => Some(source),
-                Ok(None) => {
-                    eprintln!(
-                        "Error: No config found for {}.\n  Fix: Run `sloppy-joe register` to set up per-project config, or pass `--config`.",
-                        dir.display()
-                    );
-                    process::exit(2);
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            };
+            let config_source = require_config(config.as_deref(), &dir);
             match sloppy_joe::scan_with_source_full(
                 &dir,
                 project_type.as_deref(),
@@ -241,23 +266,7 @@ async fn main() {
             cache_dir,
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let config_source = match sloppy_joe::config::resolve_config_source(
-                config.as_deref(),
-                Some(&dir),
-            ) {
-                Ok(Some(source)) => Some(source),
-                Ok(None) => {
-                    eprintln!(
-                        "Error: No config found for {}.\n  Fix: Run `sloppy-joe register` to set up per-project config, or pass `--config`.",
-                        dir.display()
-                    );
-                    process::exit(2);
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            };
+            let config_source = require_config(config.as_deref(), &dir);
             eprintln!("Warming cache for {} ...", dir.display());
             match sloppy_joe::warm_cache(
                 &dir,
@@ -319,22 +328,9 @@ async fn main() {
                         process::exit(2);
                     }
                 };
-                let dirname = git_root
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "project".to_string());
+                let dirname = repo_dirname(&git_root);
                 let config_dir = config_home.join(&dirname);
                 let config_path = config_dir.join("config.json");
-
-                // Validate config path is outside project dir before writing
-                if config_path.starts_with(&git_root) {
-                    eprintln!(
-                        "Error: Config path resolves inside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Set XDG_CONFIG_HOME or HOME to a location outside the project.",
-                        config_path.display(),
-                        git_root.display()
-                    );
-                    process::exit(2);
-                }
 
                 // Don't overwrite existing config
                 if config_path.exists() {
@@ -354,19 +350,7 @@ async fn main() {
                     process::exit(2);
                 }
 
-                let template = sloppy_joe::config::template_json();
-                let template_value: serde_json::Value =
-                    serde_json::from_str(&template).expect("template_json produces valid JSON");
-                if let Err(e) =
-                    sloppy_joe::cache::atomic_write_json_checked(&config_path, &template_value)
-                {
-                    eprintln!(
-                        "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
-                        config_path.display(),
-                        e
-                    );
-                    process::exit(2);
-                }
+                write_template_config(&config_path);
 
                 if let Err(e) = sloppy_joe::config::registry::register(&git_root, &config_path) {
                     eprintln!("Error: {}", e);
@@ -401,19 +385,7 @@ async fn main() {
                     process::exit(2);
                 }
 
-                let template = sloppy_joe::config::template_json();
-                let template_value: serde_json::Value =
-                    serde_json::from_str(&template).expect("template_json produces valid JSON");
-                if let Err(e) =
-                    sloppy_joe::cache::atomic_write_json_checked(&config_path, &template_value)
-                {
-                    eprintln!(
-                        "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
-                        config_path.display(),
-                        e
-                    );
-                    process::exit(2);
-                }
+                write_template_config(&config_path);
 
                 eprintln!("Global default config created: {}", config_path.display());
                 eprintln!("Edit the config to add your canonical rules.");
@@ -460,10 +432,7 @@ async fn main() {
                             process::exit(2);
                         }
                     };
-                    let dirname = git_root
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "project".to_string());
+                    let dirname = repo_dirname(&git_root);
                     config_home.join(&dirname).join("config.json")
                 }
             };
@@ -507,12 +476,18 @@ async fn main() {
                 }
             };
 
-            if let Err(e) = sloppy_joe::config::registry::unregister(&git_root) {
-                eprintln!("Error: {}", e);
-                process::exit(2);
+            match sloppy_joe::config::registry::unregister(&git_root) {
+                Ok(true) => {
+                    eprintln!("Unregistered: {}", git_root.display());
+                }
+                Ok(false) => {
+                    eprintln!("Warning: {} was not registered.", git_root.display());
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(2);
+                }
             }
-
-            eprintln!("Unregistered: {}", git_root.display());
         }
         Commands::List => {
             let entries = match sloppy_joe::config::registry::load_registry() {

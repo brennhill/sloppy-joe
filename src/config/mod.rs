@@ -185,9 +185,11 @@ pub fn resolve_config_source(
         return Ok(Some(source.to_string()));
     }
 
-    // Step 2: SLOPPY_JOE_CONFIG env var
+    // Step 2: SLOPPY_JOE_CONFIG env var (skip if empty)
     if let Ok(source) = std::env::var("SLOPPY_JOE_CONFIG") {
-        return Ok(Some(source));
+        if !source.is_empty() {
+            return Ok(Some(source));
+        }
     }
 
     // Step 3: Registry lookup (only if project_dir is Some)
@@ -354,7 +356,13 @@ fn ensure_config_outside_project(path: &Path, project_dir: Option<&Path>) -> Res
 
     let project_dir =
         std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = std::fs::canonicalize(path).map_err(|e| {
+        format!(
+            "Could not resolve config path for security validation.\n  Path: {}\n  Error: {}\n  Fix: Check that the config file exists and is accessible.",
+            path.display(),
+            e
+        )
+    })?;
 
     if path.starts_with(&project_dir) {
         return Err(format!(

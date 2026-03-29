@@ -14,7 +14,14 @@ pub fn config_home() -> Result<PathBuf, String> {
 fn config_home_inner() -> Result<PathBuf, String> {
     // 1. XDG_CONFIG_HOME if set
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Ok(Path::new(&xdg).join("sloppy-joe"));
+        let xdg_path = Path::new(&xdg);
+        if !xdg_path.is_absolute() {
+            return Err(format!(
+                "XDG_CONFIG_HOME must be an absolute path.\n  Value: {}\n  Fix: Set XDG_CONFIG_HOME to an absolute path (e.g. /home/user/.config).",
+                xdg_path.display()
+            ));
+        }
+        return Ok(xdg_path.join("sloppy-joe"));
     }
 
     // 2. Platform default
@@ -147,7 +154,8 @@ pub fn register(repo_root: &Path, config_path: &Path) -> Result<(), String> {
 }
 
 /// Remove a repo root from the registry.
-pub fn unregister(repo_root: &Path) -> Result<(), String> {
+/// Returns `Ok(true)` if an entry was removed, `Ok(false)` if the repo was not registered.
+pub fn unregister(repo_root: &Path) -> Result<bool, String> {
     let canon_root = std::fs::canonicalize(repo_root).map_err(|e| {
         format!(
             "Could not resolve repo root path.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
@@ -157,8 +165,11 @@ pub fn unregister(repo_root: &Path) -> Result<(), String> {
     })?;
 
     let mut entries = load_registry()?;
-    entries.remove(&canon_root.to_string_lossy().to_string());
-    save_registry(&entries)
+    let removed = entries
+        .remove(&canon_root.to_string_lossy().to_string())
+        .is_some();
+    save_registry(&entries)?;
+    Ok(removed)
 }
 
 /// Look up the config path for a project directory.
@@ -169,10 +180,12 @@ pub fn unregister(repo_root: &Path) -> Result<(), String> {
 /// 3. Check `{config_home}/default/config.json`
 /// 4. Return None
 pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
+    let config_home = config_home()?;
     let git_root = find_git_root(project_dir);
 
     if let Some(ref root) = git_root {
-        let entries = load_registry()?;
+        let registry_path = config_home.join("registry.json");
+        let entries = load_registry_from(&registry_path)?;
         let root_str = root.to_string_lossy().to_string();
         if let Some(config_path) = entries.get(&root_str) {
             let canon = std::fs::canonicalize(config_path).map_err(|e| {
@@ -194,7 +207,7 @@ pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
     }
 
     // Check global default
-    let default_config = config_home()?.join("default").join("config.json");
+    let default_config = config_home.join("default").join("config.json");
     if default_config.exists() {
         let canon = std::fs::canonicalize(&default_config).map_err(|e| {
             format!(
