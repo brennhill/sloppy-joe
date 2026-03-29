@@ -1,0 +1,153 @@
+name: 'sloppy-joe'
+description: 'Catch hallucinated, typosquatted, and non-canonical dependencies before they reach production'
+author: 'Brenn Hill'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  config:
+    description: 'Config file path or HTTPS URL (e.g., https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json)'
+    required: false
+  dir:
+    description: 'Project directory to scan'
+    required: false
+    default: '.'
+  type:
+    description: 'Ecosystem type (npm, pypi, cargo, go, ruby, php, jvm, dotnet). Auto-detected by default.'
+    required: false
+  deep:
+    description: 'Enable transitive dependency similarity checks'
+    required: false
+    default: 'false'
+  paranoid:
+    description: 'Enable bitflip mutation generators (slower, more thorough)'
+    required: false
+    default: 'false'
+  args:
+    description: 'Additional arguments to pass to sloppy-joe check'
+    required: false
+    default: ''
+  version:
+    description: 'sloppy-joe version to install (without v prefix). Defaults to latest.'
+    required: false
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          VERSION=$(curl -fsSL https://api.github.com/repos/brennhill/sloppy-joe/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved latest version: ${VERSION}"
+        else
+          echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Determine platform
+      id: platform
+      shell: bash
+      run: |
+        RUNNER_OS="${{ runner.os }}"
+        RUNNER_ARCH="${{ runner.arch }}"
+
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)
+            TARGET="x86_64-unknown-linux-musl"
+            EXT="tar.xz"
+            ;;
+          Linux-ARM64)
+            TARGET="aarch64-unknown-linux-musl"
+            EXT="tar.xz"
+            ;;
+          macOS-ARM64)
+            TARGET="aarch64-apple-darwin"
+            EXT="tar.xz"
+            ;;
+          Windows-X64)
+            TARGET="x86_64-pc-windows-msvc"
+            EXT="zip"
+            ;;
+          *)
+            echo "::error::Unsupported platform: ${RUNNER_OS}-${RUNNER_ARCH}"
+            exit 1
+            ;;
+        esac
+
+        echo "target=${TARGET}" >> "$GITHUB_OUTPUT"
+        echo "ext=${EXT}" >> "$GITHUB_OUTPUT"
+        echo "Detected platform: ${TARGET}"
+
+    - name: Install sloppy-joe
+      shell: bash
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        TARGET="${{ steps.platform.outputs.target }}"
+        EXT="${{ steps.platform.outputs.ext }}"
+        ARCHIVE="sloppy-joe-${TARGET}.${EXT}"
+        URL="https://github.com/brennhill/sloppy-joe/releases/download/v${VERSION}/${ARCHIVE}"
+
+        echo "Downloading sloppy-joe v${VERSION} from ${URL}"
+        curl -fsSL "${URL}" -o "${ARCHIVE}"
+
+        if [ "${EXT}" = "tar.xz" ]; then
+          tar -xf "${ARCHIVE}"
+        else
+          unzip -q "${ARCHIVE}"
+        fi
+
+        # cargo-dist extracts into a directory named like the archive (minus extension)
+        EXTRACT_DIR="sloppy-joe-${TARGET}"
+        if [ -d "${EXTRACT_DIR}" ]; then
+          mv "${EXTRACT_DIR}/sloppy-joe" /usr/local/bin/sloppy-joe || \
+            sudo mv "${EXTRACT_DIR}/sloppy-joe" /usr/local/bin/sloppy-joe
+        elif [ -f "sloppy-joe" ]; then
+          mv sloppy-joe /usr/local/bin/sloppy-joe || \
+            sudo mv sloppy-joe /usr/local/bin/sloppy-joe
+        elif [ -f "sloppy-joe.exe" ]; then
+          echo "$(pwd)" >> "$GITHUB_PATH"
+        else
+          echo "::error::Could not find sloppy-joe binary after extraction"
+          ls -la
+          exit 1
+        fi
+
+        chmod +x /usr/local/bin/sloppy-joe 2>/dev/null || true
+        echo "sloppy-joe v${VERSION} installed successfully"
+
+    - name: Run sloppy-joe check
+      shell: bash
+      run: |
+        ARGS="check"
+
+        if [ -n "${{ inputs.dir }}" ] && [ "${{ inputs.dir }}" != "." ]; then
+          ARGS="${ARGS} --dir ${{ inputs.dir }}"
+        fi
+
+        if [ -n "${{ inputs.config }}" ]; then
+          ARGS="${ARGS} --config ${{ inputs.config }}"
+        fi
+
+        if [ -n "${{ inputs.type }}" ]; then
+          ARGS="${ARGS} --type ${{ inputs.type }}"
+        fi
+
+        if [ "${{ inputs.deep }}" = "true" ]; then
+          ARGS="${ARGS} --deep"
+        fi
+
+        if [ "${{ inputs.paranoid }}" = "true" ]; then
+          ARGS="${ARGS} --paranoid"
+        fi
+
+        if [ -n "${{ inputs.args }}" ]; then
+          ARGS="${ARGS} ${{ inputs.args }}"
+        fi
+
+        echo "Running: sloppy-joe ${ARGS}"
+        sloppy-joe ${ARGS}

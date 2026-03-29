@@ -1,0 +1,14 @@
+- id: sloppy-joe
+  name: sloppy-joe dependency check
+  entry: sloppy-joe check
+  language: rust
+  always_run: true
+  pass_filenames: false
+  stages: [pre-commit, pre-push]
+  types_or:
+    - json        # package.json, composer.json
+    - toml        # Cargo.toml
+    - text        # requirements.txt
+    - xml         # pom.xml, *.csproj
+    - ruby        # Gemfile
+    - groovy      # build.gradle

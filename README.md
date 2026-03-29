@@ -408,19 +408,58 @@ sloppy-joe init > /secure/location/config.json
 
 ### GitHub Actions
 
+The fastest way to add sloppy-joe to your CI pipeline — downloads a pre-built binary from GitHub Releases (no Rust toolchain required):
+
 ```yaml
-name: Dependency Guard
-on: [pull_request]
+# .github/workflows/deps.yml
+name: Dependency Check
+on: [push, pull_request]
 
 jobs:
   sloppy-joe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install sloppy-joe
-        run: cargo install sloppy-joe
-      - name: Check dependencies
-        run: sloppy-joe check --config ${{ secrets.SLOPPY_JOE_CONFIG }}
+      - uses: brennhill/sloppy-joe@v0.9.1
+        with:
+          config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
+```
+
+#### Action Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `config` | Config file path or HTTPS URL | *(none)* |
+| `dir` | Project directory to scan | `.` |
+| `type` | Ecosystem (`npm`, `pypi`, `cargo`, `go`, `ruby`, `php`, `jvm`, `dotnet`) | auto-detect |
+| `deep` | Enable transitive dep similarity checks | `false` |
+| `paranoid` | Enable bitflip mutations | `false` |
+| `args` | Additional CLI arguments | *(none)* |
+| `version` | sloppy-joe version to install | `latest` |
+
+#### Examples
+
+```yaml
+# Minimal — auto-detect ecosystem, no config
+- uses: brennhill/sloppy-joe@v0.9.1
+
+# With org config from a URL
+- uses: brennhill/sloppy-joe@v0.9.1
+  with:
+    config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
+
+# Deep scan with paranoid mode
+- uses: brennhill/sloppy-joe@v0.9.1
+  with:
+    config: ${{ secrets.SLOPPY_JOE_CONFIG }}
+    deep: true
+    paranoid: true
+
+# Scan a subdirectory, pin to a specific version
+- uses: brennhill/sloppy-joe@v0.9.1
+  with:
+    dir: ./packages/api
+    version: '0.9.1'
 ```
 
 ### GitLab CI
@@ -432,7 +471,30 @@ dependency-guard:
     - sloppy-joe check --config $SLOPPY_JOE_CONFIG
 ```
 
-### Pre-commit Hook
+### pre-commit
+
+sloppy-joe works with the [pre-commit](https://pre-commit.com) framework.
+Add it to your `.pre-commit-config.yaml`:
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/brennhill/sloppy-joe
+    rev: v0.9.1
+    hooks:
+      - id: sloppy-joe
+```
+
+The hook runs `sloppy-joe check` on every commit (and optionally on push).
+It auto-detects your ecosystem from manifest files. Pass additional arguments
+via `args`:
+
+```yaml
+      - id: sloppy-joe
+        args: [--config, "https://example.com/config.json"]
+```
+
+Or use a simple shell hook without the framework:
 
 ```bash
 #!/bin/sh
@@ -496,6 +558,25 @@ cargo test
 - [strsim](https://crates.io/crates/strsim) — Levenshtein distance, used for scope squatting detection
 - [reqwest](https://crates.io/crates/reqwest) — Async HTTP client with retry for registry queries
 - [OSV.dev](https://osv.dev) — Known vulnerability database for malicious package detection
+
+## How sloppy-joe compares
+
+| Feature | sloppy-joe | Socket.dev | cargo-deny | pip-audit | npm audit |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| **Hallucinated package detection** | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Typosquatting detection** | :white_check_mark: 11 generators | Partial | :x: | :x: | :x: |
+| **Canonical name enforcement** | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Known vulnerability scanning** | :white_check_mark: via OSV | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **Install script analysis** | Basic (flag + no repo) | :white_check_mark: Deep analysis | :x: | :x: | :x: |
+| **License compliance** | :x: | :white_check_mark: | :white_check_mark: Excellent | :x: | :x: |
+| **Multi-ecosystem** | 8 ecosystems | npm, PyPI, Go, Ruby, Java, .NET | Rust only | Python only | npm only |
+| **AI agent safety** (out-of-repo config) | :white_check_mark: | :x: | :x: | :x: | :x: |
+| **Offline/CI friendly** | :white_check_mark: Runs anywhere | Requires Socket platform | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **Free / open source** | Apache 2.0 | Free tier + paid | Apache 2.0 | Apache 2.0 | Built-in |
+
+**Where others are stronger:** Socket.dev does deep install script analysis with behavioral detection that goes well beyond sloppy-joe's flag-based approach. cargo-deny has best-in-class license compliance checking. npm audit and pip-audit are zero-install options for single-ecosystem vulnerability scanning.
+
+**Where sloppy-joe is different:** It's the only tool that verifies packages actually exist on registries (catching AI hallucinations), runs 11 typosquatting generators with near-zero false positives, enforces canonical package choices, and keeps its config outside the repo so AI agents can't weaken their own checks.
 
 ## License
 
