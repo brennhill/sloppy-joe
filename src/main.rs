@@ -312,12 +312,16 @@ async fn main() {
                     }
                 };
                 let git_root = match sloppy_joe::config::registry::find_git_root(&dir) {
-                    Some(root) => root,
-                    None => {
+                    Ok(Some(root)) => root,
+                    Ok(None) => {
                         eprintln!(
                             "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo, or use `sloppy-joe init > config.json` to create a template manually.",
                             dir.display()
                         );
+                        process::exit(2);
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
                         process::exit(2);
                     }
                 };
@@ -405,12 +409,16 @@ async fn main() {
                 process::exit(2);
             });
             let git_root = match sloppy_joe::config::registry::find_git_root(&dir) {
-                Some(root) => root,
-                None => {
+                Ok(Some(root)) => root,
+                Ok(None) => {
                     eprintln!(
                         "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo.",
                         dir.display()
                     );
+                    process::exit(2);
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
                     process::exit(2);
                 }
             };
@@ -466,12 +474,16 @@ async fn main() {
                 process::exit(2);
             });
             let git_root = match sloppy_joe::config::registry::find_git_root(&dir) {
-                Some(root) => root,
-                None => {
+                Ok(Some(root)) => root,
+                Ok(None) => {
                     eprintln!(
                         "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo.",
                         dir.display()
                     );
+                    process::exit(2);
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
                     process::exit(2);
                 }
             };

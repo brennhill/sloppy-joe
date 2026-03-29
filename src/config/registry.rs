@@ -8,10 +8,6 @@ use std::path::{Path, PathBuf};
 /// 2. Platform default (macOS: ~/Library/Application Support/sloppy-joe/, Linux: ~/.config/sloppy-joe/)
 /// 3. Legacy fallback: `~/.sloppy-joe/` if it exists and the XDG location doesn't
 pub fn config_home() -> Result<PathBuf, String> {
-    config_home_inner()
-}
-
-fn config_home_inner() -> Result<PathBuf, String> {
     // 1. XDG_CONFIG_HOME if set
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         let xdg_path = Path::new(&xdg);
@@ -53,16 +49,25 @@ fn config_home_inner() -> Result<PathBuf, String> {
     })
 }
 
-/// Walk up from `dir` looking for a `.git` directory. Returns the canonicalized
-/// parent of the `.git` directory (the repo root).
-pub fn find_git_root(dir: &Path) -> Option<PathBuf> {
-    let mut current = std::fs::canonicalize(dir).ok()?;
+/// Walk up from `dir` looking for a `.git` directory or file (worktrees/submodules
+/// use a `.git` file). Returns the canonicalized repo root.
+///
+/// Returns `Err` if `dir` cannot be canonicalized (permissions, deleted).
+/// Returns `Ok(None)` if no `.git` exists in the ancestry.
+pub fn find_git_root(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let mut current = std::fs::canonicalize(dir).map_err(|e| {
+        format!(
+            "Could not resolve project directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists and is accessible.",
+            dir.display(),
+            e
+        )
+    })?;
     loop {
         if current.join(".git").exists() {
-            return Some(current);
+            return Ok(Some(current));
         }
         if !current.pop() {
-            return None;
+            return Ok(None);
         }
     }
 }
@@ -108,13 +113,7 @@ pub fn save_registry(entries: &BTreeMap<String, String>) -> Result<(), String> {
 }
 
 fn save_registry_to(path: &Path, entries: &BTreeMap<String, String>) -> Result<(), String> {
-    crate::cache::ensure_no_symlink(path).map_err(|e| {
-        format!(
-            "Refusing to write symlinked registry file.\n  Path: {}\n  Error: {}\n  Fix: Remove the symlink.",
-            path.display(),
-            e
-        )
-    })?;
+    // atomic_write_json_checked handles symlink checks, dir creation, and 0o600 permissions
     crate::cache::atomic_write_json_checked(path, entries)
 }
 
@@ -181,7 +180,7 @@ pub fn unregister(repo_root: &Path) -> Result<bool, String> {
 /// 4. Return None
 pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
     let config_home = config_home()?;
-    let git_root = find_git_root(project_dir);
+    let git_root = find_git_root(project_dir)?;
 
     if let Some(ref root) = git_root {
         let registry_path = config_home.join("registry.json");
@@ -269,22 +268,18 @@ mod tests {
 
     #[test]
     fn find_git_root_in_git_repo() {
-        // This test runs inside the sloppy-joe repo, so it should find a git root
         let cwd = std::env::current_dir().unwrap();
-        let root = find_git_root(&cwd);
+        let root = find_git_root(&cwd).unwrap();
         assert!(root.is_some(), "Should find git root in current repo");
-        let root = root.unwrap();
-        assert!(root.join(".git").exists());
+        assert!(root.unwrap().join(".git").exists());
     }
 
     #[test]
     fn find_git_root_in_non_git_dir() {
-        // Create a deeply nested temp dir that cannot be inside a git repo.
-        // /tmp itself should not have a .git anywhere in its ancestry.
         let base = unique_dir();
         let deep = base.join("a").join("b").join("c");
         std::fs::create_dir_all(&deep).unwrap();
-        let root = find_git_root(&deep);
+        let root = find_git_root(&deep).unwrap();
         assert!(
             root.is_none(),
             "Temp dir should not be inside a git repo: {:?}",
@@ -298,11 +293,17 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let src_dir = cwd.join("src");
         if src_dir.is_dir() {
-            let root = find_git_root(&src_dir);
+            let root = find_git_root(&src_dir).unwrap();
             assert!(root.is_some());
-            let root = root.unwrap();
-            assert!(root.join(".git").exists());
+            assert!(root.unwrap().join(".git").exists());
         }
+    }
+
+    #[test]
+    fn find_git_root_nonexistent_dir_returns_error() {
+        let result = find_git_root(Path::new("/nonexistent/path/that/does/not/exist"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Could not resolve"));
     }
 
     // -- load_registry tests --
@@ -563,9 +564,9 @@ mod tests {
 
     #[test]
     fn find_git_root_returns_none_for_non_git_dir() {
-        // Specifically tests that a temp dir without .git returns None
+        // Specifically tests that a temp dir without .git returns Ok(None)
         let dir = unique_dir();
-        let result = find_git_root(&dir);
+        let result = find_git_root(&dir).unwrap();
         assert!(
             result.is_none(),
             "Non-git dir should return None, got: {:?}",

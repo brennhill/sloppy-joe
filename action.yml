@@ -165,7 +165,8 @@ runs:
         fi
 
         if [ -n "${INPUT_ARGS}" ]; then
-          ARGS+=(${INPUT_ARGS})
+          read -ra EXTRA_ARGS <<< "${INPUT_ARGS}"
+          ARGS+=("${EXTRA_ARGS[@]}")
         fi
 
         echo "Running: sloppy-joe ${ARGS[*]}"
