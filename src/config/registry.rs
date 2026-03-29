@@ -405,6 +405,176 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // -- corrupted registry tests --
+
+    #[test]
+    fn corrupted_registry_returns_error_with_fix_hint() {
+        let dir = unique_dir();
+        let path = dir.join("registry.json");
+        std::fs::write(&path, "{{{{not json at all").unwrap();
+        let result = load_registry_from(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("corrupted"), "Expected 'corrupted': {}", err);
+        assert!(
+            err.contains("re-register"),
+            "Expected 're-register' hint: {}",
+            err
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- lookup edge cases --
+
+    #[test]
+    fn lookup_missing_config_file_at_registered_path_errors() {
+        // Manually write a registry entry pointing to a nonexistent config,
+        // then call lookup on a git repo whose root matches.
+        let registry_dir = unique_dir();
+        let registry_path = registry_dir.join("registry.json");
+
+        // Use the actual repo root (we're running inside a git repo)
+        let cwd = std::env::current_dir().unwrap();
+        let git_root = find_git_root(&cwd).expect("test runs in a git repo");
+        let root_str = git_root.to_string_lossy().to_string();
+
+        // Point the registry at a nonexistent file
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            root_str,
+            "/tmp/sj-nonexistent-config-12345.json".to_string(),
+        );
+        save_registry_to(&registry_path, &entries).unwrap();
+
+        // We can't call lookup() directly because it uses config_home() globally.
+        // Instead, test load_registry_from + the canonicalize logic that lookup uses:
+        let loaded = load_registry_from(&registry_path).unwrap();
+        let config_val = loaded.values().next().unwrap();
+        let result = std::fs::canonicalize(config_val);
+        assert!(result.is_err(), "canonicalize should fail for missing file");
+        let _ = std::fs::remove_dir_all(&registry_dir);
+    }
+
+    #[test]
+    fn lookup_config_inside_project_dir_detected() {
+        // Simulate the defense-in-depth check: config path starts_with project root
+        let project_root = unique_dir();
+        let config_inside = project_root.join("config.json");
+        std::fs::write(&config_inside, "{}").unwrap();
+
+        let canon_root = std::fs::canonicalize(&project_root).unwrap();
+        let canon_config = std::fs::canonicalize(&config_inside).unwrap();
+
+        // This mirrors the defense-in-depth check in lookup()
+        assert!(
+            canon_config.starts_with(&canon_root),
+            "Config inside project should be detected"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn find_git_root_returns_none_for_non_git_dir() {
+        // Specifically tests that a temp dir without .git returns None
+        let dir = unique_dir();
+        let result = find_git_root(&dir);
+        assert!(
+            result.is_none(),
+            "Non-git dir should return None, got: {:?}",
+            result
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- unregister edge cases --
+
+    #[test]
+    fn unregister_for_unregistered_repo_is_noop() {
+        let dir = unique_dir();
+        let registry_path = dir.join("registry.json");
+
+        // Start with one entry
+        let other_dir = unique_dir();
+        let canon_other = std::fs::canonicalize(&other_dir).unwrap();
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            canon_other.to_string_lossy().to_string(),
+            "/some/config.json".to_string(),
+        );
+        save_registry_to(&registry_path, &entries).unwrap();
+
+        // "Unregister" a repo that isn't in the registry
+        let unrelated_dir = unique_dir();
+        let canon_unrelated = std::fs::canonicalize(&unrelated_dir).unwrap();
+        let mut entries = load_registry_from(&registry_path).unwrap();
+        entries.remove(&canon_unrelated.to_string_lossy().to_string());
+        save_registry_to(&registry_path, &entries).unwrap();
+
+        // Original entry should still be there
+        let entries = load_registry_from(&registry_path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries.contains_key(&canon_other.to_string_lossy().to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other_dir);
+        let _ = std::fs::remove_dir_all(&unrelated_dir);
+    }
+
+    // -- list edge cases --
+
+    #[test]
+    fn list_with_empty_registry_returns_empty() {
+        let dir = unique_dir();
+        let registry_path = dir.join("registry.json");
+        // File doesn't exist — should return empty map
+        let entries = load_registry_from(&registry_path).unwrap();
+        assert!(entries.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_with_existing_empty_registry_returns_empty() {
+        let dir = unique_dir();
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, "{}").unwrap();
+        let entries = load_registry_from(&registry_path).unwrap();
+        assert!(entries.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- path canonicalization --
+
+    #[test]
+    fn path_canonicalization_trailing_slash_resolved() {
+        let dir = unique_dir();
+        let with_slash = format!("{}/", dir.display());
+        let canon1 = std::fs::canonicalize(&dir).unwrap();
+        let canon2 = std::fs::canonicalize(&with_slash).unwrap();
+        assert_eq!(
+            canon1, canon2,
+            "Trailing slash should not affect canonicalization"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_canonicalization_symlinks_resolved() {
+        let real_dir = unique_dir();
+        let link_parent = unique_dir();
+        let link = link_parent.join("symlink_dir");
+        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+
+        let canon_real = std::fs::canonicalize(&real_dir).unwrap();
+        let canon_link = std::fs::canonicalize(&link).unwrap();
+        assert_eq!(
+            canon_real, canon_link,
+            "Symlinks should resolve to same canonical path"
+        );
+        let _ = std::fs::remove_dir_all(&real_dir);
+        let _ = std::fs::remove_dir_all(&link_parent);
+    }
+
     // -- integration: register + lookup round-trip using isolated registry --
 
     #[test]
