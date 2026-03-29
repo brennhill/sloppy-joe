@@ -23,15 +23,17 @@
 **TDD cycles:** 5 red-green-refactor cycles for resolve_config_source tests
 **Verification:** 429 tests pass, clippy clean (4 pre-existing warnings), fmt clean
 **Key decisions:**
-- Kept `env = "SLOPPY_JOE_CONFIG"` on clap fields — env var flows through as cli_config (step 1), making step 2 in resolve_config_source a safety net for non-clap callers
+- Removed `env = "SLOPPY_JOE_CONFIG"` from clap attributes — cascade handled entirely in `resolve_config_source`
 - `resolve_config_source` returns `Result<Option<String>, String>` — Err for registry errors (corrupted file, symlink), None for "no config found"
 - Check and Cache both require config — Ok(None) from resolve_config_source triggers blocking error with exit(2)
 - `init --register` finds git root first and errors if not in a git repo
 - `register` without `--config` defaults to `{config_home}/{dirname}/config.json` but requires the file to already exist
 - Registry-resolved paths flow through `ensure_config_outside_project` via the existing `load_config_from_source` → `load_config_with_project` pipeline
+**Review findings:** 3 MUST FIX resolved (double env-var handling, non-atomic config writes, write-before-validate). 3 SHOULD FIX resolved (overwrite protection, early canonicalization, lookup defense-in-depth).
 **Learnings for future phases:**
-- `std::env::remove_var` is unsafe in Rust — can't use it in tests with `#![forbid(unsafe_code)]`
-- The clap `env` attribute means env var comes through as cli_config; the resolve_config_source step 2 check is only hit by non-clap callers (lib API)
+- `cache` module is now `pub` (was `pub(crate)`) so main.rs can use `atomic_write_json_checked`
+- `init --register` is fully implemented in Phase 2 (scope crept from Phase 3) — Phase 3 only needs e2e tests
+- `lookup` now validates config-outside-project as defense in depth
 
 ## Learnings
 
