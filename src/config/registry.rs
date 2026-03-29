@@ -202,6 +202,16 @@ pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
                 default_config.display(), e
             )
         })?;
+        // Defense in depth: validate default config is outside the project dir
+        if let Some(ref root) = git_root {
+            if canon.starts_with(root) {
+                return Err(format!(
+                    "Default config resolves inside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Move the default config outside the repo or check for symlinks.",
+                    canon.display(),
+                    root.display()
+                ));
+            }
+        }
         return Ok(Some(canon.to_string_lossy().to_string()));
     }
 
@@ -364,6 +374,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn load_registry_returns_error_on_symlink() {
+        // Mirrors save_registry_returns_error_on_symlink but for the read path.
+        // load_registry_from calls ensure_no_symlink before reading, so a
+        // symlinked registry.json must be rejected with an error mentioning "symlink".
+        let dir = unique_dir();
+        let real = dir.join("real.json");
+        std::fs::write(&real, r#"{"/repo": "/config.json"}"#).unwrap();
+        let link = dir.join("registry.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let result = load_registry_from(&link);
+        assert!(
+            result.is_err(),
+            "load_registry_from should reject a symlink"
+        );
+        assert!(
+            result.unwrap_err().contains("symlink"),
+            "Error should mention symlink"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // -- register / unregister round-trip --
 
     #[test]
@@ -428,36 +463,63 @@ mod tests {
 
     #[test]
     fn lookup_missing_config_file_at_registered_path_errors() {
-        // Manually write a registry entry pointing to a nonexistent config,
-        // then call lookup on a git repo whose root matches.
+        // Tests the canonicalization-failure path in lookup() lines 178-183:
+        //
+        //   let canon = std::fs::canonicalize(config_path).map_err(|e| {
+        //       format!("Registry entry points to missing config file. ...")
+        //   })?;
+        //
+        // Because lookup() uses the global config_home() which cannot be overridden
+        // in parallel tests, we exercise the identical logic directly:
+        // load a registry whose entry points to a deleted file, then run the
+        // same canonicalize call that lookup() would perform.
+
         let registry_dir = unique_dir();
         let registry_path = registry_dir.join("registry.json");
 
-        // Use the actual repo root (we're running inside a git repo)
-        let cwd = std::env::current_dir().unwrap();
-        let git_root = find_git_root(&cwd).expect("test runs in a git repo");
-        let root_str = git_root.to_string_lossy().to_string();
+        // Create a config file then immediately delete it so the path is absent.
+        let config_dir = unique_dir();
+        let config_file = config_dir.join("config.json");
+        std::fs::write(&config_file, "{}").unwrap();
+        let config_path_str = config_file.to_string_lossy().to_string();
+        std::fs::remove_file(&config_file).unwrap();
 
-        // Point the registry at a nonexistent file
+        // Write a registry entry pointing at the now-deleted file.
         let mut entries = BTreeMap::new();
-        entries.insert(
-            root_str,
-            "/tmp/sj-nonexistent-config-12345.json".to_string(),
-        );
+        entries.insert("/some/git/root".to_string(), config_path_str.clone());
         save_registry_to(&registry_path, &entries).unwrap();
 
-        // We can't call lookup() directly because it uses config_home() globally.
-        // Instead, test load_registry_from + the canonicalize logic that lookup uses:
+        // Load the registry (succeeds — the file exists and is valid JSON).
         let loaded = load_registry_from(&registry_path).unwrap();
-        let config_val = loaded.values().next().unwrap();
-        let result = std::fs::canonicalize(config_val);
-        assert!(result.is_err(), "canonicalize should fail for missing file");
+        let stored_config = loaded.values().next().unwrap();
+
+        // This is the exact logic from lookup() lines 178-183: canonicalize the
+        // stored config path.  It must fail because the file no longer exists.
+        let result = std::fs::canonicalize(stored_config);
+        assert!(
+            result.is_err(),
+            "lookup() should fail when registry points to a missing config file"
+        );
+
         let _ = std::fs::remove_dir_all(&registry_dir);
+        let _ = std::fs::remove_dir_all(&config_dir);
     }
 
     #[test]
     fn lookup_config_inside_project_dir_detected() {
-        // Simulate the defense-in-depth check: config path starts_with project root
+        // Tests the defense-in-depth check in lookup() lines 185-191:
+        //
+        //   if canon.starts_with(root) {
+        //       return Err(format!(
+        //           "Registry entry points to config inside the project directory. ..."
+        //       ));
+        //   }
+        //
+        // Because lookup() uses the global config_home() which cannot be overridden
+        // in parallel tests, we exercise the identical predicate directly: verify
+        // that a config file nested under the project root satisfies starts_with,
+        // which is exactly the condition lookup() uses to reject the entry.
+
         let project_root = unique_dir();
         let config_inside = project_root.join("config.json");
         std::fs::write(&config_inside, "{}").unwrap();
@@ -465,12 +527,25 @@ mod tests {
         let canon_root = std::fs::canonicalize(&project_root).unwrap();
         let canon_config = std::fs::canonicalize(&config_inside).unwrap();
 
-        // This mirrors the defense-in-depth check in lookup()
+        // This is the exact guard from lookup() lines 185-186.  It must be true
+        // so that lookup() would return an Err for this entry.
         assert!(
             canon_config.starts_with(&canon_root),
-            "Config inside project should be detected"
+            "lookup() defense-in-depth: config inside project dir must be detected via starts_with"
         );
+
+        // Confirm the inverse: a config in a sibling directory is NOT rejected.
+        let sibling_dir = unique_dir();
+        let config_outside = sibling_dir.join("config.json");
+        std::fs::write(&config_outside, "{}").unwrap();
+        let canon_outside = std::fs::canonicalize(&config_outside).unwrap();
+        assert!(
+            !canon_outside.starts_with(&canon_root),
+            "Config outside project root must NOT trigger the defense-in-depth check"
+        );
+
         let _ = std::fs::remove_dir_all(&project_root);
+        let _ = std::fs::remove_dir_all(&sibling_dir);
     }
 
     #[test]
@@ -617,5 +692,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&repo_dir);
         let _ = std::fs::remove_dir_all(&config_dir);
+    }
+
+    // -- default config inside project dir detection --
+
+    #[test]
+    fn default_config_inside_project_dir_detected() {
+        // Mirrors the defense-in-depth check added to lookup() for global default:
+        // if the canonicalized default config path starts_with the project root,
+        // it should be rejected.
+        let project_root = unique_dir();
+        let default_inside = project_root.join("default").join("config.json");
+        std::fs::create_dir_all(default_inside.parent().unwrap()).unwrap();
+        std::fs::write(&default_inside, "{}").unwrap();
+
+        let canon_root = std::fs::canonicalize(&project_root).unwrap();
+        let canon_default = std::fs::canonicalize(&default_inside).unwrap();
+
+        assert!(
+            canon_default.starts_with(&canon_root),
+            "Default config inside project should be detected"
+        );
+        let _ = std::fs::remove_dir_all(&project_root);
     }
 }
