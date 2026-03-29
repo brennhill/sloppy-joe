@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-pub(crate) mod cache;
+pub mod cache;
 pub mod checks;
 pub mod ecosystem;
 pub use ecosystem::Ecosystem;

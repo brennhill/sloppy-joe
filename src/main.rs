@@ -71,7 +71,7 @@ enum Commands {
         /// Accepts a local path or https:// URL. Never reads from the
         /// project directory — AI agents could rewrite it.
         /// See CONFIG.md for format details.
-        #[arg(long, env = "SLOPPY_JOE_CONFIG", value_name = "PATH_OR_URL")]
+        #[arg(long, value_name = "PATH_OR_URL")]
         config: Option<String>,
 
         /// Run similarity checks on transitive dependencies (slower, more thorough)
@@ -109,7 +109,7 @@ enum Commands {
         dir: PathBuf,
 
         /// Config file path or URL.
-        #[arg(long, env = "SLOPPY_JOE_CONFIG", value_name = "PATH_OR_URL")]
+        #[arg(long, value_name = "PATH_OR_URL")]
         config: Option<String>,
 
         /// Also warm transitive dependency caches
@@ -326,6 +326,25 @@ async fn main() {
                 let config_dir = config_home.join(&dirname);
                 let config_path = config_dir.join("config.json");
 
+                // Validate config path is outside project dir before writing
+                if config_path.starts_with(&git_root) {
+                    eprintln!(
+                        "Error: Config path resolves inside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Set XDG_CONFIG_HOME or HOME to a location outside the project.",
+                        config_path.display(),
+                        git_root.display()
+                    );
+                    process::exit(2);
+                }
+
+                // Don't overwrite existing config
+                if config_path.exists() {
+                    eprintln!(
+                        "Error: Config already exists at {}.\n  Fix: Use `sloppy-joe register` to re-register without overwriting.",
+                        config_path.display()
+                    );
+                    process::exit(2);
+                }
+
                 if let Err(e) = std::fs::create_dir_all(&config_dir) {
                     eprintln!(
                         "Error: Could not create config directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
@@ -336,7 +355,11 @@ async fn main() {
                 }
 
                 let template = sloppy_joe::config::template_json();
-                if let Err(e) = std::fs::write(&config_path, &template) {
+                let template_value: serde_json::Value =
+                    serde_json::from_str(&template).expect("template_json produces valid JSON");
+                if let Err(e) =
+                    sloppy_joe::cache::atomic_write_json_checked(&config_path, &template_value)
+                {
                     eprintln!(
                         "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
                         config_path.display(),
@@ -379,7 +402,11 @@ async fn main() {
                 }
 
                 let template = sloppy_joe::config::template_json();
-                if let Err(e) = std::fs::write(&config_path, &template) {
+                let template_value: serde_json::Value =
+                    serde_json::from_str(&template).expect("template_json produces valid JSON");
+                if let Err(e) =
+                    sloppy_joe::cache::atomic_write_json_checked(&config_path, &template_value)
+                {
                     eprintln!(
                         "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
                         config_path.display(),
@@ -417,7 +444,13 @@ async fn main() {
             };
 
             let config_path = match config {
-                Some(explicit) => PathBuf::from(explicit),
+                Some(explicit) => std::fs::canonicalize(&explicit).unwrap_or_else(|e| {
+                    eprintln!(
+                        "Error: Could not resolve config path.\n  Path: {}\n  Error: {}\n  Fix: Check that the config file exists.",
+                        explicit, e
+                    );
+                    process::exit(2);
+                }),
                 None => {
                     // Default: {config_home}/{dirname}/config.json
                     let config_home = match sloppy_joe::config::registry::config_home() {

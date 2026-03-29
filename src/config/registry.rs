@@ -181,6 +181,14 @@ pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
                     config_path, e
                 )
             })?;
+            // Defense in depth: validate config is outside the project dir
+            if canon.starts_with(root) {
+                return Err(format!(
+                    "Registry entry points to config inside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Re-register with a config file outside the repo.",
+                    canon.display(),
+                    root.display()
+                ));
+            }
             return Ok(Some(canon.to_string_lossy().to_string()));
         }
     }
