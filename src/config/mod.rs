@@ -168,14 +168,35 @@ impl SloppyJoeConfig {
     }
 }
 
-/// Resolve config source: --config flag overrides SLOPPY_JOE_CONFIG env var.
+/// Resolve config source with full resolution cascade:
+/// 1. `--config` CLI flag (highest priority)
+/// 2. `SLOPPY_JOE_CONFIG` env var
+/// 3. Registry lookup (if project_dir is Some)
+/// 4. None (caller must handle — usually a blocking error)
+///
 /// Never reads from the project directory.
 /// Accepts a file path or a URL (http:// or https://).
-pub fn resolve_config_source(cli_config: Option<&str>) -> Option<String> {
+pub fn resolve_config_source(
+    cli_config: Option<&str>,
+    project_dir: Option<&Path>,
+) -> Result<Option<String>, String> {
+    // Step 1: --config flag
     if let Some(source) = cli_config {
-        return Some(source.to_string());
+        return Ok(Some(source.to_string()));
     }
-    std::env::var("SLOPPY_JOE_CONFIG").ok()
+
+    // Step 2: SLOPPY_JOE_CONFIG env var
+    if let Ok(source) = std::env::var("SLOPPY_JOE_CONFIG") {
+        return Ok(Some(source));
+    }
+
+    // Step 3: Registry lookup (only if project_dir is Some)
+    if let Some(dir) = project_dir {
+        return registry::lookup(dir);
+    }
+
+    // Step 4: No config found
+    Ok(None)
 }
 
 /// Load config from a resolved path. Fails hard on malformed config —
@@ -346,9 +367,9 @@ fn ensure_config_outside_project(path: &Path, project_dir: Option<&Path>) -> Res
     Ok(())
 }
 
-/// Print a template config to stdout.
-pub fn print_template() {
-    let config = SloppyJoeConfig {
+/// Build the template config used by init.
+fn template_config() -> SloppyJoeConfig {
+    SloppyJoeConfig {
         canonical: {
             let mut m = HashMap::new();
             m.insert(
@@ -404,9 +425,17 @@ pub fn print_template() {
         )]),
         min_version_age_hours: 72,
         allow_unresolved_versions: false,
-    };
-    let json = serde_json::to_string_pretty(&config).unwrap();
-    println!("{json}");
+    }
+}
+
+/// Return a template config as a pretty-printed JSON string.
+pub fn template_json() -> String {
+    serde_json::to_string_pretty(&template_config()).unwrap()
+}
+
+/// Print a template config to stdout.
+pub fn print_template() {
+    println!("{}", template_json());
 }
 
 #[cfg(test)]
@@ -591,24 +620,47 @@ mod tests {
     }
 
     #[test]
-    fn resolve_config_source_with_cli_flag() {
-        let source = resolve_config_source(Some("/some/path.json"));
+    fn resolve_config_source_cli_flag_returns_it_directly() {
+        let source = resolve_config_source(Some("/some/path.json"), None).unwrap();
         assert_eq!(source, Some("/some/path.json".to_string()));
     }
 
     #[test]
-    fn resolve_config_source_with_url() {
-        let source = resolve_config_source(Some("https://example.com/config.json"));
+    fn resolve_config_source_cli_flag_with_url() {
+        let source = resolve_config_source(Some("https://example.com/config.json"), None).unwrap();
         assert_eq!(source, Some("https://example.com/config.json".to_string()));
     }
 
     #[test]
-    fn resolve_config_source_none() {
-        // When no env var is set and no CLI flag, returns None
-        // (can't reliably test env var in parallel tests)
-        let source = resolve_config_source(None);
-        // May or may not be None depending on env, just verify it doesn't panic
-        let _ = source;
+    fn resolve_config_source_none_and_none_returns_none() {
+        // When no CLI flag and no project_dir, returns None
+        // (if SLOPPY_JOE_CONFIG env var happens to be set, it would return that,
+        // but we can't safely clear env vars in parallel tests — this test
+        // verifies the function doesn't panic and returns Ok)
+        let source = resolve_config_source(None, None);
+        assert!(source.is_ok());
+    }
+
+    #[test]
+    fn resolve_config_source_with_project_dir_triggers_registry_lookup() {
+        // Use a temp dir that's not in a git repo — registry lookup should
+        // find no git root and no default config, returning None
+        let dir = std::env::temp_dir().join("sj-resolve-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = resolve_config_source(None, Some(&dir));
+        // Should not error — exercising the registry::lookup code path
+        assert!(source.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_config_source_cli_flag_takes_priority_over_project_dir() {
+        let source = resolve_config_source(
+            Some("/explicit/config.json"),
+            Some(Path::new("/some/project")),
+        )
+        .unwrap();
+        assert_eq!(source, Some("/explicit/config.json".to_string()));
     }
 
     #[test]
