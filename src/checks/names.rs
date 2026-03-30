@@ -13,6 +13,7 @@ pub const METADATA_LOW_DOWNLOADS: &str = "metadata/low-downloads";
 pub const METADATA_INSTALL_SCRIPT_RISK: &str = "metadata/install-script-risk";
 pub const METADATA_DEPENDENCY_EXPLOSION: &str = "metadata/dependency-explosion";
 pub const METADATA_MAINTAINER_CHANGE: &str = "metadata/maintainer-change";
+pub const METADATA_PUBLISHER_SCRIPT_COMBO: &str = "metadata/publisher-script-combo";
 pub const METADATA_PARSE_FAILED: &str = "metadata/parse-failed";
 pub const METADATA_NO_REPOSITORY: &str = "metadata/no-repository";
 
@@ -83,6 +84,7 @@ mod tests {
             METADATA_INSTALL_SCRIPT_RISK,
             METADATA_DEPENDENCY_EXPLOSION,
             METADATA_MAINTAINER_CHANGE,
+            METADATA_PUBLISHER_SCRIPT_COMBO,
             METADATA_PARSE_FAILED,
             METADATA_NO_REPOSITORY,
             SIMILARITY_REGISTRY_UNREACHABLE,

@@ -184,6 +184,7 @@ pub(crate) fn issues_from_lookups(
         ));
         issues.extend(signals::check_dependency_explosion(lookup, meta));
         issues.extend(signals::check_maintainer_change(lookup, meta));
+        issues.extend(signals::check_publisher_script_combo(lookup, meta));
         issues.extend(signals::check_no_repository(
             lookup,
             meta,
