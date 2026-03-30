@@ -1,4 +1,4 @@
-name: 'sloppy-joe'
+name: 'sloppy-joe-secure'
 description: 'Catch hallucinated, typosquatted, and non-canonical dependencies before they reach production'
 author: 'Brenn Hill'
 
