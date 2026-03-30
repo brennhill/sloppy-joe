@@ -215,14 +215,14 @@ pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
             )
         })?;
         // Defense in depth: validate default config is outside the project dir
-        if let Some(ref root) = git_root {
-            if canon.starts_with(root) {
-                return Err(format!(
-                    "Default config resolves inside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Move the default config outside the repo or check for symlinks.",
-                    canon.display(),
-                    root.display()
-                ));
-            }
+        if let Some(ref root) = git_root
+            && canon.starts_with(root)
+        {
+            return Err(format!(
+                "Default config resolves inside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Move the default config outside the repo or check for symlinks.",
+                canon.display(),
+                root.display()
+            ));
         }
         return Ok(Some(canon.to_string_lossy().to_string()));
     }

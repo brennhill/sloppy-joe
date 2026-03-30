@@ -186,10 +186,10 @@ pub fn resolve_config_source(
     }
 
     // Step 2: SLOPPY_JOE_CONFIG env var (skip if empty)
-    if let Ok(source) = std::env::var("SLOPPY_JOE_CONFIG") {
-        if !source.is_empty() {
-            return Ok(Some(source));
-        }
+    if let Ok(source) = std::env::var("SLOPPY_JOE_CONFIG")
+        && !source.is_empty()
+    {
+        return Ok(Some(source));
     }
 
     // Step 3: Registry lookup (only if project_dir is Some)

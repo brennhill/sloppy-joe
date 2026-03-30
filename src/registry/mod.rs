@@ -427,13 +427,10 @@ mod tests {
 
     #[test]
     fn retry_constants_are_reasonable() {
-        assert!(
-            MAX_RETRIES >= 2,
-            "Need at least 2 retries for transient errors"
-        );
-        assert!(MAX_RETRIES <= 5, "Too many retries would slow CI");
-        assert!(RETRY_BASE_DELAY_MS >= 100, "Base delay too short");
-        assert!(RETRY_BASE_DELAY_MS <= 1000, "Base delay too long for CI");
+        const { assert!(MAX_RETRIES >= 2, "Need at least 2 retries for transient errors") };
+        const { assert!(MAX_RETRIES <= 5, "Too many retries would slow CI") };
+        const { assert!(RETRY_BASE_DELAY_MS >= 100, "Base delay too short") };
+        const { assert!(RETRY_BASE_DELAY_MS <= 1000, "Base delay too long for CI") };
         // Total worst-case delay: 200 + 400 + 800 = 1400ms — reasonable
         let total_delay: u64 = (0..MAX_RETRIES)
             .map(|i| RETRY_BASE_DELAY_MS * 2u64.pow(i))

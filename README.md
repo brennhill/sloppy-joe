@@ -47,6 +47,12 @@ sloppy-joe check --json
 sloppy-joe init > config.json
 ```
 
+### Nix
+
+```bash
+nix profile install github:brennhill/sloppy-joe
+```
+
 **Exit codes:** `0` = all clear, `1` = issues found, `2` = runtime error.
 
 **Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
