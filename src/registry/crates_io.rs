@@ -49,6 +49,7 @@ fn metadata_from_body(
         current_publisher,
         previous_publisher,
         repository_url,
+        version_history: Vec::new(),
     })
 }
 

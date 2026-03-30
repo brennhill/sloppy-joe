@@ -106,6 +106,7 @@ impl super::RegistryMetadata for MavenRegistry {
             current_publisher: None,
             previous_publisher: None,
             repository_url: None,
+            version_history: Vec::new(),
         }))
     }
 }

@@ -105,6 +105,7 @@ impl super::RegistryMetadata for NugetRegistry {
             current_publisher: None,
             previous_publisher: None,
             repository_url: None, // NuGet doesn't expose this in registration API
+            version_history: Vec::new(),
         }))
     }
 }

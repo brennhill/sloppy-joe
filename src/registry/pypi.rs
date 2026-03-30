@@ -88,6 +88,7 @@ impl super::RegistryMetadata for PypiRegistry {
             current_publisher: None,
             previous_publisher: None,
             repository_url,
+            version_history: Vec::new(),
         }))
     }
 }

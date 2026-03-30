@@ -13,6 +13,16 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::time::Duration;
 
+/// A single version's metadata for temporal signal correlation.
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionRecord {
+    pub version: String,
+    pub publisher: Option<String>,
+    pub has_install_scripts: bool,
+    /// ISO 8601 publish date
+    pub date: Option<String>,
+}
+
 /// Metadata about a package from its registry.
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageMetadata {
@@ -34,6 +44,10 @@ pub struct PackageMetadata {
     pub previous_publisher: Option<String>,
     /// Source repository URL (GitHub, GitLab, etc.)
     pub repository_url: Option<String>,
+    /// Recent version history for temporal signal correlation.
+    /// Chronologically ordered (oldest first). Only versions within
+    /// the last 12 months are included.
+    pub version_history: Vec<VersionRecord>,
 }
 
 #[async_trait]
@@ -423,6 +437,82 @@ mod tests {
         // We can't easily construct reqwest errors, but verify the function compiles
         // and the logic is correct by checking it returns bool
         let _: fn(&reqwest::Error) -> bool = is_transient;
+    }
+
+    #[test]
+    fn version_record_struct_exists_and_is_constructible() {
+        let record = VersionRecord {
+            version: "1.0.0".to_string(),
+            publisher: Some("alice".to_string()),
+            has_install_scripts: true,
+            date: Some("2026-01-15T00:00:00Z".to_string()),
+        };
+        assert_eq!(record.version, "1.0.0");
+        assert_eq!(record.publisher.as_deref(), Some("alice"));
+        assert!(record.has_install_scripts);
+        assert!(record.date.is_some());
+    }
+
+    #[test]
+    fn version_record_handles_missing_optional_fields() {
+        let record = VersionRecord {
+            version: "2.0.0".to_string(),
+            publisher: None,
+            has_install_scripts: false,
+            date: None,
+        };
+        assert_eq!(record.publisher, None);
+        assert_eq!(record.date, None);
+    }
+
+    #[test]
+    fn package_metadata_has_version_history_field() {
+        let meta = PackageMetadata {
+            created: None,
+            latest_version_date: None,
+            downloads: None,
+            has_install_scripts: false,
+            dependency_count: None,
+            previous_dependency_count: None,
+            current_publisher: None,
+            previous_publisher: None,
+            repository_url: None,
+            version_history: vec![
+                VersionRecord {
+                    version: "1.0.0".to_string(),
+                    publisher: Some("alice".to_string()),
+                    has_install_scripts: false,
+                    date: Some("2025-06-01T00:00:00Z".to_string()),
+                },
+                VersionRecord {
+                    version: "2.0.0".to_string(),
+                    publisher: Some("bob".to_string()),
+                    has_install_scripts: true,
+                    date: Some("2026-01-01T00:00:00Z".to_string()),
+                },
+            ],
+        };
+        assert_eq!(meta.version_history.len(), 2);
+        assert_eq!(meta.version_history[0].publisher.as_deref(), Some("alice"));
+        assert_eq!(meta.version_history[1].publisher.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn version_history_defaults_to_empty_vec() {
+        // Non-npm registries should have empty version_history
+        let meta = PackageMetadata {
+            created: None,
+            latest_version_date: None,
+            downloads: None,
+            has_install_scripts: false,
+            dependency_count: None,
+            previous_dependency_count: None,
+            current_publisher: None,
+            previous_publisher: None,
+            repository_url: None,
+            version_history: Vec::new(),
+        };
+        assert!(meta.version_history.is_empty());
     }
 
     #[test]

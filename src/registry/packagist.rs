@@ -94,6 +94,7 @@ impl super::RegistryMetadata for PackagistRegistry {
             current_publisher: None,
             previous_publisher: None,
             repository_url,
+            version_history: Vec::new(),
         }))
     }
 }

@@ -39,6 +39,7 @@ impl RegistryMetadata for FakeRegistry {
                 current_publisher: None,
                 previous_publisher: None,
                 repository_url: None,
+                version_history: Vec::new(),
             }))
         } else {
             Ok(None)
@@ -98,6 +99,7 @@ impl RegistryMetadata for RecordingRegistry {
                 current_publisher: None,
                 previous_publisher: None,
                 repository_url: None,
+                version_history: Vec::new(),
             }))
         } else {
             Ok(None)

@@ -82,6 +82,7 @@ impl super::RegistryMetadata for GoRegistry {
             current_publisher: None,
             previous_publisher: None,
             repository_url: Some(format!("https://{}", package_name)),
+            version_history: Vec::new(),
         }))
     }
 }

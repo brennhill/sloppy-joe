@@ -53,6 +53,7 @@ fn default_meta() -> PackageMetadata {
         current_publisher: None,
         previous_publisher: None,
         repository_url: Some("https://github.com/example/pkg".to_string()),
+        version_history: Vec::new(),
     }
 }
 
