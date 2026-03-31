@@ -54,17 +54,8 @@ impl super::RegistryMetadata for GoRegistry {
         };
 
         let resp = super::retry_get(&self.client, &url).await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND
-            || resp.status() == reqwest::StatusCode::GONE
-        {
+        if super::check_metadata_status(resp.status(), "Go proxy", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "Go proxy metadata for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
 
         let body: serde_json::Value = resp.json().await?;

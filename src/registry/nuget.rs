@@ -38,15 +38,8 @@ impl super::RegistryMetadata for NugetRegistry {
             lower
         );
         let resp = super::retry_get(&self.client, &url).await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if super::check_metadata_status(resp.status(), "NuGet", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "NuGet metadata for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
 
         let body: serde_json::Value = resp.json().await?;

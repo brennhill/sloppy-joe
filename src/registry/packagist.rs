@@ -30,15 +30,8 @@ impl super::RegistryMetadata for PackagistRegistry {
         // Packagist p2 API returns all versions with time fields
         let url = format!("https://repo.packagist.org/p2/{}.json", package_name);
         let resp = super::retry_get(&self.client, &url).await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if super::check_metadata_status(resp.status(), "Packagist", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "Packagist metadata for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
 
         let body: serde_json::Value = resp.json().await?;

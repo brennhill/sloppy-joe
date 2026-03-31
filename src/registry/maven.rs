@@ -75,15 +75,8 @@ impl super::RegistryMetadata for MavenRegistry {
         let (group, artifact) = (parts[0], parts[1]);
         let url = search_url(group, artifact, version);
         let resp = super::retry_get(&self.client, &url).await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if super::check_metadata_status(resp.status(), "Maven", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "Maven metadata lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
         let body: serde_json::Value = resp.json().await?;
         let doc = &body["response"]["docs"][0];

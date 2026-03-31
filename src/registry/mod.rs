@@ -220,6 +220,27 @@ macro_rules! registry_struct {
 
 pub(crate) use registry_struct;
 
+/// Check an HTTP response status for registry metadata queries.
+/// Returns Ok(None) for NOT_FOUND/GONE, Ok(Some(())) for success, Err for other statuses.
+pub(crate) fn check_metadata_status(
+    status: reqwest::StatusCode,
+    registry_name: &str,
+    package_name: &str,
+) -> anyhow::Result<Option<()>> {
+    if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        anyhow::bail!(
+            "{} metadata lookup for '{}' returned HTTP {}",
+            registry_name,
+            package_name,
+            status
+        );
+    }
+    Ok(Some(()))
+}
+
 /// Check an HTTP response status for registry existence queries.
 /// Returns Ok(false) for NOT_FOUND/GONE, Ok(true) for success, Err for other statuses.
 pub(crate) fn check_existence_status(

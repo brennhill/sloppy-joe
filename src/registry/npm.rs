@@ -209,15 +209,8 @@ impl super::RegistryMetadata for NpmRegistry {
         );
 
         let resp = registry_resp?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if super::check_metadata_status(resp.status(), "npm registry", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "npm registry metadata lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
         let body: serde_json::Value = resp.json().await?;
         let mut meta = match metadata_from_body(&body, version) {

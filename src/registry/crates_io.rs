@@ -74,15 +74,8 @@ impl super::RegistryMetadata for CratesIoRegistry {
         self.validate_name(package_name)?;
         let url = format!("https://crates.io/api/v1/crates/{}", package_name);
         let resp = super::retry_get(&self.client, &url).await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if super::check_metadata_status(resp.status(), "crates.io", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "crates.io metadata lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
         let body: serde_json::Value = resp.json().await?;
         Ok(metadata_from_body(&body, version))

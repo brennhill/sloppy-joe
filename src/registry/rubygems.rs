@@ -51,15 +51,8 @@ impl super::RegistryMetadata for RubyGemsRegistry {
         let (gem_resp, version_resp_opt) = tokio::join!(gem_fut, version_fut);
 
         let resp = gem_resp?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if super::check_metadata_status(resp.status(), "RubyGems", package_name)?.is_none() {
             return Ok(None);
-        }
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "RubyGems metadata lookup for '{}' returned HTTP {}",
-                package_name,
-                resp.status()
-            );
         }
         let body: serde_json::Value = resp.json().await?;
 
