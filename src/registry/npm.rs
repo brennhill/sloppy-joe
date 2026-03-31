@@ -80,8 +80,7 @@ fn metadata_from_body(
         .map(|s| s.to_string());
 
     // Build version history: collect publisher + scripts + date for versions within 12 months
-    let twelve_months_hours: u64 = 365 * 24; // 8760 hours — matches PUBLISHER_SCRIPT_COMBO_WINDOW_HOURS
-    let version_history = build_version_history(&body["versions"], time, twelve_months_hours);
+    let version_history = build_version_history(&body["versions"], time, super::VERSION_HISTORY_WINDOW_HOURS);
 
     Some(super::PackageMetadata {
         created,

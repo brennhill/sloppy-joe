@@ -240,8 +240,7 @@ fn is_plausible_repo_url(url: &str) -> bool {
     KNOWN_CODE_HOSTS.iter().any(|host| lower.contains(host))
 }
 
-/// 12-month lookback window for publisher-script combo signal.
-const PUBLISHER_SCRIPT_COMBO_WINDOW_HOURS: u64 = 8760; // 12 months
+use crate::registry::VERSION_HISTORY_WINDOW_HOURS;
 
 /// Publisher changed within 12 months AND install scripts present.
 /// Detects the event-stream pattern: attacker gains publish access, then
@@ -279,7 +278,7 @@ pub(crate) fn check_publisher_script_combo(
     // Check the publisher change is within 12 months
     let date = change_version.date.as_ref()?;
     let age = age_in_hours(date)?;
-    if age > PUBLISHER_SCRIPT_COMBO_WINDOW_HOURS {
+    if age > VERSION_HISTORY_WINDOW_HOURS {
         return None;
     }
 

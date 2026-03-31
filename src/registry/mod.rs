@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use serde::Serialize;
 use std::time::Duration;
 
+/// 12-month lookback window for version history extraction and publisher-script combo signal.
+pub const VERSION_HISTORY_WINDOW_HOURS: u64 = 365 * 24; // 8760 hours
+
 /// A single version's metadata for temporal signal correlation.
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionRecord {
