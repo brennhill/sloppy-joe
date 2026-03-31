@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <defs>
+    <linearGradient id="bun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E8A849"/>
+      <stop offset="100%" stop-color="#C4822A"/>
+    </linearGradient>
+    <linearGradient id="sauce" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#B5422A"/>
+      <stop offset="100%" stop-color="#8B2E1A"/>
+    </linearGradient>
+    <linearGradient id="laser" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF3333"/>
+      <stop offset="40%" stop-color="#FF0000"/>
+      <stop offset="100%" stop-color="#FF4444" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="laserGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#FF6666" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#FF4444" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="bigGlow">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shatter">
+      <feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="3" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="8"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="500" fill="#0D1117"/>
+
+  <!-- ==================== SLOPPY JOE (left side, scaled 0.5x) ==================== -->
+  <g transform="translate(10, 75) scale(0.5)">
+    <!-- Bottom bun -->
+    <path d="M55 245 L55 265 Q55 280 80 280 L320 280 Q345 280 345 265 L345 245 Z"
+          fill="url(#bun)" stroke="#A06820" stroke-width="2"/>
+    <!-- Main filling -->
+    <path d="M48 180 Q45 210 48 245 L352 245 Q355 210 352 180 Z" fill="url(#sauce)"/>
+    <!-- Sauce oozing -->
+    <path d="M48 190 Q32 200 28 220 Q26 240 40 235 Q45 225 48 210 Z" fill="url(#sauce)" opacity="0.8"/>
+    <path d="M352 190 Q368 200 372 220 Q374 240 360 235 Q355 225 352 210 Z" fill="url(#sauce)" opacity="0.8"/>
+    <!-- Drips -->
+    <ellipse cx="130" cy="258" rx="4" ry="11" fill="#B5422A" opacity="0.45"/>
+    <ellipse cx="270" cy="262" rx="3" ry="9" fill="#B5422A" opacity="0.4"/>
+    <ellipse cx="200" cy="265" rx="5" ry="13" fill="#B5422A" opacity="0.5"/>
+    <!-- Package labels -->
+    <g transform="rotate(-6 200 190)">
+      <rect x="20" y="181" width="95" height="20" rx="3" fill="#1E3A5F" opacity="0.92"/>
+      <text x="67" y="195" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">requstes</text>
+    </g>
+    <g transform="rotate(4 280 188)">
+      <rect x="250" y="180" width="120" height="20" rx="3" fill="#1E3A5F" opacity="0.92"/>
+      <text x="310" y="194" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">fake-json-lib</text>
+    </g>
+    <g transform="rotate(5 120 208)">
+      <rect x="30" y="200" width="105" height="20" rx="3" fill="#C9962A" opacity="0.92"/>
+      <text x="82" y="214" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#1E1E1E" font-weight="600">unter_score</text>
+    </g>
+    <g transform="rotate(-3 250 208)">
+      <rect x="165" y="200" width="80" height="20" rx="3" fill="#2BA99A" opacity="0.88"/>
+      <text x="205" y="214" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">moment</text>
+    </g>
+    <g transform="rotate(-4 100 228)">
+      <rect x="15" y="220" width="85" height="20" rx="3" fill="#B5422A" opacity="0.85"/>
+      <text x="57" y="234" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">expres</text>
+    </g>
+    <g transform="rotate(6 310 228)">
+      <rect x="260" y="220" width="110" height="20" rx="3" fill="#2BA99A" opacity="0.85"/>
+      <text x="315" y="234" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#F5E6C8" font-weight="600">lodsah</text>
+    </g>
+    <!-- Top bun -->
+    <path d="M55 183 Q55 95 200 85 Q345 95 345 183 Z"
+          fill="url(#bun)" stroke="#A06820" stroke-width="2"/>
+    <ellipse cx="140" cy="130" rx="8" ry="5" fill="#F5E6C8" transform="rotate(-15 140 130)"/>
+    <ellipse cx="200" cy="112" rx="8" ry="5" fill="#F5E6C8" transform="rotate(10 200 112)"/>
+    <ellipse cx="260" cy="125" rx="8" ry="5" fill="#F5E6C8" transform="rotate(-5 260 125)"/>
+    <ellipse cx="170" cy="150" rx="7" ry="4" fill="#F5E6C8" transform="rotate(20 170 150)"/>
+    <ellipse cx="235" cy="143" rx="7" ry="4" fill="#F5E6C8" transform="rotate(-10 235 143)"/>
+  </g>
+
+  <!-- sloppy-joe label -->
+  <text x="110" y="265" text-anchor="middle"
+        font-family="'Helvetica Neue',Arial,sans-serif"
+        font-size="22" font-weight="900" fill="#E8A849" letter-spacing="-1">sloppy-joe</text>
+
+  <!-- ==================== LASER BEAM ==================== -->
+  <ellipse cx="400" cy="190" rx="200" ry="14" fill="url(#laserGlow)" filter="url(#bigGlow)"/>
+  <line x1="200" y1="190" x2="560" y2="190" stroke="url(#laser)" stroke-width="5" filter="url(#glow)"/>
+  <line x1="200" y1="190" x2="560" y2="190" stroke="#FFFFFF" stroke-width="1.5" opacity="0.8"/>
+  <!-- Beam origin -->
+  <circle cx="200" cy="190" r="10" fill="#FF3333" opacity="0.6" filter="url(#glow)"/>
+  <circle cx="200" cy="190" r="4" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- ==================== IMPACT ==================== -->
+  <circle cx="560" cy="190" r="30" fill="#FF4444" opacity="0.3" filter="url(#bigGlow)"/>
+  <circle cx="560" cy="190" r="14" fill="#FF6666" opacity="0.5" filter="url(#glow)"/>
+  <circle cx="560" cy="190" r="6" fill="#FFFFFF" opacity="0.7"/>
+  <!-- Sparks -->
+  <line x1="560" y1="190" x2="595" y2="160" stroke="#FF6644" stroke-width="2" opacity="0.7"/>
+  <line x1="560" y1="190" x2="605" y2="178" stroke="#FFAA44" stroke-width="2" opacity="0.6"/>
+  <line x1="560" y1="190" x2="600" y2="208" stroke="#FF6644" stroke-width="2" opacity="0.7"/>
+  <line x1="560" y1="190" x2="585" y2="228" stroke="#FFAA44" stroke-width="2" opacity="0.5"/>
+  <circle cx="600" cy="158" r="2.5" fill="#FFAA44" opacity="0.6"/>
+  <circle cx="612" cy="176" r="2" fill="#FF6644" opacity="0.5"/>
+  <circle cx="606" cy="212" r="2" fill="#FFAA44" opacity="0.5"/>
+
+  <!-- ==================== AXIOS (right side) ==================== -->
+  <g transform="translate(575, 115)" filter="url(#shatter)" opacity="0.85">
+    <rect x="0" y="0" width="195" height="150" rx="8" fill="#1E3A5F" stroke="#5A9BD5" stroke-width="2" opacity="0.9"/>
+    <text x="98" y="65" text-anchor="middle"
+          font-family="'SF Mono','Fira Code',monospace"
+          font-size="38" font-weight="700" fill="#5A9BD5">axios</text>
+    <text x="98" y="95" text-anchor="middle"
+          font-family="'SF Mono','Fira Code',monospace"
+          font-size="15" fill="#FF4444" font-weight="600">@1.14.1</text>
+    <text x="98" y="130" text-anchor="middle"
+          font-family="'SF Mono','Fira Code',monospace"
+          font-size="14" fill="#FF4444" font-weight="700">COMPROMISED</text>
+  </g>
+
+  <!-- Crack lines -->
+  <g opacity="0.6">
+    <line x1="575" y1="175" x2="615" y2="140" stroke="#FF4444" stroke-width="2"/>
+    <line x1="615" y1="140" x2="640" y2="155" stroke="#FF4444" stroke-width="1.5"/>
+    <line x1="615" y1="140" x2="608" y2="120" stroke="#FF4444" stroke-width="1.5"/>
+    <line x1="575" y1="200" x2="610" y2="230" stroke="#FF4444" stroke-width="2"/>
+    <line x1="610" y1="230" x2="635" y2="222" stroke="#FF4444" stroke-width="1.5"/>
+  </g>
+
+  <!-- ==================== SIGNALS PANEL (bottom) ==================== -->
+  <g transform="translate(150, 310)">
+    <rect x="0" y="0" width="500" height="170" rx="6" fill="#161B22" stroke="#30363D" stroke-width="1"/>
+
+    <text x="250" y="24" text-anchor="middle" font-family="'SF Mono','Fira Code',monospace" font-size="11" fill="#8B949E" font-weight="600" letter-spacing="1">SIGNALS FIRED</text>
+
+    <circle cx="20" cy="50" r="5" fill="#FF4444"/>
+    <text x="32" y="54" font-family="'SF Mono','Fira Code',monospace" font-size="11" fill="#FF6666">metadata/version-age</text>
+    <text x="260" y="54" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#8B949E">axios@1.14.1 is minutes old</text>
+
+    <circle cx="20" cy="76" r="5" fill="#FF4444"/>
+    <text x="32" y="80" font-family="'SF Mono','Fira Code',monospace" font-size="11" fill="#FF6666">metadata/new-package</text>
+    <text x="260" y="80" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#8B949E">plain-crypto-js created today</text>
+
+    <circle cx="20" cy="102" r="5" fill="#FF4444"/>
+    <text x="32" y="106" font-family="'SF Mono','Fira Code',monospace" font-size="11" fill="#FF6666">metadata/install-script-risk</text>
+    <text x="260" y="106" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#8B949E">postinstall + new + 0 downloads</text>
+
+    <circle cx="20" cy="128" r="5" fill="#FF4444"/>
+    <text x="32" y="132" font-family="'SF Mono','Fira Code',monospace" font-size="11" fill="#FF6666">metadata/no-repository</text>
+    <text x="260" y="132" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#8B949E">plain-crypto-js has no repo URL</text>
+
+    <circle cx="20" cy="154" r="5" fill="#FFAA44"/>
+    <text x="32" y="158" font-family="'SF Mono','Fira Code',monospace" font-size="11" fill="#FFCC66">similarity/mutation-match</text>
+    <text x="260" y="158" font-family="'SF Mono','Fira Code',monospace" font-size="10" fill="#8B949E">plain-crypto-js ~ crypto-js</text>
+  </g>
+</svg>
