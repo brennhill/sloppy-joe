@@ -68,7 +68,7 @@ signal, not either event alone.
   Verify the publisher change was legitimate. If verified, add to the allowed list."
 - If no publisher change occurred in the last 12 months, do not flag.
 - If the current version has no install scripts, do not flag.
-- Allowed-list packages skip this check.
+- Allowed-list packages still receive this check — the event-stream attack targeted exactly this category of trusted packages. Only internal packages (first-party code) skip this check.
 - Skipped when `unresolved_version` is true.
 
 ---

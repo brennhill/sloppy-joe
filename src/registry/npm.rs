@@ -80,7 +80,7 @@ fn metadata_from_body(
         .map(|s| s.to_string());
 
     // Build version history: collect publisher + scripts + date for versions within 12 months
-    let twelve_months_hours: u64 = 12 * 30 * 24; // 8760 hours
+    let twelve_months_hours: u64 = 365 * 24; // 8760 hours — matches PUBLISHER_SCRIPT_COMBO_WINDOW_HOURS
     let version_history = build_version_history(&body["versions"], time, twelve_months_hours);
 
     Some(super::PackageMetadata {
@@ -147,7 +147,7 @@ fn build_version_history(
             || scripts["install"].is_string()
             || scripts["prepare"].is_string();
 
-        let sort_key = date_str.clone().unwrap_or_default();
+        let sort_key = date_str.clone().unwrap_or_else(|| "9999-12-31T23:59:59Z".to_string());
         records.push((
             super::VersionRecord {
                 version: ver.clone(),
@@ -238,6 +238,34 @@ impl super::RegistryMetadata for NpmRegistry {
 mod tests {
     use super::*;
 
+    /// Helper: returns an ISO 8601 date string approximately N months ago.
+    /// Uses relative time so tests don't rot when hardcoded dates age out.
+    fn months_ago(months: u64) -> String {
+        let secs = crate::cache::now_epoch() as i64 - (months as i64 * 30 * 24 * 3600);
+        // Use cache module's now_iso8601 style formatting
+        let days = secs / 86400;
+        let time_of_day = secs % 86400;
+        let hour = time_of_day / 3600;
+        let min = (time_of_day % 3600) / 60;
+        let sec = time_of_day % 60;
+        let mut year = 1970i64;
+        let mut rem_days = days;
+        loop {
+            let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+            if rem_days < ydays { break; }
+            rem_days -= ydays;
+            year += 1;
+        }
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut month = 0i64;
+        for (i, &md) in mdays.iter().enumerate() {
+            if rem_days < md { month = i as i64 + 1; break; }
+            rem_days -= md;
+        }
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, rem_days + 1, hour, min, sec)
+    }
+
     #[test]
     fn metadata_from_body_downloads_defaults_to_none() {
         // metadata_from_body itself does not populate downloads —
@@ -264,14 +292,15 @@ mod tests {
 
     #[test]
     fn version_history_populated_from_npm_json() {
-        // Use dates within last 12 months so they pass the filter
-        // (test runs in 2026, so 2025-06 and 2026-01 are within range)
+        // Use relative dates so this test doesn't rot
+        let date_8mo = months_ago(8);
+        let date_1mo = months_ago(1);
         let body = serde_json::json!({
             "time": {
                 "created": "2020-01-01T00:00:00Z",
-                "modified": "2026-02-01T00:00:00Z",
-                "1.0.0": "2025-06-01T00:00:00Z",
-                "2.0.0": "2026-01-15T00:00:00Z"
+                "modified": &date_1mo,
+                "1.0.0": &date_8mo,
+                "2.0.0": &date_1mo
             },
             "dist-tags": { "latest": "2.0.0" },
             "versions": {
@@ -293,12 +322,12 @@ mod tests {
         assert_eq!(metadata.version_history[0].version, "1.0.0");
         assert_eq!(metadata.version_history[0].publisher.as_deref(), Some("alice"));
         assert!(!metadata.version_history[0].has_install_scripts);
-        assert_eq!(metadata.version_history[0].date.as_deref(), Some("2025-06-01T00:00:00Z"));
+        assert_eq!(metadata.version_history[0].date.as_deref(), Some(date_8mo.as_str()));
 
         assert_eq!(metadata.version_history[1].version, "2.0.0");
         assert_eq!(metadata.version_history[1].publisher.as_deref(), Some("bob"));
         assert!(metadata.version_history[1].has_install_scripts);
-        assert_eq!(metadata.version_history[1].date.as_deref(), Some("2026-01-15T00:00:00Z"));
+        assert_eq!(metadata.version_history[1].date.as_deref(), Some(date_1mo.as_str()));
     }
 
     #[test]
@@ -333,11 +362,12 @@ mod tests {
 
     #[test]
     fn version_history_handles_missing_npm_user() {
+        let date_1mo = months_ago(1);
         let body = serde_json::json!({
             "time": {
                 "created": "2020-01-01T00:00:00Z",
-                "modified": "2026-02-01T00:00:00Z",
-                "1.0.0": "2026-01-15T00:00:00Z"
+                "modified": &date_1mo,
+                "1.0.0": &date_1mo
             },
             "dist-tags": { "latest": "1.0.0" },
             "versions": {
@@ -355,11 +385,12 @@ mod tests {
 
     #[test]
     fn version_history_handles_missing_scripts() {
+        let date_1mo = months_ago(1);
         let body = serde_json::json!({
             "time": {
                 "created": "2020-01-01T00:00:00Z",
-                "modified": "2026-02-01T00:00:00Z",
-                "1.0.0": "2026-01-15T00:00:00Z"
+                "modified": &date_1mo,
+                "1.0.0": &date_1mo
             },
             "dist-tags": { "latest": "1.0.0" },
             "versions": {
@@ -401,11 +432,12 @@ mod tests {
 
     #[test]
     fn version_history_empty_for_no_versions() {
+        let date_1mo = months_ago(1);
         let body = serde_json::json!({
             "time": {
                 "created": "2020-01-01T00:00:00Z",
-                "modified": "2026-02-01T00:00:00Z",
-                "1.0.0": "2026-01-15T00:00:00Z"
+                "modified": &date_1mo,
+                "1.0.0": &date_1mo
             },
             "dist-tags": { "latest": "1.0.0" },
             "versions": {
@@ -420,6 +452,39 @@ mod tests {
         // version_history is populated (already tested above)
         let metadata = metadata_from_body(&body, None).unwrap();
         assert!(!metadata.version_history.is_empty());
+    }
+
+    #[test]
+    fn dateless_versions_sort_to_end() {
+        let date_2mo = months_ago(2);
+        let body = serde_json::json!({
+            "time": {
+                "created": "2020-01-01T00:00:00Z",
+                "modified": &date_2mo,
+                "1.0.0": &date_2mo
+                // no time entry for 2.0.0
+            },
+            "dist-tags": { "latest": "2.0.0" },
+            "versions": {
+                "1.0.0": {
+                    "scripts": {},
+                    "dependencies": {},
+                    "_npmUser": { "name": "alice" }
+                },
+                "2.0.0": {
+                    "scripts": {},
+                    "dependencies": {},
+                    "_npmUser": { "name": "bob" }
+                }
+            }
+        });
+        let metadata = metadata_from_body(&body, None).unwrap();
+        assert_eq!(metadata.version_history.len(), 2);
+        // Dated version comes first; dateless version sorts to the end
+        assert_eq!(metadata.version_history[0].version, "1.0.0");
+        assert!(metadata.version_history[0].date.is_some());
+        assert_eq!(metadata.version_history[1].version, "2.0.0");
+        assert!(metadata.version_history[1].date.is_none());
     }
 
     #[test]
