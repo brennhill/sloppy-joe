@@ -106,8 +106,12 @@ pub async fn scan(
 /// Compute a hash of dependency tuples + lockfile content for change detection.
 /// Includes lockfile so that resolved version changes (e.g., a compromised upstream
 /// version satisfying the same range) invalidate the cache even when the manifest
-/// is unchanged.
-fn scan_hash(project_dir: &std::path::Path, deps: &[Dependency]) -> u64 {
+/// is unchanged. If a known lockfile exists but cannot be safely hashed, hash-based
+/// scan skipping is disabled for the run.
+fn scan_hash(
+    project_dir: &std::path::Path,
+    deps: &[Dependency],
+) -> std::result::Result<u64, String> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -128,13 +132,21 @@ fn scan_hash(project_dir: &std::path::Path, deps: &[Dependency]) -> u64 {
         "poetry.lock",
     ] {
         let path = project_dir.join(lockfile);
-        if let Ok(content) = parsers::read_bytes_limited(&path, parsers::MAX_MANIFEST_BYTES) {
-            lockfile.hash(&mut hasher);
-            content.hash(&mut hasher);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let content = parsers::read_bytes_limited(&path, parsers::MAX_MANIFEST_BYTES)
+                    .map_err(|err| format!("cannot safely hash {}: {}", path.display(), err))?;
+                lockfile.hash(&mut hasher);
+                content.hash(&mut hasher);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!("cannot safely hash {}: {}", path.display(), err));
+            }
         }
     }
 
-    hasher.finish()
+    Ok(hasher.finish())
 }
 
 /// Cache entry for manifest hash skip.
@@ -142,6 +154,19 @@ fn scan_hash(project_dir: &std::path::Path, deps: &[Dependency]) -> u64 {
 struct ScanHashCache {
     timestamp: u64,
     hash: u64,
+}
+
+fn scan_hash_matches_cache(
+    project_dir: &std::path::Path,
+    deps: &[Dependency],
+    cache_base: &std::path::Path,
+) -> std::result::Result<bool, String> {
+    let hash = scan_hash(project_dir, deps)?;
+    let hash_path = cache_base.join("scan-hash.json");
+    Ok(matches!(
+        cache::read_json_cache::<ScanHashCache>(&hash_path, 7 * 24 * 3600, |c| c.timestamp),
+        Some(cached) if cached.hash == hash
+    ))
 }
 
 async fn scan_with_config(
@@ -169,18 +194,22 @@ async fn scan_with_config(
 
     // Skip scan if deps haven't changed (manifest + lockfile hash check)
     if !opts.no_cache && !opts.skip_hash_check && !all_deps.is_empty() {
-        let hash = scan_hash(project_dir, &all_deps);
         let cache_base = opts
             .cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-        let hash_path = cache_base.join("scan-hash.json");
-        if let Some(cached) =
-            cache::read_json_cache::<ScanHashCache>(&hash_path, 7 * 24 * 3600, |c| c.timestamp)
-            && cached.hash == hash
-        {
-            eprintln!("Dependencies unchanged, skipping scan.");
-            return Ok(ScanReport::empty());
+        match scan_hash_matches_cache(project_dir, &all_deps, &cache_base) {
+            Ok(true) => {
+                eprintln!("Dependencies unchanged, skipping scan.");
+                return Ok(ScanReport::empty());
+            }
+            Ok(false) => {}
+            Err(reason) => {
+                eprintln!(
+                    "Skipping dependency-hash shortcut: {}",
+                    report::sanitize_for_terminal(&reason)
+                );
+            }
         }
     }
 
@@ -213,19 +242,28 @@ async fn scan_with_config(
 
     // Save hash after successful scan
     if !opts.no_cache && !all_deps.is_empty() {
-        let hash = scan_hash(project_dir, &all_deps);
         let cache_base = opts
             .cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-        let hash_path = cache_base.join("scan-hash.json");
-        cache::atomic_write_json(
-            &hash_path,
-            &ScanHashCache {
-                timestamp: cache::now_epoch(),
-                hash,
-            },
-        );
+        match scan_hash(project_dir, &all_deps) {
+            Ok(hash) => {
+                let hash_path = cache_base.join("scan-hash.json");
+                cache::atomic_write_json(
+                    &hash_path,
+                    &ScanHashCache {
+                        timestamp: cache::now_epoch(),
+                        hash,
+                    },
+                );
+            }
+            Err(reason) => {
+                eprintln!(
+                    "Not caching dependency hash for this run: {}",
+                    report::sanitize_for_terminal(&reason)
+                );
+            }
+        }
     }
 
     Ok(report)

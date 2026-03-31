@@ -839,8 +839,8 @@ fn scan_hash_is_deterministic() {
             ecosystem: Ecosystem::Npm,
         },
     ];
-    let hash1 = scan_hash(&dir, &deps);
-    let hash2 = scan_hash(&dir, &deps);
+    let hash1 = scan_hash(&dir, &deps).unwrap();
+    let hash2 = scan_hash(&dir, &deps).unwrap();
     assert_eq!(hash1, hash2);
 }
 
@@ -857,7 +857,10 @@ fn scan_hash_changes_with_different_deps() {
         version: Some("^19.0".to_string()),
         ecosystem: Ecosystem::Npm,
     }];
-    assert_ne!(scan_hash(&dir, &deps1), scan_hash(&dir, &deps2));
+    assert_ne!(
+        scan_hash(&dir, &deps1).unwrap(),
+        scan_hash(&dir, &deps2).unwrap()
+    );
 }
 
 #[test]
@@ -887,7 +890,10 @@ fn scan_hash_order_independent() {
             ecosystem: Ecosystem::Npm,
         },
     ];
-    assert_eq!(scan_hash(&dir, &deps1), scan_hash(&dir, &deps2));
+    assert_eq!(
+        scan_hash(&dir, &deps1).unwrap(),
+        scan_hash(&dir, &deps2).unwrap()
+    );
 }
 
 #[test]
@@ -905,11 +911,11 @@ fn scan_hash_changes_with_lockfile() {
     }];
 
     // Hash without lockfile
-    let hash_no_lock = scan_hash(&dir, &deps);
+    let hash_no_lock = scan_hash(&dir, &deps).unwrap();
 
     // Write a lockfile
     std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3}"#).unwrap();
-    let hash_with_lock = scan_hash(&dir, &deps);
+    let hash_with_lock = scan_hash(&dir, &deps).unwrap();
 
     // Change lockfile content
     std::fs::write(
@@ -917,7 +923,7 @@ fn scan_hash_changes_with_lockfile() {
         r#"{"lockfileVersion":3,"packages":{"node_modules/react":{"version":"18.999.0"}}}"#,
     )
     .unwrap();
-    let hash_changed_lock = scan_hash(&dir, &deps);
+    let hash_changed_lock = scan_hash(&dir, &deps).unwrap();
 
     assert_ne!(
         hash_no_lock, hash_with_lock,
@@ -940,19 +946,48 @@ fn scan_hash_does_not_follow_symlinked_lockfile() {
         version: Some("^18.0".to_string()),
         ecosystem: Ecosystem::Npm,
     }];
-    let baseline = scan_hash(&dir, &deps);
+    let real = dir.join("real-lock.json");
+    std::fs::write(&real, r#"{"lockfileVersion":3}"#).unwrap();
+    std::os::unix::fs::symlink(&real, dir.join("package-lock.json")).unwrap();
+
+    let err = scan_hash(&dir, &deps)
+        .expect_err("present but unsafe lockfiles must disable hash-based skipping");
+    assert!(err.contains("package-lock.json"));
+    assert!(err.contains("safely hash"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn scan_hash_matches_cache_refuses_unhashable_lockfile() {
+    let dir = unique_dir();
+    let cache_dir = unique_dir();
+    let deps = vec![Dependency {
+        name: "react".to_string(),
+        version: Some("^18.0".to_string()),
+        ecosystem: Ecosystem::Npm,
+    }];
+
+    let hash_path = cache_dir.join("scan-hash.json");
+    cache::atomic_write_json(
+        &hash_path,
+        &ScanHashCache {
+            timestamp: cache::now_epoch(),
+            hash: scan_hash(&dir, &deps).unwrap(),
+        },
+    );
 
     let real = dir.join("real-lock.json");
     std::fs::write(&real, r#"{"lockfileVersion":3}"#).unwrap();
     std::os::unix::fs::symlink(&real, dir.join("package-lock.json")).unwrap();
 
-    assert_eq!(
-        scan_hash(&dir, &deps),
-        baseline,
-        "scan_hash should ignore symlinked lockfiles instead of following them"
-    );
+    let err = scan_hash_matches_cache(&dir, &deps, &cache_dir)
+        .expect_err("unsafe lockfiles must disable cache-based scan skipping");
+    assert!(err.contains("package-lock.json"));
 
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache_dir);
 }
 
 #[tokio::test]
