@@ -175,22 +175,17 @@ pub(crate) fn issues_from_lookups(
             issues.push(issue.clone());
         }
 
-        issues.extend(signals::check_install_script_risk(
-            lookup,
-            meta,
-            is_new_package.is_some(),
-            is_low_downloads.is_some(),
-            similarity_flagged,
-        ));
+        let ctx = signals::SignalContext {
+            is_new_package: is_new_package.is_some(),
+            is_low_downloads: is_low_downloads.is_some(),
+            is_similarity_flagged: similarity_flagged.contains(&lookup.package),
+        };
+
+        issues.extend(signals::check_install_script_risk(lookup, meta, &ctx));
         issues.extend(signals::check_dependency_explosion(lookup, meta));
         issues.extend(signals::check_maintainer_change(lookup, meta));
         issues.extend(signals::check_publisher_script_combo(lookup, meta));
-        issues.extend(signals::check_no_repository(
-            lookup,
-            meta,
-            is_new_package.is_some(),
-            is_low_downloads.is_some(),
-        ));
+        issues.extend(signals::check_no_repository(lookup, meta, &ctx));
     }
 
     issues

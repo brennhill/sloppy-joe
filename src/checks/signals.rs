@@ -4,9 +4,15 @@
 use crate::checks::existence::registry_url;
 use crate::registry::PackageMetadata;
 use crate::report::{Issue, Severity};
-use std::collections::HashSet;
 
 use super::metadata::{MetadataLookup, age_in_hours};
+
+/// Pre-computed context from base signals, shared with composite signals.
+pub(crate) struct SignalContext {
+    pub is_new_package: bool,
+    pub is_low_downloads: bool,
+    pub is_similarity_flagged: bool,
+}
 
 /// Version published too recently.
 pub(crate) fn check_version_age(
@@ -93,15 +99,13 @@ pub(crate) fn check_low_downloads(
 pub(crate) fn check_install_script_risk(
     lookup: &MetadataLookup,
     meta: &PackageMetadata,
-    is_new_package: bool,
-    is_low_downloads: bool,
-    similarity_flagged: &HashSet<String>,
+    ctx: &SignalContext,
 ) -> Option<Issue> {
     if lookup.unresolved_version || !meta.has_install_scripts {
         return None;
     }
 
-    let has_similarity = similarity_flagged.contains(&lookup.package);
+    let has_similarity = ctx.is_similarity_flagged;
     let has_low_downloads = meta.downloads.is_some_and(|d| d < 1000);
     let has_no_repository = meta
         .repository_url
@@ -109,8 +113,8 @@ pub(crate) fn check_install_script_risk(
         .map(|url| !is_plausible_repo_url(url))
         .unwrap_or(true);
 
-    if !is_new_package
-        && !is_low_downloads
+    if !ctx.is_new_package
+        && !ctx.is_low_downloads
         && !has_low_downloads
         && !has_similarity
         && !has_no_repository
@@ -119,7 +123,7 @@ pub(crate) fn check_install_script_risk(
     }
 
     let mut reasons = Vec::new();
-    if is_new_package
+    if ctx.is_new_package
         && let Some(ref date) = meta.created
         && let Some(age_hours) = age_in_hours(date)
     {
@@ -561,8 +565,7 @@ mod tests {
 pub(crate) fn check_no_repository(
     lookup: &MetadataLookup,
     meta: &PackageMetadata,
-    is_new_package: bool,
-    is_low_downloads: bool,
+    ctx: &SignalContext,
 ) -> Option<Issue> {
     // Only flag if repo URL is missing or doesn't point to a known code host
     if let Some(ref url) = meta.repository_url
@@ -571,15 +574,15 @@ pub(crate) fn check_no_repository(
         return None;
     }
     // Only flag if also new or low-download — lots of legitimate old packages lack repo links
-    if !is_new_package && !is_low_downloads {
+    if !ctx.is_new_package && !ctx.is_low_downloads {
         return None;
     }
 
     let mut reasons = Vec::new();
-    if is_new_package {
+    if ctx.is_new_package {
         reasons.push("is a new package (< 30 days old)");
     }
-    if is_low_downloads {
+    if ctx.is_low_downloads {
         reasons.push("has low downloads (< 100)");
     }
 
