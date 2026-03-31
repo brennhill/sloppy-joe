@@ -72,6 +72,10 @@ impl Issue {
     }
 }
 
+pub(crate) fn sanitize_for_terminal(text: &str) -> String {
+    text.chars().flat_map(|ch| ch.escape_default()).collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
     pub packages_checked: usize,
@@ -174,9 +178,10 @@ impl ScanReport {
 }
 
 fn print_issue(issue: &Issue) {
+    let safe_package = sanitize_for_terminal(&issue.package);
     let (label, colorized_package) = match issue.severity {
-        Severity::Error => ("ERROR".red().bold(), issue.package.red().bold()),
-        Severity::Warning => ("WARN".yellow().bold(), issue.package.yellow().bold()),
+        Severity::Error => ("ERROR".red().bold(), safe_package.red().bold()),
+        Severity::Warning => ("WARN".yellow().bold(), safe_package.yellow().bold()),
     };
 
     let source_label = match issue.source.as_deref() {
@@ -187,16 +192,23 @@ fn print_issue(issue: &Issue) {
         "  {} {} {}{}",
         label,
         colorized_package,
-        format!("[{}]", issue.check).dimmed(),
+        format!("[{}]", sanitize_for_terminal(&issue.check)).dimmed(),
         source_label
     );
-    println!("        {}", issue.message);
-    println!("   {}  {}", "Fix:".yellow().bold(), issue.fix);
+    println!("        {}", sanitize_for_terminal(&issue.message));
+    println!(
+        "   {}  {}",
+        "Fix:".yellow().bold(),
+        sanitize_for_terminal(&issue.fix)
+    );
     if let Some(ref s) = issue.suggestion {
-        println!("        Replace with: {}", s.green().bold());
+        println!(
+            "        Replace with: {}",
+            sanitize_for_terminal(s).green().bold()
+        );
     }
     if let Some(ref url) = issue.registry_url {
-        println!("        Verify: {}", url.dimmed());
+        println!("        Verify: {}", sanitize_for_terminal(url).dimmed());
     }
     println!();
 }
@@ -509,5 +521,13 @@ mod tests {
         assert!(i.registry_url.is_none());
         let report = ScanReport::from_issues(1, vec![i]);
         report.print_human();
+    }
+
+    #[test]
+    fn sanitize_for_terminal_escapes_control_sequences() {
+        assert_eq!(
+            sanitize_for_terminal("pkg\u{1b}[31m\nnext"),
+            "pkg\\u{1b}[31m\\nnext"
+        );
     }
 }

@@ -25,11 +25,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         if let Some(rest) = line.strip_prefix("require ") {
             if let Some(name) = rest.split_whitespace().next() {
                 let version = rest.split_whitespace().nth(1).map(String::from);
-                deps.push(Dependency {
+                let dep = Dependency {
                     name: name.to_string(),
                     version,
                     ecosystem: crate::Ecosystem::Go,
-                });
+                };
+                super::validate_dependency(&dep, &path)?;
+                deps.push(dep);
             }
             continue;
         }
@@ -44,11 +46,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             && let Some(name) = line.split_whitespace().next()
         {
             let version = line.split_whitespace().nth(1).map(String::from);
-            deps.push(Dependency {
+            let dep = Dependency {
                 name: name.to_string(),
                 version,
                 ecosystem: crate::Ecosystem::Go,
-            });
+            };
+            super::validate_dependency(&dep, &path)?;
+            deps.push(dep);
         }
     }
 

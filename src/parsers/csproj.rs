@@ -17,11 +17,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             if let Some(name) = extract_include(line) {
                 let version = extract_attr(line, "Version");
                 if line.contains("/>") || version.is_some() {
-                    deps.push(Dependency {
+                    let dep = Dependency {
                         name,
                         version,
                         ecosystem: crate::Ecosystem::Dotnet,
-                    });
+                    };
+                    super::validate_dependency(&dep, &csproj)?;
+                    deps.push(dep);
                 } else {
                     current_name = Some(name);
                     current_version = None;
@@ -35,11 +37,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 current_version = Some(version);
             }
             if line.contains("</PackageReference>") {
-                deps.push(Dependency {
+                let dep = Dependency {
                     name: current_name.take().unwrap(),
                     version: current_version.take(),
                     ecosystem: crate::Ecosystem::Dotnet,
-                });
+                };
+                super::validate_dependency(&dep, &csproj)?;
+                deps.push(dep);
             }
         }
     }

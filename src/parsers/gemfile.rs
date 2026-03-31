@@ -18,11 +18,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         if (line.starts_with("gem ") || line.starts_with("gem\t"))
             && let Some((name, version)) = extract_gem_spec(line)
         {
-            deps.push(Dependency {
+            let dep = Dependency {
                 name,
                 version,
                 ecosystem: crate::Ecosystem::Ruby,
-            });
+            };
+            super::validate_dependency(&dep, &path)?;
+            deps.push(dep);
         }
     }
 

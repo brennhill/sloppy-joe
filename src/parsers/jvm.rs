@@ -33,6 +33,7 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
             if line.starts_with(cfg)
                 && let Some(dep) = extract_gradle_dep(line)
             {
+                super::validate_dependency(&dep, path)?;
                 deps.push(dep);
             }
         }
@@ -70,6 +71,7 @@ fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
         if lines[i].trim().contains("<dependency>") {
             let (dep, end) = parse_pom_dep(&lines, i);
             if let Some(d) = dep {
+                super::validate_dependency(&d, path)?;
                 deps.push(d);
             }
             i = end;

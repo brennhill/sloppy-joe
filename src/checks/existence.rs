@@ -217,9 +217,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn few_errors_do_not_trigger_fail_closed() {
-        // With only 1 query, 100% failure rate but below MIN_QUERIES_FOR_RATE,
-        // so rate-based threshold doesn't apply. Also below hard limit (5).
+    async fn single_error_triggers_fail_closed() {
         let registry = FakeRegistry {
             existing: vec![],
             fail: true,
@@ -227,10 +225,10 @@ mod tests {
         let deps = vec![dep("react")];
         let issues = check_existence(&registry, &deps).await.unwrap();
         assert!(
-            !issues
+            issues
                 .iter()
                 .any(|i| i.check.contains("registry-unreachable")),
-            "Few errors should not trigger fail-closed"
+            "Any existence lookup failure should trigger fail-closed"
         );
     }
 }

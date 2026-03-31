@@ -323,7 +323,11 @@ mod tests {
     use crate::Ecosystem;
     use crate::registry::VersionRecord;
 
-    fn make_lookup(package: &str, unresolved: bool, meta: PackageMetadata) -> (MetadataLookup, PackageMetadata) {
+    fn make_lookup(
+        package: &str,
+        unresolved: bool,
+        meta: PackageMetadata,
+    ) -> (MetadataLookup, PackageMetadata) {
         let lookup = MetadataLookup {
             package: package.to_string(),
             ecosystem: Ecosystem::Npm,
@@ -361,16 +365,38 @@ mod tests {
         let mut days = epoch / 86400;
         let mut y = 1970i64;
         loop {
-            let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-            if days < dy { break; }
+            let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                366
+            } else {
+                365
+            };
+            if days < dy {
+                break;
+            }
             days -= dy;
             y += 1;
         }
         let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-        let mdays = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mdays = [
+            31,
+            if leap { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
         let mut m = 0i64;
         for (i, &md) in mdays.iter().enumerate() {
-            if days < md as i64 { m = i as i64 + 1; break; }
+            if days < md as i64 {
+                m = i as i64 + 1;
+                break;
+            }
             days -= md as i64;
         }
         (y, m, days + 1, h, mi, s)
@@ -406,12 +432,24 @@ mod tests {
         };
         let (lookup, meta) = make_lookup("evil-pkg", false, meta);
         let issue = check_publisher_script_combo(&lookup, &meta);
-        assert!(issue.is_some(), "Should fire when publisher changed 6 months ago + scripts added after");
+        assert!(
+            issue.is_some(),
+            "Should fire when publisher changed 6 months ago + scripts added after"
+        );
         let issue = issue.unwrap();
-        assert_eq!(issue.check, super::super::names::METADATA_PUBLISHER_SCRIPT_COMBO);
+        assert_eq!(
+            issue.check,
+            super::super::names::METADATA_PUBLISHER_SCRIPT_COMBO
+        );
         assert_eq!(issue.severity, Severity::Error);
-        assert!(issue.message.contains("alice"), "Message should mention old publisher");
-        assert!(issue.message.contains("bob"), "Message should mention new publisher");
+        assert!(
+            issue.message.contains("alice"),
+            "Message should mention old publisher"
+        );
+        assert!(
+            issue.message.contains("bob"),
+            "Message should mention new publisher"
+        );
     }
 
     // Test 2: Does NOT fire when no publisher change in history
@@ -463,7 +501,10 @@ mod tests {
         };
         let (lookup, meta) = make_lookup("old-change-pkg", false, meta);
         let issue = check_publisher_script_combo(&lookup, &meta);
-        assert!(issue.is_none(), "Should not fire when publisher change is >12 months old");
+        assert!(
+            issue.is_none(),
+            "Should not fire when publisher change is >12 months old"
+        );
     }
 
     // Test 4: Does NOT fire when no install scripts in current version
@@ -515,10 +556,18 @@ mod tests {
         };
         let (lookup, meta) = make_lookup("inherited-pkg", false, meta);
         let issue = check_publisher_script_combo(&lookup, &meta);
-        assert!(issue.is_some(), "Should fire when scripts pre-date publisher change");
+        assert!(
+            issue.is_some(),
+            "Should fire when scripts pre-date publisher change"
+        );
         let issue = issue.unwrap();
-        assert!(issue.message.contains("already present") || issue.message.contains("pre-date") || issue.message.contains("inherited"),
-            "Message should note scripts pre-date the change, got: {}", issue.message);
+        assert!(
+            issue.message.contains("already present")
+                || issue.message.contains("pre-date")
+                || issue.message.contains("inherited"),
+            "Message should note scripts pre-date the change, got: {}",
+            issue.message
+        );
     }
 
     // Test 6: Skips when unresolved_version is true
@@ -544,7 +593,10 @@ mod tests {
         };
         let (lookup, meta) = make_lookup("unresolved-pkg", true, meta);
         let issue = check_publisher_script_combo(&lookup, &meta);
-        assert!(issue.is_none(), "Should skip when unresolved_version is true");
+        assert!(
+            issue.is_none(),
+            "Should skip when unresolved_version is true"
+        );
     }
 
     // Test 7: Skips when version_history is empty

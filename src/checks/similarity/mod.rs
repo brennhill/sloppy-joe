@@ -487,6 +487,8 @@ pub async fn check_similarity_with_cache(
 
     // ---- Case variant check for case-sensitive registries ----
     if !case_insensitive {
+        let mut case_variant_queries = 0usize;
+        let mut case_variant_errors = 0usize;
         for dep in deps {
             if flagged.contains(&dep.name) {
                 continue;
@@ -494,10 +496,11 @@ pub async fn check_similarity_with_cache(
             // On case-sensitive registries, check if the lowercased name exists on registry
             let dep_lower = dep.name.to_lowercase();
             if dep_lower != dep.name {
+                case_variant_queries += 1;
                 let exists = match registry.exists(&dep_lower).await {
                     Ok(v) => v,
                     Err(_) => {
-                        // Count toward the overall error budget (already checked above)
+                        case_variant_errors += 1;
                         continue;
                     }
                 };
@@ -519,6 +522,30 @@ pub async fn check_similarity_with_cache(
                     ));
                 }
             }
+        }
+        if crate::checks::exceeds_error_threshold(
+            case_variant_errors,
+            case_variant_queries,
+            ecosystem,
+        ) {
+            let error_rate = case_variant_errors as f64 / case_variant_queries.max(1) as f64;
+            issues.push(
+                Issue::new(
+                    "<registry>",
+                    crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE,
+                    Severity::Error,
+                )
+                .message(format!(
+                    "Registry queries failed for {} of {} similarity checks ({:.0}%). \
+                     Similarity detection is unreliable. Fix network connectivity or retry.",
+                    case_variant_errors,
+                    case_variant_queries,
+                    error_rate * 100.0
+                ))
+                .fix(
+                    "Ensure the registry is reachable. Use --no-cache to bypass stale cache data.",
+                ),
+            );
         }
     }
 

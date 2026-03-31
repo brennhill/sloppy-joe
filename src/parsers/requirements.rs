@@ -20,7 +20,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             if line.starts_with("-r ") || line.starts_with("--requirement") {
                 eprintln!(
                     "Warning: requirements.txt includes '{}' — referenced file's dependencies are not scanned.",
-                    line
+                    crate::report::sanitize_for_terminal(line)
                 );
             }
             continue;
@@ -48,11 +48,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         };
 
         if !name.is_empty() {
-            deps.push(Dependency {
+            let dep = Dependency {
                 name,
                 version,
                 ecosystem: crate::Ecosystem::PyPI,
-            });
+            };
+            super::validate_dependency(&dep, &path)?;
+            deps.push(dep);
         }
     }
 

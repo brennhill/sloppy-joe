@@ -13,11 +13,31 @@ use std::path::Path;
 
 /// Read a file with a size limit to prevent memory exhaustion on huge files.
 pub(crate) fn read_file_limited(path: &std::path::Path, max_bytes: u64) -> Result<String> {
-    let meta = std::fs::metadata(path)?;
-    if meta.len() > max_bytes {
-        anyhow::bail!("File too large: {} bytes (max {})", meta.len(), max_bytes);
+    let bytes = read_bytes_limited(path, max_bytes)?;
+    String::from_utf8(bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to decode {} as UTF-8: {}", path.display(), e))
+}
+
+/// Read raw bytes from a regular file with a hard size limit.
+pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("Refusing to read symlinked file: {}", path.display());
     }
-    Ok(std::fs::read_to_string(path)?)
+    if !meta.file_type().is_file() {
+        anyhow::bail!("Refusing to read non-regular file: {}", path.display());
+    }
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = file.take(max_bytes.saturating_add(1));
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        anyhow::bail!("File too large: {} bytes (max {})", bytes.len(), max_bytes);
+    }
+    Ok(bytes)
 }
 
 /// Maximum file size for manifest/lockfile parsing (100 MB).
@@ -56,7 +76,7 @@ pub fn parse_dependencies(
 /// Detect ALL ecosystems present in a project directory.
 /// Returns one Vec<Dependency> per detected ecosystem.
 /// Used by monorepo scanning to ensure no ecosystem is missed.
-pub fn parse_all_ecosystems(project_dir: &Path) -> Vec<Vec<Dependency>> {
+pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> {
     type Parser = (&'static str, fn(&Path) -> Result<Vec<Dependency>>);
     let parsers: Vec<Parser> = vec![
         ("package.json", package_json::parse),
@@ -68,33 +88,43 @@ pub fn parse_all_ecosystems(project_dir: &Path) -> Vec<Vec<Dependency>> {
     ];
 
     let mut results = Vec::new();
+    let mut errors = Vec::new();
     for (manifest, parser) in parsers {
-        if project_dir.join(manifest).exists()
-            && let Ok(deps) = parser(project_dir)
-            && !deps.is_empty()
-        {
-            results.push(deps);
+        let path = project_dir.join(manifest);
+        if path.exists() {
+            match parser(project_dir) {
+                Ok(deps) if !deps.is_empty() => results.push(deps),
+                Ok(_) => {}
+                Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+            }
         }
     }
 
     // JVM and csproj need special detection
-    let has_jvm = project_dir.join("build.gradle").exists()
-        || project_dir.join("build.gradle.kts").exists()
-        || project_dir.join("pom.xml").exists();
-    if has_jvm
-        && let Ok(deps) = jvm::parse(project_dir)
-        && !deps.is_empty()
-    {
-        results.push(deps);
+    let jvm_manifest = ["build.gradle", "build.gradle.kts", "pom.xml"]
+        .iter()
+        .map(|name| project_dir.join(name))
+        .find(|path| path.exists());
+    if let Some(path) = jvm_manifest {
+        match jvm::parse(project_dir) {
+            Ok(deps) if !deps.is_empty() => results.push(deps),
+            Ok(_) => {}
+            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+        }
     }
-    if has_csproj(project_dir)
-        && let Ok(deps) = csproj::parse(project_dir)
-        && !deps.is_empty()
-    {
-        results.push(deps);
+    if let Some(path) = first_csproj(project_dir) {
+        match csproj::parse(project_dir) {
+            Ok(deps) if !deps.is_empty() => results.push(deps),
+            Ok(_) => {}
+            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+        }
     }
 
-    results
+    if !errors.is_empty() {
+        bail!("Broken manifest(s) detected:\n  {}", errors.join("\n  "));
+    }
+
+    Ok(results)
 }
 
 fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
@@ -132,14 +162,46 @@ fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn has_csproj(dir: &Path) -> bool {
+    first_csproj(dir).is_some()
+}
+
+fn first_csproj(dir: &Path) -> Option<std::path::PathBuf> {
     std::fs::read_dir(dir)
         .ok()
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .any(|e| e.path().extension().is_some_and(|ext| ext == "csproj"))
+                .map(|e| e.path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "csproj"))
         })
-        .unwrap_or(false)
+        .flatten()
+}
+
+pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Result<()> {
+    let escaped_name: String = dep
+        .name
+        .chars()
+        .flat_map(|ch| ch.escape_default())
+        .collect();
+
+    if !crate::registry::validate_package_name(&dep.name) {
+        bail!(
+            "invalid package name '{}' in {}",
+            escaped_name,
+            source_path.display()
+        );
+    }
+
+    if !dep.ecosystem.allows_slashes() && dep.name.contains('/') {
+        bail!(
+            "invalid package name '{}' in {}: unexpected '/' for {}",
+            escaped_name,
+            source_path.display(),
+            dep.ecosystem
+        );
+    }
+
+    Ok(())
 }
 
 /// Shared test utilities for parser tests.
@@ -360,12 +422,37 @@ mod tests {
         cleanup(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn read_file_limited_rejects_symlinked_file() {
+        let dir = empty_test_dir("parsers");
+        let real = dir.join("real.txt");
+        let link = dir.join("link.txt");
+        std::fs::write(&real, "ok").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let result = read_file_limited(&link, 100);
+        let err = result.expect_err("symlinked manifests should be rejected");
+        assert!(err.to_string().contains("symlink"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn read_file_limited_rejects_non_regular_file() {
+        let dir = empty_test_dir("parsers");
+        let result = read_file_limited(&dir, 100);
+        let err = result.expect_err("non-regular files should be rejected");
+        assert!(err.to_string().contains("regular file"));
+        cleanup(&dir);
+    }
+
     // ── parse_all_ecosystems tests ──
 
     #[test]
     fn parse_all_ecosystems_empty_dir() {
         let dir = empty_test_dir("parsers-all");
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert!(results.is_empty());
         cleanup(&dir);
     }
@@ -378,7 +465,7 @@ mod tests {
             r#"{"dependencies": {"react": "^18"}}"#,
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Npm);
         cleanup(&dir);
@@ -393,7 +480,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 2);
         let ecosystems: Vec<crate::Ecosystem> = results.iter().map(|r| r[0].ecosystem).collect();
         assert!(ecosystems.contains(&crate::Ecosystem::Npm));
@@ -409,7 +496,7 @@ mod tests {
             "[package]\nname=\"t\"\nversion=\"0.1.0\"\n\n[dependencies]\nserde = \"1\"",
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Cargo);
         cleanup(&dir);
@@ -423,7 +510,7 @@ mod tests {
             "module example.com/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9\n)\n",
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Go);
         cleanup(&dir);
@@ -433,7 +520,7 @@ mod tests {
     fn parse_all_ecosystems_detects_gemfile() {
         let dir = empty_test_dir("parsers-all");
         std::fs::write(dir.join("Gemfile"), "gem 'rails'\n").unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Ruby);
         cleanup(&dir);
@@ -447,7 +534,7 @@ mod tests {
             r#"{"require":{"laravel/framework":"^10"}}"#,
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Php);
         cleanup(&dir);
@@ -461,7 +548,7 @@ mod tests {
             "implementation 'com.google.guava:guava:31.1-jre'",
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Jvm);
         cleanup(&dir);
@@ -475,7 +562,7 @@ mod tests {
             "implementation(\"com.google.guava:guava:31.1-jre\")",
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Jvm);
         cleanup(&dir);
@@ -489,7 +576,7 @@ mod tests {
             "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.google.guava</groupId>\n      <artifactId>guava</artifactId>\n      <version>31.1-jre</version>\n    </dependency>\n  </dependencies>\n</project>",
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Jvm);
         cleanup(&dir);
@@ -503,7 +590,7 @@ mod tests {
             r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
         )
         .unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Dotnet);
         cleanup(&dir);
@@ -514,7 +601,7 @@ mod tests {
         let dir = empty_test_dir("parsers-all");
         // An empty package.json with no deps should not produce a result
         std::fs::write(dir.join("package.json"), r#"{}"#).unwrap();
-        let results = parse_all_ecosystems(&dir);
+        let results = parse_all_ecosystems(&dir).unwrap();
         assert!(results.is_empty());
         cleanup(&dir);
     }

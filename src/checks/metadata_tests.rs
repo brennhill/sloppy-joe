@@ -272,8 +272,7 @@ async fn registry_errors_emit_blocking_issue() {
             anyhow::bail!("metadata unavailable");
         }
     }
-    // Need enough deps to exceed the hard error limit (5) so fail-closed triggers
-    let deps: Vec<_> = (0..6).map(|i| dep(&format!("pkg-{}", i))).collect();
+    let deps = vec![dep("pkg-0")];
     let issues = check_metadata(
         &ErrorRegistry,
         &deps,

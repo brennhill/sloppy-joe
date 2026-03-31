@@ -14,11 +14,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     for section in ["dependencies", "devDependencies"] {
         if let Some(obj) = parsed.get(section).and_then(|v| v.as_object()) {
             for (name, version) in obj {
-                deps.push(Dependency {
+                let dep = Dependency {
                     name: name.clone(),
                     version: version.as_str().map(String::from),
                     ecosystem: crate::Ecosystem::Npm,
-                });
+                };
+                super::validate_dependency(&dep, &path)?;
+                deps.push(dep);
             }
         }
     }
@@ -79,6 +81,16 @@ mod tests {
         let dir = setup_dir(r#"{"dependencies": {"react": "^18.2.0"}}"#);
         let deps = parse(&dir).unwrap();
         assert_eq!(deps[0].version, Some("^18.2.0".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_invalid_dependency_name_with_control_character() {
+        let dir = setup_dir("{\"dependencies\": {\"bad\\u001bname\": \"1.0.0\"}}");
+        let err = parse(&dir).expect_err("invalid dependency names should fail parsing");
+        let msg = err.to_string();
+        assert!(msg.contains("package.json"));
+        assert!(msg.contains("invalid package name"));
         cleanup(&dir);
     }
 }

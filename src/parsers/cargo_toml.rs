@@ -24,11 +24,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                     ),
                     _ => (name.clone(), None),
                 };
-                deps.push(Dependency {
+                let dep = Dependency {
                     name: package_name,
                     version,
                     ecosystem: crate::Ecosystem::Cargo,
-                });
+                };
+                super::validate_dependency(&dep, &path)?;
+                deps.push(dep);
             }
         }
     }

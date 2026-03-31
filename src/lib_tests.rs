@@ -931,6 +931,46 @@ fn scan_hash_changes_with_lockfile() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn scan_hash_does_not_follow_symlinked_lockfile() {
+    let dir = unique_dir();
+    let deps = vec![Dependency {
+        name: "react".to_string(),
+        version: Some("^18.0".to_string()),
+        ecosystem: Ecosystem::Npm,
+    }];
+    let baseline = scan_hash(&dir, &deps);
+
+    let real = dir.join("real-lock.json");
+    std::fs::write(&real, r#"{"lockfileVersion":3}"#).unwrap();
+    std::os::unix::fs::symlink(&real, dir.join("package-lock.json")).unwrap();
+
+    assert_eq!(
+        scan_hash(&dir, &deps),
+        baseline,
+        "scan_hash should ignore symlinked lockfiles instead of following them"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_with_source_full_blocks_when_any_detected_manifest_is_broken() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("package.json"), r#"{}"#).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), "[package").unwrap();
+
+    let err = scan_with_source_full(&dir, None, None, false, false, false, None)
+        .await
+        .expect_err("broken detected manifests must block the scan");
+    let msg = err.to_string();
+    assert!(msg.contains("Cargo.toml"));
+    assert!(msg.contains("parse"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn mark_source_does_not_overwrite_existing() {
     let mut issues = vec![

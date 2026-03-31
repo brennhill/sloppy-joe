@@ -333,6 +333,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_osv_error_triggers_fail_closed() {
+        struct ErrorClient;
+
+        #[async_trait::async_trait]
+        impl OsvClient for ErrorClient {
+            async fn query(
+                &self,
+                _name: &str,
+                _ecosystem: &str,
+                _version: Option<&str>,
+            ) -> Result<Vec<String>> {
+                anyhow::bail!("osv unavailable");
+            }
+        }
+
+        let deps = vec![dep_with_version("react", "18.2.0")];
+        let issues =
+            check_malicious_with_cache(&ErrorClient, &deps, &ResolutionResult::default(), None)
+                .await
+                .unwrap();
+
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.check.contains("registry-unreachable")),
+            "Any OSV lookup failure should trigger fail-closed"
+        );
+    }
+
+    #[tokio::test]
     async fn cache_used_when_fresh() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};

@@ -128,7 +128,7 @@ fn scan_hash(project_dir: &std::path::Path, deps: &[Dependency]) -> u64 {
         "poetry.lock",
     ] {
         let path = project_dir.join(lockfile);
-        if let Ok(content) = std::fs::read(&path) {
+        if let Ok(content) = parsers::read_bytes_limited(&path, parsers::MAX_MANIFEST_BYTES) {
             lockfile.hash(&mut hasher);
             content.hash(&mut hasher);
         }
@@ -155,7 +155,7 @@ async fn scan_with_config(
     let dep_sets: Vec<Vec<Dependency>> = if project_type.is_some() {
         vec![parsers::parse_dependencies(project_dir, project_type)?]
     } else {
-        let all = parsers::parse_all_ecosystems(project_dir);
+        let all = parsers::parse_all_ecosystems(project_dir)?;
         if all.is_empty() {
             // Fall back to parse_dependencies for the error message
             vec![parsers::parse_dependencies(project_dir, None)?]
@@ -360,7 +360,10 @@ fn classify_deps(
         .partition(|dep| config.is_allowed(eco_str, &dep.name));
 
     if !internal.is_empty() {
-        let names: Vec<_> = internal.iter().map(|d| d.name.as_str()).collect();
+        let names: Vec<_> = internal
+            .iter()
+            .map(|d| report::sanitize_for_terminal(&d.name))
+            .collect();
         eprintln!(
             "Running OSV-only on {} internal package(s): {}",
             names.len(),
@@ -369,7 +372,10 @@ fn classify_deps(
     }
 
     if !allowed.is_empty() {
-        let names: Vec<_> = allowed.iter().map(|d| d.name.as_str()).collect();
+        let names: Vec<_> = allowed
+            .iter()
+            .map(|d| report::sanitize_for_terminal(&d.name))
+            .collect();
         eprintln!(
             "Skipping existence/similarity for {} allowed package(s): {}",
             names.len(),
