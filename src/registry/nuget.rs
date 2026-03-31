@@ -98,14 +98,7 @@ impl super::RegistryMetadata for NugetRegistry {
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
-            downloads: None,
-            has_install_scripts: false,
-            dependency_count: None,
-            previous_dependency_count: None,
-            current_publisher: None,
-            previous_publisher: None,
-            repository_url: None, // NuGet doesn't expose this in registration API
-            version_history: Vec::new(),
+            ..Default::default()
         }))
     }
 }

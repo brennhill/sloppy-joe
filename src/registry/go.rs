@@ -75,14 +75,8 @@ impl super::RegistryMetadata for GoRegistry {
         Ok(Some(super::PackageMetadata {
             created: version_date.clone(), // Go proxy doesn't expose first-publish separately
             latest_version_date: version_date,
-            downloads: None,
-            has_install_scripts: false,
-            dependency_count: None,
-            previous_dependency_count: None,
-            current_publisher: None,
-            previous_publisher: None,
             repository_url: Some(format!("https://{}", package_name)),
-            version_history: Vec::new(),
+            ..Default::default()
         }))
     }
 }

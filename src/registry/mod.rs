@@ -27,7 +27,7 @@ pub struct VersionRecord {
 }
 
 /// Metadata about a package from its registry.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct PackageMetadata {
     /// When the package was first published (ISO 8601)
     pub created: Option<String>,
@@ -471,15 +471,6 @@ mod tests {
     #[test]
     fn package_metadata_has_version_history_field() {
         let meta = PackageMetadata {
-            created: None,
-            latest_version_date: None,
-            downloads: None,
-            has_install_scripts: false,
-            dependency_count: None,
-            previous_dependency_count: None,
-            current_publisher: None,
-            previous_publisher: None,
-            repository_url: None,
             version_history: vec![
                 VersionRecord {
                     version: "1.0.0".to_string(),
@@ -494,6 +485,7 @@ mod tests {
                     date: Some("2026-01-01T00:00:00Z".to_string()),
                 },
             ],
+            ..Default::default()
         };
         assert_eq!(meta.version_history.len(), 2);
         assert_eq!(meta.version_history[0].publisher.as_deref(), Some("alice"));
@@ -503,18 +495,7 @@ mod tests {
     #[test]
     fn version_history_defaults_to_empty_vec() {
         // Non-npm registries should have empty version_history
-        let meta = PackageMetadata {
-            created: None,
-            latest_version_date: None,
-            downloads: None,
-            has_install_scripts: false,
-            dependency_count: None,
-            previous_dependency_count: None,
-            current_publisher: None,
-            previous_publisher: None,
-            repository_url: None,
-            version_history: Vec::new(),
-        };
+        let meta = PackageMetadata::default();
         assert!(meta.version_history.is_empty());
     }
 

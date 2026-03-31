@@ -87,14 +87,8 @@ impl super::RegistryMetadata for PackagistRegistry {
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
-            downloads: None,
-            has_install_scripts: false,
-            dependency_count: None,
-            previous_dependency_count: None,
-            current_publisher: None,
-            previous_publisher: None,
             repository_url,
-            version_history: Vec::new(),
+            ..Default::default()
         }))
     }
 }

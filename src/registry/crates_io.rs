@@ -43,13 +43,10 @@ fn metadata_from_body(
         created,
         latest_version_date,
         downloads,
-        has_install_scripts: false,
-        dependency_count: None,
-        previous_dependency_count: None,
         current_publisher,
         previous_publisher,
         repository_url,
-        version_history: Vec::new(),
+        ..Default::default()
     })
 }
 

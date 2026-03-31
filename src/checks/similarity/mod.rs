@@ -584,13 +584,7 @@ mod tests {
                     created: Some("2020-01-01T00:00:00Z".to_string()),
                     latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
                     downloads: Some(500), // Low downloads for candidates (enables disparity detection)
-                    has_install_scripts: false,
-                    dependency_count: None,
-                    previous_dependency_count: None,
-                    current_publisher: None,
-                    previous_publisher: None,
-                    repository_url: None,
-                    version_history: Vec::new(),
+                    ..Default::default()
                 }))
             } else {
                 Ok(None)
@@ -1122,16 +1116,8 @@ mod tests {
             unresolved_version: false,
             exists: true,
             metadata: Some(PackageMetadata {
-                created: None,
-                latest_version_date: None,
                 downloads: Some(50_000_000),
-                has_install_scripts: false,
-                dependency_count: None,
-                previous_dependency_count: None,
-                current_publisher: None,
-                previous_publisher: None,
-                repository_url: None,
-                version_history: Vec::new(),
+                ..Default::default()
             }),
         }];
 

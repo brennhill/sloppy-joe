@@ -97,16 +97,8 @@ impl super::RegistryMetadata for MavenRegistry {
             .and_then(crate::cache::epoch_millis_to_iso8601);
 
         Ok(Some(super::PackageMetadata {
-            created: None, // Maven search API doesn't easily expose first publish date
             latest_version_date,
-            downloads: None,
-            has_install_scripts: false,
-            dependency_count: None,
-            previous_dependency_count: None,
-            current_publisher: None,
-            previous_publisher: None,
-            repository_url: None,
-            version_history: Vec::new(),
+            ..Default::default()
         }))
     }
 }

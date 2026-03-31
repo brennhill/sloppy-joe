@@ -47,13 +47,8 @@ fn default_meta() -> PackageMetadata {
         created: Some("2020-01-01T00:00:00Z".to_string()),
         latest_version_date: Some("2020-01-01T00:00:00Z".to_string()),
         downloads: Some(50000),
-        has_install_scripts: false,
-        dependency_count: None,
-        previous_dependency_count: None,
-        current_publisher: None,
-        previous_publisher: None,
         repository_url: Some("https://github.com/example/pkg".to_string()),
-        version_history: Vec::new(),
+        ..Default::default()
     }
 }
 
