@@ -67,11 +67,7 @@ impl Default for ScanAccumulator {
 
 /// Check if any query error occurred.
 /// Returns true if the check should emit a fail-closed blocking issue.
-pub(crate) fn exceeds_error_threshold(
-    error_count: usize,
-    _total_queries: usize,
-    _ecosystem: Ecosystem,
-) -> bool {
+pub(crate) fn has_query_errors(error_count: usize) -> bool {
     error_count > 0
 }
 
@@ -95,72 +91,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_errors_never_exceeds() {
-        assert!(!exceeds_error_threshold(0, 100, Ecosystem::Npm));
-        assert!(!exceeds_error_threshold(0, 0, Ecosystem::Npm));
+    fn no_errors_do_not_trigger_fail_closed() {
+        assert!(!has_query_errors(0));
     }
 
     #[test]
-    fn hard_limit_always_triggers() {
-        // Any error now triggers fail-closed immediately.
-        assert!(exceeds_error_threshold(6, 1000, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(6, 6, Ecosystem::Npm));
+    fn any_error_triggers_fail_closed() {
+        assert!(has_query_errors(1));
+        assert!(has_query_errors(6));
     }
 
     #[test]
-    fn any_error_triggers_fail_closed_even_for_small_samples() {
-        assert!(exceeds_error_threshold(1, 1, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(2, 2, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(1, 1, Ecosystem::Go));
-    }
-
-    #[test]
-    fn go_has_higher_rate_threshold() {
-        assert!(exceeds_error_threshold(2, 10, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(2, 10, Ecosystem::Go));
-        assert!(exceeds_error_threshold(3, 10, Ecosystem::Go));
-    }
-
-    #[test]
-    fn go_has_higher_hard_limit() {
-        assert!(exceeds_error_threshold(6, 100, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(6, 100, Ecosystem::Go));
-        assert!(exceeds_error_threshold(11, 100, Ecosystem::Go));
-    }
-
-    // ── Edge cases for exceeds_error_threshold (lines 63-64) ──
-
-    #[test]
-    fn exactly_at_previous_hard_limit_still_triggers() {
-        assert!(exceeds_error_threshold(5, 100, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(10, 100, Ecosystem::Go));
-    }
-
-    #[test]
-    fn one_above_hard_limit_triggers() {
-        assert!(exceeds_error_threshold(6, 100, Ecosystem::Npm));
-        assert!(exceeds_error_threshold(11, 100, Ecosystem::Go));
-    }
-
-    #[test]
-    fn rate_exactly_at_previous_threshold_still_triggers() {
-        assert!(exceeds_error_threshold(1, 10, Ecosystem::Npm));
-    }
-
-    #[test]
-    fn rate_just_above_threshold_triggers() {
-        assert!(exceeds_error_threshold(2, 10, Ecosystem::Npm));
-    }
-
-    #[test]
-    fn jvm_rate_threshold() {
-        assert!(exceeds_error_threshold(2, 10, Ecosystem::Jvm));
-        assert!(exceeds_error_threshold(3, 10, Ecosystem::Jvm));
-    }
-
-    #[test]
-    fn single_error_below_min_queries_still_triggers() {
-        assert!(exceeds_error_threshold(1, 4, Ecosystem::Npm));
+    fn multiple_errors_still_trigger_fail_closed() {
+        assert!(has_query_errors(2));
+        assert!(has_query_errors(10));
     }
 
     #[test]

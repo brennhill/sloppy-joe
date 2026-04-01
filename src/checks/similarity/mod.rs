@@ -373,7 +373,7 @@ pub async fn check_similarity_with_cache(
     }
 
     // Emit blocking error if registry is unreachable (fail closed)
-    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+    if crate::checks::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new(
@@ -523,11 +523,7 @@ pub async fn check_similarity_with_cache(
                 }
             }
         }
-        if crate::checks::exceeds_error_threshold(
-            case_variant_errors,
-            case_variant_queries,
-            ecosystem,
-        ) {
+        if crate::checks::has_query_errors(case_variant_errors) {
             let error_rate = case_variant_errors as f64 / case_variant_queries.max(1) as f64;
             issues.push(
                 Issue::new(

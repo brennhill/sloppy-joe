@@ -179,11 +179,7 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    let ecosystem = deps
-        .first()
-        .map(|d| d.ecosystem)
-        .unwrap_or(crate::Ecosystem::Npm);
-    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+    if crate::checks::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new(

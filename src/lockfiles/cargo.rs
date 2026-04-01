@@ -14,7 +14,7 @@ use super::{
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let path = project_dir.join("Cargo.lock");
-    if !path.exists() {
+    if !crate::parsers::path_detected(&path)? {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
         return Ok(result);

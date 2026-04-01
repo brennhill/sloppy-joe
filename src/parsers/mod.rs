@@ -19,6 +19,39 @@ pub(crate) fn read_file_limited(path: &std::path::Path, max_bytes: u64) -> Resul
 }
 
 /// Read raw bytes from a regular file with a hard size limit.
+#[cfg(unix)]
+pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::fs::OpenOptions;
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => {
+            anyhow::bail!("Refusing to read symlinked file: {}", path.display())
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        anyhow::bail!("Refusing to read non-regular file: {}", path.display());
+    }
+    let mut reader = file.take(max_bytes.saturating_add(1));
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        anyhow::bail!("File too large: {} bytes (max {})", bytes.len(), max_bytes);
+    }
+    Ok(bytes)
+}
+
+/// Read raw bytes from a regular file with a hard size limit.
+#[cfg(not(unix))]
 pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>> {
     use std::io::Read;
 
@@ -42,6 +75,14 @@ pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Resu
 
 /// Maximum file size for manifest/lockfile parsing (100 MB).
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 100 * 1024 * 1024;
+
+pub(crate) fn path_detected(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
 
 /// Shared XML value extractor: `<tag>value</tag>` on a single line.
 /// Searches for the close tag starting AFTER the open tag to avoid
@@ -91,7 +132,7 @@ pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> 
     let mut errors = Vec::new();
     for (manifest, parser) in parsers {
         let path = project_dir.join(manifest);
-        if path.exists() {
+        if path_detected(&path)? {
             match parser(project_dir) {
                 Ok(deps) if !deps.is_empty() => results.push(deps),
                 Ok(_) => {}
@@ -104,7 +145,12 @@ pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> 
     let jvm_manifest = ["build.gradle", "build.gradle.kts", "pom.xml"]
         .iter()
         .map(|name| project_dir.join(name))
-        .find(|path| path.exists());
+        .find_map(|path| match path_detected(&path) {
+            Ok(true) => Some(Ok(path)),
+            Ok(false) => None,
+            Err(err) => Some(Err(err)),
+        })
+        .transpose()?;
     if let Some(path) = jvm_manifest {
         match jvm::parse(project_dir) {
             Ok(deps) if !deps.is_empty() => results.push(deps),
@@ -112,7 +158,7 @@ pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> 
             Err(err) => errors.push(format!("{}: {}", path.display(), err)),
         }
     }
-    if let Some(path) = first_csproj(project_dir) {
+    if let Some(path) = first_csproj(project_dir)? {
         match csproj::parse(project_dir) {
             Ok(deps) if !deps.is_empty() => results.push(deps),
             Ok(_) => {}
@@ -128,31 +174,31 @@ pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> 
 }
 
 fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
-    if project_dir.join("package.json").exists() {
+    if path_detected(&project_dir.join("package.json"))? {
         return package_json::parse(project_dir);
     }
-    if project_dir.join("requirements.txt").exists() {
+    if path_detected(&project_dir.join("requirements.txt"))? {
         return requirements::parse(project_dir);
     }
-    if project_dir.join("Cargo.toml").exists() {
+    if path_detected(&project_dir.join("Cargo.toml"))? {
         return cargo_toml::parse(project_dir);
     }
-    if project_dir.join("go.mod").exists() {
+    if path_detected(&project_dir.join("go.mod"))? {
         return go_mod::parse(project_dir);
     }
-    if project_dir.join("Gemfile").exists() {
+    if path_detected(&project_dir.join("Gemfile"))? {
         return gemfile::parse(project_dir);
     }
-    if project_dir.join("composer.json").exists() {
+    if path_detected(&project_dir.join("composer.json"))? {
         return composer_json::parse(project_dir);
     }
-    if project_dir.join("build.gradle").exists()
-        || project_dir.join("build.gradle.kts").exists()
-        || project_dir.join("pom.xml").exists()
+    if path_detected(&project_dir.join("build.gradle"))?
+        || path_detected(&project_dir.join("build.gradle.kts"))?
+        || path_detected(&project_dir.join("pom.xml"))?
     {
         return jvm::parse(project_dir);
     }
-    if has_csproj(project_dir) {
+    if first_csproj(project_dir)?.is_some() {
         return csproj::parse(project_dir);
     }
     bail!(
@@ -161,20 +207,15 @@ fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
     );
 }
 
-fn has_csproj(dir: &Path) -> bool {
-    first_csproj(dir).is_some()
-}
-
-fn first_csproj(dir: &Path) -> Option<std::path::PathBuf> {
+fn first_csproj(dir: &Path) -> Result<Option<std::path::PathBuf>> {
     std::fs::read_dir(dir)
-        .ok()
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .find(|path| path.extension().is_some_and(|ext| ext == "csproj"))
         })
-        .flatten()
+        .map_err(Into::into)
 }
 
 pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Result<()> {
@@ -358,14 +399,14 @@ mod tests {
     fn has_csproj_finds_file() {
         let dir = empty_test_dir("parsers");
         std::fs::write(dir.join("app.csproj"), "<Project></Project>").unwrap();
-        assert!(has_csproj(&dir));
+        assert!(first_csproj(&dir).unwrap().is_some());
         cleanup(&dir);
     }
 
     #[test]
     fn has_csproj_no_file() {
         let dir = empty_test_dir("parsers");
-        assert!(!has_csproj(&dir));
+        assert!(first_csproj(&dir).unwrap().is_none());
         cleanup(&dir);
     }
 

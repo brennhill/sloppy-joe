@@ -56,7 +56,7 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
     }
 
     // Fail closed if registry is unreachable
-    if super::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+    if super::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new(

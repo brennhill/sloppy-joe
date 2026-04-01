@@ -142,7 +142,7 @@ fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<Par
         }
         Some(Ecosystem::Cargo) => {
             let path = project_dir.join("Cargo.lock");
-            if !path.exists() {
+            if !crate::parsers::path_detected(&path)? {
                 return Ok(ParsedLockfile::None);
             }
             let content =
@@ -215,10 +215,13 @@ pub(crate) fn resolve_versions(
 // -- Shared helpers used by npm.rs and cargo.rs --
 
 fn first_existing(project_dir: &Path, names: &[&str]) -> Option<PathBuf> {
-    names
-        .iter()
-        .map(|name| project_dir.join(name))
-        .find(|path| path.exists())
+    names.iter().find_map(|name| {
+        let path = project_dir.join(name);
+        match crate::parsers::path_detected(&path) {
+            Ok(true) => Some(path),
+            _ => None,
+        }
+    })
 }
 
 fn add_manifest_exact_fallbacks(result: &mut ResolutionResult, deps: &[Dependency]) {

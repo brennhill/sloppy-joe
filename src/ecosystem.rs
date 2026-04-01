@@ -109,23 +109,6 @@ impl Ecosystem {
             Self::Dotnet => format!("https://www.nuget.org/packages/{}", name),
         }
     }
-    /// Error rate threshold for fail-closed behavior.
-    /// Go proxy is slower/flakier, so it gets a more lenient threshold.
-    pub fn error_rate_threshold(&self) -> f64 {
-        match self {
-            Self::Go => 0.25,  // Go proxy is flaky — 25% threshold
-            Self::Jvm => 0.20, // Maven Solr can be slow — 20% threshold
-            _ => 0.10,         // Default: 10%
-        }
-    }
-
-    /// Hard error count limit for fail-closed behavior.
-    pub fn error_hard_limit(&self) -> usize {
-        match self {
-            Self::Go => 10, // Go proxy is flaky — higher limit
-            _ => 5,         // Default: 5 errors
-        }
-    }
 }
 
 impl fmt::Display for Ecosystem {
@@ -279,37 +262,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn go_has_higher_error_thresholds() {
-        assert!(Ecosystem::Go.error_rate_threshold() > Ecosystem::Npm.error_rate_threshold());
-        assert!(Ecosystem::Go.error_hard_limit() > Ecosystem::Npm.error_hard_limit());
-    }
-
-    #[test]
-    fn error_thresholds_are_reasonable() {
-        for eco in [
-            Ecosystem::Npm,
-            Ecosystem::PyPI,
-            Ecosystem::Cargo,
-            Ecosystem::Go,
-            Ecosystem::Ruby,
-            Ecosystem::Php,
-            Ecosystem::Jvm,
-            Ecosystem::Dotnet,
-        ] {
-            assert!(
-                eco.error_rate_threshold() > 0.0 && eco.error_rate_threshold() <= 0.5,
-                "Error rate threshold for {} should be between 0 and 50%",
-                eco
-            );
-            assert!(
-                eco.error_hard_limit() >= 3 && eco.error_hard_limit() <= 20,
-                "Error hard limit for {} should be between 3 and 20",
-                eco
-            );
-        }
-    }
-
     // ── osv_name exhaustive tests (lines 57-66) ──
 
     #[test]
@@ -382,13 +334,5 @@ mod tests {
         assert!(!Ecosystem::Go.is_case_insensitive());
         assert!(!Ecosystem::Ruby.is_case_insensitive());
         assert!(!Ecosystem::Jvm.is_case_insensitive());
-    }
-
-    // ── Jvm error thresholds ──
-
-    #[test]
-    fn jvm_has_higher_rate_threshold_than_default() {
-        assert!(Ecosystem::Jvm.error_rate_threshold() > Ecosystem::Npm.error_rate_threshold());
-        assert_eq!(Ecosystem::Jvm.error_rate_threshold(), 0.20);
     }
 }

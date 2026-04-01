@@ -65,7 +65,7 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
 /// Read poetry.lock if it exists, return parsed TOML value.
 pub(super) fn read_lockfile(project_dir: &Path) -> Option<toml::Value> {
     let path = project_dir.join("poetry.lock");
-    if !path.exists() {
+    if !crate::parsers::path_detected(&path).ok()? {
         return None;
     }
     let content =

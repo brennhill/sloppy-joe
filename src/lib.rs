@@ -103,6 +103,348 @@ pub async fn scan(
     scan_with_config(project_dir, project_type, config, &ScanOptions::default()).await
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProjectInputKind {
+    Npm,
+    PyPI,
+    Cargo,
+    Go,
+    Ruby,
+    Php,
+    Gradle,
+    Maven,
+    Dotnet,
+}
+
+#[derive(Clone, Debug)]
+struct ProjectInputSpec {
+    kind: ProjectInputKind,
+    manifest_path: std::path::PathBuf,
+}
+
+impl ProjectInputKind {
+    fn missing_lockfile_help(&self) -> Option<&'static str> {
+        match self {
+            Self::Npm => Some(
+                "Run `npm install --package-lock-only` or `npm shrinkwrap`, then commit the lockfile.",
+            ),
+            Self::Cargo => Some("Run `cargo generate-lockfile` and commit Cargo.lock."),
+            Self::Go => Some("Run `go mod tidy` so Go records dependency checksums in go.sum."),
+            Self::Ruby => Some("Run `bundle lock` or `bundle install`, then commit Gemfile.lock."),
+            Self::Php => {
+                Some("Run `composer update` or `composer install`, then commit composer.lock.")
+            }
+            Self::Gradle => Some(
+                "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
+            ),
+            Self::Dotnet => {
+                Some("Run `dotnet restore --use-lock-file` and commit packages.lock.json.")
+            }
+            Self::PyPI | Self::Maven => None,
+        }
+    }
+}
+
+fn preflight_scan_inputs(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+) -> Result<Vec<Issue>> {
+    let specs = detected_project_inputs(project_dir, project_type)?;
+    let mut warnings = Vec::new();
+
+    for spec in specs {
+        let manifest_content =
+            parsers::read_file_limited(&spec.manifest_path, parsers::MAX_MANIFEST_BYTES).map_err(
+                |err| {
+                    anyhow::anyhow!(
+                        "Broken manifest '{}': {}",
+                        spec.manifest_path.display(),
+                        err
+                    )
+                },
+            )?;
+
+        match spec.kind {
+            ProjectInputKind::Npm => ensure_one_lockfile_readable(
+                project_dir,
+                &["package-lock.json", "npm-shrinkwrap.json"],
+                spec.kind.missing_lockfile_help().unwrap(),
+            )?,
+            ProjectInputKind::Cargo => ensure_lockfile_readable(
+                &project_dir.join("Cargo.lock"),
+                spec.kind.missing_lockfile_help().unwrap(),
+            )?,
+            ProjectInputKind::Go => {
+                if parsers::go_mod::requires_go_sum(&manifest_content) {
+                    ensure_lockfile_readable(
+                        &project_dir.join("go.sum"),
+                        spec.kind.missing_lockfile_help().unwrap(),
+                    )?;
+                }
+            }
+            ProjectInputKind::Ruby => ensure_lockfile_readable(
+                &project_dir.join("Gemfile.lock"),
+                spec.kind.missing_lockfile_help().unwrap(),
+            )?,
+            ProjectInputKind::Php => ensure_lockfile_readable(
+                &project_dir.join("composer.lock"),
+                spec.kind.missing_lockfile_help().unwrap(),
+            )?,
+            ProjectInputKind::Gradle => ensure_lockfile_readable(
+                &project_dir.join("gradle.lockfile"),
+                spec.kind.missing_lockfile_help().unwrap(),
+            )?,
+            ProjectInputKind::Dotnet => ensure_lockfile_readable(
+                &spec.manifest_path.with_file_name("packages.lock.json"),
+                spec.kind.missing_lockfile_help().unwrap(),
+            )?,
+            ProjectInputKind::Maven => warnings.push(
+                Issue::new(
+                    "<lockfile>",
+                    checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE,
+                    Severity::Warning,
+                )
+                .message(format!(
+                    "Maven manifest '{}' has no trusted lockfile-backed verification path in sloppy-joe. Resolution-sensitive checks continue with reduced confidence. Gradle dependency locking via gradle.lockfile is recommended when practical.",
+                    spec.manifest_path.display()
+                ))
+                .fix(
+                    "Keep Maven and review resolution-sensitive findings manually, or move the build to Gradle with dependency locking if you need strict lockfile enforcement.",
+                ),
+            ),
+            ProjectInputKind::PyPI => {}
+        }
+    }
+
+    Ok(warnings)
+}
+
+fn ensure_lockfile_readable(path: &std::path::Path, help: &str) -> Result<()> {
+    parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)
+        .map(|_| ())
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is missing or unreadable: {}. Fix: {}",
+                path.display(),
+                err,
+                help
+            )
+        })
+}
+
+fn ensure_one_lockfile_readable(
+    project_dir: &std::path::Path,
+    candidates: &[&str],
+    help: &str,
+) -> Result<()> {
+    let mut found_readable = false;
+
+    for candidate in candidates {
+        let path = project_dir.join(candidate);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Required lockfile '{}' is unreadable: {}. Fix: {}",
+                        path.display(),
+                        err,
+                        help
+                    )
+                })?;
+                found_readable = true;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "Required lockfile '{}' could not be inspected: {}. Fix: {}",
+                    path.display(),
+                    err,
+                    help
+                ));
+            }
+        }
+    }
+
+    if found_readable {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Required lockfile '{}' is missing. Fix: {}",
+        candidates.join("' or '"),
+        help
+    )
+}
+
+fn detected_project_inputs(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+) -> Result<Vec<ProjectInputSpec>> {
+    match project_type {
+        Some("npm") => require_named_manifest(project_dir, "package.json", ProjectInputKind::Npm),
+        Some("pypi") => {
+            require_named_manifest(project_dir, "requirements.txt", ProjectInputKind::PyPI)
+        }
+        Some("cargo") => require_named_manifest(project_dir, "Cargo.toml", ProjectInputKind::Cargo),
+        Some("go") => require_named_manifest(project_dir, "go.mod", ProjectInputKind::Go),
+        Some("ruby") => require_named_manifest(project_dir, "Gemfile", ProjectInputKind::Ruby),
+        Some("php") => require_named_manifest(project_dir, "composer.json", ProjectInputKind::Php),
+        Some("jvm") => detect_jvm_manifests(project_dir, true),
+        Some("dotnet") => detect_dotnet_manifests(project_dir, true),
+        Some(_) => Ok(Vec::new()),
+        None => {
+            let mut specs = Vec::new();
+            specs.extend(detect_named_manifest(
+                project_dir,
+                "package.json",
+                ProjectInputKind::Npm,
+            )?);
+            specs.extend(detect_named_manifest(
+                project_dir,
+                "requirements.txt",
+                ProjectInputKind::PyPI,
+            )?);
+            specs.extend(detect_named_manifest(
+                project_dir,
+                "Cargo.toml",
+                ProjectInputKind::Cargo,
+            )?);
+            specs.extend(detect_named_manifest(
+                project_dir,
+                "go.mod",
+                ProjectInputKind::Go,
+            )?);
+            specs.extend(detect_named_manifest(
+                project_dir,
+                "Gemfile",
+                ProjectInputKind::Ruby,
+            )?);
+            specs.extend(detect_named_manifest(
+                project_dir,
+                "composer.json",
+                ProjectInputKind::Php,
+            )?);
+            specs.extend(detect_jvm_manifests(project_dir, false)?);
+            specs.extend(detect_dotnet_manifests(project_dir, false)?);
+            Ok(specs)
+        }
+    }
+}
+
+fn require_named_manifest(
+    project_dir: &std::path::Path,
+    manifest_name: &str,
+    kind: ProjectInputKind,
+) -> Result<Vec<ProjectInputSpec>> {
+    let specs = detect_named_manifest(project_dir, manifest_name, kind)?;
+    if specs.is_empty() {
+        anyhow::bail!(
+            "Required manifest '{}' is missing for this project type.",
+            manifest_name
+        );
+    }
+    Ok(specs)
+}
+
+fn detect_named_manifest(
+    project_dir: &std::path::Path,
+    manifest_name: &str,
+    kind: ProjectInputKind,
+) -> Result<Vec<ProjectInputSpec>> {
+    let path = project_dir.join(manifest_name);
+    if path_detected(&path)? {
+        Ok(vec![ProjectInputSpec {
+            kind,
+            manifest_path: path,
+        }])
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn detect_jvm_manifests(
+    project_dir: &std::path::Path,
+    required: bool,
+) -> Result<Vec<ProjectInputSpec>> {
+    let mut specs = Vec::new();
+
+    for manifest_name in ["build.gradle", "build.gradle.kts"] {
+        let path = project_dir.join(manifest_name);
+        if path_detected(&path)? {
+            specs.push(ProjectInputSpec {
+                kind: ProjectInputKind::Gradle,
+                manifest_path: path,
+            });
+        }
+    }
+
+    let pom = project_dir.join("pom.xml");
+    if path_detected(&pom)? {
+        specs.push(ProjectInputSpec {
+            kind: ProjectInputKind::Maven,
+            manifest_path: pom,
+        });
+    }
+
+    if required && specs.is_empty() {
+        anyhow::bail!(
+            "Required manifest 'build.gradle, build.gradle.kts, or pom.xml' is missing for this project type."
+        );
+    }
+
+    Ok(specs)
+}
+
+fn detect_dotnet_manifests(
+    project_dir: &std::path::Path,
+    required: bool,
+) -> Result<Vec<ProjectInputSpec>> {
+    let mut specs = Vec::new();
+    for path in dotnet_manifest_paths(project_dir)? {
+        specs.push(ProjectInputSpec {
+            kind: ProjectInputKind::Dotnet,
+            manifest_path: path,
+        });
+    }
+
+    if required && specs.is_empty() {
+        anyhow::bail!("Required manifest '.csproj' is missing for this project type.");
+    }
+
+    Ok(specs)
+}
+
+fn dotnet_manifest_paths(project_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    let entries = std::fs::read_dir(project_dir).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {} for .csproj manifests: {}",
+            project_dir.display(),
+            err
+        )
+    })?;
+
+    let mut manifests = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "csproj") {
+            manifests.push(path);
+        }
+    }
+    Ok(manifests)
+}
+
+fn path_detected(path: &std::path::Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            path.display(),
+            err
+        )),
+    }
+}
+
 /// Compute a hash of dependency tuples + lockfile content for change detection.
 /// Includes lockfile so that resolved version changes (e.g., a compromised upstream
 /// version satisfying the same range) invalidate the cache even when the manifest
@@ -128,8 +470,12 @@ fn scan_hash(
         "package-lock.json",
         "npm-shrinkwrap.json",
         "Cargo.lock",
+        "go.sum",
         "Gemfile.lock",
         "poetry.lock",
+        "composer.lock",
+        "gradle.lockfile",
+        "packages.lock.json",
     ] {
         let path = project_dir.join(lockfile);
         match std::fs::symlink_metadata(&path) {
@@ -175,6 +521,8 @@ async fn scan_with_config(
     config: config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
+    let preflight_warnings = preflight_scan_inputs(project_dir, project_type)?;
+
     // When project_type is specified, scan only that ecosystem (original behavior).
     // When auto-detecting, scan ALL ecosystems found in the project.
     let dep_sets: Vec<Vec<Dependency>> = if project_type.is_some() {
@@ -201,7 +549,7 @@ async fn scan_with_config(
         match scan_hash_matches_cache(project_dir, &all_deps, &cache_base) {
             Ok(true) => {
                 eprintln!("Dependencies unchanged, skipping scan.");
-                return Ok(ScanReport::empty());
+                return Ok(ScanReport::from_issues(0, preflight_warnings));
             }
             Ok(false) => {}
             Err(reason) => {
@@ -217,7 +565,7 @@ async fn scan_with_config(
     let client = registry::http_client();
     let osv_client = checks::malicious::RealOsvClient::with_client(client.clone());
     let mut total_packages = 0;
-    let mut all_issues = Vec::new();
+    let mut all_issues = preflight_warnings;
 
     for deps in &dep_sets {
         if deps.is_empty() {

@@ -138,6 +138,208 @@ fn unique_dir() -> std::path::PathBuf {
     dir
 }
 
+#[cfg(unix)]
+fn symlink_path(link: &std::path::Path, target: &std::path::Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn preflight_blocks_broken_detected_manifests_for_all_ecosystems() {
+    let cases = [
+        ("package.json", Some("npm")),
+        ("requirements.txt", Some("pypi")),
+        ("Cargo.toml", Some("cargo")),
+        ("go.mod", Some("go")),
+        ("Gemfile", Some("ruby")),
+        ("composer.json", Some("php")),
+        ("build.gradle", Some("jvm")),
+        ("pom.xml", Some("jvm")),
+        ("app.csproj", Some("dotnet")),
+    ];
+
+    for (manifest_name, project_type) in cases {
+        let dir = unique_dir();
+        symlink_path(
+            &dir.join(manifest_name),
+            &dir.join(format!("missing-{}", manifest_name)),
+        );
+
+        let err = preflight_scan_inputs(&dir, project_type)
+            .expect_err("broken detected manifests must block scanning");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(manifest_name),
+            "expected error to mention {manifest_name}, got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn preflight_requires_manifest_for_explicit_project_types() {
+    let cases = [
+        (Some("npm"), "package.json"),
+        (Some("pypi"), "requirements.txt"),
+        (Some("cargo"), "Cargo.toml"),
+        (Some("go"), "go.mod"),
+        (Some("ruby"), "Gemfile"),
+        (Some("php"), "composer.json"),
+        (Some("jvm"), "build.gradle, build.gradle.kts, or pom.xml"),
+        (Some("dotnet"), ".csproj"),
+    ];
+
+    for (project_type, expected) in cases {
+        let dir = unique_dir();
+
+        let err = preflight_scan_inputs(&dir, project_type)
+            .expect_err("explicit project types must require a manifest");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(expected),
+            "expected error to mention {expected}, got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn preflight_requires_strict_lockfiles_for_supported_ecosystems() {
+    let cases = [
+        (
+            Some("npm"),
+            "package.json",
+            r#"{"dependencies":{"react":"^18.0.0"}}"#,
+            "package-lock.json",
+        ),
+        (
+            Some("cargo"),
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            "Cargo.lock",
+        ),
+        (
+            Some("ruby"),
+            "Gemfile",
+            "source 'https://rubygems.org'\ngem 'rails'\n",
+            "Gemfile.lock",
+        ),
+        (
+            Some("php"),
+            "composer.json",
+            r#"{"require":{"laravel/framework":"^10.0"}}"#,
+            "composer.lock",
+        ),
+        (
+            Some("jvm"),
+            "build.gradle",
+            "plugins { id 'java' }\ndependencies { implementation 'org.slf4j:slf4j-api:2.0.0' }\n",
+            "gradle.lockfile",
+        ),
+        (
+            Some("dotnet"),
+            "app.csproj",
+            r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+            "packages.lock.json",
+        ),
+    ];
+
+    for (project_type, manifest_name, manifest_content, expected_lockfile) in cases {
+        let dir = unique_dir();
+        std::fs::write(dir.join(manifest_name), manifest_content).unwrap();
+
+        let err = preflight_scan_inputs(&dir, project_type)
+            .expect_err("missing required lockfiles must block scanning");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(expected_lockfile),
+            "expected error to mention {expected_lockfile}, got: {msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn preflight_accepts_npm_shrinkwrap_as_required_lockfile() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("npm-shrinkwrap.json"), r#"{"lockfileVersion":3}"#).unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm")).unwrap();
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_requires_go_sum_when_external_dependencies_exist() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("go.mod"),
+        "module example.com/app\n\ngo 1.21\n\nrequire github.com/gin-gonic/gin v1.9.1\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("go"))
+        .expect_err("go projects with external deps must require go.sum");
+    let msg = err.to_string();
+    assert!(msg.contains("go.sum"));
+    assert!(msg.contains("go mod tidy"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_go_without_go_sum_for_stdlib_only_modules() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("go.mod"), "module example.com/app\n\ngo 1.21\n").unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("go")).unwrap();
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_go_without_go_sum_when_all_deps_are_local_replaces() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("go.mod"),
+        "module example.com/app\n\ngo 1.21\n\nrequire example.com/localdep v0.0.0\nreplace example.com/localdep => ../localdep\n",
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("go")).unwrap();
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_warns_for_maven_without_a_trusted_lockfile() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>demo</artifactId><version>1.0.0</version></project>"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("jvm")).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].severity, Severity::Warning);
+    assert!(warnings[0].message.contains("Maven"));
+    assert!(warnings[0].message.contains("Gradle"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn scan_empty_project_returns_empty_report() {
     let dir = unique_dir();
@@ -994,7 +1196,9 @@ fn scan_hash_matches_cache_refuses_unhashable_lockfile() {
 async fn scan_with_source_full_blocks_when_any_detected_manifest_is_broken() {
     let dir = unique_dir();
     std::fs::write(dir.join("package.json"), r#"{}"#).unwrap();
+    std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3}"#).unwrap();
     std::fs::write(dir.join("Cargo.toml"), "[package").unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "").unwrap();
 
     let err = scan_with_source_full(&dir, None, None, false, false, false, None)
         .await
@@ -1002,6 +1206,44 @@ async fn scan_with_source_full_blocks_when_any_detected_manifest_is_broken() {
     let msg = err.to_string();
     assert!(msg.contains("Cargo.toml"));
     assert!(msg.contains("parse"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_with_source_full_blocks_when_required_lockfile_is_missing() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("strict lockfile policy must block npm scans without a lockfile");
+    let msg = err.to_string();
+    assert!(msg.contains("package-lock.json"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_with_source_full_emits_maven_lockfile_warning() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>demo</artifactId><version>1.0.0</version></project>"#,
+    )
+    .unwrap();
+
+    let report = scan_with_source_full(&dir, Some("jvm"), None, false, false, true, None)
+        .await
+        .expect("maven lockfile policy should warn and continue");
+    assert_eq!(report.packages_checked, 0);
+    assert_eq!(report.issues.len(), 1);
+    assert_eq!(report.issues[0].severity, Severity::Warning);
+    assert!(report.issues[0].message.contains("Maven"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -57,6 +57,20 @@ nix profile install github:brennhill/sloppy-joe
 
 **Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
 
+**Ecosystem-specific rules:** see [docs/ecosystems/README.md](docs/ecosystems/README.md) for lockfile and manifest policy details, including [Go](docs/ecosystems/GOLANG.md) and [JVM](docs/ecosystems/JVM.md).
+
+| Ecosystem | Required manifest | Lockfile policy |
+|---|---|---|
+| npm | `package.json` | strict: `package-lock.json` or `npm-shrinkwrap.json` |
+| PyPI | `requirements.txt` | no universal strict lockfile rule enforced |
+| Cargo | `Cargo.toml` | strict: `Cargo.lock` |
+| Go | `go.mod` | conditional: `go.sum` required for external deps |
+| Ruby | `Gemfile` | strict: `Gemfile.lock` |
+| PHP / Composer | `composer.json` | strict: `composer.lock` |
+| JVM / Gradle | `build.gradle` or `build.gradle.kts` | strict: `gradle.lockfile` |
+| JVM / Maven | `pom.xml` | warning-only: no trusted lockfile path enforced |
+| .NET / NuGet | `.csproj` | strict: `packages.lock.json` |
+
 **Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
 
 **Release automation:** pushing a tag like `v0.8.0` triggers a GitHub Releases build for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`. Release binaries are built with `cargo auditable` metadata embedded and gated by `cargo audit bin` before publication.
@@ -320,18 +334,19 @@ ERROR requsets [metadata/low-downloads]
 
 ## Supported Ecosystems
 
-| Ecosystem | Manifest | Lockfile | Existence | Metadata | Age Gate |
-|-----------|----------|----------|:---------:|:--------:|:--------:|
-| npm | package.json | package-lock.json | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PyPI | requirements.txt | poetry.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Cargo | Cargo.toml | Cargo.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Go | go.mod | — | :white_check_mark: | :x: | :x: |
-| Ruby | Gemfile | Gemfile.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PHP | composer.json | — | :white_check_mark: | :x: | :x: |
-| JVM | build.gradle / pom.xml | — | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| .NET | *.csproj | — | :white_check_mark: | :x: | :x: |
+| Ecosystem | Manifest | Lockfile Policy | Existence | Metadata | Age Gate |
+|-----------|----------|-----------------|:---------:|:--------:|:--------:|
+| npm | package.json | `package-lock.json` or `npm-shrinkwrap.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PyPI | requirements.txt | no universal strict lockfile rule today | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Cargo | Cargo.toml | `Cargo.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Go | go.mod | `go.sum` required for external deps; not required for stdlib-only or all-local `replace` | :white_check_mark: | :x: | :x: |
+| Ruby | Gemfile | `Gemfile.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PHP | composer.json | `composer.lock` required | :white_check_mark: | :x: | :x: |
+| JVM (Gradle) | build.gradle / build.gradle.kts | `gradle.lockfile` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| JVM (Maven) | pom.xml | warning-only: no strict lockfile enforcement | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| .NET | *.csproj | `packages.lock.json` required | :white_check_mark: | :x: | :x: |
 
-All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes. Lockfile support enables transitive dependency scanning and exact version resolution.
+All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes. Lockfile support enables transitive dependency scanning and exact version resolution where the ecosystem provides a trustworthy project-local lockfile model.
 
 ## Quick Start
 
@@ -534,25 +549,15 @@ sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
 **Retry with backoff.** All registry HTTP calls retry 3 times with exponential backoff (200ms, 400ms, 800ms) on transient failures (5xx, timeouts, connection errors). A single network blip won't fail your build.
 
-**Fail-closed with thresholds.** If too many registry queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The thresholds are ecosystem-aware:
-
-| Ecosystem | Error rate threshold | Hard error limit |
-|-----------|---------------------|-----------------|
-| npm, PyPI, Cargo, Ruby, PHP, .NET | 10% | 5 |
-| Maven/JVM | 20% | 5 |
-| Go | 25% | 10 |
-
-Go and Maven have higher thresholds because their proxies are inherently slower and more error-prone.
-
-**Minimum sample size.** The rate-based threshold requires at least 5 queries before it applies. This prevents false `registry-unreachable` errors when most queries are served from cache, leaving only 2-3 uncached queries that happen to fail.
+**Fail-closed on query errors.** If registry or OSV queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The scan no longer relies on per-ecosystem thresholds or sample-size cutoffs before it blocks.
 
 **Similarity cache.** Mutation existence results are cached for 7 days. After the first scan, most queries are served from cache with zero network calls. Only new dependencies trigger registry queries.
 
-**Lockfile-aware resolution.** When a lockfile is present (package-lock.json, Cargo.lock, Gemfile.lock, poetry.lock), sloppy-joe resolves exact versions from it — eliminating `no-exact-version` warnings for range-based version requirements.
+**Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock`), sloppy-joe resolves exact versions from it instead of guessing from ranges.
 
 ## Tests
 
-296 tests covering all similarity checks (scope squatting, 8 mutation types, deterministic classification), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing + validation, lockfile resolution (npm, Cargo, Ruby, Python), all 8 parsers, report formatting, error threshold behavior, and HTTP retry logic.
+The test suite covers similarity checks, metadata signals, OSV behavior, config parsing and validation, lockfile resolution, manifest and lockfile preflight policy, report formatting, and HTTP retry logic.
 
 ```bash
 cargo test

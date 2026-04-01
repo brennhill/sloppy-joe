@@ -317,6 +317,47 @@ pub(crate) fn check_publisher_script_combo(
     )
 }
 
+/// Package has no valid repository URL and is either new or low-download.
+pub(crate) fn check_no_repository(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+    ctx: &SignalContext,
+) -> Option<Issue> {
+    // Only flag if repo URL is missing or doesn't point to a known code host
+    if let Some(ref url) = meta.repository_url
+        && is_plausible_repo_url(url)
+    {
+        return None;
+    }
+    // Only flag if also new or low-download — lots of legitimate old packages lack repo links
+    if !ctx.is_new_package && !ctx.is_low_downloads {
+        return None;
+    }
+
+    let mut reasons = Vec::new();
+    if ctx.is_new_package {
+        reasons.push("is a new package (< 30 days old)");
+    }
+    if ctx.is_low_downloads {
+        reasons.push("has low downloads (< 100)");
+    }
+
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_NO_REPOSITORY, Severity::Warning)
+            .message(format!(
+                "'{}' has no source repository URL and {}. \
+                 Legitimate packages almost always link to their source code. \
+                 The absence of a repository link on a new or low-download package is a supply chain risk indicator.",
+                lookup.package,
+                reasons.join(" and ")
+            ))
+            .fix(format!(
+                "Verify '{}' at its registry page. If it's legitimate, add it to the 'allowed' list.",
+                lookup.package
+            )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,45 +652,4 @@ mod tests {
         let issue = check_publisher_script_combo(&lookup, &meta);
         assert!(issue.is_none(), "Should skip when version_history is empty");
     }
-}
-
-/// Package has no valid repository URL and is either new or low-download.
-pub(crate) fn check_no_repository(
-    lookup: &MetadataLookup,
-    meta: &PackageMetadata,
-    ctx: &SignalContext,
-) -> Option<Issue> {
-    // Only flag if repo URL is missing or doesn't point to a known code host
-    if let Some(ref url) = meta.repository_url
-        && is_plausible_repo_url(url)
-    {
-        return None;
-    }
-    // Only flag if also new or low-download — lots of legitimate old packages lack repo links
-    if !ctx.is_new_package && !ctx.is_low_downloads {
-        return None;
-    }
-
-    let mut reasons = Vec::new();
-    if ctx.is_new_package {
-        reasons.push("is a new package (< 30 days old)");
-    }
-    if ctx.is_low_downloads {
-        reasons.push("has low downloads (< 100)");
-    }
-
-    Some(
-        Issue::new(&lookup.package, super::names::METADATA_NO_REPOSITORY, Severity::Warning)
-            .message(format!(
-                "'{}' has no source repository URL and {}. \
-                 Legitimate packages almost always link to their source code. \
-                 The absence of a repository link on a new or low-download package is a supply chain risk indicator.",
-                lookup.package,
-                reasons.join(" and ")
-            ))
-            .fix(format!(
-                "Verify '{}' at its registry page. If it's legitimate, add it to the 'allowed' list.",
-                lookup.package
-            )),
-    )
 }

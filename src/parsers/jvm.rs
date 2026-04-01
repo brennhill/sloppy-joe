@@ -4,11 +4,11 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let gradle = project_dir.join("build.gradle");
-    if gradle.exists() {
+    if super::path_detected(&gradle)? {
         return parse_gradle(&gradle);
     }
     let gradle_kts = project_dir.join("build.gradle.kts");
-    if gradle_kts.exists() {
+    if super::path_detected(&gradle_kts)? {
         return parse_gradle(&gradle_kts);
     }
     let pom = project_dir.join("pom.xml");
