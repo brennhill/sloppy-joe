@@ -297,6 +297,23 @@ fn preflight_requires_go_sum_when_external_dependencies_exist() {
 }
 
 #[test]
+fn preflight_requires_go_sum_when_only_indirect_external_dependencies_exist() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("go.mod"),
+        "module example.com/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1 // indirect\n)\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("go"))
+        .expect_err("go projects with indirect external deps must still require go.sum");
+    let msg = err.to_string();
+    assert!(msg.contains("go.sum"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn preflight_allows_go_without_go_sum_for_stdlib_only_modules() {
     let dir = unique_dir();
     std::fs::write(dir.join("go.mod"), "module example.com/app\n\ngo 1.21\n").unwrap();
@@ -318,6 +335,70 @@ fn preflight_allows_go_without_go_sum_when_all_deps_are_local_replaces() {
 
     let warnings = preflight_scan_inputs(&dir, Some("go")).unwrap();
     assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_invalid_secondary_jvm_manifest() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("build.gradle"),
+        "implementation 'com.google.guava:guava:31.1-jre'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>bad?group</groupId>
+      <artifactId>guava</artifactId>
+      <version>31.1-jre</version>
+    </dependency>
+  </dependencies>
+</project>
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("gradle.lockfile"),
+        "com.google.guava:guava:31.1-jre=compileClasspath\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("every detected JVM manifest must be parsed or rejected");
+    let msg = err.to_string();
+    assert!(msg.contains("pom.xml"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_invalid_secondary_dotnet_manifest() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("app.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("broken.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Bad?Package" Version="1.0.0" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages.lock.json"),
+        r#"{"version":1,"dependencies":{}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("dotnet"))
+        .expect_err("every detected .csproj manifest must be parsed or rejected");
+    let msg = err.to_string();
+    assert!(msg.contains("broken.csproj"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

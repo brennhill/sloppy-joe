@@ -165,6 +165,28 @@ fn preflight_scan_inputs(
             )?;
 
         match spec.kind {
+            ProjectInputKind::Gradle | ProjectInputKind::Maven => {
+                parsers::jvm::validate_manifest(&spec.manifest_path).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Broken manifest '{}': {}",
+                        spec.manifest_path.display(),
+                        err
+                    )
+                })?;
+            }
+            ProjectInputKind::Dotnet => {
+                parsers::csproj::parse_file(&spec.manifest_path).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Broken manifest '{}': {}",
+                        spec.manifest_path.display(),
+                        err
+                    )
+                })?;
+            }
+            _ => {}
+        }
+
+        match spec.kind {
             ProjectInputKind::Npm => ensure_one_lockfile_readable(
                 project_dir,
                 &["package-lock.json", "npm-shrinkwrap.json"],

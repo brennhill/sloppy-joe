@@ -8,7 +8,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read go.mod")?;
 
-    let requirements = parse_requirements(&content);
+    let requirements = parse_requirements(&content, false);
     let mut deps = Vec::new();
     for (name, version) in requirements {
         let dep = Dependency {
@@ -23,7 +23,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     Ok(deps)
 }
 
-fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
+fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Option<String>)> {
     let mut deps = Vec::new();
     let mut in_require = false;
 
@@ -40,6 +40,13 @@ fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
         }
 
         if let Some(rest) = line.strip_prefix("require ") {
+            let comment = rest
+                .split_once("//")
+                .map(|(_, comment)| comment.trim())
+                .unwrap_or("");
+            if !include_indirect && comment == "indirect" {
+                continue;
+            }
             if let Some(name) = rest.split_whitespace().next() {
                 let version = rest.split_whitespace().nth(1).map(String::from);
                 deps.push((name.to_string(), version));
@@ -50,12 +57,15 @@ fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
         if in_require
             && !line.is_empty()
             && !line.starts_with("//")
-            && line
-                .split("//")
-                .nth(1)
-                .is_none_or(|comment| comment.trim() != "indirect")
             && let Some(name) = line.split_whitespace().next()
         {
+            let comment = line
+                .split_once("//")
+                .map(|(_, comment)| comment.trim())
+                .unwrap_or("");
+            if !include_indirect && comment == "indirect" {
+                continue;
+            }
             let version = line.split_whitespace().nth(1).map(String::from);
             deps.push((name.to_string(), version));
         }
@@ -65,7 +75,7 @@ fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
 }
 
 pub(crate) fn requires_go_sum(content: &str) -> bool {
-    let required: HashSet<String> = parse_requirements(content)
+    let required: HashSet<String> = parse_requirements(content, true)
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -252,6 +262,20 @@ require github.com/gin-gonic/gin v1.9.1
         assert_eq!(deps[0].name, "github.com/gin-gonic/gin");
         assert_eq!(deps[0].version, Some("v1.9.1".to_string()));
         cleanup(&dir);
+    }
+
+    #[test]
+    fn go_sum_required_for_indirect_external_dependencies() {
+        let content = r#"
+module example.com/myapp
+
+go 1.21
+
+require (
+    github.com/gin-gonic/gin v1.9.1 // indirect
+)
+"#;
+        assert!(requires_go_sum(content));
     }
 
     #[test]

@@ -1,4 +1,7 @@
 mod cargo;
+mod composer;
+mod dotnet;
+mod gradle;
 mod npm;
 mod python;
 mod ruby;
@@ -66,6 +69,9 @@ enum ParsedLockfile {
         file_name: String,
     },
     Cargo(toml::Value),
+    Composer(serde_json::Value),
+    Dotnet(serde_json::Value),
+    Gradle(String),
     Ruby(String),
     Python(toml::Value),
     None,
@@ -152,6 +158,18 @@ fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<Par
                 Err(_) => Ok(ParsedLockfile::None),
             }
         }
+        Some(Ecosystem::Php) => match composer::read_lockfile(project_dir) {
+            Some(value) => Ok(ParsedLockfile::Composer(value)),
+            None => Ok(ParsedLockfile::None),
+        },
+        Some(Ecosystem::Jvm) => match gradle::read_lockfile(project_dir) {
+            Some(content) => Ok(ParsedLockfile::Gradle(content)),
+            None => Ok(ParsedLockfile::None),
+        },
+        Some(Ecosystem::Dotnet) => match dotnet::read_lockfile(project_dir) {
+            Some(value) => Ok(ParsedLockfile::Dotnet(value)),
+            None => Ok(ParsedLockfile::None),
+        },
         Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir) {
             Some(content) => Ok(ParsedLockfile::Ruby(content)),
             None => Ok(ParsedLockfile::None),
@@ -169,6 +187,9 @@ fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<R
     match parsed {
         ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
+        ParsedLockfile::Composer(value) => composer::resolve_from_value(value, deps),
+        ParsedLockfile::Dotnet(value) => dotnet::resolve_from_value(value, deps),
+        ParsedLockfile::Gradle(content) => gradle::resolve_from_content(content, deps),
         ParsedLockfile::Ruby(content) => ruby::resolve_from_content(content, deps),
         ParsedLockfile::Python(value) => python::resolve_from_value(value, deps),
         ParsedLockfile::None => {
@@ -184,6 +205,9 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
         ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
+        ParsedLockfile::Composer(value) => composer::parse_all_from_value(value),
+        ParsedLockfile::Dotnet(value) => dotnet::parse_all_from_value(value),
+        ParsedLockfile::Gradle(content) => gradle::parse_all_from_content(content),
         ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
         ParsedLockfile::Python(value) => python::parse_all_from_value(value),
         ParsedLockfile::None => Ok(vec![]),
@@ -202,6 +226,9 @@ pub(crate) fn resolve_versions(
     match first.ecosystem {
         Ecosystem::Npm => npm::resolve(project_dir, deps),
         Ecosystem::Cargo => cargo::resolve(project_dir, deps),
+        Ecosystem::Php => composer::resolve(project_dir, deps),
+        Ecosystem::Jvm => gradle::resolve(project_dir, deps),
+        Ecosystem::Dotnet => dotnet::resolve(project_dir, deps),
         Ecosystem::Ruby => ruby::resolve(project_dir, deps),
         Ecosystem::PyPI => python::resolve(project_dir, deps),
         _ => {
@@ -598,6 +625,30 @@ mod tests {
         }
     }
 
+    fn php_dep(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: Ecosystem::Php,
+        }
+    }
+
+    fn jvm_dep(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: Ecosystem::Jvm,
+        }
+    }
+
+    fn dotnet_dep(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: Ecosystem::Dotnet,
+        }
+    }
+
     #[test]
     fn ruby_lockfile_resolves_versions() {
         let dir = unique_dir();
@@ -700,6 +751,87 @@ mod tests {
         assert_eq!(data.resolution.exact_version(&direct[0]), Some("2.31.0"));
         assert_eq!(data.transitive_deps.len(), 1);
         assert_eq!(data.transitive_deps[0].name, "urllib3");
+    }
+
+    #[test]
+    fn lockfile_data_parse_php_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("composer.lock"),
+            r#"{
+  "packages": [
+    {"name": "laravel/framework", "version": "v10.0.0"},
+    {"name": "symfony/console", "version": "v6.4.0"}
+  ],
+  "packages-dev": []
+}"#,
+        )
+        .unwrap();
+        let direct = vec![php_dep("laravel/framework", Some("^10.0"))];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
+        assert_eq!(resolved.version, "v10.0.0");
+        assert_eq!(resolved.source, ResolutionSource::Lockfile);
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(data.transitive_deps[0].name, "symfony/console");
+    }
+
+    #[test]
+    fn lockfile_data_parse_gradle_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("gradle.lockfile"),
+            "\
+org.slf4j:slf4j-api:2.0.9=compileClasspath,runtimeClasspath\n\
+ch.qos.logback:logback-core:1.4.14=runtimeClasspath\n\
+empty=annotationProcessor\n",
+        )
+        .unwrap();
+        let direct = vec![jvm_dep("org.slf4j:slf4j-api", None)];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
+        assert_eq!(resolved.version, "2.0.9");
+        assert_eq!(resolved.source, ResolutionSource::Lockfile);
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(data.transitive_deps[0].name, "ch.qos.logback:logback-core");
+    }
+
+    #[test]
+    fn lockfile_data_parse_dotnet_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("packages.lock.json"),
+            r#"{
+  "version": 1,
+  "dependencies": {
+    ".NETCoreApp,Version=v8.0": {
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "13.0.1",
+        "resolved": "13.0.1",
+        "dependencies": {
+          "System.Runtime.CompilerServices.Unsafe": "6.0.0"
+        }
+      },
+      "System.Runtime.CompilerServices.Unsafe": {
+        "type": "Transitive",
+        "resolved": "6.0.0"
+      }
+    }
+  }
+}"#,
+        )
+        .unwrap();
+        let direct = vec![dotnet_dep("Newtonsoft.Json", Some("13.0.1"))];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
+        assert_eq!(resolved.version, "13.0.1");
+        assert_eq!(resolved.source, ResolutionSource::Lockfile);
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(
+            data.transitive_deps[0].name,
+            "System.Runtime.CompilerServices.Unsafe"
+        );
     }
 
     #[test]

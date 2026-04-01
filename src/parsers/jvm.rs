@@ -1,5 +1,5 @@
 use crate::Dependency;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
@@ -13,6 +13,20 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     }
     let pom = project_dir.join("pom.xml");
     parse_pom(&pom)
+}
+
+pub(crate) fn validate_manifest(path: &Path) -> Result<()> {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("build.gradle") | Some("build.gradle.kts") => {
+            parse_gradle(path)?;
+            Ok(())
+        }
+        Some("pom.xml") => {
+            parse_pom(path)?;
+            Ok(())
+        }
+        _ => bail!("Unsupported JVM manifest: {}", path.display()),
+    }
 }
 
 fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {

@@ -4,7 +4,11 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let csproj = find_csproj(project_dir)?;
-    let content = super::read_file_limited(&csproj, super::MAX_MANIFEST_BYTES)
+    parse_file(&csproj)
+}
+
+pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
+    let content = super::read_file_limited(csproj, super::MAX_MANIFEST_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
 
     let mut deps = Vec::new();
@@ -22,7 +26,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                         version,
                         ecosystem: crate::Ecosystem::Dotnet,
                     };
-                    super::validate_dependency(&dep, &csproj)?;
+                    super::validate_dependency(&dep, csproj)?;
                     deps.push(dep);
                 } else {
                     current_name = Some(name);
@@ -42,7 +46,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                     version: current_version.take(),
                     ecosystem: crate::Ecosystem::Dotnet,
                 };
-                super::validate_dependency(&dep, &csproj)?;
+                super::validate_dependency(&dep, csproj)?;
                 deps.push(dep);
             }
         }
