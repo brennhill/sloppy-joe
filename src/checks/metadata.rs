@@ -68,7 +68,7 @@ pub(crate) async fn fetch_metadata(
         .iter()
         .map(|dep| {
             (
-                dep.name.clone(),
+                dep.package_name().to_string(),
                 dep.ecosystem,
                 dep.version.clone(),
                 resolution.exact_version(dep).map(str::to_string),

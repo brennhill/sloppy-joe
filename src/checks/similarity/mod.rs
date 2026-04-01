@@ -217,11 +217,14 @@ pub async fn check_similarity_with_cache(
     let mut flagged: HashSet<String> = HashSet::new();
 
     // Build a set of all dep names for intra-manifest comparison
-    let dep_names: HashSet<String> = deps.iter().map(|d| d.name.to_lowercase()).collect();
+    let dep_names: HashSet<String> = deps
+        .iter()
+        .map(|d| d.package_name().to_lowercase())
+        .collect();
 
     // ---- Phase 0: Scope squatting (no registry needed) ----
     for dep in deps {
-        if let Some(scope) = extract_scope(&dep.name, ecosystem) {
+        if let Some(scope) = extract_scope(dep.package_name(), ecosystem) {
             let scopes = known_scopes(ecosystem);
             let scope_lower = scope.to_lowercase();
             for &known in scopes {
@@ -233,10 +236,10 @@ pub async fn check_similarity_with_cache(
                 let distance = strsim::levenshtein(&scope_lower, &known_lower);
                 let threshold = max_distance(scope_lower.len());
                 if distance > 0 && distance <= threshold {
-                    if flagged.insert(dep.name.clone()) {
+                    if flagged.insert(dep.package_name().to_string()) {
                         issues.push(make_issue(
-                            &dep.name,
-                            &dep.name,
+                            dep.package_name(),
+                            dep.package_name(),
                             "scope-squatting",
                             &format!(
                                 "Scope '{}' is {} character{} away from the known scope '{}'.\n      \
@@ -248,7 +251,7 @@ pub async fn check_similarity_with_cache(
                             ),
                             &format!(
                                 "If you meant '{}', fix the scope in your manifest.",
-                                dep.name.replace(&scope, known)
+                                dep.package_name().replace(&scope, known)
                             ),
                         ));
                     }
@@ -266,33 +269,37 @@ pub async fn check_similarity_with_cache(
     };
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
     for dep in deps {
-        if !flagged.contains(&dep.name) {
+        if !flagged.contains(dep.package_name()) {
             all_mutations.insert(
-                dep.name.clone(),
-                generate_mutations_with(&generators, &dep.name, ecosystem),
+                dep.package_name().to_string(),
+                generate_mutations_with(&generators, dep.package_name(), ecosystem),
             );
         }
     }
 
     // ---- Phase 1: Intra-manifest comparison (no network) ----
     for dep in deps {
-        if flagged.contains(&dep.name) {
+        if flagged.contains(dep.package_name()) {
             continue;
         }
-        if let Some(mutations) = all_mutations.get(&dep.name) {
+        if let Some(mutations) = all_mutations.get(dep.package_name()) {
             for (mutation, gen_name) in mutations {
                 let mutation_lower = mutation.to_lowercase();
-                if dep_names.contains(&mutation_lower) && mutation_lower != dep.name.to_lowercase()
+                if dep_names.contains(&mutation_lower)
+                    && mutation_lower != dep.package_name().to_lowercase()
                 {
-                    if flagged.insert(dep.name.clone()) {
-                        let message = format_match_message(&dep.name, &mutation_lower, gen_name);
+                    if flagged.insert(dep.package_name().to_string()) {
+                        let message =
+                            format_match_message(dep.package_name(), &mutation_lower, gen_name);
                         issues.push(make_issue(
-                            &dep.name,
+                            dep.package_name(),
                             &mutation_lower,
                             gen_name,
                             &format!(
                                 "{} Both '{}' and '{}' are in your manifest.",
-                                message, dep.name, mutation_lower
+                                message,
+                                dep.package_name(),
+                                mutation_lower
                             ),
                             "Examine both packages and add the intended one to your allowed list.",
                         ));
@@ -306,12 +313,12 @@ pub async fn check_similarity_with_cache(
     // ---- Phase 2: Batch-query registry for non-flagged deps ----
     let mut queries: Vec<(String, String)> = Vec::new();
     for dep in deps {
-        if flagged.contains(&dep.name) {
+        if flagged.contains(dep.package_name()) {
             continue;
         }
-        if let Some(mutations) = all_mutations.get(&dep.name) {
+        if let Some(mutations) = all_mutations.get(dep.package_name()) {
             for mutation in mutations.keys() {
-                queries.push((dep.name.clone(), mutation.clone()));
+                queries.push((dep.package_name().to_string(), mutation.clone()));
             }
         }
     }
@@ -408,10 +415,10 @@ pub async fn check_similarity_with_cache(
     // For each dep with matches, pick the highest-severity match (deterministic).
     let metadata_queries: Vec<(String, String)> = deps
         .iter()
-        .filter(|dep| !flagged.contains(&dep.name))
+        .filter(|dep| !flagged.contains(dep.package_name()))
         .filter_map(|dep| {
-            let dep_matches = matches.get(&dep.name)?;
-            let dep_mutations = all_mutations.get(&dep.name)?;
+            let dep_matches = matches.get(dep.package_name())?;
+            let dep_mutations = all_mutations.get(dep.package_name())?;
             // Pick the candidate with the highest generator severity
             let best = dep_matches.iter().max_by_key(|c| {
                 dep_mutations
@@ -419,7 +426,7 @@ pub async fn check_similarity_with_cache(
                     .map(|g| generator_severity(g))
                     .unwrap_or(0)
             })?;
-            Some((dep.name.clone(), best.clone()))
+            Some((dep.package_name().to_string(), best.clone()))
         })
         .collect();
 
@@ -490,12 +497,12 @@ pub async fn check_similarity_with_cache(
         let mut case_variant_queries = 0usize;
         let mut case_variant_errors = 0usize;
         for dep in deps {
-            if flagged.contains(&dep.name) {
+            if flagged.contains(dep.package_name()) {
                 continue;
             }
             // On case-sensitive registries, check if the lowercased name exists on registry
-            let dep_lower = dep.name.to_lowercase();
-            if dep_lower != dep.name {
+            let dep_lower = dep.package_name().to_lowercase();
+            if dep_lower != dep.package_name() {
                 case_variant_queries += 1;
                 let exists = match registry.exists(&dep_lower).await {
                     Ok(v) => v,
@@ -504,16 +511,18 @@ pub async fn check_similarity_with_cache(
                         continue;
                     }
                 };
-                if exists && flagged.insert(dep.name.clone()) {
+                if exists && flagged.insert(dep.package_name().to_string()) {
                     issues.push(make_issue(
-                        &dep.name,
+                        dep.package_name(),
                         &dep_lower,
                         "case-variant",
                         &format!(
                             "'{}' differs from '{}' only in letter casing. \
                              On case-sensitive registries ({}) these resolve to different packages. \
                              An attacker could register the case variant.",
-                            dep.name, dep_lower, ecosystem
+                            dep.package_name(),
+                            dep_lower,
+                            ecosystem
                         ),
                         &format!(
                             "Use the exact casing '{}' in your manifest.",
@@ -622,6 +631,7 @@ mod tests {
             name: name.to_string(),
             version: None,
             ecosystem,
+            actual_name: None,
         }
     }
 

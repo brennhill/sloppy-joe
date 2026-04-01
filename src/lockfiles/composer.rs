@@ -53,23 +53,25 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
             name,
             version: Some(version),
             ecosystem: crate::Ecosystem::Php,
+            actual_name: None,
         })
         .collect())
 }
 
-pub(super) fn read_lockfile(project_dir: &Path) -> Option<serde_json::Value> {
+pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<serde_json::Value>> {
     let path = project_dir.join("composer.lock");
-    if !crate::parsers::path_detected(&path).ok()? {
-        return None;
+    if !crate::parsers::path_detected(&path)? {
+        return Ok(None);
     }
-    let content =
-        crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).ok()?;
-    serde_json::from_str(&content).ok()
+    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let parsed = serde_json::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
+    Ok(Some(parsed))
 }
 
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let Some(parsed) = read_lockfile(project_dir) else {
+    let Some(parsed) = read_lockfile(project_dir)? else {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
         return Ok(result);

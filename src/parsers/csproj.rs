@@ -25,6 +25,7 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
                         name,
                         version,
                         ecosystem: crate::Ecosystem::Dotnet,
+                        actual_name: None,
                     };
                     super::validate_dependency(&dep, csproj)?;
                     deps.push(dep);
@@ -45,6 +46,7 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
                     name: current_name.take().unwrap(),
                     version: current_version.take(),
                     ecosystem: crate::Ecosystem::Dotnet,
+                    actual_name: None,
                 };
                 super::validate_dependency(&dep, csproj)?;
                 deps.push(dep);

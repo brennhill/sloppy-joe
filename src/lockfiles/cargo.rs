@@ -161,6 +161,7 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
             name: name.to_string(),
             version,
             ecosystem: crate::Ecosystem::Cargo,
+            actual_name: None,
         });
     }
 

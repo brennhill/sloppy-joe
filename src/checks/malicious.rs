@@ -146,11 +146,16 @@ pub async fn check_malicious_with_cache(
         // and will return all known vulnerabilities for the package.
         let exact_version = resolution.exact_version(dep).map(str::to_string);
         let version_suffix = exact_version.clone().unwrap_or_default();
-        let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
+        let cache_key = format!(
+            "{}:{}:{}",
+            dep.ecosystem,
+            dep.package_name(),
+            version_suffix
+        );
         if !cache.contains_key(&cache_key) {
             pending
                 .entry(cache_key)
-                .or_insert_with(|| (dep.name.clone(), dep.ecosystem, exact_version));
+                .or_insert_with(|| (dep.package_name().to_string(), dep.ecosystem, exact_version));
         }
     }
 
@@ -201,7 +206,12 @@ pub async fn check_malicious_with_cache(
     for dep in deps {
         // Check cache for results (including unresolved deps which now get queried)
         let version_suffix = resolution.exact_version(dep).unwrap_or_default();
-        let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
+        let cache_key = format!(
+            "{}:{}:{}",
+            dep.ecosystem,
+            dep.package_name(),
+            version_suffix
+        );
         let vuln_ids = cache
             .get(&cache_key)
             .map(|entry| entry.vuln_ids.clone())
@@ -209,15 +219,15 @@ pub async fn check_malicious_with_cache(
 
         if !vuln_ids.is_empty() {
             issues.push(
-                Issue::new(&dep.name, crate::checks::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
+                Issue::new(dep.package_name(), crate::checks::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
                     .message(format!(
                         "'{}' has known security vulnerabilities in the OSV database. Vulnerability IDs: {}",
-                        dep.name,
+                        dep.package_name(),
                         vuln_ids.join(", ")
                     ))
                     .fix(format!(
                         "Remove '{}' or update to a non-vulnerable version.",
-                        dep.name
+                        dep.package_name()
                     )),
             );
         }
@@ -262,6 +272,7 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::Npm,
+            actual_name: None,
         }
     }
 
@@ -314,6 +325,7 @@ mod tests {
             name: "vulnerable-pkg".to_string(),
             version: None,
             ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
         }];
         let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await

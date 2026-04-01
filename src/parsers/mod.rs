@@ -5,7 +5,11 @@ pub mod gemfile;
 pub mod go_mod;
 pub mod jvm;
 pub mod package_json;
+pub mod pipfile;
+pub mod pyproject_toml;
 pub mod requirements;
+pub mod setup_cfg;
+pub mod setup_py;
 
 use crate::Dependency;
 use anyhow::{Result, bail};
@@ -102,7 +106,7 @@ pub fn parse_dependencies(
 ) -> Result<Vec<Dependency>> {
     match project_type {
         Some("npm") => package_json::parse(project_dir),
-        Some("pypi") => requirements::parse(project_dir),
+        Some("pypi") => parse_python_project(project_dir),
         Some("cargo") => cargo_toml::parse(project_dir),
         Some("go") => go_mod::parse(project_dir),
         Some("ruby") => gemfile::parse(project_dir),
@@ -118,53 +122,24 @@ pub fn parse_dependencies(
 /// Returns one Vec<Dependency> per detected ecosystem.
 /// Used by monorepo scanning to ensure no ecosystem is missed.
 pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> {
-    type Parser = (&'static str, fn(&Path) -> Result<Vec<Dependency>>);
-    let parsers: Vec<Parser> = vec![
-        ("package.json", package_json::parse),
-        ("requirements.txt", requirements::parse),
-        ("Cargo.toml", cargo_toml::parse),
-        ("go.mod", go_mod::parse),
-        ("Gemfile", gemfile::parse),
-        ("composer.json", composer_json::parse),
-    ];
-
     let mut results = Vec::new();
     let mut errors = Vec::new();
-    for (manifest, parser) in parsers {
-        let path = project_dir.join(manifest);
-        if path_detected(&path)? {
-            match parser(project_dir) {
-                Ok(deps) if !deps.is_empty() => results.push(deps),
-                Ok(_) => {}
-                Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-            }
-        }
-    }
-
-    // JVM and csproj need special detection
-    let jvm_manifest = ["build.gradle", "build.gradle.kts", "pom.xml"]
-        .iter()
-        .map(|name| project_dir.join(name))
-        .find_map(|path| match path_detected(&path) {
-            Ok(true) => Some(Ok(path)),
-            Ok(false) => None,
-            Err(err) => Some(Err(err)),
-        })
-        .transpose()?;
-    if let Some(path) = jvm_manifest {
-        match jvm::parse(project_dir) {
-            Ok(deps) if !deps.is_empty() => results.push(deps),
-            Ok(_) => {}
-            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-        }
-    }
-    if let Some(path) = first_csproj(project_dir)? {
-        match csproj::parse(project_dir) {
-            Ok(deps) if !deps.is_empty() => results.push(deps),
-            Ok(_) => {}
-            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-        }
-    }
+    let root = std::fs::canonicalize(project_dir).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {} for project manifests: {}",
+            project_dir.display(),
+            err
+        )
+    })?;
+    let mut visited = std::collections::HashSet::new();
+    parse_all_ecosystems_inner(
+        project_dir,
+        &root,
+        &mut visited,
+        &mut results,
+        &mut errors,
+        false,
+    )?;
 
     if !errors.is_empty() {
         bail!("Broken manifest(s) detected:\n  {}", errors.join("\n  "));
@@ -173,12 +148,185 @@ pub fn parse_all_ecosystems(project_dir: &Path) -> Result<Vec<Vec<Dependency>>> 
     Ok(results)
 }
 
+fn parse_all_ecosystems_inner(
+    current_dir: &Path,
+    root: &Path,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    results: &mut Vec<Vec<Dependency>>,
+    errors: &mut Vec<String>,
+    inside_node_modules: bool,
+) -> Result<()> {
+    let canonical_current = std::fs::canonicalize(current_dir).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {} for project manifests: {}",
+            current_dir.display(),
+            err
+        )
+    })?;
+    if !canonical_current.starts_with(root) {
+        bail!(
+            "Refusing to follow symlinked directory '{}' outside the scan root.",
+            current_dir.display()
+        );
+    }
+    if !visited.insert(canonical_current) {
+        return Ok(());
+    }
+
+    type Parser = (&'static str, fn(&Path) -> Result<Vec<Dependency>>);
+    let parsers: Vec<Parser> = if inside_node_modules {
+        if has_npm_lockfile(current_dir) {
+            vec![("package.json", package_json::parse)]
+        } else {
+            Vec::new()
+        }
+    } else {
+        vec![
+            ("package.json", package_json::parse),
+            ("Cargo.toml", cargo_toml::parse),
+            ("go.mod", go_mod::parse),
+            ("Gemfile", gemfile::parse),
+            ("composer.json", composer_json::parse),
+        ]
+    };
+
+    for (manifest, parser) in parsers {
+        let path = current_dir.join(manifest);
+        if path_detected(&path)? {
+            match parser(current_dir) {
+                Ok(deps) if !deps.is_empty() => results.push(deps),
+                Ok(_) => {}
+                Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+            }
+        }
+    }
+
+    if let Some(path) = first_python_manifest(current_dir)? {
+        match parse_python_project(current_dir) {
+            Ok(deps) if !deps.is_empty() => results.push(deps),
+            Ok(_) => {}
+            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+        }
+    }
+
+    let jvm_manifest = ["build.gradle", "build.gradle.kts", "pom.xml"]
+        .iter()
+        .map(|name| current_dir.join(name))
+        .find_map(|path| match path_detected(&path) {
+            Ok(true) => Some(Ok(path)),
+            Ok(false) => None,
+            Err(err) => Some(Err(err)),
+        })
+        .transpose()?;
+    if let Some(path) = jvm_manifest {
+        match jvm::parse(current_dir) {
+            Ok(deps) if !deps.is_empty() => results.push(deps),
+            Ok(_) => {}
+            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+        }
+    }
+    if let Some(path) = first_csproj(current_dir)? {
+        match csproj::parse(current_dir) {
+            Ok(deps) if !deps.is_empty() => results.push(deps),
+            Ok(_) => {}
+            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+        }
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(current_dir)
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to inspect {} for project manifests: {}",
+                current_dir.display(),
+                err
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to inspect {} for project manifests: {}",
+                current_dir.display(),
+                err
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let name = entry.file_name();
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if name.to_str() == Some(".git") {
+                continue;
+            }
+            parse_all_ecosystems_inner(
+                &path,
+                root,
+                visited,
+                results,
+                errors,
+                inside_node_modules || name.to_str() == Some("node_modules"),
+            )?;
+            continue;
+        }
+        if file_type.is_symlink() {
+            let target = std::fs::canonicalize(&path).map_err(|err| {
+                anyhow::anyhow!(
+                    "Failed to resolve symlinked path '{}': {}",
+                    path.display(),
+                    err
+                )
+            })?;
+            if target.is_dir() {
+                if !target.starts_with(root) {
+                    bail!(
+                        "Refusing to follow symlinked directory '{}' outside the scan root.",
+                        path.display()
+                    );
+                }
+                parse_all_ecosystems_inner(
+                    &path,
+                    root,
+                    visited,
+                    results,
+                    errors,
+                    inside_node_modules
+                        || target.strip_prefix(root).ok().is_some_and(|relative| {
+                            relative
+                                .components()
+                                .any(|component| ignored_directory_component(component))
+                        }),
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn ignored_directory_name(name: &std::ffi::OsStr) -> bool {
+    matches!(name.to_str(), Some("node_modules"))
+}
+
+fn ignored_directory_component(component: std::path::Component<'_>) -> bool {
+    match component {
+        std::path::Component::Normal(name) => ignored_directory_name(name),
+        _ => false,
+    }
+}
+
+fn has_npm_lockfile(dir: &Path) -> bool {
+    ["npm-shrinkwrap.json", "package-lock.json"]
+        .iter()
+        .any(|name| path_detected(&dir.join(name)).unwrap_or(false))
+}
+
 fn auto_detect(project_dir: &Path) -> Result<Vec<Dependency>> {
     if path_detected(&project_dir.join("package.json"))? {
         return package_json::parse(project_dir);
     }
-    if path_detected(&project_dir.join("requirements.txt"))? {
-        return requirements::parse(project_dir);
+    if first_python_manifest(project_dir)?.is_some() {
+        return parse_python_project(project_dir);
     }
     if path_detected(&project_dir.join("Cargo.toml"))? {
         return cargo_toml::parse(project_dir);
@@ -216,6 +364,64 @@ fn first_csproj(dir: &Path) -> Result<Option<std::path::PathBuf>> {
                 .find(|path| path.extension().is_some_and(|ext| ext == "csproj"))
         })
         .map_err(Into::into)
+}
+
+fn parse_python_project(project_dir: &Path) -> Result<Vec<Dependency>> {
+    if path_detected(&project_dir.join("pyproject.toml"))? {
+        return match pyproject_toml::classify_manifest(&project_dir.join("pyproject.toml"))? {
+            pyproject_toml::PyprojectKind::Poetry => pyproject_toml::parse_poetry(project_dir),
+            pyproject_toml::PyprojectKind::Legacy => pyproject_toml::parse_legacy(project_dir),
+        };
+    }
+    if let Some(path) = first_requirements_file(project_dir)? {
+        return requirements::parse_file(&path, project_dir);
+    }
+    if path_detected(&project_dir.join("Pipfile"))? {
+        return pipfile::parse(project_dir);
+    }
+    if path_detected(&project_dir.join("setup.cfg"))? {
+        return setup_cfg::parse(project_dir);
+    }
+    if path_detected(&project_dir.join("setup.py"))? {
+        return setup_py::parse(project_dir);
+    }
+    bail!(
+        "Could not detect Python project manifest in {}",
+        project_dir.display()
+    );
+}
+
+fn first_python_manifest(dir: &Path) -> Result<Option<std::path::PathBuf>> {
+    if path_detected(&dir.join("pyproject.toml"))? {
+        return Ok(Some(dir.join("pyproject.toml")));
+    }
+    if let Some(path) = first_requirements_file(dir)? {
+        return Ok(Some(path));
+    }
+    for manifest in ["Pipfile", "setup.cfg", "setup.py"] {
+        let path = dir.join(manifest);
+        if path_detected(&path)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn first_requirements_file(dir: &Path) -> Result<Option<std::path::PathBuf>> {
+    let mut candidates = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name == "requirements.txt"
+                        || (name.starts_with("requirements") && name.ends_with(".txt"))
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    Ok(candidates.into_iter().next())
 }
 
 pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Result<()> {
@@ -644,6 +850,27 @@ mod tests {
         std::fs::write(dir.join("package.json"), r#"{}"#).unwrap();
         let results = parse_all_ecosystems(&dir).unwrap();
         assert!(results.is_empty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_recurses_into_nested_projects() {
+        let dir = empty_test_dir("parsers-all");
+        std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+        std::fs::create_dir_all(dir.join("services/api")).unwrap();
+        std::fs::write(
+            dir.join("apps/web/package.json"),
+            r#"{"dependencies": {"react": "^18"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("services/api/requirements.txt"), "flask==2.0\n").unwrap();
+
+        let results = parse_all_ecosystems(&dir).unwrap();
+
+        assert_eq!(results.len(), 2);
+        let ecosystems: Vec<crate::Ecosystem> = results.iter().map(|r| r[0].ecosystem).collect();
+        assert!(ecosystems.contains(&crate::Ecosystem::Npm));
+        assert!(ecosystems.contains(&crate::Ecosystem::PyPI));
         cleanup(&dir);
     }
 }

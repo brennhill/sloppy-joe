@@ -21,7 +21,8 @@ use std::path::Path;
 ///     "npm": ["some-vetted-pkg"]
 ///   },
 ///   "min_version_age_hours": 72,
-///   "allow_unresolved_versions": false
+///   "allow_unresolved_versions": false,
+///   "python_enforcement": "prefer_poetry"
 /// }
 /// ```
 ///
@@ -34,6 +35,21 @@ use std::path::Path;
 ///   Internal packages are exempt. Allowed packages are NOT exempt.
 /// - `allow_unresolved_versions`: downgrade unresolved-version policy failures
 ///   to warnings, but still emit them. Default: false.
+/// - `python_enforcement`: controls how strictly sloppy-joe enforces trusted
+///   Python manifest workflows. `prefer_poetry` (default) trusts Poetry when
+///   present and warns on legacy manifests. `poetry_only` blocks non-Poetry
+///   Python manifests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PythonEnforcement {
+    PreferPoetry,
+    PoetryOnly,
+}
+
+fn default_python_enforcement() -> PythonEnforcement {
+    PythonEnforcement::PreferPoetry
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SloppyJoeConfig {
     #[serde(default)]
@@ -46,6 +62,8 @@ pub struct SloppyJoeConfig {
     pub min_version_age_hours: u64,
     #[serde(default)]
     pub allow_unresolved_versions: bool,
+    #[serde(default = "default_python_enforcement")]
+    pub python_enforcement: PythonEnforcement,
 }
 
 fn default_min_version_age_hours() -> u64 {
@@ -60,6 +78,7 @@ impl Default for SloppyJoeConfig {
             allowed: HashMap::new(),
             min_version_age_hours: default_min_version_age_hours(),
             allow_unresolved_versions: false,
+            python_enforcement: default_python_enforcement(),
         }
     }
 }
@@ -433,6 +452,7 @@ fn template_config() -> SloppyJoeConfig {
         )]),
         min_version_age_hours: 72,
         allow_unresolved_versions: false,
+        python_enforcement: default_python_enforcement(),
     }
 }
 
@@ -554,6 +574,7 @@ mod tests {
         assert!(config.allowed.is_empty());
         assert_eq!(config.min_version_age_hours, 72);
         assert!(!config.allow_unresolved_versions);
+        assert_eq!(config.python_enforcement, PythonEnforcement::PreferPoetry);
     }
 
     #[test]
@@ -572,7 +593,7 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48,"allow_unresolved_versions":true}"#,
+            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48,"allow_unresolved_versions":true,"python_enforcement":"poetry_only"}"#,
         ).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
@@ -580,6 +601,21 @@ mod tests {
         assert!(config.allowed.contains_key("npm"));
         assert_eq!(config.min_version_age_hours, 48);
         assert!(config.allow_unresolved_versions);
+        assert_eq!(config.python_enforcement, PythonEnforcement::PoetryOnly);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_rejects_unknown_python_enforcement() {
+        let dir = std::env::temp_dir().join("sloppy-joe-test-config-python-mode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"python_enforcement":"requirements_only"}"#).unwrap();
+
+        let err = load_config(Some(&path)).expect_err("unknown Python enforcement modes must fail");
+        assert!(err.contains("prefer_poetry"));
+        assert!(err.contains("poetry_only"));
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

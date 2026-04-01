@@ -15,6 +15,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             name,
             version,
             ecosystem: crate::Ecosystem::Go,
+            actual_name: None,
         };
         super::validate_dependency(&dep, &path)?;
         deps.push(dep);

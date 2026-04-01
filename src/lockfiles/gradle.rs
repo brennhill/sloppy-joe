@@ -75,21 +75,22 @@ pub(super) fn parse_all_from_content(content: &str) -> Result<Vec<Dependency>> {
             name,
             version: Some(version),
             ecosystem: crate::Ecosystem::Jvm,
+            actual_name: None,
         })
         .collect())
 }
 
-pub(super) fn read_lockfile(project_dir: &Path) -> Option<String> {
+pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<String>> {
     let path = project_dir.join("gradle.lockfile");
-    if !crate::parsers::path_detected(&path).ok()? {
-        return None;
+    if !crate::parsers::path_detected(&path)? {
+        return Ok(None);
     }
-    crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).ok()
+    crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).map(Some)
 }
 
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let Some(content) = read_lockfile(project_dir) else {
+    let Some(content) = read_lockfile(project_dir)? else {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
         return Ok(result);

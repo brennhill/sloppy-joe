@@ -15,7 +15,7 @@ pub(crate) fn registry_url(ecosystem: Ecosystem, name: &str) -> String {
 /// Uses a concurrency limit of 10 simultaneous requests.
 pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Result<Vec<Issue>> {
     let ecosystem: Ecosystem = registry.ecosystem().parse().unwrap_or(Ecosystem::Npm);
-    let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
+    let names: Vec<String> = deps.iter().map(|d| d.package_name().to_string()).collect();
 
     // Collect all results including errors (don't abort on first failure)
     let results: Vec<(String, std::result::Result<bool, anyhow::Error>)> = stream::iter(names)
@@ -96,20 +96,21 @@ pub(crate) fn check_existence_from_metadata(
     let mut issues = Vec::new();
     for dep in deps {
         let exists = lookup_map
-            .get(&(dep.name.clone(), dep.version.clone()))
+            .get(&(dep.package_name().to_string(), dep.version.clone()))
             .copied()
             .unwrap_or(false);
         if !exists {
-            let url = registry_url(ecosystem, &dep.name);
+            let url = registry_url(ecosystem, dep.package_name());
             issues.push(
-                Issue::new(&dep.name, super::names::EXISTENCE, Severity::Error)
+                Issue::new(dep.package_name(), super::names::EXISTENCE, Severity::Error)
                     .message(format!(
                         "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
-                        dep.name, ecosystem
+                        dep.package_name(),
+                        ecosystem
                     ))
                     .fix(format!(
                         "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
-                        dep.name
+                        dep.package_name()
                     ))
                     .registry_url(url),
             );

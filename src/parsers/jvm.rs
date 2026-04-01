@@ -15,18 +15,16 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     parse_pom(&pom)
 }
 
-pub(crate) fn validate_manifest(path: &Path) -> Result<()> {
+pub(crate) fn parse_manifest(path: &Path) -> Result<Vec<Dependency>> {
     match path.file_name().and_then(|name| name.to_str()) {
-        Some("build.gradle") | Some("build.gradle.kts") => {
-            parse_gradle(path)?;
-            Ok(())
-        }
-        Some("pom.xml") => {
-            parse_pom(path)?;
-            Ok(())
-        }
+        Some("build.gradle") | Some("build.gradle.kts") => parse_gradle(path),
+        Some("pom.xml") => parse_pom(path),
         _ => bail!("Unsupported JVM manifest: {}", path.display()),
     }
+}
+
+pub(crate) fn validate_manifest(path: &Path) -> Result<()> {
+    parse_manifest(path).map(|_| ())
 }
 
 fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
@@ -69,6 +67,7 @@ fn extract_gradle_dep(line: &str) -> Option<Dependency> {
             name,
             version,
             ecosystem: crate::Ecosystem::Jvm,
+            actual_name: None,
         });
     }
     None
@@ -110,6 +109,7 @@ fn parse_pom_dep(lines: &[&str], start: usize) -> (Option<Dependency>, usize) {
                         name,
                         version,
                         ecosystem: crate::Ecosystem::Jvm,
+                        actual_name: None,
                     }),
                     i,
                 );

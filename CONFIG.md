@@ -1,6 +1,6 @@
 # sloppy-joe Configuration
 
-sloppy-joe works with zero configuration. Config adds three capabilities: canonical enforcement (reject known-bad alternatives), internal package bypass (skip checks for your org's packages), and allowed lists (skip existence/similarity for vetted packages).
+sloppy-joe works with zero configuration. Config adds canonical enforcement (reject known-bad alternatives), internal package bypass (skip checks for your org's packages), allowed lists (skip existence/similarity for vetted packages), and Python workflow enforcement.
 
 ## Security Model
 
@@ -10,18 +10,19 @@ sloppy-joe works with zero configuration. Config adds three capabilities: canoni
 2. `SLOPPY_JOE_CONFIG=/path/to/config.json` (environment variable)
 3. `--config https://example.com/config.json` (URL — fetched at runtime)
 
-If neither is set, sloppy-joe runs with default settings (no canonical rules, no internal/allowed lists, 72-hour version age gate).
+If neither is set, sloppy-joe runs with default settings (no canonical rules, no internal/allowed lists, 72-hour version age gate, and `python_enforcement: "prefer_poetry"`).
 
 ## Config Format
 
-JSON file with four top-level keys. All are optional.
+JSON file with five top-level keys. All are optional.
 
 ```json
 {
   "canonical": { ... },
   "internal": { ... },
   "allowed": { ... },
-  "min_version_age_hours": 72
+  "min_version_age_hours": 72,
+  "python_enforcement": "prefer_poetry"
 }
 ```
 
@@ -109,6 +110,23 @@ Minimum age (in hours) a package version must have before it's accepted. Default
 **Note:** This checks the exact pinned version's publish date, not just the latest version. Internal packages are exempt. Allowed packages are NOT exempt.
 
 Set to `0` to disable.
+
+### `python_enforcement`
+
+Controls how strictly sloppy-joe treats Python manifest workflows.
+
+```json
+{
+  "python_enforcement": "prefer_poetry"
+}
+```
+
+Valid values:
+
+- `prefer_poetry` (default): trust Poetry projects (`pyproject.toml` with Poetry metadata plus `poetry.lock`). Legacy Python manifests such as `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml` are still scanned, but every run emits a warning encouraging migration to Poetry.
+- `poetry_only`: block those legacy Python manifests and require Poetry for Python scans.
+
+Legacy Python support still fails closed on unsafe forms. For example, direct URLs, editable requirements, local paths, VCS sources, and unsupported dynamic dependency declarations are rejected rather than silently skipped.
 
 ## Generating a Template
 

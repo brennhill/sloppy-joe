@@ -51,6 +51,7 @@ pub(super) fn parse_all_from_content(content: &str) -> Result<Vec<Dependency>> {
             name,
             version: Some(version),
             ecosystem: crate::Ecosystem::Ruby,
+            actual_name: None,
         })
         .collect())
 }
