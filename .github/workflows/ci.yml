@@ -88,5 +88,8 @@ jobs:
       - name: Build sloppy-joe
         run: cargo build --release
 
+      - name: Generate self-check config
+        run: ./target/release/sloppy-joe init > /tmp/sloppy-joe-self-check.json
+
       - name: Check own dependencies
-        run: ./target/release/sloppy-joe check --no-cache
+        run: ./target/release/sloppy-joe check --no-cache --config /tmp/sloppy-joe-self-check.json
