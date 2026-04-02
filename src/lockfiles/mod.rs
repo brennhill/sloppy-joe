@@ -68,6 +68,10 @@ enum ParsedLockfile {
         value: serde_json::Value,
         file_name: String,
     },
+    NpmLegacy {
+        value: serde_json::Value,
+        file_name: String,
+    },
     Cargo(toml::Value),
     Composer(serde_json::Value),
     Dotnet(serde_json::Value),
@@ -170,9 +174,13 @@ fn read_lockfile(
                 .to_string();
             let content =
                 crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-            let value = serde_json::from_str(&content)
+            let value: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
-            Ok(ParsedLockfile::Npm { value, file_name })
+            if value["lockfileVersion"].as_u64() == Some(1) {
+                Ok(ParsedLockfile::NpmLegacy { value, file_name })
+            } else {
+                Ok(ParsedLockfile::Npm { value, file_name })
+            }
         }
         Some(Ecosystem::Cargo) => {
             let path = project_dir.join("Cargo.lock");
@@ -239,6 +247,9 @@ fn read_lockfile_for_project_kind(
 fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<ResolutionResult> {
     match parsed {
         ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
+        ParsedLockfile::NpmLegacy { value, file_name } => {
+            npm::resolve_from_value(value, deps, file_name)
+        }
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
         ParsedLockfile::Composer(value) => composer::resolve_from_value(value, deps),
         ParsedLockfile::Dotnet(value) => dotnet::resolve_from_value(value, deps),
@@ -257,6 +268,7 @@ fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<R
 fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
+        ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
         ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
         ParsedLockfile::Composer(value) => composer::parse_all_from_value(value),
         ParsedLockfile::Dotnet(value) => dotnet::parse_all_from_value(value),
@@ -273,6 +285,7 @@ fn parse_all_from_parsed_for_project(
 ) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
+        ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
         _ => parse_all_from_parsed(parsed),
     }
 }
@@ -527,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn npm_v1_parse_retains_nested_transitive_dependencies() {
+    fn npm_v1_lockfile_data_disables_transitive_extraction() {
         let dir = unique_dir();
         std::fs::write(
             dir.join("package-lock.json"),
@@ -537,13 +550,11 @@ mod tests {
 
         let direct = vec![npm_dep("react", "18.3.1")];
         let data = LockfileData::parse(&dir, &direct)
-            .expect("legacy npm lockfiles must recurse nested transitive dependencies");
+            .expect("legacy npm lockfiles should still parse for reduced-trust direct resolution");
 
         assert!(
-            data.transitive_deps
-                .iter()
-                .any(|dep| dep.name == "loose-envify" && dep.version.as_deref() == Some("1.4.0")),
-            "nested v1 transitive dependencies must remain visible"
+            data.transitive_deps.is_empty(),
+            "legacy npm v1 lockfiles must not claim trusted transitive coverage"
         );
     }
 

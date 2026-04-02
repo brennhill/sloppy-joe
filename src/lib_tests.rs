@@ -1326,6 +1326,31 @@ fn preflight_blocks_nested_npm_project_under_ancestor_foreign_lockfile() {
 }
 
 #[test]
+fn preflight_blocks_nested_npm_project_under_ancestor_bun_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(dir.join("bun.lock"), "dummy\n").unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("ancestor bun lockfiles must block trusting nested npm lockfiles");
+    let msg = err.to_string();
+    assert!(msg.contains("bun.lock"));
+    assert!(msg.contains("apps/web/package.json"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn preflight_blocks_workspace_dependency_without_declared_workspace_root() {
     let dir = unique_dir();
     std::fs::create_dir_all(dir.join("apps/web")).unwrap();
@@ -1356,6 +1381,62 @@ fn preflight_blocks_workspace_dependency_without_declared_workspace_root() {
     let msg = err.to_string();
     assert!(msg.contains("workspace-lib"));
     assert!(msg.contains("workspaces"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_workspace_dependency_when_lockfile_target_mismatches_verified_workspace() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/other-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","workspaces":["apps/*","packages/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"workspace-lib":"workspace:*"}},"node_modules/workspace-lib":{"resolved":"../../packages/other-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package-lock.json"),
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package.json"),
+        r#"{"name":"other-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package-lock.json"),
+        r#"{"name":"other-lib","lockfileVersion":3,"packages":{"":{"name":"other-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace lockfile links must point at the verified workspace target");
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("other-lib"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1407,6 +1488,52 @@ fn preflight_blocks_workspace_dependency_outside_declared_workspace_set() {
 }
 
 #[test]
+fn preflight_blocks_file_dependency_when_lockfile_target_mismatches_manifest_target() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/local-lib")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/other-lib")).unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"local-lib":"file:../../packages/local-lib"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"local-lib":"file:../../packages/local-lib"}},"node_modules/local-lib":{"resolved":"../../packages/other-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/local-lib/package.json"),
+        r#"{"name":"local-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/local-lib/package-lock.json"),
+        r#"{"name":"local-lib","lockfileVersion":3,"packages":{"":{"name":"local-lib"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package.json"),
+        r#"{"name":"other-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package-lock.json"),
+        r#"{"name":"other-lib","lockfileVersion":3,"packages":{"":{"name":"other-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("file/link lockfile entries must point at the manifest-verified local target");
+    let msg = err.to_string();
+    assert!(msg.contains("local-lib"));
+    assert!(msg.contains("other-lib"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn preflight_blocks_npm_lockfile_entries_missing_integrity() {
     let dir = unique_dir();
     std::fs::write(
@@ -1430,6 +1557,29 @@ fn preflight_blocks_npm_lockfile_entries_missing_integrity() {
 }
 
 #[test]
+fn preflight_blocks_npm_lockfile_entries_with_wrong_package_identity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"name":"lodash","version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("lockfile entries must not claim a different package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn preflight_blocks_npm_lockfile_entries_with_foreign_resolved_url() {
     let dir = unique_dir();
     std::fs::write(
@@ -1448,6 +1598,75 @@ fn preflight_blocks_npm_lockfile_entries_with_foreign_resolved_url() {
     let msg = err.to_string();
     assert!(msg.contains("resolved"));
     assert!(msg.contains("evil.example"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_registry_url_for_different_package() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/lodash/-/lodash-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_registry_url_for_different_version() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-99.0.0.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked version");
+    let msg = err.to_string();
+    assert!(msg.contains("18.3.1"));
+    assert!(msg.contains("99.0.0"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_bundled_npm_lockfile_entries() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","bundled":true}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("bundled npm entries must not silently bypass provenance checks");
+    let msg = err.to_string();
+    assert!(msg.contains("bundled"));
+    assert!(msg.contains("react"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2557,6 +2776,17 @@ async fn npm_fixture_stale_shadow_package_lock_in_yarn_repo_blocks() {
 }
 
 #[tokio::test]
+async fn npm_fixture_stale_shadow_package_lock_in_bun_repo_blocks() {
+    let dir = fixture_dir("stale-shadow-package-lock-bun");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("bun projects with a shadow package-lock must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("bun"));
+    assert!(msg.contains("package-lock"));
+}
+
+#[tokio::test]
 async fn npm_fixture_override_only_drift_blocks_until_strict_verification_exists() {
     let dir = fixture_dir("override-only-drift");
     let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
@@ -2605,6 +2835,74 @@ async fn npm_fixture_v1_range_drift_can_be_explicitly_allowed() {
     .expect("explicit opt-in should allow legacy npm v1 lockfiles");
 
     assert_eq!(report.packages_checked, 1);
+    assert!(report.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE
+            && issue.severity == Severity::Warning
+    }));
+    assert!(report.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE
+            && issue.severity == Severity::Warning
+    }));
+}
+
+#[test]
+fn npm_fixture_workspace_lock_target_mismatch_blocks() {
+    let dir = fixture_dir("workspace-lock-target-mismatch");
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace lockfile links must point at the verified workspace target");
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("other-lib"));
+}
+
+#[test]
+fn npm_fixture_file_lock_target_mismatch_blocks() {
+    let dir = fixture_dir("file-lock-target-mismatch");
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("file/link lockfile entries must point at the manifest-verified local target");
+    let msg = err.to_string();
+    assert!(msg.contains("local-lib"));
+    assert!(msg.contains("other-lib"));
+}
+
+#[test]
+fn npm_fixture_wrong_package_identity_blocks() {
+    let dir = fixture_dir("wrong-package-identity");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("lockfile entries must not claim a different package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+}
+
+#[test]
+fn npm_fixture_registry_url_wrong_package_blocks() {
+    let dir = fixture_dir("registry-url-wrong-package");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+}
+
+#[test]
+fn npm_fixture_registry_url_wrong_version_blocks() {
+    let dir = fixture_dir("registry-url-wrong-version");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked version");
+    let msg = err.to_string();
+    assert!(msg.contains("18.3.1"));
+    assert!(msg.contains("99.0.0"));
+}
+
+#[test]
+fn npm_fixture_bundled_entry_blocks() {
+    let dir = fixture_dir("bundled-entry");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("bundled npm entries must not silently bypass provenance checks");
+    let msg = err.to_string();
+    assert!(msg.contains("bundled"));
+    assert!(msg.contains("react"));
 }
 
 #[tokio::test]

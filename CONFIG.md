@@ -178,7 +178,7 @@ Set to `0` to disable.
 
 ### `allow_legacy_npm_v1_lockfile`
 
-Controls whether sloppy-joe will trust legacy npm v5/v6 `lockfileVersion: 1` lockfiles.
+Controls whether sloppy-joe will allow legacy npm v5/v6 `lockfileVersion: 1` lockfiles in reduced-confidence mode.
 
 ```json
 {
@@ -188,7 +188,7 @@ Controls whether sloppy-joe will trust legacy npm v5/v6 `lockfileVersion: 1` loc
 
 Default: `false`
 
-When `false`, sloppy-joe blocks npm v1 lockfiles with a message telling you to regenerate them using a modern npm. This is the recommended setting. Only turn this on if you are intentionally pinned to legacy npm and accept weaker lockfile sync guarantees.
+When `false`, sloppy-joe blocks npm v1 lockfiles with a message telling you to regenerate them using a modern npm. This is the recommended setting. When `true`, sloppy-joe keeps scanning but emits loud reduced-confidence warnings and disables trusted npm transitive coverage for that legacy lockfile. Only turn this on if you are intentionally pinned to legacy npm and accept weaker guarantees.
 
 ### `python_enforcement`
 

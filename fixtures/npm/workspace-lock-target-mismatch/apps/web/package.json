@@ -1,0 +1,6 @@
+{
+  "name": "web",
+  "dependencies": {
+    "workspace-lib": "workspace:*"
+  }
+}

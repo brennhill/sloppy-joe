@@ -416,12 +416,17 @@ fn preflight_project_inputs(
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_npm_package_manager_policy(&canonical_root, spec, manifest)?;
             validate_npm_manifest_security_policy(spec, manifest)?;
-        }
-        validate_lockfile_syntax(spec, npm_manifest, config)?;
-
-        if spec.kind == ProjectInputKind::Npm {
-            let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
-            validate_local_npm_dependencies(&canonical_root, spec, manifest, &npm_index)?;
+            let (lockfile, npm_warnings) = read_validated_npm_lockfile(spec, manifest, config)?;
+            warnings.extend(npm_warnings);
+            validate_local_npm_dependencies(
+                &canonical_root,
+                spec,
+                manifest,
+                &lockfile,
+                &npm_index,
+            )?;
+        } else {
+            validate_lockfile_syntax(spec, npm_manifest, config)?;
         }
     }
 
@@ -475,6 +480,63 @@ fn read_npm_manifest_value(path: &std::path::Path) -> Result<serde_json::Value> 
     })
 }
 
+fn read_validated_npm_lockfile(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+    config: &config::SloppyJoeConfig,
+) -> Result<(serde_json::Value, Vec<Issue>)> {
+    let path =
+        selected_lockfile_path(spec).expect("npm preflight should guarantee a lockfile exists");
+    let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
+    let lockfile = serde_json::from_str::<serde_json::Value>(&content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken lockfile '{}': failed to parse JSON: {}",
+            path.display(),
+            err
+        )
+    })?;
+    validate_npm_lockfile_version(&lockfile, &path, config)?;
+    validate_npm_lockfile_consistency(manifest, &lockfile, &path)?;
+    validate_npm_lockfile_provenance(&lockfile, &path)?;
+
+    let warnings = if npm_lockfile_version(&lockfile) == 1 && config.allow_legacy_npm_v1_lockfile {
+        legacy_npm_v1_warnings(&path)
+    } else {
+        Vec::new()
+    };
+
+    Ok((lockfile, warnings))
+}
+
+fn legacy_npm_v1_warnings(lockfile_path: &std::path::Path) -> Vec<Issue> {
+    vec![
+        Issue::new(
+            "<lockfile>",
+            checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE,
+            Severity::Warning,
+        )
+        .message(format!(
+            "Legacy npm v5/v6 lockfile '{}' is allowed by config, but sloppy-joe treats it as reduced-confidence input. package-lock v1 cannot prove modern npm artifact and graph invariants as strongly as current lockfiles.",
+            lockfile_path.display()
+        ))
+        .fix(
+            "Regenerate the lockfile with a modern npm and commit the upgraded package-lock.json or npm-shrinkwrap.json.",
+        ),
+        Issue::new(
+            "<lockfile>",
+            checks::names::RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,
+            Severity::Warning,
+        )
+        .message(format!(
+            "Legacy npm v5/v6 lockfile '{}' is scanned without trusted transitive coverage. sloppy-joe skips transitive dependency extraction for package-lock v1 because the older format is too weak for strict graph trust.",
+            lockfile_path.display()
+        ))
+        .fix(
+            "Upgrade the lockfile with a modern npm if you need trusted transitive npm coverage.",
+        ),
+    ]
+}
+
 fn load_npm_manifests(
     specs: &[ProjectInputSpec],
 ) -> Result<std::collections::HashMap<std::path::PathBuf, serde_json::Value>> {
@@ -523,6 +585,7 @@ fn validate_local_npm_dependencies(
     scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
+    lockfile: &serde_json::Value,
     npm_index: &NpmProjectIndex,
 ) -> Result<()> {
     let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
@@ -539,27 +602,117 @@ fn validate_local_npm_dependencies(
             spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
         })
     {
-        if local_spec.starts_with("workspace:") {
+        let expected_target = if local_spec.starts_with("workspace:") {
             validate_workspace_npm_dependency(
                 scan_root,
                 spec,
                 &name,
                 &canonical_project_dir,
                 npm_index,
+            )?
+        } else {
+            let canonical_target = resolve_local_npm_target(
+                scan_root,
+                spec,
+                &name,
+                &local_spec,
+                &canonical_project_dir,
             )?;
-            continue;
-        }
+            if !npm_index.dirs.contains(&canonical_target) {
+                anyhow::bail!(
+                    "Local npm dependency '{}' in '{}' resolves to '{}' inside the scan root, but no scanned npm project was found there.",
+                    name,
+                    spec.manifest_path.display(),
+                    local_spec
+                );
+            }
+            canonical_target
+        };
 
-        let canonical_target =
-            resolve_local_npm_target(scan_root, spec, &name, &local_spec, &canonical_project_dir)?;
-        if !npm_index.dirs.contains(&canonical_target) {
-            anyhow::bail!(
-                "Local npm dependency '{}' in '{}' resolves to '{}' inside the scan root, but no scanned npm project was found there.",
-                name,
-                spec.manifest_path.display(),
+        validate_local_npm_lockfile_target(
+            spec,
+            lockfile,
+            &name,
+            &local_spec,
+            &canonical_project_dir,
+            &expected_target,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_local_npm_lockfile_target(
+    spec: &ProjectInputSpec,
+    lockfile: &serde_json::Value,
+    dep_name: &str,
+    local_spec: &str,
+    canonical_project_dir: &std::path::Path,
+    expected_target: &std::path::Path,
+) -> Result<()> {
+    let lockfile_path = selected_lockfile_path(spec)
+        .expect("npm projects must have a selected lockfile during preflight");
+    let entry = lockfile
+        .get("packages")
+        .and_then(|packages| packages.get(format!("node_modules/{dep_name}")))
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is out of sync with package.json: local npm dependency '{}' is missing its lockfile entry.",
+                lockfile_path.display(),
+                dep_name
+            )
+        })?;
+
+    if !entry
+        .get("link")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' must be a local link for '{}', but link=true was not present.",
+            lockfile_path.display(),
+            dep_name,
+            local_spec
+        );
+    }
+
+    let resolved = entry
+        .get("resolved")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' entry '{}' is missing its resolved local target for '{}'.",
+                lockfile_path.display(),
+                dep_name,
                 local_spec
-            );
-        }
+            )
+        })?;
+    let candidate = if std::path::Path::new(resolved).is_absolute() {
+        std::path::PathBuf::from(resolved)
+    } else {
+        canonical_project_dir.join(resolved)
+    };
+    let normalized = normalize_filesystem_path(&candidate);
+    let canonical_lockfile_target = std::fs::canonicalize(&normalized).map_err(|err| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' entry '{}' points to '{}' but that target is missing or unreadable: {}.",
+            lockfile_path.display(),
+            dep_name,
+            resolved,
+            err
+        )
+    })?;
+
+    if canonical_lockfile_target != expected_target {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' points to '{}' for '{}', but the manifest-verified local target is '{}'. Regenerate the lockfile so the local dependency binding matches exactly.",
+            lockfile_path.display(),
+            dep_name,
+            resolved,
+            local_spec,
+            expected_target.display()
+        );
     }
 
     Ok(())
@@ -796,11 +949,18 @@ fn validate_npm_package_manager_policy(
             )?;
         }
 
-        for foreign_lockfile in ["pnpm-lock.yaml", "yarn.lock"] {
-            let path = ancestor_dir.join(foreign_lockfile);
+        for foreign_marker in [
+            "pnpm-lock.yaml",
+            "pnpm-workspace.yaml",
+            "yarn.lock",
+            ".pnp.cjs",
+            "bun.lock",
+            "bun.lockb",
+        ] {
+            let path = ancestor_dir.join(foreign_marker);
             if parsers::path_detected(&path)? {
                 anyhow::bail!(
-                    "Found foreign lockfile '{}' above npm project '{}'. sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json when pnpm/yarn lock state is present anywhere in the ancestor tree within the scan root.",
+                    "Found foreign package-manager marker '{}' above npm project '{}'. sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json when non-npm lock state is present anywhere in the ancestor tree within the scan root.",
                     path.display(),
                     spec.manifest_path.display()
                 );
@@ -864,7 +1024,7 @@ fn validate_workspace_npm_dependency(
     dep_name: &str,
     canonical_project_dir: &std::path::Path,
     npm_index: &NpmProjectIndex,
-) -> Result<()> {
+) -> Result<std::path::PathBuf> {
     let Some(workspace_root) = find_npm_workspace_root(scan_root, canonical_project_dir)? else {
         anyhow::bail!(
             "Local npm dependency '{}' in '{}' uses workspace:, but no ancestor package.json with a matching npm workspaces declaration was found. Scan the workspace root, or replace the workspace reference with a dependency source sloppy-joe can verify exactly.",
@@ -890,7 +1050,7 @@ fn validate_workspace_npm_dependency(
         .collect::<Vec<_>>();
 
     match matching_dirs.len() {
-        1 => Ok(()),
+        1 => Ok(matching_dirs[0].clone()),
         0 => anyhow::bail!(
             "Local npm dependency '{}' in '{}' does not resolve to any scanned package declared by the workspaces in '{}'. Keep workspace targets inside the declared npm workspaces set, or remove the workspace reference.",
             dep_name,
@@ -1046,15 +1206,72 @@ fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
     }
 }
 
+fn npm_lockfile_version(lockfile: &serde_json::Value) -> u64 {
+    lockfile
+        .get("lockfileVersion")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+}
+
+fn npm_registry_tarball_path(resolved: &str) -> Option<&str> {
+    let resolved = resolved.trim();
+    let resolved = resolved.strip_prefix("https://").unwrap_or(resolved);
+    resolved.strip_prefix("registry.npmjs.org/")
+}
+
+fn expected_npm_registry_tarball_paths(package_name: &str, version: &str) -> Vec<String> {
+    if let Some((scope, leaf)) = package_name.split_once('/')
+        && let Some(scope_name) = scope.strip_prefix('@')
+    {
+        let filename = format!("{leaf}-{version}.tgz");
+        return vec![
+            format!("{package_name}/-/{filename}"),
+            format!("%40{scope_name}%2F{leaf}/-/{filename}"),
+            format!("%40{scope_name}%2f{leaf}/-/{filename}"),
+        ];
+    }
+
+    vec![format!("{package_name}/-/{}-{version}.tgz", package_name)]
+}
+
+fn validate_npm_resolved_identity(
+    package_name: &str,
+    version: &str,
+    resolved: &str,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    let Some(path) = npm_registry_tarball_path(resolved) else {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' has untrusted resolved source '{}'. sloppy-joe only trusts npm registry tarball URLs in package-lock.json and npm-shrinkwrap.json.",
+            lockfile_path.display(),
+            package_name,
+            crate::report::sanitize_for_terminal(resolved)
+        );
+    };
+
+    if !expected_npm_registry_tarball_paths(package_name, version)
+        .iter()
+        .any(|expected| expected == path)
+    {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' resolves to '{}', which does not match the locked package identity '{}' at version '{}'.",
+            lockfile_path.display(),
+            package_name,
+            crate::report::sanitize_for_terminal(resolved),
+            package_name,
+            version
+        );
+    }
+
+    Ok(())
+}
+
 fn validate_npm_lockfile_version(
     lockfile: &serde_json::Value,
     lockfile_path: &std::path::Path,
     config: &config::SloppyJoeConfig,
 ) -> Result<()> {
-    let version = lockfile
-        .get("lockfileVersion")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
+    let version = npm_lockfile_version(lockfile);
 
     if version == 1 && !config.allow_legacy_npm_v1_lockfile {
         anyhow::bail!(
@@ -1336,18 +1553,21 @@ fn validate_npm_lockfile_package_entry(
             key
         );
     };
-    validate_npm_lockfile_entry_fields(
-        entry
-            .get("name")
-            .and_then(|value| value.as_str())
-            .unwrap_or(
-                key.rsplit_once("node_modules/")
-                    .map(|(_, name)| name)
-                    .unwrap_or(key),
-            ),
-        entry,
-        lockfile_path,
-    )
+    let expected_name = key
+        .rsplit_once("node_modules/")
+        .map(|(_, name)| name)
+        .unwrap_or(key);
+    if let Some(locked_name) = entry.get("name").and_then(|value| value.as_str())
+        && locked_name != expected_name
+    {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' claims to be '{}'. npm lockfile entries must match the package they install exactly.",
+            lockfile_path.display(),
+            expected_name,
+            locked_name
+        );
+    }
+    validate_npm_lockfile_entry_fields(expected_name, entry, lockfile_path)
 }
 
 fn validate_npm_lockfile_dependency_entries(
@@ -1362,14 +1582,17 @@ fn validate_npm_lockfile_dependency_entries(
                 name
             );
         };
-        validate_npm_lockfile_entry_fields(
-            entry
-                .get("name")
-                .and_then(|value| value.as_str())
-                .unwrap_or(name),
-            entry,
-            lockfile_path,
-        )?;
+        if let Some(locked_name) = entry.get("name").and_then(|value| value.as_str())
+            && locked_name != name
+        {
+            anyhow::bail!(
+                "Required lockfile '{}' entry '{}' claims to be '{}'. npm lockfile entries must match the package they install exactly.",
+                lockfile_path.display(),
+                name,
+                locked_name
+            );
+        }
+        validate_npm_lockfile_entry_fields(name, entry, lockfile_path)?;
         if let Some(nested) = entry
             .get("dependencies")
             .and_then(|value| value.as_object())
@@ -1389,25 +1612,29 @@ fn validate_npm_lockfile_entry_fields(
         .get("link")
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
-        || entry
-            .get("inBundle")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-        || entry
-            .get("bundled")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
     {
         return Ok(());
     }
 
     if entry
-        .get("version")
-        .and_then(|value| value.as_str())
-        .is_none()
+        .get("inBundle")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || entry
+            .get("bundled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
     {
-        return Ok(());
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' is marked as bundled. sloppy-joe does not trust bundled npm payloads yet because the bundled code cannot be verified independently from package-lock.json.",
+            lockfile_path.display(),
+            package_name
+        );
     }
+
+    let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
+        return Ok(());
+    };
 
     let resolved = entry
         .get("resolved")
@@ -1427,6 +1654,7 @@ fn validate_npm_lockfile_entry_fields(
             crate::report::sanitize_for_terminal(resolved)
         );
     }
+    validate_npm_resolved_identity(package_name, version, resolved, lockfile_path)?;
 
     let integrity = entry
         .get("integrity")
@@ -1453,10 +1681,7 @@ fn validate_npm_lockfile_entry_fields(
 }
 
 fn is_trusted_npm_resolved_source(resolved: &str) -> bool {
-    let resolved = resolved.trim();
-    resolved == "registry.npmjs.org"
-        || resolved.starts_with("registry.npmjs.org/")
-        || resolved.starts_with("https://registry.npmjs.org/")
+    npm_registry_tarball_path(resolved).is_some()
 }
 
 #[cfg(test)]

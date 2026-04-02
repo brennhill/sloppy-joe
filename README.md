@@ -437,7 +437,7 @@ Use `sloppy-joe check --review-exceptions` when you need to review maintainer-ch
 
 **`min_version_age_hours`** — block any version published less than this many hours ago. Default: 72 (3 days). Set to 0 to disable. Internal packages are exempt.
 
-**`allow_legacy_npm_v1_lockfile`** — allow `lockfileVersion: 1` npm lockfiles from npm v5/v6. Default: `false`. Keep this off unless you are intentionally stuck on legacy npm and accept weaker lockfile verification.
+**`allow_legacy_npm_v1_lockfile`** — allow `lockfileVersion: 1` npm lockfiles from npm v5/v6 in reduced-confidence mode. Default: `false`. Keep this off unless you are intentionally stuck on legacy npm and accept loud warnings plus reduced trusted npm transitive coverage.
 
 **`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects and warns on every run for legacy manifests like `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml`. `poetry_only` blocks those legacy manifests and requires Poetry.
 

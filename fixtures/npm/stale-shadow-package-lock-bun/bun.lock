@@ -1,0 +1,2 @@
+# Minimal Bun lock marker. The fixture only needs to prove that a foreign
+# package-manager lock is present beside a shadow package-lock.json.

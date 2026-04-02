@@ -62,7 +62,7 @@ use std::path::Path;
 /// - `allow_unresolved_versions`: downgrade unresolved-version policy failures
 ///   to warnings, but still emit them. Default: false.
 /// - `allow_legacy_npm_v1_lockfile`: allow legacy npm v5/v6
-///   `lockfileVersion: 1` lockfiles. Default: false.
+///   `lockfileVersion: 1` lockfiles in reduced-confidence mode. Default: false.
 /// - `python_enforcement`: controls how strictly sloppy-joe enforces trusted
 ///   Python manifest workflows. `prefer_poetry` (default) trusts Poetry when
 ///   present and warns on legacy manifests. `poetry_only` blocks non-Poetry

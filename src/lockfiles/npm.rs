@@ -240,13 +240,15 @@ fn entry_matches_dependency(
     dep: &Dependency,
     entry: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> bool {
-    let Some(expected) = dep.actual_name.as_deref() else {
-        return true;
-    };
+    let expected = dep.actual_name.as_deref().unwrap_or(dep.name.as_str());
     let Some(entry) = entry else {
         return true;
     };
-    entry.get("name").and_then(|value| value.as_str()) == Some(expected)
+    entry
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(|actual| actual == expected)
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
