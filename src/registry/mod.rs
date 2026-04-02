@@ -100,6 +100,13 @@ pub trait RegistryMetadata: Send + Sync {
         let _ = version;
         Ok(None)
     }
+
+    /// Fetch the current owner list for a package when the registry exposes it.
+    /// Used only for review-oriented output such as exception candidate evidence.
+    async fn owners(&self, package_name: &str) -> Result<Option<Vec<String>>> {
+        let _ = package_name;
+        Ok(None)
+    }
 }
 
 /// Combined trait for registries that support both existence checks and metadata lookups.

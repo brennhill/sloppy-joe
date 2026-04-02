@@ -1,6 +1,21 @@
 use colored::Colorize;
 use serde::Serialize;
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReviewExceptionCandidate {
+    pub ecosystem: String,
+    pub package: String,
+    pub check: String,
+    pub version: String,
+    pub previous_publisher: String,
+    pub current_publisher: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_url: Option<String>,
+    pub metadata_exception: crate::config::MetadataException,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub enum Severity {
     Error,
@@ -80,6 +95,8 @@ pub(crate) fn sanitize_for_terminal(text: &str) -> String {
 pub struct ScanReport {
     pub packages_checked: usize,
     pub issues: Vec<Issue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_candidates: Vec<ReviewExceptionCandidate>,
 }
 
 impl ScanReport {
@@ -87,6 +104,7 @@ impl ScanReport {
         ScanReport {
             packages_checked: 0,
             issues: vec![],
+            review_candidates: vec![],
         }
     }
 
@@ -94,6 +112,19 @@ impl ScanReport {
         ScanReport {
             packages_checked,
             issues,
+            review_candidates: vec![],
+        }
+    }
+
+    pub fn from_issues_with_review_candidates(
+        packages_checked: usize,
+        issues: Vec<Issue>,
+        review_candidates: Vec<ReviewExceptionCandidate>,
+    ) -> Self {
+        ScanReport {
+            packages_checked,
+            issues,
+            review_candidates,
         }
     }
 
@@ -174,6 +205,15 @@ impl ScanReport {
                 "WARN".yellow().bold()
             );
         }
+
+        if !self.review_candidates.is_empty() {
+            println!();
+            println!("{}", "REVIEW EXCEPTIONS:".cyan().bold());
+            println!();
+            for candidate in &self.review_candidates {
+                print_review_candidate(candidate);
+            }
+        }
     }
 }
 
@@ -209,6 +249,50 @@ fn print_issue(issue: &Issue) {
     }
     if let Some(ref url) = issue.registry_url {
         println!("        Verify: {}", sanitize_for_terminal(url).dimmed());
+    }
+    println!();
+}
+
+fn metadata_exception_snippet(candidate: &ReviewExceptionCandidate) -> String {
+    let snippet = serde_json::json!({
+        "metadata_exceptions": {
+            candidate.ecosystem.clone(): [candidate.metadata_exception.clone()]
+        }
+    });
+    serde_json::to_string_pretty(&snippet).expect("review exception snippets should serialize")
+}
+
+fn print_review_candidate(candidate: &ReviewExceptionCandidate) {
+    println!(
+        "  {} {} {}",
+        "CANDIDATE".cyan().bold(),
+        sanitize_for_terminal(&candidate.package).cyan().bold(),
+        format!("[{}]", sanitize_for_terminal(&candidate.check)).dimmed(),
+    );
+    println!(
+        "        Version: {}",
+        sanitize_for_terminal(&candidate.version)
+    );
+    println!(
+        "        Publisher change: {} -> {}",
+        sanitize_for_terminal(&candidate.previous_publisher),
+        sanitize_for_terminal(&candidate.current_publisher)
+    );
+    if !candidate.owners.is_empty() {
+        println!(
+            "        Owners: {}",
+            sanitize_for_terminal(&candidate.owners.join(", "))
+        );
+    }
+    if let Some(url) = &candidate.repository_url {
+        println!(
+            "        Repository: {}",
+            sanitize_for_terminal(url).dimmed()
+        );
+    }
+    println!("        Config snippet:");
+    for line in metadata_exception_snippet(candidate).lines() {
+        println!("          {}", line);
     }
     println!();
 }
@@ -270,6 +354,27 @@ mod tests {
         assert_eq!(built.suggestion, manual.suggestion);
         assert_eq!(built.registry_url, manual.registry_url);
         assert_eq!(built.source, manual.source);
+    }
+
+    fn review_candidate() -> ReviewExceptionCandidate {
+        ReviewExceptionCandidate {
+            ecosystem: "cargo".to_string(),
+            package: "colored".to_string(),
+            check: "metadata/maintainer-change".to_string(),
+            version: "2.2.0".to_string(),
+            previous_publisher: "kurtlawrence".to_string(),
+            current_publisher: "hwittenborn".to_string(),
+            owners: vec!["mackwic".to_string(), "kurtlawrence".to_string()],
+            repository_url: Some("https://github.com/mackwic/colored".to_string()),
+            metadata_exception: crate::config::MetadataException {
+                package: "colored".to_string(),
+                check: "metadata/maintainer-change".to_string(),
+                version: "2.2.0".to_string(),
+                previous_publisher: Some("kurtlawrence".to_string()),
+                current_publisher: Some("hwittenborn".to_string()),
+                reason: Some("reviewed transfer".to_string()),
+            },
+        }
     }
 
     #[test]
@@ -341,6 +446,28 @@ mod tests {
     fn print_json_does_not_panic() {
         let report = ScanReport::from_issues(1, vec![issue("foo", "existence", Severity::Error)]);
         report.print_json();
+    }
+
+    #[test]
+    fn report_json_includes_review_candidates() {
+        let report = ScanReport::from_issues_with_review_candidates(
+            1,
+            vec![issue("foo", "existence", Severity::Error)],
+            vec![review_candidate()],
+        );
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"review_candidates\""));
+        assert!(json.contains("\"metadata_exception\""));
+        assert!(json.contains("\"current_publisher\":\"hwittenborn\""));
+    }
+
+    #[test]
+    fn metadata_exception_snippet_wraps_candidate_in_config_shape() {
+        let snippet = metadata_exception_snippet(&review_candidate());
+        assert!(snippet.contains("\"metadata_exceptions\""));
+        assert!(snippet.contains("\"cargo\""));
+        assert!(snippet.contains("\"colored\""));
+        assert!(snippet.contains("\"metadata/maintainer-change\""));
     }
 
     #[test]
@@ -445,6 +572,16 @@ mod tests {
             ],
         );
         assert!(report.has_errors());
+        report.print_human();
+    }
+
+    #[test]
+    fn print_human_with_review_candidates_does_not_panic() {
+        let report = ScanReport::from_issues_with_review_candidates(
+            1,
+            vec![issue("foo", "existence", Severity::Error)],
+            vec![review_candidate()],
+        );
         report.print_human();
     }
 

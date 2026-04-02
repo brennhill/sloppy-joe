@@ -207,9 +207,85 @@ fn unique_dir() -> std::path::PathBuf {
     dir
 }
 
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
 #[cfg(unix)]
 fn symlink_path(link: &std::path::Path, target: &std::path::Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn repo_self_check_config_is_valid_and_has_exact_similarity_suppressions() {
+    let config_path = repo_root().join(".github/sloppy-joe-self-check.json");
+    let config = config::load_config(Some(&config_path))
+        .expect("checked-in self-check config should remain valid");
+    let cargo_rules = config
+        .similarity_exceptions
+        .get("cargo")
+        .expect("self-check config should define cargo similarity suppressions");
+
+    let expected = [
+        ("serde_json", "serde", "segment-overlap"),
+        ("clap", "coap", "keyboard-proximity"),
+        ("async-trait", "trait-async", "word-reorder"),
+        ("colored", "colorer", "keyboard-proximity"),
+        ("futures", "future", "extra-char"),
+        ("libc", "libx", "keyboard-proximity"),
+        ("serde", "xerde", "keyboard-proximity"),
+        ("strsim", "strim", "extra-char"),
+        ("tokio", "toki", "extra-char"),
+        ("toml", "tomo", "keyboard-proximity"),
+    ];
+
+    for (package, candidate, generator) in expected {
+        assert!(
+            cargo_rules.iter().any(|rule| {
+                rule.package == package
+                    && rule.candidate == candidate
+                    && rule.generator == generator
+            }),
+            "missing self-check similarity suppression for {package} -> {candidate} ({generator})"
+        );
+    }
+}
+
+#[test]
+fn repo_cargo_manifest_pins_direct_dependencies_exactly() {
+    let cargo_toml = std::fs::read_to_string(repo_root().join("Cargo.toml"))
+        .expect("repo Cargo.toml must exist");
+    let parsed: toml::Value = toml::from_str(&cargo_toml).expect("repo Cargo.toml must be valid");
+    let deps = parsed
+        .get("dependencies")
+        .and_then(|value| value.as_table())
+        .expect("repo Cargo.toml should have a [dependencies] table");
+
+    for (name, value) in deps {
+        let version = match value {
+            toml::Value::String(version) => version.as_str(),
+            toml::Value::Table(table) => table
+                .get("version")
+                .and_then(|version| version.as_str())
+                .expect("dependency tables should carry explicit versions"),
+            other => panic!("unexpected dependency shape for {name}: {other:?}"),
+        };
+
+        assert!(
+            version.starts_with('='),
+            "dependency {name} should use an exact version pin, found {version}"
+        );
+    }
+}
+
+#[test]
+fn repo_ci_self_check_build_uses_locked_cargo_graph() {
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("CI workflow must exist");
+    assert!(
+        workflow.contains("run: cargo build --release --locked"),
+        "self-check CI must build with --locked so Cargo.lock cannot drift before scanning"
+    );
 }
 
 #[cfg(unix)]

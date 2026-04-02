@@ -3,6 +3,7 @@ use crate::Ecosystem;
 use crate::config::SloppyJoeConfig;
 use crate::lockfiles::ResolutionResult;
 use crate::registry::{PackageMetadata, Registry};
+use crate::report::ReviewExceptionCandidate;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
@@ -179,12 +180,100 @@ pub(crate) fn issues_from_lookups(
 
         issues.extend(signals::check_install_script_risk(lookup, meta, &ctx));
         issues.extend(signals::check_dependency_explosion(lookup, meta));
-        issues.extend(signals::check_maintainer_change(lookup, meta));
+        let maintainer_issue = signals::check_maintainer_change(lookup, meta).filter(|issue| {
+            let Some(version) = lookup
+                .resolved_version
+                .as_deref()
+                .or(lookup.version.as_deref())
+            else {
+                return true;
+            };
+            !config.is_metadata_exception(
+                lookup.ecosystem.as_str(),
+                &lookup.package,
+                &issue.check,
+                version,
+                meta.previous_publisher.as_deref(),
+                meta.current_publisher.as_deref(),
+            )
+        });
+        issues.extend(maintainer_issue);
         issues.extend(signals::check_publisher_script_combo(lookup, meta));
         issues.extend(signals::check_no_repository(lookup, meta, &ctx));
     }
 
     issues
+}
+
+pub(crate) async fn review_candidates_from_lookups(
+    registry: &dyn Registry,
+    lookups: &[MetadataLookup],
+    config: &SloppyJoeConfig,
+) -> Vec<ReviewExceptionCandidate> {
+    let mut candidates = Vec::new();
+
+    for lookup in lookups {
+        let Some(meta) = lookup.metadata.as_ref() else {
+            continue;
+        };
+        let Some(issue) = super::signals::check_maintainer_change(lookup, meta) else {
+            continue;
+        };
+        let Some(version) = lookup
+            .resolved_version
+            .as_deref()
+            .or(lookup.version.as_deref())
+        else {
+            continue;
+        };
+        if config.is_metadata_exception(
+            lookup.ecosystem.as_str(),
+            &lookup.package,
+            &issue.check,
+            version,
+            meta.previous_publisher.as_deref(),
+            meta.current_publisher.as_deref(),
+        ) {
+            continue;
+        }
+        let (Some(previous_publisher), Some(current_publisher)) = (
+            meta.previous_publisher.as_deref(),
+            meta.current_publisher.as_deref(),
+        ) else {
+            continue;
+        };
+
+        let owners = registry
+            .owners(&lookup.package)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+
+        candidates.push(ReviewExceptionCandidate {
+            ecosystem: lookup.ecosystem.as_str().to_string(),
+            package: lookup.package.clone(),
+            check: issue.check,
+            version: version.to_string(),
+            previous_publisher: previous_publisher.to_string(),
+            current_publisher: current_publisher.to_string(),
+            owners,
+            repository_url: meta.repository_url.clone(),
+            metadata_exception: crate::config::MetadataException {
+                package: lookup.package.clone(),
+                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                version: version.to_string(),
+                previous_publisher: Some(previous_publisher.to_string()),
+                current_publisher: Some(current_publisher.to_string()),
+                reason: Some(
+                    "Reviewed maintainer transfer produced by `sloppy-joe check --review-exceptions`"
+                        .to_string(),
+                ),
+            },
+        });
+    }
+
+    candidates
 }
 
 /// Check metadata signals: version age, package age, download count,

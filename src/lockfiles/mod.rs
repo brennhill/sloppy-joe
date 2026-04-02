@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn parse_all_cargo_succeeds_on_valid_lockfile() {
-        let content = "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\n";
+        let content = "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
         let deps = cargo::parse_all(content).unwrap();
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.name == "serde"));

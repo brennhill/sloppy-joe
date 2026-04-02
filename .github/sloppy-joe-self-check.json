@@ -1,0 +1,69 @@
+{
+  "similarity_exceptions": {
+    "cargo": [
+      {
+        "package": "serde_json",
+        "candidate": "serde",
+        "generator": "segment-overlap",
+        "reason": "serde_json is the legitimate serde companion crate."
+      },
+      {
+        "package": "clap",
+        "candidate": "coap",
+        "generator": "keyboard-proximity",
+        "reason": "clap is the intended command-line parser dependency."
+      },
+      {
+        "package": "async-trait",
+        "candidate": "trait-async",
+        "generator": "word-reorder",
+        "reason": "async-trait is the intended proc-macro crate."
+      },
+      {
+        "package": "colored",
+        "candidate": "colorer",
+        "generator": "keyboard-proximity",
+        "reason": "colored is the intended terminal-coloring crate."
+      },
+      {
+        "package": "futures",
+        "candidate": "future",
+        "generator": "extra-char",
+        "reason": "futures is the intended async foundation crate."
+      },
+      {
+        "package": "libc",
+        "candidate": "libx",
+        "generator": "keyboard-proximity",
+        "reason": "libc is the intended systems FFI crate."
+      },
+      {
+        "package": "serde",
+        "candidate": "xerde",
+        "generator": "keyboard-proximity",
+        "reason": "serde is the intended serialization framework."
+      },
+      {
+        "package": "strsim",
+        "candidate": "strim",
+        "generator": "extra-char",
+        "reason": "strsim is the intended string-similarity crate."
+      },
+      {
+        "package": "tokio",
+        "candidate": "toki",
+        "generator": "extra-char",
+        "reason": "tokio is the intended async runtime."
+      },
+      {
+        "package": "toml",
+        "candidate": "tomo",
+        "generator": "keyboard-proximity",
+        "reason": "toml is the intended TOML parser crate."
+      }
+    ]
+  },
+  "min_version_age_hours": 72,
+  "allow_unresolved_versions": false,
+  "python_enforcement": "prefer_poetry"
+}

@@ -10,17 +10,19 @@ sloppy-joe works with zero configuration. Config adds canonical enforcement (rej
 2. `SLOPPY_JOE_CONFIG=/path/to/config.json` (environment variable)
 3. `--config https://example.com/config.json` (URL — fetched at runtime)
 
-If neither is set, sloppy-joe runs with default settings (no canonical rules, no internal/allowed lists, 72-hour version age gate, and `python_enforcement: "prefer_poetry"`).
+If neither is set, sloppy-joe runs with default settings (no canonical rules, no internal/allowed lists, no similarity exceptions, no metadata exceptions, 72-hour version age gate, and `python_enforcement: "prefer_poetry"`).
 
 ## Config Format
 
-JSON file with five top-level keys. All are optional.
+JSON file with seven top-level keys. All are optional.
 
 ```json
 {
   "canonical": { ... },
   "internal": { ... },
   "allowed": { ... },
+  "similarity_exceptions": { ... },
+  "metadata_exceptions": { ... },
   "min_version_age_hours": 72,
   "python_enforcement": "prefer_poetry"
 }
@@ -94,6 +96,68 @@ Lists vetted external packages that should skip existence and similarity checks 
 **When to use:** For legitimate external packages that trigger false positives on similarity checks (e.g., a package with a name close to a popular one that you've manually verified).
 
 **Difference from internal:** Internal packages skip everything. Allowed packages skip only existence and similarity.
+
+### `similarity_exceptions`
+
+Exact suppressions for known-good similarity false positives. Unlike `allowed`, these only suppress one specific similarity match and do not mute metadata, OSV, canonical, or other similarity findings.
+
+```json
+{
+  "similarity_exceptions": {
+    "cargo": [
+      {
+        "package": "serde_json",
+        "candidate": "serde",
+        "generator": "segment-overlap",
+        "reason": "serde_json is a legitimate companion crate in the serde ecosystem"
+      }
+    ]
+  }
+}
+```
+
+**What it does:** If sloppy-joe would flag exactly `package -> candidate` for the specified similarity `generator`, that single finding is suppressed.
+
+**When to use:** For narrow, reviewed false positives where the package itself is still supposed to receive normal existence, metadata, age, canonical, and vulnerability checks.
+
+**Why not `allowed`:** `allowed` skips all similarity checks for that package. `similarity_exceptions` suppresses only one exact edge.
+
+### `metadata_exceptions`
+
+Exact suppressions for reviewed metadata findings. This is narrower than `allowed`: it suppresses one exact metadata edge and leaves similarity, OSV, canonical, version-age, and every other metadata signal intact.
+
+Currently only `metadata/maintainer-change` is supported.
+
+```json
+{
+  "metadata_exceptions": {
+    "cargo": [
+      {
+        "package": "colored",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "kurtlawrence",
+        "current_publisher": "hwittenborn",
+        "reason": "Reviewed upstream maintainer transfer"
+      }
+    ]
+  }
+}
+```
+
+**What it does:** Suppresses the maintainer-change finding only when all of these match exactly:
+- ecosystem
+- package
+- check type
+- version
+- previous publisher
+- current publisher
+
+**When to use:** Only after a human review of a specific maintainer transfer on a specific version. This is an audit trail, not a trust shortcut.
+
+**Why so strict:** A different version or a different publisher transition should still block. Maintainer exceptions are intentionally one reviewed edge at a time.
+
+**Review workflow:** Run `sloppy-joe check --review-exceptions` to emit review-ready candidates for maintainer-change findings. Human output includes owners, repository URL, and a ready-to-paste config snippet. `sloppy-joe check --json --review-exceptions` includes the same data in a top-level `review_candidates` array so CI or tooling can surface it programmatically.
 
 ### `min_version_age_hours`
 

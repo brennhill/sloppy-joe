@@ -43,6 +43,9 @@ sloppy-joe check --config https://raw.githubusercontent.com/yourorg/security-con
 # JSON output for CI pipelines
 sloppy-joe check --json
 
+# Review exact maintainer-change exceptions with evidence
+sloppy-joe check --review-exceptions
+
 # Generate a starter config
 sloppy-joe init > config.json
 ```
@@ -394,6 +397,26 @@ sloppy-joe check --json
   "allowed": {
     "npm": ["some-vetted-external-pkg"]
   },
+  "similarity_exceptions": {
+    "cargo": [
+      {
+        "package": "serde_json",
+        "candidate": "serde",
+        "generator": "segment-overlap"
+      }
+    ]
+  },
+  "metadata_exceptions": {
+    "cargo": [
+      {
+        "package": "colored",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "kurtlawrence",
+        "current_publisher": "hwittenborn"
+      }
+    ]
+  },
   "min_version_age_hours": 72,
   "python_enforcement": "prefer_poetry"
 }
@@ -404,6 +427,12 @@ sloppy-joe check --json
 **`internal`** — your org's packages. Skip ALL checks. These change constantly.
 
 **`allowed`** — vetted external packages. Skip existence + similarity, but still subject to the version age gate.
+
+**`similarity_exceptions`** — exact package/candidate/generator suppressions for reviewed similarity false positives. Use this when one specific similarity edge is wrong but you still want normal checks on the package.
+
+**`metadata_exceptions`** — exact reviewed metadata suppressions. Currently this only supports `metadata/maintainer-change`, and it requires an exact package/version/previous-publisher/current-publisher match.
+
+Use `sloppy-joe check --review-exceptions` when you need to review maintainer-change blockers. The scan still blocks normally, but human output adds a `REVIEW EXCEPTIONS` section with owners, repository URL, and a ready-to-paste `metadata_exceptions` snippet. `--json` includes the same data in a top-level `review_candidates` field.
 
 **`min_version_age_hours`** — block any version published less than this many hours ago. Default: 72 (3 days). Set to 0 to disable. Internal packages are exempt.
 

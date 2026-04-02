@@ -20,6 +20,26 @@ use std::path::Path;
 ///   "allowed": {
 ///     "npm": ["some-vetted-pkg"]
 ///   },
+///   "similarity_exceptions": {
+///     "cargo": [
+///       {
+///         "package": "serde_json",
+///         "candidate": "serde",
+///         "generator": "segment-overlap"
+///       }
+///     ]
+///   },
+///   "metadata_exceptions": {
+///     "cargo": [
+///       {
+///         "package": "colored",
+///         "check": "metadata/maintainer-change",
+///         "version": "2.2.0",
+///         "previous_publisher": "kurtlawrence",
+///         "current_publisher": "hwittenborn"
+///       }
+///     ]
+///   },
 ///   "min_version_age_hours": 72,
 ///   "allow_unresolved_versions": false,
 ///   "python_enforcement": "prefer_poetry"
@@ -30,6 +50,11 @@ use std::path::Path;
 /// - `internal`: your org's packages. Skip ALL checks. These change constantly.
 /// - `allowed`: vetted external packages. Skip existence + similarity, but
 ///   still subject to version age gating.
+/// - `similarity_exceptions`: exact package/candidate/generator suppressions
+///   for known-good similarity false positives.
+/// - `metadata_exceptions`: exact suppressions for reviewed metadata findings.
+///   Currently only `metadata/maintainer-change` is supported, and it requires
+///   exact package/version/previous_publisher/current_publisher matching.
 /// - `min_version_age_hours`: block any dependency whose latest version was
 ///   published less than this many hours ago. Default: 72 (3 days).
 ///   Internal packages are exempt. Allowed packages are NOT exempt.
@@ -50,6 +75,53 @@ fn default_python_enforcement() -> PythonEnforcement {
     PythonEnforcement::PreferPoetry
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimilarityException {
+    pub package: String,
+    pub candidate: String,
+    pub generator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl SimilarityException {
+    fn matches(&self, package: &str, candidate: &str, generator: &str) -> bool {
+        self.package.eq_ignore_ascii_case(package)
+            && self.candidate.eq_ignore_ascii_case(candidate)
+            && self.generator == generator
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataException {
+    pub package: String,
+    pub check: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl MetadataException {
+    fn matches(
+        &self,
+        package: &str,
+        check: &str,
+        version: &str,
+        previous_publisher: Option<&str>,
+        current_publisher: Option<&str>,
+    ) -> bool {
+        self.package.eq_ignore_ascii_case(package)
+            && self.check == check
+            && self.version == version
+            && self.previous_publisher.as_deref() == previous_publisher
+            && self.current_publisher.as_deref() == current_publisher
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SloppyJoeConfig {
     #[serde(default)]
@@ -58,6 +130,10 @@ pub struct SloppyJoeConfig {
     pub internal: HashMap<String, Vec<String>>,
     #[serde(default)]
     pub allowed: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub similarity_exceptions: HashMap<String, Vec<SimilarityException>>,
+    #[serde(default)]
+    pub metadata_exceptions: HashMap<String, Vec<MetadataException>>,
     #[serde(default = "default_min_version_age_hours")]
     pub min_version_age_hours: u64,
     #[serde(default)]
@@ -76,6 +152,8 @@ impl Default for SloppyJoeConfig {
             canonical: HashMap::new(),
             internal: HashMap::new(),
             allowed: HashMap::new(),
+            similarity_exceptions: HashMap::new(),
+            metadata_exceptions: HashMap::new(),
             min_version_age_hours: default_min_version_age_hours(),
             allow_unresolved_versions: false,
             python_enforcement: default_python_enforcement(),
@@ -108,6 +186,46 @@ impl SloppyJoeConfig {
         Self::matches_patterns(&self.allowed, ecosystem, package)
     }
 
+    /// Check whether a specific similarity match is explicitly suppressed.
+    pub fn is_similarity_exception(
+        &self,
+        ecosystem: &str,
+        package: &str,
+        candidate: &str,
+        generator: &str,
+    ) -> bool {
+        self.similarity_exceptions
+            .get(ecosystem)
+            .into_iter()
+            .flat_map(|rules| rules.iter())
+            .any(|rule| rule.matches(package, candidate, generator))
+    }
+
+    /// Check whether a specific metadata finding is explicitly suppressed.
+    pub fn is_metadata_exception(
+        &self,
+        ecosystem: &str,
+        package: &str,
+        check: &str,
+        version: &str,
+        previous_publisher: Option<&str>,
+        current_publisher: Option<&str>,
+    ) -> bool {
+        self.metadata_exceptions
+            .get(ecosystem)
+            .into_iter()
+            .flat_map(|rules| rules.iter())
+            .any(|rule| {
+                rule.matches(
+                    package,
+                    check,
+                    version,
+                    previous_publisher,
+                    current_publisher,
+                )
+            })
+    }
+
     /// Validate config at load time. Returns a list of errors.
     pub fn validate(&self) -> Vec<String> {
         let valid_ecosystems = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
@@ -118,6 +236,14 @@ impl SloppyJoeConfig {
             ("canonical", self.canonical.keys().collect::<Vec<_>>()),
             ("internal", self.internal.keys().collect::<Vec<_>>()),
             ("allowed", self.allowed.keys().collect::<Vec<_>>()),
+            (
+                "similarity_exceptions",
+                self.similarity_exceptions.keys().collect::<Vec<_>>(),
+            ),
+            (
+                "metadata_exceptions",
+                self.metadata_exceptions.keys().collect::<Vec<_>>(),
+            ),
         ] {
             for key in keys {
                 if !valid_ecosystems.contains(&key.as_str()) {
@@ -143,6 +269,74 @@ impl SloppyJoeConfig {
                             pattern, section_name, eco
                         ));
                     }
+                }
+            }
+        }
+
+        for (eco, rules) in &self.similarity_exceptions {
+            for rule in rules {
+                if rule.package.trim().is_empty() || rule.candidate.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid similarity exception in {}: package and candidate must be non-empty",
+                        eco
+                    ));
+                }
+                if rule.package.contains('*') || rule.candidate.contains('*') {
+                    errors.push(format!(
+                        "Invalid similarity exception in {}: package and candidate must be exact names, not globs",
+                        eco
+                    ));
+                }
+                if !valid_similarity_generator(&rule.generator) {
+                    errors.push(format!(
+                        "Invalid similarity exception generator '{}' in {}. Valid: {}",
+                        rule.generator,
+                        eco,
+                        valid_similarity_generators().join(", ")
+                    ));
+                }
+            }
+        }
+
+        for (eco, rules) in &self.metadata_exceptions {
+            for rule in rules {
+                if rule.package.trim().is_empty() || rule.version.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid metadata exception in {}: package and version must be non-empty",
+                        eco
+                    ));
+                }
+                if rule.package.contains('*') {
+                    errors.push(format!(
+                        "Invalid metadata exception in {}: package must be an exact name, not a glob",
+                        eco
+                    ));
+                }
+                if rule.check != crate::checks::names::METADATA_MAINTAINER_CHANGE {
+                    errors.push(format!(
+                        "Invalid metadata exception check '{}' in {}. Only '{}' is currently supported.",
+                        rule.check,
+                        eco,
+                        crate::checks::names::METADATA_MAINTAINER_CHANGE
+                    ));
+                }
+                if rule
+                    .previous_publisher
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                    || rule
+                        .current_publisher
+                        .as_deref()
+                        .unwrap_or("")
+                        .trim()
+                        .is_empty()
+                {
+                    errors.push(format!(
+                        "Invalid metadata exception in {}: maintainer-change exceptions require exact previous_publisher and current_publisher values",
+                        eco
+                    ));
                 }
             }
         }
@@ -185,6 +379,28 @@ impl SloppyJoeConfig {
         }
         false
     }
+}
+
+fn valid_similarity_generators() -> [&'static str; 13] {
+    [
+        "separator-swap",
+        "collapse-repeated",
+        "version-suffix",
+        "word-reorder",
+        "char-swap",
+        "extra-char",
+        "homoglyph",
+        "confused-forms",
+        "bitflip",
+        "keyboard-proximity",
+        "segment-overlap",
+        "scope-squatting",
+        "case-variant",
+    ]
+}
+
+fn valid_similarity_generator(generator: &str) -> bool {
+    valid_similarity_generators().contains(&generator)
 }
 
 /// Resolve config source with full resolution cascade:
@@ -450,6 +666,8 @@ fn template_config() -> SloppyJoeConfig {
             "npm".to_string(),
             vec!["some-vetted-external-pkg".to_string()],
         )]),
+        similarity_exceptions: HashMap::new(),
+        metadata_exceptions: HashMap::new(),
         min_version_age_hours: 72,
         allow_unresolved_versions: false,
         python_enforcement: default_python_enforcement(),
@@ -572,6 +790,8 @@ mod tests {
         assert!(config.canonical.is_empty());
         assert!(config.internal.is_empty());
         assert!(config.allowed.is_empty());
+        assert!(config.similarity_exceptions.is_empty());
+        assert!(config.metadata_exceptions.is_empty());
         assert_eq!(config.min_version_age_hours, 72);
         assert!(!config.allow_unresolved_versions);
         assert_eq!(config.python_enforcement, PythonEnforcement::PreferPoetry);
@@ -587,18 +807,29 @@ mod tests {
     }
 
     #[test]
+    fn template_config_keeps_similarity_exceptions_empty() {
+        let config = template_config();
+        assert!(
+            config.similarity_exceptions.is_empty(),
+            "public init template must not embed repo-specific similarity suppressions"
+        );
+    }
+
+    #[test]
     fn load_config_valid_file() {
         let dir = std::env::temp_dir().join("sloppy-joe-test-config-v2");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"min_version_age_hours":48,"allow_unresolved_versions":true,"python_enforcement":"poetry_only"}"#,
+            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"python_enforcement":"poetry_only"}"#,
         ).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
         assert!(config.internal.contains_key("npm"));
         assert!(config.allowed.contains_key("npm"));
+        assert!(config.similarity_exceptions.contains_key("cargo"));
+        assert!(config.metadata_exceptions.contains_key("cargo"));
         assert_eq!(config.min_version_age_hours, 48);
         assert!(config.allow_unresolved_versions);
         assert_eq!(config.python_enforcement, PythonEnforcement::PoetryOnly);
@@ -743,10 +974,123 @@ mod tests {
             )]),
             internal: HashMap::from([("npm".to_string(), vec!["@myorg/*".to_string()])]),
             allowed: HashMap::from([("npm".to_string(), vec!["vetted-pkg".to_string()])]),
+            similarity_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![SimilarityException {
+                    package: "serde_json".to_string(),
+                    candidate: "serde".to_string(),
+                    generator: "segment-overlap".to_string(),
+                    reason: Some("legitimate companion crate".to_string()),
+                }],
+            )]),
+            metadata_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![MetadataException {
+                    package: "colored".to_string(),
+                    check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                    version: "2.2.0".to_string(),
+                    previous_publisher: Some("kurtlawrence".to_string()),
+                    current_publisher: Some("hwittenborn".to_string()),
+                    reason: Some("reviewed transfer".to_string()),
+                }],
+            )]),
             ..Default::default()
         };
         let errors = config.validate();
         assert!(errors.is_empty(), "Expected no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn similarity_exception_matches_exact_pair_and_generator_only() {
+        let config = SloppyJoeConfig {
+            similarity_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![SimilarityException {
+                    package: "serde_json".to_string(),
+                    candidate: "serde".to_string(),
+                    generator: "segment-overlap".to_string(),
+                    reason: Some("legitimate companion crate".to_string()),
+                }],
+            )]),
+            ..Default::default()
+        };
+
+        assert!(config.is_similarity_exception("cargo", "serde_json", "serde", "segment-overlap"));
+        assert!(!config.is_similarity_exception("cargo", "serde_json", "serde", "word-reorder"));
+        assert!(!config.is_similarity_exception("cargo", "serde", "serde_json", "segment-overlap"));
+        assert!(!config.is_similarity_exception(
+            "cargo",
+            "serde_json",
+            "serde_yaml",
+            "segment-overlap"
+        ));
+    }
+
+    #[test]
+    fn metadata_exception_matches_exact_package_version_and_publishers_only() {
+        let config = SloppyJoeConfig {
+            metadata_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![MetadataException {
+                    package: "colored".to_string(),
+                    check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                    version: "2.2.0".to_string(),
+                    previous_publisher: Some("kurtlawrence".to_string()),
+                    current_publisher: Some("hwittenborn".to_string()),
+                    reason: Some("reviewed transfer".to_string()),
+                }],
+            )]),
+            ..Default::default()
+        };
+
+        assert!(config.is_metadata_exception(
+            "cargo",
+            "colored",
+            crate::checks::names::METADATA_MAINTAINER_CHANGE,
+            "2.2.0",
+            Some("kurtlawrence"),
+            Some("hwittenborn"),
+        ));
+        assert!(!config.is_metadata_exception(
+            "cargo",
+            "colored",
+            crate::checks::names::METADATA_MAINTAINER_CHANGE,
+            "2.2.1",
+            Some("kurtlawrence"),
+            Some("hwittenborn"),
+        ));
+        assert!(!config.is_metadata_exception(
+            "cargo",
+            "colored",
+            crate::checks::names::METADATA_MAINTAINER_CHANGE,
+            "2.2.0",
+            Some("someone-else"),
+            Some("hwittenborn"),
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_incomplete_metadata_exception() {
+        let config = SloppyJoeConfig {
+            metadata_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![MetadataException {
+                    package: "colored".to_string(),
+                    check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                    version: "2.2.0".to_string(),
+                    previous_publisher: None,
+                    current_publisher: Some("hwittenborn".to_string()),
+                    reason: None,
+                }],
+            )]),
+            ..Default::default()
+        };
+
+        let errors = config.validate();
+        assert!(
+            errors.iter().any(|err| err.contains("previous_publisher")),
+            "expected validation error for incomplete metadata exception, got: {errors:?}"
+        );
     }
 
     #[test]

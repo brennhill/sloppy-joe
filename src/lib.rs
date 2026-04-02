@@ -66,6 +66,7 @@ pub async fn warm_cache(
         cache_dir,
         disable_osv_disk_cache: false,
         skip_hash_check: true,
+        review_exceptions: false,
     };
     scan_with_config(project_dir, project_type, config, &opts).await
 }
@@ -79,9 +80,6 @@ pub async fn scan_with_source_full(
     no_cache: bool,
     cache_dir: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
-    let config = config::load_config_from_source(config_source, Some(project_dir))
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let opts = ScanOptions {
         deep,
         paranoid,
@@ -89,8 +87,21 @@ pub async fn scan_with_source_full(
         cache_dir,
         disable_osv_disk_cache: false,
         skip_hash_check: false,
+        review_exceptions: false,
     };
-    scan_with_config(project_dir, project_type, config, &opts).await
+    scan_with_source_full_options(project_dir, project_type, config_source, &opts).await
+}
+
+pub async fn scan_with_source_full_options(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config_source: Option<&str>,
+    opts: &ScanOptions<'_>,
+) -> Result<ScanReport> {
+    let config = config::load_config_from_source(config_source, Some(project_dir))
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    scan_with_config(project_dir, project_type, config, opts).await
 }
 
 pub async fn scan(
@@ -1523,6 +1534,7 @@ async fn scan_with_config(
     let osv_client = checks::malicious::RealOsvClient::with_client(client.clone());
     let mut total_packages = 0;
     let mut all_issues = preflight_warnings;
+    let mut all_review_candidates = Vec::new();
 
     for project in &projects {
         if project.deps.is_empty() {
@@ -1542,9 +1554,14 @@ async fn scan_with_config(
         .await?;
         total_packages += report.packages_checked;
         all_issues.extend(report.issues);
+        all_review_candidates.extend(report.review_candidates);
     }
 
-    let report = ScanReport::from_issues(total_packages, all_issues);
+    let report = ScanReport::from_issues_with_review_candidates(
+        total_packages,
+        all_issues,
+        all_review_candidates,
+    );
 
     // Save hash after successful scan
     if !opts.no_cache {
@@ -1695,9 +1712,10 @@ async fn scan_with_services_inner_for_kind(
         acc.issues.extend(trans_acc.issues);
     }
 
-    Ok(ScanReport::from_issues(
+    Ok(ScanReport::from_issues_with_review_candidates(
         non_internal.len() + transitive_deps.len(),
         acc.issues,
+        acc.review_candidates,
     ))
 }
 
@@ -1793,6 +1811,8 @@ pub struct ScanOptions<'a> {
     pub disable_osv_disk_cache: bool,
     /// Skip the manifest hash check (used by `cache` command to always run).
     pub skip_hash_check: bool,
+    /// Emit structured exception review candidates for supported findings.
+    pub review_exceptions: bool,
 }
 
 /// A dependency parsed from a project manifest file (package.json, Cargo.toml, etc.).

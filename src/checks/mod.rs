@@ -47,6 +47,8 @@ pub struct ScanAccumulator {
     /// Metadata lookups — written by MetadataCheck,
     /// read by ExistenceCheck for existence-from-metadata.
     pub metadata_lookups: Option<Vec<metadata::MetadataLookup>>,
+    /// Review-mode exception candidates derived from supported findings.
+    pub review_candidates: Vec<crate::report::ReviewExceptionCandidate>,
 }
 
 impl ScanAccumulator {
@@ -55,6 +57,7 @@ impl ScanAccumulator {
             issues: Vec::new(),
             similarity_flagged: HashSet::new(),
             metadata_lookups: None,
+            review_candidates: Vec::new(),
         }
     }
 }
@@ -113,5 +116,6 @@ mod tests {
         assert!(acc.issues.is_empty());
         assert!(acc.similarity_flagged.is_empty());
         assert!(acc.metadata_lookups.is_none());
+        assert!(acc.review_candidates.is_empty());
     }
 }
