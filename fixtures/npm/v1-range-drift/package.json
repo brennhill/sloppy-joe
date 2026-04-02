@@ -1,0 +1,6 @@
+{
+  "name": "legacy-v1-range-drift",
+  "dependencies": {
+    "react": "^19.0.0"
+  }
+}

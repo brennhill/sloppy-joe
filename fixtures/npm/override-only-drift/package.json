@@ -1,0 +1,9 @@
+{
+  "name": "override-only-drift",
+  "dependencies": {
+    "react": "18.3.1"
+  },
+  "overrides": {
+    "loose-envify": "1.0.0"
+  }
+}

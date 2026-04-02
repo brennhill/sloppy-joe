@@ -412,7 +412,12 @@ fn preflight_project_inputs(
         }
 
         let npm_manifest = npm_manifests.get(&spec.manifest_path);
-        validate_lockfile_syntax(spec, npm_manifest)?;
+        if spec.kind == ProjectInputKind::Npm {
+            let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
+            validate_npm_package_manager_policy(spec, manifest)?;
+            validate_npm_manifest_security_policy(spec, manifest)?;
+        }
+        validate_lockfile_syntax(spec, npm_manifest, config)?;
 
         if spec.kind == ProjectInputKind::Npm {
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
@@ -658,6 +663,7 @@ fn normalize_filesystem_path(path: &std::path::Path) -> std::path::PathBuf {
 fn validate_lockfile_syntax(
     spec: &ProjectInputSpec,
     npm_manifest: Option<&serde_json::Value>,
+    config: &config::SloppyJoeConfig,
 ) -> Result<()> {
     let project_dir = spec.project_dir();
 
@@ -673,6 +679,7 @@ fn validate_lockfile_syntax(
                     err
                 )
             })?;
+            validate_npm_lockfile_version(&lockfile, &path, config)?;
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_npm_lockfile_consistency(manifest, &lockfile, &path)?;
         }
@@ -729,6 +736,76 @@ fn validate_lockfile_syntax(
         | ProjectInputKind::Ruby
         | ProjectInputKind::Gradle
         | ProjectInputKind::Maven => {}
+    }
+
+    Ok(())
+}
+
+fn validate_npm_package_manager_policy(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+) -> Result<()> {
+    if let Some(package_manager) = manifest
+        .get("packageManager")
+        .and_then(|value| value.as_str())
+    {
+        let manager = package_manager
+            .split_once('@')
+            .map(|(name, _)| name)
+            .unwrap_or(package_manager);
+        if manager != "npm" {
+            anyhow::bail!(
+                "package.json '{}' declares packageManager '{}'. sloppy-joe only trusts package-lock.json or npm-shrinkwrap.json for real npm projects, and refuses shadow npm lockfiles in {} repos.",
+                spec.manifest_path.display(),
+                package_manager,
+                manager
+            );
+        }
+    }
+
+    for foreign_lockfile in ["pnpm-lock.yaml", "yarn.lock"] {
+        let path = spec.project_dir().join(foreign_lockfile);
+        if parsers::path_detected(&path)? {
+            anyhow::bail!(
+                "Found foreign lockfile '{}' next to '{}'. sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json when pnpm/yarn lock state is present.",
+                path.display(),
+                spec.manifest_path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_npm_manifest_security_policy(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+) -> Result<()> {
+    if manifest.get("overrides").is_some() {
+        anyhow::bail!(
+            "package.json '{}' uses npm overrides. Overrides change the resolved dependency graph, and sloppy-joe does not yet have strict override verification. Remove overrides or review this project with another control until strict support exists.",
+            spec.manifest_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_npm_lockfile_version(
+    lockfile: &serde_json::Value,
+    lockfile_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<()> {
+    let version = lockfile
+        .get("lockfileVersion")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+
+    if version == 1 && !config.allow_legacy_npm_v1_lockfile {
+        anyhow::bail!(
+            "This repo is using a legacy npm v5/v6 lockfile ('{}', lockfileVersion: 1). Regenerate with a modern npm. If you must keep it temporarily, set allow_legacy_npm_v1_lockfile to true.",
+            lockfile_path.display()
+        );
     }
 
     Ok(())
@@ -1371,6 +1448,21 @@ fn scan_hash_for_projects(projects: &[ParsedProject]) -> std::result::Result<u64
     tuples.sort();
     tuples.hash(&mut hasher);
 
+    let mut hashed_manifests = std::collections::HashSet::new();
+    let mut manifests: Vec<_> = projects
+        .iter()
+        .map(|project| project.spec.manifest_path.clone())
+        .filter(|path| hashed_manifests.insert(path.clone()))
+        .collect();
+    manifests.sort();
+
+    for path in manifests {
+        let content = parsers::read_bytes_limited(&path, parsers::MAX_MANIFEST_BYTES)
+            .map_err(|err| format!("cannot safely hash {}: {}", path.display(), err))?;
+        path.display().to_string().hash(&mut hasher);
+        content.hash(&mut hasher);
+    }
+
     let mut hashed_lockfiles = std::collections::HashSet::new();
     let mut lockfiles: Vec<_> = projects
         .iter()
@@ -1680,17 +1772,18 @@ async fn scan_with_services_inner_for_kind(
         let trans_resolution = lockfile_data.resolve_transitive(&transitive_deps)?;
 
         // Build transitive pipeline (skip similarity unless --deep)
-        let trans_pipeline: Vec<Box<dyn checks::Check>> = if opts.deep {
-            checks::pipeline::default_pipeline()
-        } else {
-            // All checks except similarity for transitive deps
-            vec![
-                Box::new(checks::pipeline::CanonicalCheck),
-                Box::new(checks::pipeline::MetadataCheck),
-                Box::new(checks::pipeline::ExistenceCheck),
-                Box::new(checks::pipeline::MaliciousCheck),
-            ]
-        };
+        let trans_pipeline: Vec<Box<dyn checks::Check>> =
+            if opts.deep || ecosystem == Ecosystem::Npm {
+                checks::pipeline::default_pipeline()
+            } else {
+                // All checks except similarity for transitive deps
+                vec![
+                    Box::new(checks::pipeline::CanonicalCheck),
+                    Box::new(checks::pipeline::MetadataCheck),
+                    Box::new(checks::pipeline::ExistenceCheck),
+                    Box::new(checks::pipeline::MaliciousCheck),
+                ]
+            };
 
         let trans_ctx = checks::CheckContext {
             checkable_deps: &transitive_deps,

@@ -1,0 +1,6 @@
+{
+  "name": "private-scope-typo",
+  "dependencies": {
+    "@acmf/widget": "1.0.0"
+  }
+}

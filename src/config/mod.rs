@@ -42,6 +42,7 @@ use std::path::Path;
 ///   },
 ///   "min_version_age_hours": 72,
 ///   "allow_unresolved_versions": false,
+///   "allow_legacy_npm_v1_lockfile": false,
 ///   "python_enforcement": "prefer_poetry"
 /// }
 /// ```
@@ -60,6 +61,8 @@ use std::path::Path;
 ///   Internal packages are exempt. Allowed packages are NOT exempt.
 /// - `allow_unresolved_versions`: downgrade unresolved-version policy failures
 ///   to warnings, but still emit them. Default: false.
+/// - `allow_legacy_npm_v1_lockfile`: allow legacy npm v5/v6
+///   `lockfileVersion: 1` lockfiles. Default: false.
 /// - `python_enforcement`: controls how strictly sloppy-joe enforces trusted
 ///   Python manifest workflows. `prefer_poetry` (default) trusts Poetry when
 ///   present and warns on legacy manifests. `poetry_only` blocks non-Poetry
@@ -138,12 +141,27 @@ pub struct SloppyJoeConfig {
     pub min_version_age_hours: u64,
     #[serde(default)]
     pub allow_unresolved_versions: bool,
+    #[serde(default)]
+    pub allow_legacy_npm_v1_lockfile: bool,
     #[serde(default = "default_python_enforcement")]
     pub python_enforcement: PythonEnforcement,
 }
 
 fn default_min_version_age_hours() -> u64 {
     72
+}
+
+fn extract_npm_scope(package_or_pattern: &str) -> Option<&str> {
+    let value = package_or_pattern
+        .strip_suffix("/*")
+        .unwrap_or(package_or_pattern);
+    if !value.starts_with('@') {
+        return None;
+    }
+    value
+        .split_once('/')
+        .map(|(scope, _)| scope)
+        .or(Some(value))
 }
 
 impl Default for SloppyJoeConfig {
@@ -156,6 +174,7 @@ impl Default for SloppyJoeConfig {
             metadata_exceptions: HashMap::new(),
             min_version_age_hours: default_min_version_age_hours(),
             allow_unresolved_versions: false,
+            allow_legacy_npm_v1_lockfile: false,
             python_enforcement: default_python_enforcement(),
         }
     }
@@ -184,6 +203,75 @@ impl SloppyJoeConfig {
     /// but still subject to age gating).
     pub fn is_allowed(&self, ecosystem: &str, package: &str) -> bool {
         Self::matches_patterns(&self.allowed, ecosystem, package)
+    }
+
+    /// Additional trusted scopes derived from repo config.
+    pub fn trusted_scopes(&self, ecosystem: &str) -> Vec<String> {
+        let mut scopes = std::collections::BTreeSet::new();
+
+        for pattern in self
+            .internal
+            .get(ecosystem)
+            .into_iter()
+            .flat_map(|rules| rules.iter())
+            .chain(
+                self.allowed
+                    .get(ecosystem)
+                    .into_iter()
+                    .flat_map(|rules| rules.iter()),
+            )
+        {
+            if let Some(scope) = extract_npm_scope(pattern) {
+                scopes.insert(scope.to_string());
+            }
+        }
+
+        for package in self
+            .canonical
+            .get(ecosystem)
+            .into_iter()
+            .flat_map(|rules| rules.keys())
+        {
+            if let Some(scope) = extract_npm_scope(package) {
+                scopes.insert(scope.to_string());
+            }
+        }
+
+        scopes.into_iter().collect()
+    }
+
+    /// Exact package roots that should participate in similarity checks even
+    /// when they are not part of the built-in popular-package corpus.
+    pub fn similarity_roots(&self, ecosystem: &str) -> Vec<String> {
+        let mut roots = std::collections::BTreeSet::new();
+
+        for package in self
+            .allowed
+            .get(ecosystem)
+            .into_iter()
+            .flat_map(|rules| rules.iter())
+            .chain(
+                self.internal
+                    .get(ecosystem)
+                    .into_iter()
+                    .flat_map(|rules| rules.iter()),
+            )
+        {
+            if !package.contains('*') {
+                roots.insert(package.to_string());
+            }
+        }
+
+        for package in self
+            .canonical
+            .get(ecosystem)
+            .into_iter()
+            .flat_map(|rules| rules.keys())
+        {
+            roots.insert(package.to_string());
+        }
+
+        roots.into_iter().collect()
     }
 
     /// Check whether a specific similarity match is explicitly suppressed.
@@ -670,6 +758,7 @@ fn template_config() -> SloppyJoeConfig {
         metadata_exceptions: HashMap::new(),
         min_version_age_hours: 72,
         allow_unresolved_versions: false,
+        allow_legacy_npm_v1_lockfile: false,
         python_enforcement: default_python_enforcement(),
     }
 }
@@ -756,6 +845,44 @@ mod tests {
     }
 
     #[test]
+    fn trusted_scopes_include_configured_npm_patterns_and_names() {
+        let config = SloppyJoeConfig {
+            internal: HashMap::from([("npm".to_string(), vec!["@acme/*".to_string()])]),
+            allowed: HashMap::from([("npm".to_string(), vec!["@partner/widget".to_string()])]),
+            canonical: HashMap::from([(
+                "npm".to_string(),
+                HashMap::from([("@types/node".to_string(), vec![])]),
+            )]),
+            ..Default::default()
+        };
+
+        let scopes = config.trusted_scopes("npm");
+        assert!(scopes.contains(&"@acme".to_string()));
+        assert!(scopes.contains(&"@partner".to_string()));
+        assert!(scopes.contains(&"@types".to_string()));
+    }
+
+    #[test]
+    fn similarity_roots_include_exact_configured_package_names_only() {
+        let config = SloppyJoeConfig {
+            allowed: HashMap::from([(
+                "npm".to_string(),
+                vec!["acme-widget".to_string(), "@acme/*".to_string()],
+            )]),
+            canonical: HashMap::from([(
+                "npm".to_string(),
+                HashMap::from([("long-tail-lib".to_string(), vec!["other".to_string()])]),
+            )]),
+            ..Default::default()
+        };
+
+        let roots = config.similarity_roots("npm");
+        assert!(roots.contains(&"acme-widget".to_string()));
+        assert!(roots.contains(&"long-tail-lib".to_string()));
+        assert!(!roots.contains(&"@acme/*".to_string()));
+    }
+
+    #[test]
     fn alternatives_map_builds_reverse_lookup() {
         let config = SloppyJoeConfig {
             canonical: HashMap::from([(
@@ -794,6 +921,7 @@ mod tests {
         assert!(config.metadata_exceptions.is_empty());
         assert_eq!(config.min_version_age_hours, 72);
         assert!(!config.allow_unresolved_versions);
+        assert!(!config.allow_legacy_npm_v1_lockfile);
         assert_eq!(config.python_enforcement, PythonEnforcement::PreferPoetry);
     }
 
@@ -822,7 +950,7 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"python_enforcement":"poetry_only"}"#,
+            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"allow_legacy_npm_v1_lockfile":true,"python_enforcement":"poetry_only"}"#,
         ).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
@@ -832,6 +960,7 @@ mod tests {
         assert!(config.metadata_exceptions.contains_key("cargo"));
         assert_eq!(config.min_version_age_hours, 48);
         assert!(config.allow_unresolved_versions);
+        assert!(config.allow_legacy_npm_v1_lockfile);
         assert_eq!(config.python_enforcement, PythonEnforcement::PoetryOnly);
         std::fs::remove_dir_all(&dir).unwrap();
     }

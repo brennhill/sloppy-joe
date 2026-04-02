@@ -304,11 +304,15 @@ pub(crate) async fn check_similarity_with_options(
         .collect();
 
     // ---- Phase 0: Scope squatting (no registry needed) ----
+    let configured_scopes = config.trusted_scopes(ecosystem.as_str());
     for dep in deps {
         if let Some(scope) = extract_scope(dep.package_name(), ecosystem) {
-            let scopes = known_scopes(ecosystem);
             let scope_lower = scope.to_lowercase();
-            for &known in scopes {
+            for known in known_scopes(ecosystem)
+                .iter()
+                .copied()
+                .chain(configured_scopes.iter().map(String::as_str))
+            {
                 let known_lower = known.to_lowercase();
                 if scope_lower == known_lower {
                     // Exact match to a known scope -- safe
@@ -355,13 +359,26 @@ pub(crate) async fn check_similarity_with_options(
     } else {
         generators::default_generators()
     };
+    let configured_roots = config.similarity_roots(ecosystem.as_str());
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
     for dep in deps {
         if !flagged.contains(dep.package_name()) {
-            all_mutations.insert(
-                dep.package_name().to_string(),
-                generate_mutations_with(&generators, dep.package_name(), ecosystem),
-            );
+            let mut mutations = generate_mutations_with(&generators, dep.package_name(), ecosystem);
+            for candidate in generators::segment_overlap_variants_with_additional_roots(
+                dep.package_name(),
+                ecosystem,
+                &configured_roots,
+            ) {
+                mutations
+                    .entry(candidate)
+                    .and_modify(|existing| {
+                        if generator_severity("segment-overlap") > generator_severity(existing) {
+                            *existing = "segment-overlap";
+                        }
+                    })
+                    .or_insert("segment-overlap");
+            }
+            all_mutations.insert(dep.package_name().to_string(), mutations);
         }
     }
 

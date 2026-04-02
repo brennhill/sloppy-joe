@@ -1,0 +1,7 @@
+{
+  "name": "yarn-shadow-lock",
+  "packageManager": "yarn@4.2.0",
+  "dependencies": {
+    "react": "^18.3.1"
+  }
+}

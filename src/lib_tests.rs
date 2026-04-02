@@ -211,6 +211,57 @@ fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn fixture_dir(case: &str) -> std::path::PathBuf {
+    repo_root().join("fixtures").join("npm").join(case)
+}
+
+fn fixture_config(case: &str) -> config::SloppyJoeConfig {
+    let path = fixture_dir(case).join("sloppy-joe.json");
+    config::load_config(Some(&path)).expect("fixture config should remain valid")
+}
+
+async fn scan_fixture_with_fake_services(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config: config::SloppyJoeConfig,
+    registry: &dyn Registry,
+    osv_client: &dyn OsvClient,
+    opts: &ScanOptions<'_>,
+) -> Result<ScanReport> {
+    let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
+    let preflight_warnings = preflight_project_inputs(project_dir, &specs, &config)?;
+    let projects = parse_project_inputs(project_dir, &specs)?;
+
+    let mut total_packages = 0;
+    let mut all_issues = preflight_warnings;
+    let mut all_review_candidates = Vec::new();
+
+    for project in &projects {
+        if project.deps.is_empty() {
+            continue;
+        }
+        let report = scan_with_services_inner_for_kind(
+            Some(project.spec.kind),
+            project.spec.project_dir(),
+            config.clone(),
+            project.deps.clone(),
+            registry,
+            osv_client,
+            opts,
+        )
+        .await?;
+        total_packages += report.packages_checked;
+        all_issues.extend(report.issues);
+        all_review_candidates.extend(report.review_candidates);
+    }
+
+    Ok(ScanReport::from_issues_with_review_candidates(
+        total_packages,
+        all_issues,
+        all_review_candidates,
+    ))
+}
+
 #[cfg(unix)]
 fn symlink_path(link: &std::path::Path, target: &std::path::Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
@@ -2298,6 +2349,173 @@ async fn transitive_internal_deps_are_skipped() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&config_dir);
+}
+
+#[tokio::test]
+async fn npm_fixture_stale_shadow_package_lock_in_pnpm_repo_blocks() {
+    let dir = fixture_dir("stale-shadow-package-lock-pnpm");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("pnpm projects with a shadow package-lock must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("pnpm"));
+    assert!(msg.contains("package-lock"));
+}
+
+#[tokio::test]
+async fn npm_fixture_stale_shadow_package_lock_in_yarn_repo_blocks() {
+    let dir = fixture_dir("stale-shadow-package-lock-yarn");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("yarn projects with a shadow package-lock must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("yarn"));
+    assert!(msg.contains("package-lock"));
+}
+
+#[tokio::test]
+async fn npm_fixture_override_only_drift_blocks_until_strict_verification_exists() {
+    let dir = fixture_dir("override-only-drift");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("overrides must not silently bypass strict lockfile trust");
+    let msg = err.to_string();
+    assert!(msg.contains("overrides"));
+    assert!(msg.contains("package.json"));
+}
+
+#[tokio::test]
+async fn npm_fixture_v1_range_drift_blocks_by_default() {
+    let dir = fixture_dir("v1-range-drift");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("legacy npm v1 lockfiles must block by default");
+    let msg = err.to_string();
+    assert!(msg.contains("legacy npm v5/v6 lockfile"));
+    assert!(msg.contains("modern npm"));
+}
+
+#[tokio::test]
+async fn npm_fixture_v1_range_drift_can_be_explicitly_allowed() {
+    let dir = fixture_dir("v1-range-drift");
+    let config = config::SloppyJoeConfig {
+        allow_legacy_npm_v1_lockfile: true,
+        ..Default::default()
+    };
+    let registry = FakeRegistry {
+        existing: vec!["react".to_string()],
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config,
+        &registry,
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("explicit opt-in should allow legacy npm v1 lockfiles");
+
+    assert_eq!(report.packages_checked, 1);
+}
+
+#[tokio::test]
+async fn npm_fixture_transitive_typosquat_flags_similarity_without_deep() {
+    let dir = fixture_dir("transitive-typosquat");
+    let registry = FakeRegistry {
+        existing: vec![
+            "react".to_string(),
+            "express".to_string(),
+            "expresss".to_string(),
+        ],
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fixture scan should succeed");
+
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.package == "expresss"
+                && issue.check.starts_with("similarity/")
+                && issue.source.as_deref() == Some("transitive")
+        }),
+        "transitive npm typosquat should trigger similarity without --deep"
+    );
+}
+
+#[tokio::test]
+async fn npm_fixture_private_scope_typo_uses_configured_trusted_scope() {
+    let dir = fixture_dir("private-scope-typo");
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        fixture_config("private-scope-typo"),
+        &FakeRegistry {
+            existing: vec!["@acmf/widget".to_string()],
+        },
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fixture scan should succeed");
+
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.package == "@acmf/widget"
+                && issue.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING
+        }),
+        "repo-configured trusted scopes should participate in npm scope-squatting detection"
+    );
+}
+
+#[tokio::test]
+async fn npm_fixture_long_tail_combo_squat_uses_configured_package_roots() {
+    let dir = fixture_dir("long-tail-combo-squat");
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        fixture_config("long-tail-combo-squat"),
+        &FakeRegistry {
+            existing: vec!["acme-widget".to_string(), "acme-widget-utils".to_string()],
+        },
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fixture scan should succeed");
+
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.package == "acme-widget-utils"
+                && issue.check == crate::checks::names::SIMILARITY_SEGMENT_OVERLAP
+        }),
+        "repo-configured trusted package roots should participate in npm combo-squatting detection"
+    );
 }
 
 #[tokio::test]

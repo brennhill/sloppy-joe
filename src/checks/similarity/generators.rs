@@ -673,6 +673,27 @@ pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<
         return vec![];
     }
 
+    segment_overlap_variants_against(name, top.iter().copied())
+}
+
+pub(super) fn segment_overlap_variants_with_additional_roots(
+    name: &str,
+    ecosystem: Ecosystem,
+    additional_roots: &[String],
+) -> Vec<String> {
+    let top = super::popular::top_packages(ecosystem);
+    segment_overlap_variants_against(
+        name,
+        top.iter()
+            .copied()
+            .chain(additional_roots.iter().map(String::as_str)),
+    )
+}
+
+fn segment_overlap_variants_against<'a>(
+    name: &str,
+    roots: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
     let separators = ['-', '_', '.'];
     let sep = separators
         .iter()
@@ -686,6 +707,10 @@ pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<
     }
 
     let mut results = Vec::new();
+    let normalized_roots: HashSet<String> = roots
+        .into_iter()
+        .map(|root| root.replace(['_', '.'], "-"))
+        .collect();
 
     // Strategy 1: remove one segment at a time and check if result is a top package
     for i in 0..segments.len() {
@@ -697,10 +722,7 @@ pub(super) fn segment_overlap_variants(name: &str, ecosystem: Ecosystem) -> Vec<
             .collect();
         let candidate = reduced.join(&sep.to_string());
         let candidate_normalized = candidate.replace(['_', '.'], "-");
-        if top.iter().any(|&pkg| {
-            let pkg_normalized = pkg.replace(['_', '.'], "-");
-            pkg_normalized == candidate_normalized
-        }) {
+        if normalized_roots.contains(&candidate_normalized) {
             results.push(candidate);
         }
     }

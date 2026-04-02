@@ -10,11 +10,11 @@ sloppy-joe works with zero configuration. Config adds canonical enforcement (rej
 2. `SLOPPY_JOE_CONFIG=/path/to/config.json` (environment variable)
 3. `--config https://example.com/config.json` (URL — fetched at runtime)
 
-If neither is set, sloppy-joe runs with default settings (no canonical rules, no internal/allowed lists, no similarity exceptions, no metadata exceptions, 72-hour version age gate, and `python_enforcement: "prefer_poetry"`).
+If neither is set, sloppy-joe runs with default settings (no canonical rules, no internal/allowed lists, no similarity exceptions, no metadata exceptions, 72-hour version age gate, `allow_legacy_npm_v1_lockfile: false`, and `python_enforcement: "prefer_poetry"`).
 
 ## Config Format
 
-JSON file with seven top-level keys. All are optional.
+JSON file with eight top-level keys. All are optional.
 
 ```json
 {
@@ -24,6 +24,7 @@ JSON file with seven top-level keys. All are optional.
   "similarity_exceptions": { ... },
   "metadata_exceptions": { ... },
   "min_version_age_hours": 72,
+  "allow_legacy_npm_v1_lockfile": false,
   "python_enforcement": "prefer_poetry"
 }
 ```
@@ -174,6 +175,20 @@ Minimum age (in hours) a package version must have before it's accepted. Default
 **Note:** This checks the exact pinned version's publish date, not just the latest version. Internal packages are exempt. Allowed packages are NOT exempt.
 
 Set to `0` to disable.
+
+### `allow_legacy_npm_v1_lockfile`
+
+Controls whether sloppy-joe will trust legacy npm v5/v6 `lockfileVersion: 1` lockfiles.
+
+```json
+{
+  "allow_legacy_npm_v1_lockfile": true
+}
+```
+
+Default: `false`
+
+When `false`, sloppy-joe blocks npm v1 lockfiles with a message telling you to regenerate them using a modern npm. This is the recommended setting. Only turn this on if you are intentionally pinned to legacy npm and accept weaker lockfile sync guarantees.
 
 ### `python_enforcement`
 
