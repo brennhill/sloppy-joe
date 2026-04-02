@@ -14,7 +14,7 @@ use super::{
 /// Read + parse + resolve in one step (used by resolve_versions test API).
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let Some(path) = first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
+    let Some(path) = first_existing(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
     else {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
@@ -24,7 +24,7 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("package-lock.json")
+        .unwrap_or("npm-shrinkwrap.json")
         .to_string();
     let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
     let parsed: serde_json::Value = match serde_json::from_str(&content) {
@@ -64,21 +64,36 @@ pub(super) fn resolve_from_value(
 
     let mut result = ResolutionResult::default();
     for dep in deps {
-        let resolved = packages
-            .and_then(|packages| {
-                packages
-                    .get(&format!("node_modules/{}", dep.name))
-                    .and_then(|entry| entry.get("version"))
-                    .and_then(|value| value.as_str())
-            })
-            .or_else(|| {
-                dependencies.and_then(|dependencies| {
-                    dependencies
-                        .get(&dep.name)
-                        .and_then(|entry| entry.get("version"))
-                        .and_then(|value| value.as_str())
-                })
-            });
+        let package_entry = packages.and_then(|packages| {
+            packages
+                .get(&format!("node_modules/{}", dep.name))
+                .and_then(|entry| entry.as_object())
+        });
+        let dependency_entry = dependencies.and_then(|dependencies| {
+            dependencies
+                .get(&dep.name)
+                .and_then(|entry| entry.as_object())
+        });
+
+        let resolved = if packages.is_some() {
+            if !entry_matches_dependency(dep, package_entry) {
+                result.issues.push(missing_entry_issue(dep, file_name));
+                add_manifest_exact_fallback(&mut result, dep);
+                continue;
+            }
+            package_entry
+                .and_then(|entry| entry.get("version"))
+                .and_then(|value| value.as_str())
+        } else {
+            if !entry_matches_dependency(dep, dependency_entry) {
+                result.issues.push(missing_entry_issue(dep, file_name));
+                add_manifest_exact_fallback(&mut result, dep);
+                continue;
+            }
+            dependency_entry
+                .and_then(|entry| entry.get("version"))
+                .and_then(|value| value.as_str())
+        };
 
         match resolved {
             Some(version) => {
@@ -117,15 +132,47 @@ pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
 
 /// Parse ALL npm deps from a pre-parsed JSON value.
 pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dependency>> {
+    parse_dependencies_from_value(parsed, None)
+}
+
+pub(super) fn parse_transitive_from_value(
+    parsed: &serde_json::Value,
+    direct_deps: &[Dependency],
+) -> Result<Vec<Dependency>> {
+    let direct_root_paths = direct_deps
+        .iter()
+        .map(|dep| format!("node_modules/{}", dep.name))
+        .collect::<std::collections::HashSet<_>>();
+    parse_dependencies_from_value(parsed, Some(&direct_root_paths))
+}
+
+fn parse_dependencies_from_value(
+    parsed: &serde_json::Value,
+    direct_root_paths: Option<&std::collections::HashSet<String>>,
+) -> Result<Vec<Dependency>> {
     let mut deps = Vec::new();
     if let Some(packages) = parsed.get("packages").and_then(|v| v.as_object()) {
         for (key, entry) in packages {
             if key.is_empty() {
                 continue;
             }
-            let name = key
-                .rsplit_once("node_modules/")
-                .map(|(_, name)| name)
+            if !key.contains("node_modules/") {
+                continue;
+            }
+            if direct_root_paths.is_some_and(|paths| paths.contains(key)) {
+                continue;
+            }
+            if entry
+                .get("link")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let name = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .or_else(|| key.rsplit_once("node_modules/").map(|(_, name)| name))
                 .unwrap_or(key);
             if name.is_empty() {
                 continue;
@@ -141,25 +188,65 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
                 name: name.to_string(),
                 version,
                 ecosystem: crate::Ecosystem::Npm,
+                actual_name: None,
             });
         }
     } else if let Some(dependencies) = parsed.get("dependencies").and_then(|v| v.as_object()) {
-        for (name, entry) in dependencies {
-            let version = entry
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            deps.push(Dependency {
-                name: name.clone(),
-                version,
-                ecosystem: crate::Ecosystem::Npm,
-            });
-        }
+        collect_v1_dependencies(dependencies, direct_root_paths, 0, &mut deps);
     } else {
         anyhow::bail!("npm lockfile has no packages or dependencies section");
     }
 
     Ok(deps)
+}
+
+fn collect_v1_dependencies(
+    dependencies: &serde_json::Map<String, serde_json::Value>,
+    direct_root_paths: Option<&std::collections::HashSet<String>>,
+    depth: usize,
+    deps: &mut Vec<Dependency>,
+) {
+    for (name, entry) in dependencies {
+        let is_direct_root = depth == 0
+            && direct_root_paths
+                .is_some_and(|paths| paths.contains(&format!("node_modules/{name}")));
+        if !is_direct_root {
+            let version = entry
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            deps.push(Dependency {
+                name: entry
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(name)
+                    .to_string(),
+                version,
+                ecosystem: crate::Ecosystem::Npm,
+                actual_name: None,
+            });
+        }
+
+        if let Some(nested) = entry
+            .get("dependencies")
+            .and_then(|value| value.as_object())
+        {
+            collect_v1_dependencies(nested, None, depth + 1, deps);
+        }
+    }
+}
+
+fn entry_matches_dependency(
+    dep: &Dependency,
+    entry: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    let Some(expected) = dep.actual_name.as_deref() else {
+        return true;
+    };
+    let Some(entry) = entry else {
+        return true;
+    };
+    entry.get("name").and_then(|value| value.as_str()) == Some(expected)
 }
 
 #[cfg(test)]

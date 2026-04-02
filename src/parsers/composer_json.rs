@@ -18,11 +18,14 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 if name == "php" || name.starts_with("ext-") {
                     continue;
                 }
-                deps.push(Dependency {
+                let dep = Dependency {
                     name: name.clone(),
                     version: version.as_str().map(String::from),
                     ecosystem: crate::Ecosystem::Php,
-                });
+                    actual_name: None,
+                };
+                super::validate_dependency(&dep, &path)?;
+                deps.push(dep);
             }
         }
     }

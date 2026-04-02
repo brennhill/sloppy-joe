@@ -14,16 +14,19 @@ pub fn check_canonical(
     let alternatives = config.alternatives_map(ecosystem.as_str());
 
     for dep in deps {
-        if let Some(canonical) = alternatives.get(&dep.name) {
+        if let Some(canonical) = alternatives.get(dep.package_name()) {
             issues.push(
-                Issue::new(&dep.name, super::names::CANONICAL, Severity::Error)
+                Issue::new(dep.package_name(), super::names::CANONICAL, Severity::Error)
                     .message(format!(
                         "'{}' is not the approved package for this purpose. Your team uses '{}'. Using non-canonical packages creates inconsistency and increases maintenance cost.",
-                        dep.name, canonical
+                        dep.package_name(),
+                        canonical
                     ))
                     .fix(format!(
                         "Replace '{}' with '{}' in your manifest file. If your team has decided to switch to '{}', update the sloppy-joe config to reflect the new canonical choice.",
-                        dep.name, canonical, dep.name
+                        dep.package_name(),
+                        canonical,
+                        dep.package_name()
                     ))
                     .suggestion(canonical),
             );

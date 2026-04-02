@@ -14,7 +14,7 @@ use super::{
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
     let path = project_dir.join("Cargo.lock");
-    if !path.exists() {
+    if !crate::parsers::path_detected(&path)? {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
         return Ok(result);
@@ -147,6 +147,9 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
         let Some(table) = package.as_table() else {
             continue;
         };
+        if table.get("source").and_then(|v| v.as_str()).is_none() {
+            continue;
+        }
         let Some(name) = table.get("name").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -161,8 +164,33 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
             name: name.to_string(),
             version,
             ecosystem: crate::Ecosystem::Cargo,
+            actual_name: None,
         });
     }
 
     Ok(deps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_all;
+
+    #[test]
+    fn parse_all_skips_workspace_root_package_without_source() {
+        let lockfile = r#"
+[[package]]
+name = "demo-app"
+version = "0.1.0"
+dependencies = ["serde"]
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+
+        let deps = parse_all(lockfile).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "serde");
+    }
 }

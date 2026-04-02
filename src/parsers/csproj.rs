@@ -4,7 +4,11 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let csproj = find_csproj(project_dir)?;
-    let content = super::read_file_limited(&csproj, super::MAX_MANIFEST_BYTES)
+    parse_file(&csproj)
+}
+
+pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
+    let content = super::read_file_limited(csproj, super::MAX_MANIFEST_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
 
     let mut deps = Vec::new();
@@ -17,11 +21,14 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             if let Some(name) = extract_include(line) {
                 let version = extract_attr(line, "Version");
                 if line.contains("/>") || version.is_some() {
-                    deps.push(Dependency {
+                    let dep = Dependency {
                         name,
                         version,
                         ecosystem: crate::Ecosystem::Dotnet,
-                    });
+                        actual_name: None,
+                    };
+                    super::validate_dependency(&dep, csproj)?;
+                    deps.push(dep);
                 } else {
                     current_name = Some(name);
                     current_version = None;
@@ -35,11 +42,14 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 current_version = Some(version);
             }
             if line.contains("</PackageReference>") {
-                deps.push(Dependency {
+                let dep = Dependency {
                     name: current_name.take().unwrap(),
                     version: current_version.take(),
                     ecosystem: crate::Ecosystem::Dotnet,
-                });
+                    actual_name: None,
+                };
+                super::validate_dependency(&dep, csproj)?;
+                deps.push(dep);
             }
         }
     }

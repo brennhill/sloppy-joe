@@ -1,18 +1,30 @@
 use crate::Dependency;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let gradle = project_dir.join("build.gradle");
-    if gradle.exists() {
+    if super::path_detected(&gradle)? {
         return parse_gradle(&gradle);
     }
     let gradle_kts = project_dir.join("build.gradle.kts");
-    if gradle_kts.exists() {
+    if super::path_detected(&gradle_kts)? {
         return parse_gradle(&gradle_kts);
     }
     let pom = project_dir.join("pom.xml");
     parse_pom(&pom)
+}
+
+pub(crate) fn parse_manifest(path: &Path) -> Result<Vec<Dependency>> {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("build.gradle") | Some("build.gradle.kts") => parse_gradle(path),
+        Some("pom.xml") => parse_pom(path),
+        _ => bail!("Unsupported JVM manifest: {}", path.display()),
+    }
+}
+
+pub(crate) fn validate_manifest(path: &Path) -> Result<()> {
+    parse_manifest(path).map(|_| ())
 }
 
 fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
@@ -33,6 +45,7 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
             if line.starts_with(cfg)
                 && let Some(dep) = extract_gradle_dep(line)
             {
+                super::validate_dependency(&dep, path)?;
                 deps.push(dep);
             }
         }
@@ -54,6 +67,7 @@ fn extract_gradle_dep(line: &str) -> Option<Dependency> {
             name,
             version,
             ecosystem: crate::Ecosystem::Jvm,
+            actual_name: None,
         });
     }
     None
@@ -70,6 +84,7 @@ fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
         if lines[i].trim().contains("<dependency>") {
             let (dep, end) = parse_pom_dep(&lines, i);
             if let Some(d) = dep {
+                super::validate_dependency(&d, path)?;
                 deps.push(d);
             }
             i = end;
@@ -94,6 +109,7 @@ fn parse_pom_dep(lines: &[&str], start: usize) -> (Option<Dependency>, usize) {
                         name,
                         version,
                         ecosystem: crate::Ecosystem::Jvm,
+                        actual_name: None,
                     }),
                     i,
                 );

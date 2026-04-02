@@ -86,7 +86,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build sloppy-joe
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Stage self-check config
+        run: install -m 0644 .github/sloppy-joe-self-check.json /tmp/sloppy-joe-self-check.json
 
       - name: Check own dependencies
-        run: ./target/release/sloppy-joe check --no-cache
+        run: ./target/release/sloppy-joe check --no-cache --config /tmp/sloppy-joe-self-check.json

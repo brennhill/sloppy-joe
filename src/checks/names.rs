@@ -67,6 +67,12 @@ pub const RESOLUTION_MISSING_LOCKFILE_ENTRY: &str = "resolution/missing-lockfile
 pub const RESOLUTION_LOCKFILE_OUT_OF_SYNC: &str = "resolution/lockfile-out-of-sync";
 pub const RESOLUTION_AMBIGUOUS: &str = "resolution/ambiguous";
 pub const RESOLUTION_NO_EXACT_VERSION: &str = "resolution/no-exact-version";
+pub const RESOLUTION_NO_TRUSTED_LOCKFILE: &str = "resolution/no-trusted-lockfile";
+pub const RESOLUTION_NPM_ALIAS: &str = "resolution/npm-alias";
+pub const RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE: &str =
+    "resolution/no-trusted-transitive-coverage";
+pub const RESOLUTION_LOCAL_DEPENDENCY_SOURCE: &str = "resolution/local-dependency-source";
+pub const RESOLUTION_PYTHON_LEGACY_MANIFEST: &str = "resolution/python-legacy-manifest";
 
 #[cfg(test)]
 mod tests {
@@ -110,6 +116,11 @@ mod tests {
             RESOLUTION_LOCKFILE_OUT_OF_SYNC,
             RESOLUTION_AMBIGUOUS,
             RESOLUTION_NO_EXACT_VERSION,
+            RESOLUTION_NO_TRUSTED_LOCKFILE,
+            RESOLUTION_NPM_ALIAS,
+            RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,
+            RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            RESOLUTION_PYTHON_LEGACY_MANIFEST,
         ]
     }
 

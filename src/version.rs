@@ -8,6 +8,9 @@ pub fn exact_version(raw: &str, ecosystem: Ecosystem) -> Option<String> {
 
     match ecosystem {
         Ecosystem::PyPI => {
+            if raw.starts_with("===") {
+                return None;
+            }
             let exact = raw.strip_prefix("==")?.trim();
             if exact.is_empty()
                 || exact.contains(',')
@@ -188,6 +191,11 @@ mod tests {
     fn pypi_rejects_double_equals_with_embedded_space() {
         // Space inside the version string (not trailing whitespace which gets trimmed)
         assert_eq!(exact_version("==2.31.0 beta", Ecosystem::PyPI), None);
+    }
+
+    #[test]
+    fn pypi_rejects_arbitrary_equality_operator() {
+        assert_eq!(exact_version("===2.31.0", Ecosystem::PyPI), None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub(crate) fn registry_url(ecosystem: Ecosystem, name: &str) -> String {
 /// Uses a concurrency limit of 10 simultaneous requests.
 pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Result<Vec<Issue>> {
     let ecosystem: Ecosystem = registry.ecosystem().parse().unwrap_or(Ecosystem::Npm);
-    let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
+    let names: Vec<String> = deps.iter().map(|d| d.package_name().to_string()).collect();
 
     // Collect all results including errors (don't abort on first failure)
     let results: Vec<(String, std::result::Result<bool, anyhow::Error>)> = stream::iter(names)
@@ -56,7 +56,7 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
     }
 
     // Fail closed if registry is unreachable
-    if super::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+    if super::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new(
@@ -96,20 +96,21 @@ pub(crate) fn check_existence_from_metadata(
     let mut issues = Vec::new();
     for dep in deps {
         let exists = lookup_map
-            .get(&(dep.name.clone(), dep.version.clone()))
+            .get(&(dep.package_name().to_string(), dep.version.clone()))
             .copied()
             .unwrap_or(false);
         if !exists {
-            let url = registry_url(ecosystem, &dep.name);
+            let url = registry_url(ecosystem, dep.package_name());
             issues.push(
-                Issue::new(&dep.name, super::names::EXISTENCE, Severity::Error)
+                Issue::new(dep.package_name(), super::names::EXISTENCE, Severity::Error)
                     .message(format!(
                         "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
-                        dep.name, ecosystem
+                        dep.package_name(),
+                        ecosystem
                     ))
                     .fix(format!(
                         "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
-                        dep.name
+                        dep.package_name()
                     ))
                     .registry_url(url),
             );
@@ -217,9 +218,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn few_errors_do_not_trigger_fail_closed() {
-        // With only 1 query, 100% failure rate but below MIN_QUERIES_FOR_RATE,
-        // so rate-based threshold doesn't apply. Also below hard limit (5).
+    async fn single_error_triggers_fail_closed() {
         let registry = FakeRegistry {
             existing: vec![],
             fail: true,
@@ -227,10 +226,10 @@ mod tests {
         let deps = vec![dep("react")];
         let issues = check_existence(&registry, &deps).await.unwrap();
         assert!(
-            !issues
+            issues
                 .iter()
                 .any(|i| i.check.contains("registry-unreachable")),
-            "Few errors should not trigger fail-closed"
+            "Any existence lookup failure should trigger fail-closed"
         );
     }
 }

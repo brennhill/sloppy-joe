@@ -63,6 +63,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
+        /// Emit review-ready exception candidates for supported findings.
+        #[arg(long)]
+        review_exceptions: bool,
+
         /// Project directory to scan [default: current directory]
         #[arg(long, default_value = ".")]
         dir: PathBuf,
@@ -221,6 +225,7 @@ async fn main() {
         Commands::Check {
             project_type,
             json,
+            review_exceptions,
             dir,
             config,
             deep,
@@ -230,14 +235,20 @@ async fn main() {
         } => {
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
             let config_source = require_config(config.as_deref(), &dir);
-            match sloppy_joe::scan_with_source_full(
-                &dir,
-                project_type.as_deref(),
-                config_source.as_deref(),
+            let opts = sloppy_joe::ScanOptions {
                 deep,
                 paranoid,
                 no_cache,
-                cache_dir.as_deref(),
+                cache_dir: cache_dir.as_deref(),
+                disable_osv_disk_cache: false,
+                skip_hash_check: false,
+                review_exceptions,
+            };
+            match sloppy_joe::scan_with_source_full_options(
+                &dir,
+                project_type.as_deref(),
+                config_source.as_deref(),
+                &opts,
             )
             .await
             {
@@ -518,6 +529,29 @@ async fn main() {
                     println!("{} -> {}", repo, config);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_cli_parses_review_exceptions_flag() {
+        let cli = Cli::try_parse_from(["sloppy-joe", "check", "--review-exceptions", "--json"])
+            .expect("check command should parse review-exceptions");
+
+        match cli.command {
+            Commands::Check {
+                json,
+                review_exceptions,
+                ..
+            } => {
+                assert!(json);
+                assert!(review_exceptions);
+            }
+            _ => panic!("expected check command"),
         }
     }
 }

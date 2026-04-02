@@ -23,6 +23,14 @@ struct SimilarityCache {
     entries: HashMap<String, bool>,
 }
 
+pub(crate) struct SimilarityRunOptions<'a> {
+    pub cache_dir: Option<&'a Path>,
+    pub no_cache: bool,
+    pub paranoid: bool,
+    pub dep_metadata: Option<&'a [crate::checks::metadata::MetadataLookup]>,
+    pub config: &'a crate::config::SloppyJoeConfig,
+}
+
 fn cache_path_for(ecosystem: Ecosystem, cache_dir: Option<&Path>) -> PathBuf {
     let base = cache_dir
         .map(PathBuf::from)
@@ -185,6 +193,16 @@ fn format_match_message(dep_name: &str, candidate: &str, generator: &str) -> Str
     }
 }
 
+fn is_suppressed(
+    config: &crate::config::SloppyJoeConfig,
+    ecosystem: Ecosystem,
+    package: &str,
+    candidate: &str,
+    generator: &str,
+) -> bool {
+    config.is_similarity_exception(ecosystem.as_str(), package, candidate, generator)
+}
+
 /// Main entry point. Registry-based similarity checking.
 ///
 /// Phase 0: Scope squatting (no registry)
@@ -197,7 +215,41 @@ pub async fn check_similarity(
     deps: &[Dependency],
     ecosystem: Ecosystem,
 ) -> Result<Vec<Issue>> {
-    check_similarity_with_cache(registry, deps, ecosystem, None, false, false, None).await
+    let config = crate::config::SloppyJoeConfig::default();
+    check_similarity_with_options(
+        registry,
+        deps,
+        ecosystem,
+        SimilarityRunOptions {
+            cache_dir: None,
+            no_cache: false,
+            paranoid: false,
+            dep_metadata: None,
+            config: &config,
+        },
+    )
+    .await
+}
+
+pub async fn check_similarity_with_config(
+    registry: &dyn Registry,
+    deps: &[Dependency],
+    ecosystem: Ecosystem,
+    config: &crate::config::SloppyJoeConfig,
+) -> Result<Vec<Issue>> {
+    check_similarity_with_options(
+        registry,
+        deps,
+        ecosystem,
+        SimilarityRunOptions {
+            cache_dir: None,
+            no_cache: false,
+            paranoid: false,
+            dep_metadata: None,
+            config,
+        },
+    )
+    .await
 }
 
 /// Check similarity with configurable cache and generator selection.
@@ -212,16 +264,48 @@ pub async fn check_similarity_with_cache(
     paranoid: bool,
     dep_metadata: Option<&[crate::checks::metadata::MetadataLookup]>,
 ) -> Result<Vec<Issue>> {
+    let config = crate::config::SloppyJoeConfig::default();
+    check_similarity_with_options(
+        registry,
+        deps,
+        ecosystem,
+        SimilarityRunOptions {
+            cache_dir,
+            no_cache,
+            paranoid,
+            dep_metadata,
+            config: &config,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn check_similarity_with_options(
+    registry: &dyn Registry,
+    deps: &[Dependency],
+    ecosystem: Ecosystem,
+    options: SimilarityRunOptions<'_>,
+) -> Result<Vec<Issue>> {
+    let SimilarityRunOptions {
+        cache_dir,
+        no_cache,
+        paranoid,
+        dep_metadata,
+        config,
+    } = options;
     let case_insensitive = is_case_insensitive(ecosystem);
     let mut issues = Vec::new();
     let mut flagged: HashSet<String> = HashSet::new();
 
     // Build a set of all dep names for intra-manifest comparison
-    let dep_names: HashSet<String> = deps.iter().map(|d| d.name.to_lowercase()).collect();
+    let dep_names: HashSet<String> = deps
+        .iter()
+        .map(|d| d.package_name().to_lowercase())
+        .collect();
 
     // ---- Phase 0: Scope squatting (no registry needed) ----
     for dep in deps {
-        if let Some(scope) = extract_scope(&dep.name, ecosystem) {
+        if let Some(scope) = extract_scope(dep.package_name(), ecosystem) {
             let scopes = known_scopes(ecosystem);
             let scope_lower = scope.to_lowercase();
             for &known in scopes {
@@ -233,10 +317,20 @@ pub async fn check_similarity_with_cache(
                 let distance = strsim::levenshtein(&scope_lower, &known_lower);
                 let threshold = max_distance(scope_lower.len());
                 if distance > 0 && distance <= threshold {
-                    if flagged.insert(dep.name.clone()) {
+                    let candidate = dep.package_name().replace(&scope, known);
+                    if is_suppressed(
+                        config,
+                        ecosystem,
+                        dep.package_name(),
+                        &candidate,
+                        "scope-squatting",
+                    ) {
+                        continue;
+                    }
+                    if flagged.insert(dep.package_name().to_string()) {
                         issues.push(make_issue(
-                            &dep.name,
-                            &dep.name,
+                            dep.package_name(),
+                            &candidate,
                             "scope-squatting",
                             &format!(
                                 "Scope '{}' is {} character{} away from the known scope '{}'.\n      \
@@ -246,10 +340,7 @@ pub async fn check_similarity_with_cache(
                                 if distance == 1 { "" } else { "s" },
                                 known
                             ),
-                            &format!(
-                                "If you meant '{}', fix the scope in your manifest.",
-                                dep.name.replace(&scope, known)
-                            ),
+                            &format!("If you meant '{}', fix the scope in your manifest.", candidate),
                         ));
                     }
                     break;
@@ -266,33 +357,46 @@ pub async fn check_similarity_with_cache(
     };
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
     for dep in deps {
-        if !flagged.contains(&dep.name) {
+        if !flagged.contains(dep.package_name()) {
             all_mutations.insert(
-                dep.name.clone(),
-                generate_mutations_with(&generators, &dep.name, ecosystem),
+                dep.package_name().to_string(),
+                generate_mutations_with(&generators, dep.package_name(), ecosystem),
             );
         }
     }
 
     // ---- Phase 1: Intra-manifest comparison (no network) ----
     for dep in deps {
-        if flagged.contains(&dep.name) {
+        if flagged.contains(dep.package_name()) {
             continue;
         }
-        if let Some(mutations) = all_mutations.get(&dep.name) {
+        if let Some(mutations) = all_mutations.get(dep.package_name()) {
             for (mutation, gen_name) in mutations {
                 let mutation_lower = mutation.to_lowercase();
-                if dep_names.contains(&mutation_lower) && mutation_lower != dep.name.to_lowercase()
+                if is_suppressed(
+                    config,
+                    ecosystem,
+                    dep.package_name(),
+                    &mutation_lower,
+                    gen_name,
+                ) {
+                    continue;
+                }
+                if dep_names.contains(&mutation_lower)
+                    && mutation_lower != dep.package_name().to_lowercase()
                 {
-                    if flagged.insert(dep.name.clone()) {
-                        let message = format_match_message(&dep.name, &mutation_lower, gen_name);
+                    if flagged.insert(dep.package_name().to_string()) {
+                        let message =
+                            format_match_message(dep.package_name(), &mutation_lower, gen_name);
                         issues.push(make_issue(
-                            &dep.name,
+                            dep.package_name(),
                             &mutation_lower,
                             gen_name,
                             &format!(
                                 "{} Both '{}' and '{}' are in your manifest.",
-                                message, dep.name, mutation_lower
+                                message,
+                                dep.package_name(),
+                                mutation_lower
                             ),
                             "Examine both packages and add the intended one to your allowed list.",
                         ));
@@ -306,12 +410,12 @@ pub async fn check_similarity_with_cache(
     // ---- Phase 2: Batch-query registry for non-flagged deps ----
     let mut queries: Vec<(String, String)> = Vec::new();
     for dep in deps {
-        if flagged.contains(&dep.name) {
+        if flagged.contains(dep.package_name()) {
             continue;
         }
-        if let Some(mutations) = all_mutations.get(&dep.name) {
+        if let Some(mutations) = all_mutations.get(dep.package_name()) {
             for mutation in mutations.keys() {
-                queries.push((dep.name.clone(), mutation.clone()));
+                queries.push((dep.package_name().to_string(), mutation.clone()));
             }
         }
     }
@@ -373,7 +477,7 @@ pub async fn check_similarity_with_cache(
     }
 
     // Emit blocking error if registry is unreachable (fail closed)
-    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+    if crate::checks::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new(
@@ -408,18 +512,27 @@ pub async fn check_similarity_with_cache(
     // For each dep with matches, pick the highest-severity match (deterministic).
     let metadata_queries: Vec<(String, String)> = deps
         .iter()
-        .filter(|dep| !flagged.contains(&dep.name))
+        .filter(|dep| !flagged.contains(dep.package_name()))
         .filter_map(|dep| {
-            let dep_matches = matches.get(&dep.name)?;
-            let dep_mutations = all_mutations.get(&dep.name)?;
+            let dep_matches = matches.get(dep.package_name())?;
+            let dep_mutations = all_mutations.get(dep.package_name())?;
             // Pick the candidate with the highest generator severity
-            let best = dep_matches.iter().max_by_key(|c| {
-                dep_mutations
-                    .get(c.as_str())
-                    .map(|g| generator_severity(g))
-                    .unwrap_or(0)
-            })?;
-            Some((dep.name.clone(), best.clone()))
+            let best = dep_matches
+                .iter()
+                .filter(|candidate| {
+                    let generator = dep_mutations
+                        .get(candidate.as_str())
+                        .copied()
+                        .unwrap_or("mutation-match");
+                    !is_suppressed(config, ecosystem, dep.package_name(), candidate, generator)
+                })
+                .max_by_key(|c| {
+                    dep_mutations
+                        .get(c.as_str())
+                        .map(|g| generator_severity(g))
+                        .unwrap_or(0)
+                })?;
+            Some((dep.package_name().to_string(), best.clone()))
         })
         .collect();
 
@@ -487,30 +600,44 @@ pub async fn check_similarity_with_cache(
 
     // ---- Case variant check for case-sensitive registries ----
     if !case_insensitive {
+        let mut case_variant_queries = 0usize;
+        let mut case_variant_errors = 0usize;
         for dep in deps {
-            if flagged.contains(&dep.name) {
+            if flagged.contains(dep.package_name()) {
                 continue;
             }
             // On case-sensitive registries, check if the lowercased name exists on registry
-            let dep_lower = dep.name.to_lowercase();
-            if dep_lower != dep.name {
+            let dep_lower = dep.package_name().to_lowercase();
+            if dep_lower != dep.package_name() {
+                case_variant_queries += 1;
                 let exists = match registry.exists(&dep_lower).await {
                     Ok(v) => v,
                     Err(_) => {
-                        // Count toward the overall error budget (already checked above)
+                        case_variant_errors += 1;
                         continue;
                     }
                 };
-                if exists && flagged.insert(dep.name.clone()) {
+                if is_suppressed(
+                    config,
+                    ecosystem,
+                    dep.package_name(),
+                    &dep_lower,
+                    "case-variant",
+                ) {
+                    continue;
+                }
+                if exists && flagged.insert(dep.package_name().to_string()) {
                     issues.push(make_issue(
-                        &dep.name,
+                        dep.package_name(),
                         &dep_lower,
                         "case-variant",
                         &format!(
                             "'{}' differs from '{}' only in letter casing. \
                              On case-sensitive registries ({}) these resolve to different packages. \
                              An attacker could register the case variant.",
-                            dep.name, dep_lower, ecosystem
+                            dep.package_name(),
+                            dep_lower,
+                            ecosystem
                         ),
                         &format!(
                             "Use the exact casing '{}' in your manifest.",
@@ -519,6 +646,26 @@ pub async fn check_similarity_with_cache(
                     ));
                 }
             }
+        }
+        if crate::checks::has_query_errors(case_variant_errors) {
+            let error_rate = case_variant_errors as f64 / case_variant_queries.max(1) as f64;
+            issues.push(
+                Issue::new(
+                    "<registry>",
+                    crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE,
+                    Severity::Error,
+                )
+                .message(format!(
+                    "Registry queries failed for {} of {} similarity checks ({:.0}%). \
+                     Similarity detection is unreliable. Fix network connectivity or retry.",
+                    case_variant_errors,
+                    case_variant_queries,
+                    error_rate * 100.0
+                ))
+                .fix(
+                    "Ensure the registry is reachable. Use --no-cache to bypass stale cache data.",
+                ),
+            );
         }
     }
 
@@ -540,8 +687,10 @@ fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix
 mod tests {
     use super::generators::*;
     use super::*;
+    use crate::config::{SimilarityException, SloppyJoeConfig};
     use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
     use async_trait::async_trait;
+    use std::collections::HashMap;
 
     struct FakeRegistry {
         existing: HashSet<String>,
@@ -599,6 +748,7 @@ mod tests {
             name: name.to_string(),
             version: None,
             ecosystem,
+            actual_name: None,
         }
     }
 
@@ -701,6 +851,61 @@ mod tests {
                 .iter()
                 .any(|i| i.package == "lodahs" || i.package == "lodash"),
             "Expected intra-manifest flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_similarity_exception_suppresses_specific_pair_only() {
+        let registry = FakeRegistry::empty();
+        let deps = vec![
+            dep_eco("serde", Ecosystem::Cargo),
+            dep_eco("serde_json", Ecosystem::Cargo),
+        ];
+        let config = SloppyJoeConfig {
+            similarity_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![SimilarityException {
+                    package: "serde_json".to_string(),
+                    candidate: "serde".to_string(),
+                    generator: "segment-overlap".to_string(),
+                    reason: Some("legitimate companion crate".to_string()),
+                }],
+            )]),
+            ..Default::default()
+        };
+
+        let issues = check_similarity_with_config(&registry, &deps, Ecosystem::Cargo, &config)
+            .await
+            .unwrap();
+        assert!(
+            issues.is_empty(),
+            "exact similarity exception should suppress the serde_json/serde segment-overlap false positive"
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_similarity_exception_does_not_broadly_allow_package() {
+        let registry = FakeRegistry::with(&["serde_json"]);
+        let deps = vec![dep_eco("serde_jsom", Ecosystem::Cargo)];
+        let config = SloppyJoeConfig {
+            similarity_exceptions: HashMap::from([(
+                "cargo".to_string(),
+                vec![SimilarityException {
+                    package: "serde_json".to_string(),
+                    candidate: "serde".to_string(),
+                    generator: "segment-overlap".to_string(),
+                    reason: Some("legitimate companion crate".to_string()),
+                }],
+            )]),
+            ..Default::default()
+        };
+
+        let issues = check_similarity_with_config(&registry, &deps, Ecosystem::Cargo, &config)
+            .await
+            .unwrap();
+        assert!(
+            issues.iter().any(|issue| issue.package == "serde_jsom"),
+            "package-specific exception must not suppress unrelated similarity findings"
         );
     }
 

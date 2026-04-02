@@ -1,13 +1,13 @@
+use super::{
+    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue,
+};
 use crate::Dependency;
 use anyhow::Result;
 use std::path::Path;
 
 #[cfg(test)]
 use super::add_manifest_exact_fallbacks;
-use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue,
-};
 
 /// Resolve versions from a pre-parsed poetry.lock TOML value.
 pub(super) fn resolve_from_value(
@@ -58,25 +58,25 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
             name,
             version: Some(version),
             ecosystem: crate::Ecosystem::PyPI,
+            actual_name: None,
         })
         .collect())
 }
 
-/// Read poetry.lock if it exists, return parsed TOML value.
-pub(super) fn read_lockfile(project_dir: &Path) -> Option<toml::Value> {
+pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<toml::Value>> {
     let path = project_dir.join("poetry.lock");
-    if !path.exists() {
-        return None;
+    if !crate::parsers::path_detected(&path)? {
+        return Ok(None);
     }
-    let content =
-        crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).ok()?;
-    toml::from_str(&content).ok()
+    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let parsed = toml::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
+    Ok(Some(parsed))
 }
 
-/// Resolve from disk (used by resolve_versions test API).
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
-    let Some(parsed) = read_lockfile(project_dir) else {
+    let Some(parsed) = read_lockfile(project_dir)? else {
         let mut result = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut result, deps);
         return Ok(result);

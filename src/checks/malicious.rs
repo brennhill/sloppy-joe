@@ -146,11 +146,16 @@ pub async fn check_malicious_with_cache(
         // and will return all known vulnerabilities for the package.
         let exact_version = resolution.exact_version(dep).map(str::to_string);
         let version_suffix = exact_version.clone().unwrap_or_default();
-        let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
+        let cache_key = format!(
+            "{}:{}:{}",
+            dep.ecosystem,
+            dep.package_name(),
+            version_suffix
+        );
         if !cache.contains_key(&cache_key) {
             pending
                 .entry(cache_key)
-                .or_insert_with(|| (dep.name.clone(), dep.ecosystem, exact_version));
+                .or_insert_with(|| (dep.package_name().to_string(), dep.ecosystem, exact_version));
         }
     }
 
@@ -179,11 +184,7 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    let ecosystem = deps
-        .first()
-        .map(|d| d.ecosystem)
-        .unwrap_or(crate::Ecosystem::Npm);
-    if crate::checks::exceeds_error_threshold(error_count, total_queries, ecosystem) {
+    if crate::checks::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
             Issue::new(
@@ -205,7 +206,12 @@ pub async fn check_malicious_with_cache(
     for dep in deps {
         // Check cache for results (including unresolved deps which now get queried)
         let version_suffix = resolution.exact_version(dep).unwrap_or_default();
-        let cache_key = format!("{}:{}:{}", dep.ecosystem, dep.name, version_suffix);
+        let cache_key = format!(
+            "{}:{}:{}",
+            dep.ecosystem,
+            dep.package_name(),
+            version_suffix
+        );
         let vuln_ids = cache
             .get(&cache_key)
             .map(|entry| entry.vuln_ids.clone())
@@ -213,15 +219,15 @@ pub async fn check_malicious_with_cache(
 
         if !vuln_ids.is_empty() {
             issues.push(
-                Issue::new(&dep.name, crate::checks::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
+                Issue::new(dep.package_name(), crate::checks::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
                     .message(format!(
                         "'{}' has known security vulnerabilities in the OSV database. Vulnerability IDs: {}",
-                        dep.name,
+                        dep.package_name(),
                         vuln_ids.join(", ")
                     ))
                     .fix(format!(
                         "Remove '{}' or update to a non-vulnerable version.",
-                        dep.name
+                        dep.package_name()
                     )),
             );
         }
@@ -266,6 +272,7 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::Npm,
+            actual_name: None,
         }
     }
 
@@ -318,6 +325,7 @@ mod tests {
             name: "vulnerable-pkg".to_string(),
             version: None,
             ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
         }];
         let issues = check_malicious_with_cache(&client, &deps, &ResolutionResult::default(), None)
             .await
@@ -329,6 +337,36 @@ mod tests {
                 .any(|i| i.package == "vulnerable-pkg" && i.check.contains("known-vulnerability")),
             "Unresolved deps should still get OSV checks. Issues: {:?}",
             issues.iter().map(|i| &i.check).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn single_osv_error_triggers_fail_closed() {
+        struct ErrorClient;
+
+        #[async_trait::async_trait]
+        impl OsvClient for ErrorClient {
+            async fn query(
+                &self,
+                _name: &str,
+                _ecosystem: &str,
+                _version: Option<&str>,
+            ) -> Result<Vec<String>> {
+                anyhow::bail!("osv unavailable");
+            }
+        }
+
+        let deps = vec![dep_with_version("react", "18.2.0")];
+        let issues =
+            check_malicious_with_cache(&ErrorClient, &deps, &ResolutionResult::default(), None)
+                .await
+                .unwrap();
+
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.check.contains("registry-unreachable")),
+            "Any OSV lookup failure should trigger fail-closed"
         );
     }
 

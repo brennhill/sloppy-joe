@@ -11,19 +11,94 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
     let mut deps = Vec::new();
 
-    for section in ["dependencies", "devDependencies"] {
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
         if let Some(obj) = parsed.get(section).and_then(|v| v.as_object()) {
             for (name, version) in obj {
-                deps.push(Dependency {
-                    name: name.clone(),
-                    version: version.as_str().map(String::from),
-                    ecosystem: crate::Ecosystem::Npm,
-                });
+                if let Some(dep) = parse_dependency(name, version.as_str(), &path)? {
+                    super::validate_dependency(&dep, &path)?;
+                    deps.push(dep);
+                }
             }
         }
     }
 
     Ok(deps)
+}
+
+fn parse_dependency(
+    manifest_name: &str,
+    version: Option<&str>,
+    source_path: &Path,
+) -> Result<Option<Dependency>> {
+    let Some(version) = version.map(str::trim) else {
+        return Ok(Some(Dependency {
+            name: manifest_name.to_string(),
+            version: None,
+            ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
+        }));
+    };
+
+    if let Some(alias_spec) = version.strip_prefix("npm:") {
+        let (target_name, target_version) = alias_spec.rsplit_once('@').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported npm alias '{}' in {}: expected npm:<package>@<version>",
+                crate::report::sanitize_for_terminal(version),
+                source_path.display()
+            )
+        })?;
+        let actual = Dependency {
+            name: target_name.to_string(),
+            version: Some(target_version.to_string()),
+            ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
+        };
+        super::validate_dependency(&actual, source_path)?;
+        return Ok(Some(Dependency {
+            name: manifest_name.to_string(),
+            version: Some(target_version.to_string()),
+            ecosystem: crate::Ecosystem::Npm,
+            actual_name: Some(target_name.to_string()),
+        }));
+    }
+
+    if is_unsupported_remote_spec(version) {
+        anyhow::bail!(
+            "Unsupported non-registry npm dependency '{}' in {}",
+            crate::report::sanitize_for_terminal(version),
+            source_path.display()
+        );
+    }
+
+    if version.starts_with("workspace:")
+        || version.starts_with("file:")
+        || version.starts_with("link:")
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(Dependency {
+        name: manifest_name.to_string(),
+        version: Some(version.to_string()),
+        ecosystem: crate::Ecosystem::Npm,
+        actual_name: None,
+    }))
+}
+
+fn is_unsupported_remote_spec(version: &str) -> bool {
+    let version = version.trim();
+    version.starts_with("git+")
+        || version.starts_with("git://")
+        || version.starts_with("github:")
+        || version.starts_with("gitlab:")
+        || version.starts_with("bitbucket:")
+        || version.starts_with("gist:")
+        || version.contains("://")
 }
 
 #[cfg(test)]
@@ -79,6 +154,72 @@ mod tests {
         let dir = setup_dir(r#"{"dependencies": {"react": "^18.2.0"}}"#);
         let deps = parse(&dir).unwrap();
         assert_eq!(deps[0].version, Some("^18.2.0".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_optional_dependencies() {
+        let dir = setup_dir(r#"{"optionalDependencies": {"fsevents": "^2.3.0"}}"#);
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "fsevents");
+        assert_eq!(deps[0].version, Some("^2.3.0".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_invalid_dependency_name_with_control_character() {
+        let dir = setup_dir("{\"dependencies\": {\"bad\\u001bname\": \"1.0.0\"}}");
+        let err = parse(&dir).expect_err("invalid dependency names should fail parsing");
+        let msg = err.to_string();
+        assert!(msg.contains("package.json"));
+        assert!(msg.contains("invalid package name"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_peer_dependencies_as_direct_inputs() {
+        let dir = setup_dir(r#"{"peerDependencies": {"react": "^18.0.0"}}"#);
+        let deps = parse(&dir).expect("peer dependencies should be treated as direct inputs");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "react");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn skip_workspace_and_file_dependencies() {
+        let dir = setup_dir(
+            r#"{"dependencies": {"workspace-lib": "workspace:*", "local-lib": "file:../local-lib", "react": "18.3.1"}}"#,
+        );
+        let deps =
+            parse(&dir).expect("local dependency protocols should not be treated as registry deps");
+        let names: Vec<_> = deps.iter().map(|dep| dep.name.as_str()).collect();
+        assert_eq!(names, vec!["react"]);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_git_and_remote_dependency_sources() {
+        for spec in [
+            "github:owner/repo",
+            "git+https://github.com/owner/repo.git",
+            "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+        ] {
+            let dir = setup_dir(&format!(r#"{{"dependencies": {{"react": "{spec}"}}}}"#));
+            let err = parse(&dir).expect_err("unsupported npm dependency sources must fail closed");
+            assert!(err.to_string().contains(spec));
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn parse_npm_alias_dependency_into_target_spec() {
+        let dir = setup_dir(r#"{"dependencies": {"lodash": "npm:evil-pkg@1.2.3"}}"#);
+        let deps = parse(&dir).expect("npm aliases should parse into a dependency identity");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "lodash");
+        assert_eq!(deps[0].version, Some("1.2.3".to_string()));
+        assert_eq!(deps[0].actual_name.as_deref(), Some("evil-pkg"));
         cleanup(&dir);
     }
 }

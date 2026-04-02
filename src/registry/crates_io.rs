@@ -80,6 +80,26 @@ impl super::RegistryMetadata for CratesIoRegistry {
         let body: serde_json::Value = resp.json().await?;
         Ok(metadata_from_body(&body, version))
     }
+
+    async fn owners(&self, package_name: &str) -> Result<Option<Vec<String>>> {
+        self.validate_name(package_name)?;
+        let url = format!("https://crates.io/api/v1/crates/{}/owners", package_name);
+        let resp = super::retry_get(&self.client, &url).await?;
+        if super::check_metadata_status(resp.status(), "crates.io", package_name)?.is_none() {
+            return Ok(None);
+        }
+        let body: serde_json::Value = resp.json().await?;
+        let owners = body["users"]
+            .as_array()
+            .map(|users| {
+                users
+                    .iter()
+                    .filter_map(|user| user["login"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(Some(owners))
+    }
 }
 
 #[cfg(test)]

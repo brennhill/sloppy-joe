@@ -1,4 +1,7 @@
 mod cargo;
+mod composer;
+mod dotnet;
+mod gradle;
 mod npm;
 mod python;
 mod ruby;
@@ -66,8 +69,11 @@ enum ParsedLockfile {
         file_name: String,
     },
     Cargo(toml::Value),
-    Ruby(String),
+    Composer(serde_json::Value),
+    Dotnet(serde_json::Value),
+    Gradle(String),
     Python(toml::Value),
+    Ruby(String),
     None,
 }
 
@@ -84,26 +90,47 @@ pub struct LockfileData {
 }
 
 impl LockfileData {
+    #[cfg(test)]
     pub fn parse(project_dir: &Path, direct_deps: &[Dependency]) -> Result<Self> {
+        Self::parse_for_kind(project_dir, None, direct_deps)
+    }
+
+    pub fn parse_for_kind(
+        project_dir: &Path,
+        project_kind: Option<crate::ProjectInputKind>,
+        direct_deps: &[Dependency],
+    ) -> Result<Self> {
         let ecosystem = direct_deps.first().map(|d| d.ecosystem);
 
         // Read and parse the lockfile once
-        let parsed = read_lockfile(project_dir, ecosystem)?;
+        let parsed = read_lockfile(project_dir, ecosystem, project_kind)?;
 
         // Resolve direct dep versions from the parsed data
         let resolution = resolve_from_parsed(&parsed, direct_deps)?;
 
         // Extract all deps from the parsed data
-        let all_deps = parse_all_from_parsed(&parsed)?;
+        let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps)?;
 
         // Filter to transitive only
-        let direct_names: HashSet<String> = direct_deps.iter().map(|d| d.name.clone()).collect();
+        let direct_versions: HashSet<(String, String)> = direct_deps
+            .iter()
+            .filter_map(|dep| {
+                resolution
+                    .exact_version(dep)
+                    .map(|version| (dep.package_name().to_string(), version.to_string()))
+            })
+            .collect();
         let mut transitive: Vec<Dependency> = all_deps
             .into_iter()
-            .filter(|dep| !direct_names.contains(&dep.name))
+            .filter(|dep| {
+                let Some(version) = dep.version.as_deref() else {
+                    return true;
+                };
+                !direct_versions.contains(&(dep.package_name().to_string(), version.to_string()))
+            })
             .collect();
         let mut seen = HashSet::new();
-        transitive.retain(|dep| seen.insert((dep.name.clone(), dep.version.clone())));
+        transitive.retain(|dep| seen.insert((dep.package_name().to_string(), dep.version.clone())));
 
         Ok(Self {
             resolution,
@@ -120,47 +147,91 @@ impl LockfileData {
 }
 
 /// Read and parse the lockfile from disk (once).
-fn read_lockfile(project_dir: &Path, ecosystem: Option<Ecosystem>) -> Result<ParsedLockfile> {
+fn read_lockfile(
+    project_dir: &Path,
+    ecosystem: Option<Ecosystem>,
+    project_kind: Option<crate::ProjectInputKind>,
+) -> Result<ParsedLockfile> {
+    if let Some(kind) = project_kind {
+        return read_lockfile_for_project_kind(project_dir, kind);
+    }
+
     match ecosystem {
         Some(Ecosystem::Npm) => {
             let Some(path) =
-                first_existing(project_dir, &["package-lock.json", "npm-shrinkwrap.json"])
+                first_existing(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
             else {
                 return Ok(ParsedLockfile::None);
             };
             let file_name = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("package-lock.json")
+                .unwrap_or("npm-shrinkwrap.json")
                 .to_string();
             let content =
                 crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-            match serde_json::from_str(&content) {
-                Ok(value) => Ok(ParsedLockfile::Npm { value, file_name }),
-                Err(_) => Ok(ParsedLockfile::None), // parse error handled in resolve
-            }
+            let value = serde_json::from_str(&content)
+                .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
+            Ok(ParsedLockfile::Npm { value, file_name })
         }
         Some(Ecosystem::Cargo) => {
             let path = project_dir.join("Cargo.lock");
-            if !path.exists() {
+            if !crate::parsers::path_detected(&path)? {
                 return Ok(ParsedLockfile::None);
             }
             let content =
                 crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-            match toml::from_str(&content) {
-                Ok(value) => Ok(ParsedLockfile::Cargo(value)),
-                Err(_) => Ok(ParsedLockfile::None),
-            }
+            let value = toml::from_str(&content)
+                .map_err(|err| anyhow::anyhow!("Failed to parse Cargo.lock: {}", err))?;
+            Ok(ParsedLockfile::Cargo(value))
         }
+        Some(Ecosystem::Php) => match composer::read_lockfile(project_dir)? {
+            Some(value) => Ok(ParsedLockfile::Composer(value)),
+            None => Ok(ParsedLockfile::None),
+        },
+        Some(Ecosystem::Jvm) => match gradle::read_lockfile(project_dir)? {
+            Some(content) => Ok(ParsedLockfile::Gradle(content)),
+            None => Ok(ParsedLockfile::None),
+        },
+        Some(Ecosystem::Dotnet) => match dotnet::read_lockfile(project_dir)? {
+            Some(value) => Ok(ParsedLockfile::Dotnet(value)),
+            None => Ok(ParsedLockfile::None),
+        },
         Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir) {
             Some(content) => Ok(ParsedLockfile::Ruby(content)),
             None => Ok(ParsedLockfile::None),
         },
-        Some(Ecosystem::PyPI) => match python::read_lockfile(project_dir) {
+        Some(Ecosystem::PyPI) => match python::read_lockfile(project_dir)? {
             Some(value) => Ok(ParsedLockfile::Python(value)),
             None => Ok(ParsedLockfile::None),
         },
         _ => Ok(ParsedLockfile::None),
+    }
+}
+
+fn read_lockfile_for_project_kind(
+    project_dir: &Path,
+    project_kind: crate::ProjectInputKind,
+) -> Result<ParsedLockfile> {
+    match project_kind {
+        crate::ProjectInputKind::Npm => read_lockfile(project_dir, Some(Ecosystem::Npm), None),
+        crate::ProjectInputKind::PyProjectPoetry => {
+            read_lockfile(project_dir, Some(Ecosystem::PyPI), None)
+        }
+        crate::ProjectInputKind::PyRequirements
+        | crate::ProjectInputKind::PyProjectLegacy
+        | crate::ProjectInputKind::PyPipfile
+        | crate::ProjectInputKind::PySetupPy
+        | crate::ProjectInputKind::PySetupCfg => Ok(ParsedLockfile::None),
+        crate::ProjectInputKind::Cargo => read_lockfile(project_dir, Some(Ecosystem::Cargo), None),
+        crate::ProjectInputKind::Go => read_lockfile(project_dir, Some(Ecosystem::Go), None),
+        crate::ProjectInputKind::Ruby => read_lockfile(project_dir, Some(Ecosystem::Ruby), None),
+        crate::ProjectInputKind::Php => read_lockfile(project_dir, Some(Ecosystem::Php), None),
+        crate::ProjectInputKind::Gradle => read_lockfile(project_dir, Some(Ecosystem::Jvm), None),
+        crate::ProjectInputKind::Maven => Ok(ParsedLockfile::None),
+        crate::ProjectInputKind::Dotnet => {
+            read_lockfile(project_dir, Some(Ecosystem::Dotnet), None)
+        }
     }
 }
 
@@ -169,8 +240,11 @@ fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<R
     match parsed {
         ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
-        ParsedLockfile::Ruby(content) => ruby::resolve_from_content(content, deps),
+        ParsedLockfile::Composer(value) => composer::resolve_from_value(value, deps),
+        ParsedLockfile::Dotnet(value) => dotnet::resolve_from_value(value, deps),
+        ParsedLockfile::Gradle(content) => gradle::resolve_from_content(content, deps),
         ParsedLockfile::Python(value) => python::resolve_from_value(value, deps),
+        ParsedLockfile::Ruby(content) => ruby::resolve_from_content(content, deps),
         ParsedLockfile::None => {
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
@@ -184,9 +258,22 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
         ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
-        ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
+        ParsedLockfile::Composer(value) => composer::parse_all_from_value(value),
+        ParsedLockfile::Dotnet(value) => dotnet::parse_all_from_value(value),
+        ParsedLockfile::Gradle(content) => gradle::parse_all_from_content(content),
         ParsedLockfile::Python(value) => python::parse_all_from_value(value),
+        ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
         ParsedLockfile::None => Ok(vec![]),
+    }
+}
+
+fn parse_all_from_parsed_for_project(
+    parsed: &ParsedLockfile,
+    direct_deps: &[Dependency],
+) -> Result<Vec<Dependency>> {
+    match parsed {
+        ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
+        _ => parse_all_from_parsed(parsed),
     }
 }
 
@@ -202,6 +289,9 @@ pub(crate) fn resolve_versions(
     match first.ecosystem {
         Ecosystem::Npm => npm::resolve(project_dir, deps),
         Ecosystem::Cargo => cargo::resolve(project_dir, deps),
+        Ecosystem::Php => composer::resolve(project_dir, deps),
+        Ecosystem::Jvm => gradle::resolve(project_dir, deps),
+        Ecosystem::Dotnet => dotnet::resolve(project_dir, deps),
         Ecosystem::Ruby => ruby::resolve(project_dir, deps),
         Ecosystem::PyPI => python::resolve(project_dir, deps),
         _ => {
@@ -215,10 +305,13 @@ pub(crate) fn resolve_versions(
 // -- Shared helpers used by npm.rs and cargo.rs --
 
 fn first_existing(project_dir: &Path, names: &[&str]) -> Option<PathBuf> {
-    names
-        .iter()
-        .map(|name| project_dir.join(name))
-        .find(|path| path.exists())
+    names.iter().find_map(|name| {
+        let path = project_dir.join(name);
+        match crate::parsers::path_detected(&path) {
+            Ok(true) => Some(path),
+            _ => None,
+        }
+    })
 }
 
 fn add_manifest_exact_fallbacks(result: &mut ResolutionResult, deps: &[Dependency]) {
@@ -302,6 +395,7 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::Npm,
+            actual_name: None,
         }
     }
 
@@ -310,6 +404,7 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::Cargo,
+            actual_name: None,
         }
     }
 
@@ -349,6 +444,107 @@ mod tests {
         let deps = vec![npm_dep("react", "^18.2.0")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "18.3.1");
+    }
+
+    #[test]
+    fn npm_shrinkwrap_takes_precedence_over_package_lock() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.2.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("npm-shrinkwrap.json"),
+            r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.2.0"}},"node_modules/react":{"version":"18.2.9"}}}"#,
+        )
+        .unwrap();
+        let deps = vec![npm_dep("react", "^18.2.0")];
+        let result = resolve_versions(&dir, &deps).unwrap();
+        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "18.2.9");
+    }
+
+    #[test]
+    fn npm_alias_resolves_against_alias_path_but_real_package_identity() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"dependencies":{"lodash":"npm:evil-pkg@1.2.3"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"lodash":"npm:evil-pkg@1.2.3"}},"node_modules/lodash":{"name":"evil-pkg","version":"1.2.3"}}}"#,
+        )
+        .unwrap();
+
+        let deps = crate::parsers::package_json::parse(&dir).unwrap();
+        let data = LockfileData::parse(&dir, &deps).unwrap();
+
+        assert_eq!(data.resolution.exact_version(&deps[0]), Some("1.2.3"));
+        assert!(
+            data.transitive_deps.is_empty(),
+            "direct alias target must not be reintroduced as transitive"
+        );
+    }
+
+    #[test]
+    fn npm_parse_retains_nested_versions_of_direct_package_names() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"},"node_modules/other":{"version":"1.0.0"},"node_modules/other/node_modules/react":{"version":"17.0.2"}}}"#,
+        )
+        .unwrap();
+
+        let direct = vec![npm_dep("react", "18.3.1")];
+        let data = LockfileData::parse(&dir, &direct).expect(
+            "nested locked versions of a direct package must still be scanned as transitive deps",
+        );
+
+        assert!(
+            data.transitive_deps
+                .iter()
+                .any(|dep| dep.name == "react" && dep.version.as_deref() == Some("17.0.2")),
+            "nested direct-name versions must remain visible as transitive deps"
+        );
+    }
+
+    #[test]
+    fn npm_parse_skips_linked_workspace_entries() {
+        let lockfile = r#"{
+            "packages": {
+                "": { "name": "demo" },
+                "packages/local-lib": { "name": "local-lib", "version": "1.0.0" },
+                "node_modules/local-lib": { "resolved": "packages/local-lib", "link": true },
+                "node_modules/react": { "version": "18.3.1" }
+            }
+        }"#;
+        let deps =
+            npm::parse_all(lockfile).expect("lockfile parsing should ignore linked local entries");
+        let names: Vec<&str> = deps.iter().map(|dep| dep.name.as_str()).collect();
+        assert_eq!(names, vec!["react"]);
+    }
+
+    #[test]
+    fn npm_v1_parse_retains_nested_transitive_dependencies() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"demo","lockfileVersion":1,"dependencies":{"react":{"version":"18.3.1","dependencies":{"loose-envify":{"version":"1.4.0"}}}}}"#,
+        )
+        .unwrap();
+
+        let direct = vec![npm_dep("react", "18.3.1")];
+        let data = LockfileData::parse(&dir, &direct)
+            .expect("legacy npm lockfiles must recurse nested transitive dependencies");
+
+        assert!(
+            data.transitive_deps
+                .iter()
+                .any(|dep| dep.name == "loose-envify" && dep.version.as_deref() == Some("1.4.0")),
+            "nested v1 transitive dependencies must remain visible"
+        );
     }
 
     #[test]
@@ -404,6 +600,20 @@ mod tests {
                 .iter()
                 .any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED)
         );
+    }
+
+    #[test]
+    fn lockfile_data_parse_npm_malformed_lockfile_errors() {
+        let dir = unique_dir();
+        std::fs::write(dir.join("package-lock.json"), "{not json").unwrap();
+        let deps = vec![npm_dep("react", "^18.2.0")];
+
+        let err = match LockfileData::parse(&dir, &deps) {
+            Ok(_) => panic!("malformed npm lockfiles must block scanning"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("package-lock.json"));
     }
 
     #[test]
@@ -523,7 +733,7 @@ mod tests {
 
     #[test]
     fn parse_all_cargo_succeeds_on_valid_lockfile() {
-        let content = "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\n";
+        let content = "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.42.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
         let deps = cargo::parse_all(content).unwrap();
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|d| d.name == "serde"));
@@ -576,6 +786,7 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::Ruby,
+            actual_name: None,
         }
     }
 
@@ -584,6 +795,7 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::PyPI,
+            actual_name: None,
         }
     }
 
@@ -592,6 +804,34 @@ mod tests {
             name: name.to_string(),
             version: Some(version.to_string()),
             ecosystem: Ecosystem::Go,
+            actual_name: None,
+        }
+    }
+
+    fn php_dep(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: Ecosystem::Php,
+            actual_name: None,
+        }
+    }
+
+    fn jvm_dep(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: Ecosystem::Jvm,
+            actual_name: None,
+        }
+    }
+
+    fn dotnet_dep(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: Ecosystem::Dotnet,
+            actual_name: None,
         }
     }
 
@@ -623,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn python_lockfile_resolves_versions() {
+    fn python_poetry_projects_use_poetry_lock() {
         let dir = unique_dir();
         std::fs::write(
             dir.join("poetry.lock"),
@@ -631,11 +871,38 @@ mod tests {
         )
         .unwrap();
         let deps = vec![pypi_dep("requests", "==2.31.0")];
-        let result = resolve_versions(&dir, &deps).unwrap();
-        assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "2.31.0");
+        let result = LockfileData::parse_for_kind(
+            &dir,
+            Some(crate::ProjectInputKind::PyProjectPoetry),
+            &deps,
+        )
+        .unwrap()
+        .resolution;
         assert_eq!(
             result.resolved_version(&deps[0]).unwrap().source,
             ResolutionSource::Lockfile
+        );
+    }
+
+    #[test]
+    fn legacy_python_projects_do_not_use_poetry_lock() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("poetry.lock"),
+            "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
+        )
+        .unwrap();
+        let deps = vec![pypi_dep("requests", "==2.31.0")];
+        let result = LockfileData::parse_for_kind(
+            &dir,
+            Some(crate::ProjectInputKind::PyRequirements),
+            &deps,
+        )
+        .unwrap()
+        .resolution;
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
         );
     }
 
@@ -648,6 +915,39 @@ mod tests {
             result.resolved_version(&deps[0]).unwrap().source,
             ResolutionSource::ManifestExact
         );
+    }
+
+    #[test]
+    fn lockfile_data_parse_python_rejects_malformed_poetry_lockfiles() {
+        let dir = unique_dir();
+        std::fs::write(dir.join("poetry.lock"), "not = [valid").unwrap();
+        let deps = vec![pypi_dep("requests", "==2.31.0")];
+
+        let err = match LockfileData::parse(&dir, &deps) {
+            Ok(_) => panic!("trusted Python lockfiles must fail closed on parse errors"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("poetry.lock"));
+    }
+
+    #[test]
+    fn maven_projects_do_not_read_gradle_lockfiles() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("gradle.lockfile"),
+            "com.google.guava:guava:31.1-jre=compileClasspath\n",
+        )
+        .unwrap();
+        let deps = vec![jvm_dep("com.google.guava:guava", Some("31.1-jre"))];
+
+        let data = LockfileData::parse_for_kind(&dir, Some(crate::ProjectInputKind::Maven), &deps)
+            .expect("Maven projects must not consume gradle.lockfile");
+
+        assert_eq!(
+            data.resolution.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::ManifestExact
+        );
+        assert!(data.transitive_deps.is_empty());
     }
 
     #[test]
@@ -685,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn lockfile_data_parse_python_with_transitive() {
+    fn lockfile_data_parse_python_exposes_transitive_dependencies_from_trusted_lockfile() {
         let dir = unique_dir();
         std::fs::write(
             dir.join("poetry.lock"),
@@ -695,8 +995,92 @@ mod tests {
         let direct = vec![pypi_dep("requests", "==2.31.0")];
         let data = LockfileData::parse(&dir, &direct).unwrap();
         assert_eq!(data.resolution.exact_version(&direct[0]), Some("2.31.0"));
+        assert!(
+            data.transitive_deps
+                .iter()
+                .any(|dep| dep.name == "urllib3" && dep.version.as_deref() == Some("2.1.0"))
+        );
+    }
+
+    #[test]
+    fn lockfile_data_parse_php_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("composer.lock"),
+            r#"{
+  "packages": [
+    {"name": "laravel/framework", "version": "v10.0.0"},
+    {"name": "symfony/console", "version": "v6.4.0"}
+  ],
+  "packages-dev": []
+}"#,
+        )
+        .unwrap();
+        let direct = vec![php_dep("laravel/framework", Some("^10.0"))];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
+        assert_eq!(resolved.version, "v10.0.0");
+        assert_eq!(resolved.source, ResolutionSource::Lockfile);
         assert_eq!(data.transitive_deps.len(), 1);
-        assert_eq!(data.transitive_deps[0].name, "urllib3");
+        assert_eq!(data.transitive_deps[0].name, "symfony/console");
+    }
+
+    #[test]
+    fn lockfile_data_parse_gradle_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("gradle.lockfile"),
+            "\
+org.slf4j:slf4j-api:2.0.9=compileClasspath,runtimeClasspath\n\
+ch.qos.logback:logback-core:1.4.14=runtimeClasspath\n\
+empty=annotationProcessor\n",
+        )
+        .unwrap();
+        let direct = vec![jvm_dep("org.slf4j:slf4j-api", None)];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
+        assert_eq!(resolved.version, "2.0.9");
+        assert_eq!(resolved.source, ResolutionSource::Lockfile);
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(data.transitive_deps[0].name, "ch.qos.logback:logback-core");
+    }
+
+    #[test]
+    fn lockfile_data_parse_dotnet_with_transitive() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("packages.lock.json"),
+            r#"{
+  "version": 1,
+  "dependencies": {
+    ".NETCoreApp,Version=v8.0": {
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "13.0.1",
+        "resolved": "13.0.1",
+        "dependencies": {
+          "System.Runtime.CompilerServices.Unsafe": "6.0.0"
+        }
+      },
+      "System.Runtime.CompilerServices.Unsafe": {
+        "type": "Transitive",
+        "resolved": "6.0.0"
+      }
+    }
+  }
+}"#,
+        )
+        .unwrap();
+        let direct = vec![dotnet_dep("Newtonsoft.Json", Some("13.0.1"))];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+        let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
+        assert_eq!(resolved.version, "13.0.1");
+        assert_eq!(resolved.source, ResolutionSource::Lockfile);
+        assert_eq!(data.transitive_deps.len(), 1);
+        assert_eq!(
+            data.transitive_deps[0].name,
+            "System.Runtime.CompilerServices.Unsafe"
+        );
     }
 
     #[test]

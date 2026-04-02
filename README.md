@@ -43,6 +43,9 @@ sloppy-joe check --config https://raw.githubusercontent.com/yourorg/security-con
 # JSON output for CI pipelines
 sloppy-joe check --json
 
+# Review exact maintainer-change exceptions with evidence
+sloppy-joe check --review-exceptions
+
 # Generate a starter config
 sloppy-joe init > config.json
 ```
@@ -56,6 +59,20 @@ nix profile install github:brennhill/sloppy-joe
 **Exit codes:** `0` = all clear, `1` = issues found, `2` = runtime error.
 
 **Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
+
+**Ecosystem-specific rules:** see [docs/ecosystems/README.md](docs/ecosystems/README.md) for lockfile and manifest policy details, including [Go](docs/ecosystems/GOLANG.md) and [JVM](docs/ecosystems/JVM.md).
+
+| Ecosystem | Required manifest | Lockfile policy |
+|---|---|---|
+| npm | `package.json` | strict: `package-lock.json` or `npm-shrinkwrap.json` |
+| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted: Poetry requires `poetry.lock`; legacy manifests allowed with warnings |
+| Cargo | `Cargo.toml` | strict: `Cargo.lock` |
+| Go | `go.mod` | conditional: `go.sum` required for external deps |
+| Ruby | `Gemfile` | strict: `Gemfile.lock` |
+| PHP / Composer | `composer.json` | strict: `composer.lock` |
+| JVM / Gradle | `build.gradle` or `build.gradle.kts` | strict: `gradle.lockfile` |
+| JVM / Maven | `pom.xml` | warning-only: no trusted lockfile path enforced |
+| .NET / NuGet | `.csproj` | strict: `packages.lock.json` |
 
 **Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
 
@@ -320,18 +337,19 @@ ERROR requsets [metadata/low-downloads]
 
 ## Supported Ecosystems
 
-| Ecosystem | Manifest | Lockfile | Existence | Metadata | Age Gate |
-|-----------|----------|----------|:---------:|:--------:|:--------:|
-| npm | package.json | package-lock.json | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PyPI | requirements.txt | poetry.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Cargo | Cargo.toml | Cargo.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Go | go.mod | — | :white_check_mark: | :x: | :x: |
-| Ruby | Gemfile | Gemfile.lock | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PHP | composer.json | — | :white_check_mark: | :x: | :x: |
-| JVM | build.gradle / pom.xml | — | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| .NET | *.csproj | — | :white_check_mark: | :x: | :x: |
+| Ecosystem | Manifest | Lockfile Policy | Existence | Metadata | Age Gate |
+|-----------|----------|-----------------|:---------:|:--------:|:--------:|
+| npm | package.json | `package-lock.json` or `npm-shrinkwrap.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Cargo | Cargo.toml | `Cargo.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Go | go.mod | `go.sum` required for external deps; not required for stdlib-only or all-local `replace` | :white_check_mark: | :x: | :x: |
+| Ruby | Gemfile | `Gemfile.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PHP | composer.json | `composer.lock` required | :white_check_mark: | :x: | :x: |
+| JVM (Gradle) | build.gradle / build.gradle.kts | `gradle.lockfile` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| JVM (Maven) | pom.xml | warning-only: no strict lockfile enforcement | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| .NET | *.csproj | `packages.lock.json` required | :white_check_mark: | :x: | :x: |
 
-All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes. Lockfile support enables transitive dependency scanning and exact version resolution.
+All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes. Lockfile support enables transitive dependency scanning and exact version resolution where the ecosystem provides a trustworthy project-local lockfile model.
 
 ## Quick Start
 
@@ -379,7 +397,28 @@ sloppy-joe check --json
   "allowed": {
     "npm": ["some-vetted-external-pkg"]
   },
-  "min_version_age_hours": 72
+  "similarity_exceptions": {
+    "cargo": [
+      {
+        "package": "serde_json",
+        "candidate": "serde",
+        "generator": "segment-overlap"
+      }
+    ]
+  },
+  "metadata_exceptions": {
+    "cargo": [
+      {
+        "package": "colored",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "kurtlawrence",
+        "current_publisher": "hwittenborn"
+      }
+    ]
+  },
+  "min_version_age_hours": 72,
+  "python_enforcement": "prefer_poetry"
 }
 ```
 
@@ -389,7 +428,15 @@ sloppy-joe check --json
 
 **`allowed`** — vetted external packages. Skip existence + similarity, but still subject to the version age gate.
 
+**`similarity_exceptions`** — exact package/candidate/generator suppressions for reviewed similarity false positives. Use this when one specific similarity edge is wrong but you still want normal checks on the package.
+
+**`metadata_exceptions`** — exact reviewed metadata suppressions. Currently this only supports `metadata/maintainer-change`, and it requires an exact package/version/previous-publisher/current-publisher match.
+
+Use `sloppy-joe check --review-exceptions` when you need to review maintainer-change blockers. The scan still blocks normally, but human output adds a `REVIEW EXCEPTIONS` section with owners, repository URL, and a ready-to-paste `metadata_exceptions` snippet. `--json` includes the same data in a top-level `review_candidates` field.
+
 **`min_version_age_hours`** — block any version published less than this many hours ago. Default: 72 (3 days). Set to 0 to disable. Internal packages are exempt.
+
+**`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects and warns on every run for legacy manifests like `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml`. `poetry_only` blocks those legacy manifests and requires Poetry.
 
 ### Config Security
 
@@ -534,25 +581,15 @@ sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
 **Retry with backoff.** All registry HTTP calls retry 3 times with exponential backoff (200ms, 400ms, 800ms) on transient failures (5xx, timeouts, connection errors). A single network blip won't fail your build.
 
-**Fail-closed with thresholds.** If too many registry queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The thresholds are ecosystem-aware:
-
-| Ecosystem | Error rate threshold | Hard error limit |
-|-----------|---------------------|-----------------|
-| npm, PyPI, Cargo, Ruby, PHP, .NET | 10% | 5 |
-| Maven/JVM | 20% | 5 |
-| Go | 25% | 10 |
-
-Go and Maven have higher thresholds because their proxies are inherently slower and more error-prone.
-
-**Minimum sample size.** The rate-based threshold requires at least 5 queries before it applies. This prevents false `registry-unreachable` errors when most queries are served from cache, leaving only 2-3 uncached queries that happen to fail.
+**Fail-closed on query errors.** If registry or OSV queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The scan no longer relies on per-ecosystem thresholds or sample-size cutoffs before it blocks.
 
 **Similarity cache.** Mutation existence results are cached for 7 days. After the first scan, most queries are served from cache with zero network calls. Only new dependencies trigger registry queries.
 
-**Lockfile-aware resolution.** When a lockfile is present (package-lock.json, Cargo.lock, Gemfile.lock, poetry.lock), sloppy-joe resolves exact versions from it — eliminating `no-exact-version` warnings for range-based version requirements.
+**Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges.
 
 ## Tests
 
-296 tests covering all similarity checks (scope squatting, 8 mutation types, deterministic classification), metadata signals (install scripts, dep explosion, maintainer change), OSV vulnerability check, config parsing + validation, lockfile resolution (npm, Cargo, Ruby, Python), all 8 parsers, report formatting, error threshold behavior, and HTTP retry logic.
+The test suite covers similarity checks, metadata signals, OSV behavior, config parsing and validation, lockfile resolution, manifest and lockfile preflight policy, report formatting, and HTTP retry logic.
 
 ```bash
 cargo test

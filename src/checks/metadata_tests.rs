@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 struct FakeRegistry {
     metadata_response: Option<PackageMetadata>,
+    owners_response: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -25,6 +26,10 @@ impl RegistryMetadata for FakeRegistry {
         _version: Option<&str>,
     ) -> Result<Option<PackageMetadata>> {
         Ok(self.metadata_response.clone())
+    }
+
+    async fn owners(&self, _name: &str) -> Result<Option<Vec<String>>> {
+        Ok(self.owners_response.clone())
     }
 }
 
@@ -80,6 +85,7 @@ async fn version_too_new_is_blocked() {
             latest_version_date: Some(now),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -98,6 +104,7 @@ async fn version_too_new_is_blocked() {
 async fn old_version_passes() {
     let registry = FakeRegistry {
         metadata_response: Some(default_meta()),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -121,6 +128,7 @@ async fn new_package_is_flagged() {
             latest_version_date: Some(now),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep("brand-new-pkg")];
     let issues = check_metadata(
@@ -169,6 +177,7 @@ async fn low_downloads_flagged() {
             downloads: Some(5),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep("obscure-pkg")];
     let issues = check_metadata(
@@ -190,6 +199,7 @@ async fn high_downloads_not_flagged() {
             downloads: Some(1000000),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep("popular-pkg")];
     let issues = check_metadata(
@@ -214,6 +224,7 @@ async fn age_gate_disabled_with_zero() {
             downloads: Some(5),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -234,6 +245,7 @@ async fn age_gate_disabled_with_zero() {
 async fn no_metadata_emits_parse_failed_warning_when_exists() {
     let registry = FakeRegistry {
         metadata_response: None,
+        owners_response: None,
     };
     let deps = vec![dep("some-pkg")];
     let issues = check_metadata(
@@ -272,8 +284,7 @@ async fn registry_errors_emit_blocking_issue() {
             anyhow::bail!("metadata unavailable");
         }
     }
-    // Need enough deps to exceed the hard error limit (5) so fail-closed triggers
-    let deps: Vec<_> = (0..6).map(|i| dep(&format!("pkg-{}", i))).collect();
+    let deps = vec![dep("pkg-0")];
     let issues = check_metadata(
         &ErrorRegistry,
         &deps,
@@ -300,6 +311,7 @@ async fn non_exact_versions_skip_version_age_checks() {
             latest_version_date: Some(now),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "^1.2.3")];
     let issues = check_metadata(
@@ -322,6 +334,7 @@ async fn versionless_dependencies_skip_version_age_checks() {
             latest_version_date: Some(now),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep("some-pkg")];
     let issues = check_metadata(
@@ -344,6 +357,7 @@ async fn install_script_with_low_downloads_flagged() {
             has_install_scripts: true,
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("expresz", "1.2.3")];
     let issues = check_metadata(
@@ -373,6 +387,7 @@ async fn install_script_with_new_package_flagged() {
             has_install_scripts: true,
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("new-pkg-with-scripts", "1.2.3")];
     let issues = check_metadata(
@@ -399,6 +414,7 @@ async fn install_script_with_high_downloads_old_package_not_flagged() {
             has_install_scripts: true,
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("well-known-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -425,6 +441,7 @@ async fn no_install_script_not_flagged() {
             has_install_scripts: false,
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("low-dl-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -451,6 +468,7 @@ async fn dependency_explosion_flagged() {
             previous_dependency_count: Some(3),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -478,6 +496,7 @@ async fn small_increase_not_flagged() {
             previous_dependency_count: Some(3),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -504,6 +523,7 @@ async fn no_previous_version_not_flagged() {
             previous_dependency_count: None,
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -530,6 +550,7 @@ async fn maintainer_changed_flagged() {
             previous_publisher: Some("original-author".to_string()),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -549,6 +570,185 @@ async fn maintainer_changed_flagged() {
 }
 
 #[tokio::test]
+async fn exact_metadata_exception_suppresses_reviewed_maintainer_change_only() {
+    let registry = FakeRegistry {
+        metadata_response: Some(PackageMetadata {
+            current_publisher: Some("new-person".to_string()),
+            previous_publisher: Some("original-author".to_string()),
+            ..default_meta()
+        }),
+        owners_response: None,
+    };
+    let deps = vec![dep_with_version("some-pkg", "1.2.3")];
+    let config = SloppyJoeConfig {
+        metadata_exceptions: std::collections::HashMap::from([(
+            "npm".to_string(),
+            vec![crate::config::MetadataException {
+                package: "some-pkg".to_string(),
+                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                version: "1.2.3".to_string(),
+                previous_publisher: Some("original-author".to_string()),
+                current_publisher: Some("new-person".to_string()),
+                reason: Some("reviewed maintainer transfer".to_string()),
+            }],
+        )]),
+        ..config_with_age(72)
+    };
+    let issues = check_metadata(
+        &registry,
+        &deps,
+        &config,
+        &empty_similarity(),
+        &no_resolution(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.check == "metadata/maintainer-change"),
+        "exact reviewed metadata exception should suppress only the matched maintainer-change finding"
+    );
+}
+
+#[tokio::test]
+async fn metadata_exception_near_miss_does_not_suppress_maintainer_change() {
+    let registry = FakeRegistry {
+        metadata_response: Some(PackageMetadata {
+            current_publisher: Some("new-person".to_string()),
+            previous_publisher: Some("original-author".to_string()),
+            ..default_meta()
+        }),
+        owners_response: None,
+    };
+    let deps = vec![dep_with_version("some-pkg", "1.2.3")];
+    let config = SloppyJoeConfig {
+        metadata_exceptions: std::collections::HashMap::from([(
+            "npm".to_string(),
+            vec![crate::config::MetadataException {
+                package: "some-pkg".to_string(),
+                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                version: "1.2.4".to_string(),
+                previous_publisher: Some("original-author".to_string()),
+                current_publisher: Some("new-person".to_string()),
+                reason: Some("wrong version".to_string()),
+            }],
+        )]),
+        ..config_with_age(72)
+    };
+    let issues = check_metadata(
+        &registry,
+        &deps,
+        &config,
+        &empty_similarity(),
+        &no_resolution(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.check == "metadata/maintainer-change"),
+        "metadata exceptions must remain exact; a version mismatch must still block"
+    );
+}
+
+#[tokio::test]
+async fn review_candidates_include_owner_evidence_and_exact_exception_object() {
+    let registry = FakeRegistry {
+        metadata_response: Some(PackageMetadata {
+            current_publisher: Some("new-person".to_string()),
+            previous_publisher: Some("original-author".to_string()),
+            repository_url: Some("https://github.com/example/pkg".to_string()),
+            ..default_meta()
+        }),
+        owners_response: Some(vec!["alice".to_string(), "bob".to_string()]),
+    };
+    let lookups = vec![MetadataLookup {
+        package: "some-pkg".to_string(),
+        ecosystem: crate::Ecosystem::Npm,
+        version: Some("1.2.3".to_string()),
+        resolved_version: Some("1.2.3".to_string()),
+        unresolved_version: false,
+        exists: true,
+        metadata: registry.metadata_response.clone(),
+    }];
+
+    let candidates =
+        review_candidates_from_lookups(&registry, &lookups, &config_with_age(72)).await;
+
+    assert_eq!(candidates.len(), 1);
+    let candidate = &candidates[0];
+    assert_eq!(candidate.ecosystem, "npm");
+    assert_eq!(candidate.package, "some-pkg");
+    assert_eq!(candidate.check, "metadata/maintainer-change");
+    assert_eq!(candidate.version, "1.2.3");
+    assert_eq!(candidate.previous_publisher, "original-author");
+    assert_eq!(candidate.current_publisher, "new-person");
+    assert_eq!(candidate.owners, vec!["alice", "bob"]);
+    assert_eq!(
+        candidate.repository_url.as_deref(),
+        Some("https://github.com/example/pkg")
+    );
+    assert_eq!(candidate.metadata_exception.package, "some-pkg");
+    assert_eq!(
+        candidate.metadata_exception.check,
+        crate::checks::names::METADATA_MAINTAINER_CHANGE
+    );
+    assert_eq!(candidate.metadata_exception.version, "1.2.3");
+    assert_eq!(
+        candidate.metadata_exception.previous_publisher.as_deref(),
+        Some("original-author")
+    );
+    assert_eq!(
+        candidate.metadata_exception.current_publisher.as_deref(),
+        Some("new-person")
+    );
+}
+
+#[tokio::test]
+async fn review_candidates_skip_already_configured_metadata_exception() {
+    let registry = FakeRegistry {
+        metadata_response: Some(PackageMetadata {
+            current_publisher: Some("new-person".to_string()),
+            previous_publisher: Some("original-author".to_string()),
+            ..default_meta()
+        }),
+        owners_response: Some(vec!["alice".to_string()]),
+    };
+    let lookups = vec![MetadataLookup {
+        package: "some-pkg".to_string(),
+        ecosystem: crate::Ecosystem::Npm,
+        version: Some("1.2.3".to_string()),
+        resolved_version: Some("1.2.3".to_string()),
+        unresolved_version: false,
+        exists: true,
+        metadata: registry.metadata_response.clone(),
+    }];
+    let config = SloppyJoeConfig {
+        metadata_exceptions: std::collections::HashMap::from([(
+            "npm".to_string(),
+            vec![crate::config::MetadataException {
+                package: "some-pkg".to_string(),
+                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                version: "1.2.3".to_string(),
+                previous_publisher: Some("original-author".to_string()),
+                current_publisher: Some("new-person".to_string()),
+                reason: Some("reviewed".to_string()),
+            }],
+        )]),
+        ..config_with_age(72)
+    };
+
+    let candidates = review_candidates_from_lookups(&registry, &lookups, &config).await;
+
+    assert!(
+        candidates.is_empty(),
+        "review mode should not suggest metadata exceptions that are already configured"
+    );
+}
+
+#[tokio::test]
 async fn same_maintainer_not_flagged() {
     let registry = FakeRegistry {
         metadata_response: Some(PackageMetadata {
@@ -556,6 +756,7 @@ async fn same_maintainer_not_flagged() {
             previous_publisher: Some("same".to_string()),
             ..default_meta()
         }),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(
@@ -583,6 +784,7 @@ async fn install_script_with_no_repo_flagged() {
     };
     let registry = FakeRegistry {
         metadata_response: Some(meta),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("sketchy-pkg", "1.0.0")];
     let issues = check_metadata(
@@ -611,6 +813,7 @@ async fn install_script_with_repo_not_amplified() {
     };
     let registry = FakeRegistry {
         metadata_response: Some(meta),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("legit-pkg", "5.0.0")];
     let issues = check_metadata(
@@ -641,6 +844,7 @@ async fn no_repository_on_new_package_flagged() {
     };
     let registry = FakeRegistry {
         metadata_response: Some(meta),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("suspicious-pkg", "0.1.0")];
     let issues = check_metadata(
@@ -671,6 +875,7 @@ async fn spoofed_repo_url_still_flagged() {
     };
     let registry = FakeRegistry {
         metadata_response: Some(meta),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("spoofed-pkg", "0.1.0")];
     let issues = check_metadata(
@@ -701,6 +906,7 @@ async fn has_repository_not_flagged() {
     };
     let registry = FakeRegistry {
         metadata_response: Some(meta),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("ok-pkg", "0.1.0")];
     let issues = check_metadata(
@@ -728,6 +934,7 @@ async fn no_repository_on_old_popular_package_not_flagged() {
     };
     let registry = FakeRegistry {
         metadata_response: Some(meta),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("old-pkg", "5.0.0")];
     let issues = check_metadata(
@@ -751,6 +958,7 @@ async fn no_repository_on_old_popular_package_not_flagged() {
 async fn no_publisher_info_not_flagged() {
     let registry = FakeRegistry {
         metadata_response: Some(default_meta()),
+        owners_response: None,
     };
     let deps = vec![dep_with_version("some-pkg", "1.2.3")];
     let issues = check_metadata(

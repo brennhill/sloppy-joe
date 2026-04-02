@@ -80,7 +80,8 @@ fn metadata_from_body(
         .map(|s| s.to_string());
 
     // Build version history: collect publisher + scripts + date for versions within 12 months
-    let version_history = build_version_history(&body["versions"], time, super::VERSION_HISTORY_WINDOW_HOURS);
+    let version_history =
+        build_version_history(&body["versions"], time, super::VERSION_HISTORY_WINDOW_HOURS);
 
     Some(super::PackageMetadata {
         created,
@@ -136,9 +137,7 @@ fn build_version_history(
             continue;
         }
 
-        let publisher = ver_data["_npmUser"]["name"]
-            .as_str()
-            .map(|s| s.to_string());
+        let publisher = ver_data["_npmUser"]["name"].as_str().map(|s| s.to_string());
 
         let scripts = &ver_data["scripts"];
         let has_install_scripts = scripts["preinstall"].is_string()
@@ -146,7 +145,9 @@ fn build_version_history(
             || scripts["install"].is_string()
             || scripts["prepare"].is_string();
 
-        let sort_key = date_str.clone().unwrap_or_else(|| "9999-12-31T23:59:59Z".to_string());
+        let sort_key = date_str
+            .clone()
+            .unwrap_or_else(|| "9999-12-31T23:59:59Z".to_string());
         records.push((
             super::VersionRecord {
                 version: ver.clone(),
@@ -243,19 +244,49 @@ mod tests {
         let mut year = 1970i64;
         let mut rem_days = days;
         loop {
-            let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-            if rem_days < ydays { break; }
+            let ydays = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                366
+            } else {
+                365
+            };
+            if rem_days < ydays {
+                break;
+            }
             rem_days -= ydays;
             year += 1;
         }
         let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-        let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mdays = [
+            31,
+            if leap { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
         let mut month = 0i64;
         for (i, &md) in mdays.iter().enumerate() {
-            if rem_days < md { month = i as i64 + 1; break; }
+            if rem_days < md {
+                month = i as i64 + 1;
+                break;
+            }
             rem_days -= md;
         }
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, rem_days + 1, hour, min, sec)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            year,
+            month,
+            rem_days + 1,
+            hour,
+            min,
+            sec
+        )
     }
 
     #[test]
@@ -312,14 +343,26 @@ mod tests {
         assert_eq!(metadata.version_history.len(), 2);
         // Chronological order (oldest first)
         assert_eq!(metadata.version_history[0].version, "1.0.0");
-        assert_eq!(metadata.version_history[0].publisher.as_deref(), Some("alice"));
+        assert_eq!(
+            metadata.version_history[0].publisher.as_deref(),
+            Some("alice")
+        );
         assert!(!metadata.version_history[0].has_install_scripts);
-        assert_eq!(metadata.version_history[0].date.as_deref(), Some(date_8mo.as_str()));
+        assert_eq!(
+            metadata.version_history[0].date.as_deref(),
+            Some(date_8mo.as_str())
+        );
 
         assert_eq!(metadata.version_history[1].version, "2.0.0");
-        assert_eq!(metadata.version_history[1].publisher.as_deref(), Some("bob"));
+        assert_eq!(
+            metadata.version_history[1].publisher.as_deref(),
+            Some("bob")
+        );
         assert!(metadata.version_history[1].has_install_scripts);
-        assert_eq!(metadata.version_history[1].date.as_deref(), Some(date_1mo.as_str()));
+        assert_eq!(
+            metadata.version_history[1].date.as_deref(),
+            Some(date_1mo.as_str())
+        );
     }
 
     #[test]

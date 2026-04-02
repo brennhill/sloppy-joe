@@ -44,14 +44,17 @@ impl Check for SimilarityCheck {
         acc: &'a mut ScanAccumulator,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            let results = super::similarity::check_similarity_with_cache(
+            let results = super::similarity::check_similarity_with_options(
                 ctx.registry,
                 ctx.checkable_deps,
                 ctx.ecosystem,
-                ctx.opts.cache_dir,
-                ctx.opts.no_cache,
-                ctx.opts.paranoid,
-                acc.metadata_lookups.as_deref(),
+                super::similarity::SimilarityRunOptions {
+                    cache_dir: ctx.opts.cache_dir,
+                    no_cache: ctx.opts.no_cache,
+                    paranoid: ctx.opts.paranoid,
+                    dep_metadata: acc.metadata_lookups.as_deref(),
+                    config: ctx.config,
+                },
             )
             .await?;
 
@@ -105,6 +108,16 @@ impl Check for MetadataCheck {
                 ctx.config,
                 &acc.similarity_flagged,
             ));
+            if ctx.opts.review_exceptions {
+                acc.review_candidates.extend(
+                    super::metadata::review_candidates_from_lookups(
+                        ctx.registry,
+                        &lookups,
+                        ctx.config,
+                    )
+                    .await,
+                );
+            }
             acc.metadata_lookups = Some(lookups);
 
             Ok(())

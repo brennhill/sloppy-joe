@@ -100,6 +100,13 @@ pub trait RegistryMetadata: Send + Sync {
         let _ = version;
         Ok(None)
     }
+
+    /// Fetch the current owner list for a package when the registry exposes it.
+    /// Used only for review-oriented output such as exception candidate evidence.
+    async fn owners(&self, package_name: &str) -> Result<Option<Vec<String>>> {
+        let _ = package_name;
+        Ok(None)
+    }
 }
 
 /// Combined trait for registries that support both existence checks and metadata lookups.
@@ -522,7 +529,12 @@ mod tests {
 
     #[test]
     fn retry_constants_are_reasonable() {
-        const { assert!(MAX_RETRIES >= 2, "Need at least 2 retries for transient errors") };
+        const {
+            assert!(
+                MAX_RETRIES >= 2,
+                "Need at least 2 retries for transient errors"
+            )
+        };
         const { assert!(MAX_RETRIES <= 5, "Too many retries would slow CI") };
         const { assert!(RETRY_BASE_DELAY_MS >= 100, "Base delay too short") };
         const { assert!(RETRY_BASE_DELAY_MS <= 1000, "Base delay too long for CI") };

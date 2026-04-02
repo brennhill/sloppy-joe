@@ -51,6 +51,7 @@ pub(super) fn parse_all_from_content(content: &str) -> Result<Vec<Dependency>> {
             name,
             version: Some(version),
             ecosystem: crate::Ecosystem::Ruby,
+            actual_name: None,
         })
         .collect())
 }
@@ -58,7 +59,7 @@ pub(super) fn parse_all_from_content(content: &str) -> Result<Vec<Dependency>> {
 /// Read Gemfile.lock if it exists, return content.
 pub(super) fn read_lockfile(project_dir: &Path) -> Option<String> {
     let path = project_dir.join("Gemfile.lock");
-    if !path.exists() {
+    if !crate::parsers::path_detected(&path).ok()? {
         return None;
     }
     crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).ok()
