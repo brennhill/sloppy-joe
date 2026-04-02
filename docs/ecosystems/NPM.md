@@ -11,7 +11,7 @@ If neither lockfile is present, or the effective lockfile is unreadable, `sloppy
 
 By default, `lockfileVersion: 1` is blocked. That format comes from npm v5/v6 and is too weak for strict trust. If you must keep it temporarily, set `allow_legacy_npm_v1_lockfile: true` in config and plan a migration to a modern npm-generated lockfile.
 
-If `package.json` declares a non-npm package manager such as pnpm or Yarn, or if foreign lockfiles like `pnpm-lock.yaml` or `yarn.lock` are present next to a shadow `package-lock.json`, `sloppy-joe` blocks the scan rather than trusting the npm lockfile.
+If `package.json` declares a non-npm package manager such as pnpm or Yarn, or if foreign lockfiles like `pnpm-lock.yaml` or `yarn.lock` appear anywhere above the project inside the scan root, `sloppy-joe` blocks the scan rather than trusting a shadow npm lockfile.
 
 The effective lockfile must also be in sync with `package.json`:
 
@@ -19,6 +19,8 @@ The effective lockfile must also be in sync with `package.json`:
 - direct sections include `dependencies`, `devDependencies`, `optionalDependencies`, and `peerDependencies`
 - a populated lockfile with an empty manifest blocks the scan
 - npm alias entries must resolve to the same underlying package identity in both files
+- trusted npm lockfile entries must carry explicit tarball provenance (`resolved`) and integrity hashes (`integrity`)
+- only npm registry tarball URLs are trusted in `resolved`; foreign tarball sources block the scan
 - npm `overrides` currently block the scan. They change the resolved graph, and sloppy-joe does not yet have strict override verification.
 
 ## Direct dependency policy
@@ -26,7 +28,8 @@ The effective lockfile must also be in sync with `package.json`:
 - `optionalDependencies` and `peerDependencies` are scanned as direct inputs.
 - npm alias dependencies are scanned under their published package identity, and the alias indirection is reported explicitly.
 - `workspace:`, `file:`, and `link:` dependencies are not treated as registry packages.
-- Those local dependency references must resolve to scanned npm projects inside the scan root.
+- `workspace:` dependencies must resolve through an ancestor npm `workspaces` declaration, and the target package name must match exactly one scanned workspace package inside that declared set.
+- `file:` and `link:` dependencies must resolve to scanned npm projects inside the scan root.
 - If a local npm reference escapes the scan root, points at a missing target, or does not resolve to a discovered local project, `sloppy-joe` blocks the scan.
 - npm transitive dependencies get similarity checks even without `--deep`, because npm typosquats often hide one level down in the lockfile graph.
 

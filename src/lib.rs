@@ -414,7 +414,7 @@ fn preflight_project_inputs(
         let npm_manifest = npm_manifests.get(&spec.manifest_path);
         if spec.kind == ProjectInputKind::Npm {
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
-            validate_npm_package_manager_policy(spec, manifest)?;
+            validate_npm_package_manager_policy(&canonical_root, spec, manifest)?;
             validate_npm_manifest_security_policy(spec, manifest)?;
         }
         validate_lockfile_syntax(spec, npm_manifest, config)?;
@@ -540,19 +540,13 @@ fn validate_local_npm_dependencies(
         })
     {
         if local_spec.starts_with("workspace:") {
-            let matches_local_project = npm_index
-                .by_name
-                .get(&name)
-                .into_iter()
-                .flat_map(|dirs| dirs.iter())
-                .any(|dir| dir != &canonical_project_dir);
-            if !matches_local_project {
-                anyhow::bail!(
-                    "Local npm dependency '{}' in '{}' does not resolve to a scanned project inside the scan root. Scan the repo root that contains the workspace target, or remove the out-of-scope workspace reference.",
-                    name,
-                    spec.manifest_path.display()
-                );
-            }
+            validate_workspace_npm_dependency(
+                scan_root,
+                spec,
+                &name,
+                &canonical_project_dir,
+                npm_index,
+            )?;
             continue;
         }
 
@@ -660,6 +654,40 @@ fn normalize_filesystem_path(path: &std::path::Path) -> std::path::PathBuf {
     normalized
 }
 
+fn ancestor_dirs_inclusive(
+    start: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>> {
+    if !start.starts_with(root) {
+        anyhow::bail!(
+            "Path '{}' is outside scan root '{}'.",
+            start.display(),
+            root.display()
+        );
+    }
+
+    let mut dirs = Vec::new();
+    let mut current = start.to_path_buf();
+    loop {
+        dirs.push(current.clone());
+        if current == root {
+            break;
+        }
+        current = current
+            .parent()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Failed to find ancestor path from '{}' back to scan root '{}'.",
+                    start.display(),
+                    root.display()
+                )
+            })?
+            .to_path_buf();
+    }
+
+    Ok(dirs)
+}
+
 fn validate_lockfile_syntax(
     spec: &ProjectInputSpec,
     npm_manifest: Option<&serde_json::Value>,
@@ -682,6 +710,7 @@ fn validate_lockfile_syntax(
             validate_npm_lockfile_version(&lockfile, &path, config)?;
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_npm_lockfile_consistency(manifest, &lockfile, &path)?;
+            validate_npm_lockfile_provenance(&lockfile, &path)?;
         }
         ProjectInputKind::Cargo => {
             let path = project_dir.join("Cargo.lock");
@@ -742,8 +771,50 @@ fn validate_lockfile_syntax(
 }
 
 fn validate_npm_package_manager_policy(
+    scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
+) -> Result<()> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+
+    for ancestor_dir in ancestor_dirs_inclusive(&canonical_project_dir, scan_root)? {
+        let manifest_path = ancestor_dir.join("package.json");
+        if ancestor_dir == canonical_project_dir {
+            validate_npm_package_manager_field(&spec.manifest_path, manifest, &spec.manifest_path)?;
+        } else if parsers::path_detected(&manifest_path)? {
+            let ancestor_manifest = read_npm_manifest_value(&manifest_path)?;
+            validate_npm_package_manager_field(
+                &manifest_path,
+                &ancestor_manifest,
+                &spec.manifest_path,
+            )?;
+        }
+
+        for foreign_lockfile in ["pnpm-lock.yaml", "yarn.lock"] {
+            let path = ancestor_dir.join(foreign_lockfile);
+            if parsers::path_detected(&path)? {
+                anyhow::bail!(
+                    "Found foreign lockfile '{}' above npm project '{}'. sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json when pnpm/yarn lock state is present anywhere in the ancestor tree within the scan root.",
+                    path.display(),
+                    spec.manifest_path.display()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_npm_package_manager_field(
+    manifest_path: &std::path::Path,
+    manifest: &serde_json::Value,
+    npm_project_manifest: &std::path::Path,
 ) -> Result<()> {
     if let Some(package_manager) = manifest
         .get("packageManager")
@@ -755,21 +826,11 @@ fn validate_npm_package_manager_policy(
             .unwrap_or(package_manager);
         if manager != "npm" {
             anyhow::bail!(
-                "package.json '{}' declares packageManager '{}'. sloppy-joe only trusts package-lock.json or npm-shrinkwrap.json for real npm projects, and refuses shadow npm lockfiles in {} repos.",
-                spec.manifest_path.display(),
+                "package.json '{}' declares packageManager '{}'. npm project '{}' sits inside a {}-managed tree, so sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json there.",
+                manifest_path.display(),
                 package_manager,
+                npm_project_manifest.display(),
                 manager
-            );
-        }
-    }
-
-    for foreign_lockfile in ["pnpm-lock.yaml", "yarn.lock"] {
-        let path = spec.project_dir().join(foreign_lockfile);
-        if parsers::path_detected(&path)? {
-            anyhow::bail!(
-                "Found foreign lockfile '{}' next to '{}'. sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json when pnpm/yarn lock state is present.",
-                path.display(),
-                spec.manifest_path.display()
             );
         }
     }
@@ -789,6 +850,200 @@ fn validate_npm_manifest_security_policy(
     }
 
     Ok(())
+}
+
+struct WorkspaceRoot {
+    manifest_path: std::path::PathBuf,
+    project_dir: std::path::PathBuf,
+    patterns: Vec<String>,
+}
+
+fn validate_workspace_npm_dependency(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    dep_name: &str,
+    canonical_project_dir: &std::path::Path,
+    npm_index: &NpmProjectIndex,
+) -> Result<()> {
+    let Some(workspace_root) = find_npm_workspace_root(scan_root, canonical_project_dir)? else {
+        anyhow::bail!(
+            "Local npm dependency '{}' in '{}' uses workspace:, but no ancestor package.json with a matching npm workspaces declaration was found. Scan the workspace root, or replace the workspace reference with a dependency source sloppy-joe can verify exactly.",
+            dep_name,
+            spec.manifest_path.display()
+        );
+    };
+
+    let matching_dirs = npm_index
+        .by_name
+        .get(dep_name)
+        .into_iter()
+        .flat_map(|dirs| dirs.iter())
+        .filter(|dir| *dir != canonical_project_dir)
+        .filter(|dir| {
+            workspace_patterns_match(
+                &workspace_root.project_dir,
+                dir,
+                workspace_root.patterns.iter().map(String::as_str),
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    match matching_dirs.len() {
+        1 => Ok(()),
+        0 => anyhow::bail!(
+            "Local npm dependency '{}' in '{}' does not resolve to any scanned package declared by the workspaces in '{}'. Keep workspace targets inside the declared npm workspaces set, or remove the workspace reference.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root.manifest_path.display()
+        ),
+        _ => anyhow::bail!(
+            "Local npm dependency '{}' in '{}' resolves ambiguously to multiple scanned packages declared by the workspaces in '{}'. Each workspace package name must be unique within the workspace root.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root.manifest_path.display()
+        ),
+    }
+}
+
+fn find_npm_workspace_root(
+    scan_root: &std::path::Path,
+    canonical_project_dir: &std::path::Path,
+) -> Result<Option<WorkspaceRoot>> {
+    for ancestor_dir in ancestor_dirs_inclusive(canonical_project_dir, scan_root)? {
+        let manifest_path = ancestor_dir.join("package.json");
+        if !parsers::path_detected(&manifest_path)? {
+            continue;
+        }
+
+        let manifest = read_npm_manifest_value(&manifest_path)?;
+        let Some(patterns) = parse_npm_workspaces(&manifest_path, &manifest)? else {
+            continue;
+        };
+
+        if ancestor_dir == canonical_project_dir
+            || workspace_patterns_match(
+                &ancestor_dir,
+                canonical_project_dir,
+                patterns.iter().map(String::as_str),
+            )
+        {
+            return Ok(Some(WorkspaceRoot {
+                manifest_path: manifest_path.clone(),
+                project_dir: ancestor_dir,
+                patterns,
+            }));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_npm_workspaces(
+    manifest_path: &std::path::Path,
+    manifest: &serde_json::Value,
+) -> Result<Option<Vec<String>>> {
+    let Some(value) = manifest.get("workspaces") else {
+        return Ok(None);
+    };
+
+    let patterns = if let Some(array) = value.as_array() {
+        array
+            .iter()
+            .map(|entry| {
+                entry.as_str().map(str::to_string).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Broken manifest '{}': workspaces entries must be strings.",
+                        manifest_path.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else if let Some(array) = value
+        .get("packages")
+        .and_then(|packages| packages.as_array())
+    {
+        array
+            .iter()
+            .map(|entry| {
+                entry.as_str().map(str::to_string).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Broken manifest '{}': workspaces.packages entries must be strings.",
+                        manifest_path.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        anyhow::bail!(
+            "Broken manifest '{}': workspaces must be an array of strings or an object with a packages array.",
+            manifest_path.display()
+        );
+    };
+
+    Ok(Some(patterns))
+}
+
+fn workspace_patterns_match<'a>(
+    root_dir: &std::path::Path,
+    candidate_dir: &std::path::Path,
+    mut patterns: impl Iterator<Item = &'a str>,
+) -> bool {
+    let Ok(relative) = candidate_dir.strip_prefix(root_dir) else {
+        return false;
+    };
+    let path_parts = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if path_parts.is_empty() {
+        return false;
+    }
+
+    patterns.any(|pattern| workspace_pattern_matches_parts(pattern, &path_parts))
+}
+
+fn workspace_pattern_matches_parts(pattern: &str, path_parts: &[String]) -> bool {
+    let pattern_parts = pattern
+        .trim()
+        .trim_start_matches("./")
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    workspace_pattern_parts_match(&pattern_parts, path_parts)
+}
+
+fn workspace_pattern_parts_match(pattern_parts: &[&str], path_parts: &[String]) -> bool {
+    match pattern_parts.split_first() {
+        None => path_parts.is_empty(),
+        Some((&"**", remaining_patterns)) => (0..=path_parts.len())
+            .any(|skip| workspace_pattern_parts_match(remaining_patterns, &path_parts[skip..])),
+        Some((&segment_pattern, remaining_patterns)) => {
+            let Some((path_part, remaining_path)) = path_parts.split_first() else {
+                return false;
+            };
+            wildcard_segment_matches(segment_pattern, path_part)
+                && workspace_pattern_parts_match(remaining_patterns, remaining_path)
+        }
+    }
+}
+
+fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    match pattern.split_once('*') {
+        None => pattern == value,
+        Some((prefix, suffix)) => {
+            if !value.starts_with(prefix) || !value.ends_with(suffix) {
+                return false;
+            }
+            value.len() >= prefix.len() + suffix.len()
+        }
+    }
 }
 
 fn validate_npm_lockfile_version(
@@ -1043,6 +1298,165 @@ fn validate_npm_lockfile_consistency(
     }
 
     Ok(())
+}
+
+fn validate_npm_lockfile_provenance(
+    lockfile: &serde_json::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    if let Some(packages) = lockfile.get("packages").and_then(|value| value.as_object()) {
+        for (key, entry) in packages {
+            validate_npm_lockfile_package_entry(key, entry, lockfile_path)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(dependencies) = lockfile
+        .get("dependencies")
+        .and_then(|value| value.as_object())
+    {
+        validate_npm_lockfile_dependency_entries(dependencies, lockfile_path)?;
+    }
+
+    Ok(())
+}
+
+fn validate_npm_lockfile_package_entry(
+    key: &str,
+    entry: &serde_json::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    if key.is_empty() {
+        return Ok(());
+    }
+    let Some(entry) = entry.as_object() else {
+        anyhow::bail!(
+            "Broken lockfile '{}': package entry '{}' was not an object.",
+            lockfile_path.display(),
+            key
+        );
+    };
+    validate_npm_lockfile_entry_fields(
+        entry
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or(
+                key.rsplit_once("node_modules/")
+                    .map(|(_, name)| name)
+                    .unwrap_or(key),
+            ),
+        entry,
+        lockfile_path,
+    )
+}
+
+fn validate_npm_lockfile_dependency_entries(
+    dependencies: &serde_json::Map<String, serde_json::Value>,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    for (name, entry) in dependencies {
+        let Some(entry) = entry.as_object() else {
+            anyhow::bail!(
+                "Broken lockfile '{}': dependency entry '{}' was not an object.",
+                lockfile_path.display(),
+                name
+            );
+        };
+        validate_npm_lockfile_entry_fields(
+            entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or(name),
+            entry,
+            lockfile_path,
+        )?;
+        if let Some(nested) = entry
+            .get("dependencies")
+            .and_then(|value| value.as_object())
+        {
+            validate_npm_lockfile_dependency_entries(nested, lockfile_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_npm_lockfile_entry_fields(
+    package_name: &str,
+    entry: &serde_json::Map<String, serde_json::Value>,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    if entry
+        .get("link")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || entry
+            .get("inBundle")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        || entry
+            .get("bundled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    if entry
+        .get("version")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        return Ok(());
+    }
+
+    let resolved = entry
+        .get("resolved")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' entry '{}' is missing a resolved source URL. sloppy-joe only trusts npm lockfile entries with explicit tarball provenance.",
+                lockfile_path.display(),
+                package_name
+            )
+        })?;
+    if !is_trusted_npm_resolved_source(resolved) {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' has untrusted resolved source '{}'. sloppy-joe only trusts npm registry tarball URLs in package-lock.json and npm-shrinkwrap.json.",
+            lockfile_path.display(),
+            package_name,
+            crate::report::sanitize_for_terminal(resolved)
+        );
+    }
+
+    let integrity = entry
+        .get("integrity")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' entry '{}' is missing integrity metadata. sloppy-joe only trusts npm lockfile entries with explicit integrity hashes.",
+                lockfile_path.display(),
+                package_name
+            )
+        })?;
+    if !integrity.contains('-') {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' has malformed integrity metadata '{}'.",
+            lockfile_path.display(),
+            package_name,
+            crate::report::sanitize_for_terminal(integrity)
+        );
+    }
+
+    Ok(())
+}
+
+fn is_trusted_npm_resolved_source(resolved: &str) -> bool {
+    let resolved = resolved.trim();
+    resolved == "registry.npmjs.org"
+        || resolved.starts_with("registry.npmjs.org/")
+        || resolved.starts_with("https://registry.npmjs.org/")
 }
 
 #[cfg(test)]

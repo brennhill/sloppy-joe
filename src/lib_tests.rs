@@ -477,7 +477,7 @@ fn preflight_accepts_npm_shrinkwrap_as_required_lockfile() {
     .unwrap();
     std::fs::write(
         dir.join("npm-shrinkwrap.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
 
@@ -516,7 +516,7 @@ fn preflight_accepts_peer_dependencies_in_npm_lockfile_roots() {
     .unwrap();
     std::fs::write(
         dir.join("package-lock.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","peerDependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","peerDependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
 
@@ -963,7 +963,7 @@ async fn repo_root_scans_warn_for_legacy_python_manifests_instead_of_skipping_th
         .unwrap();
         std::fs::write(
             dir.join("apps/web/package-lock.json"),
-            r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+            r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -1153,7 +1153,7 @@ fn detected_project_inputs_ignore_installed_packages_inside_node_modules_without
     .unwrap();
     std::fs::write(
         dir.join("package-lock.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1195,7 +1195,7 @@ fn preflight_ignores_python_vendor_manifests_inside_node_modules() {
     .unwrap();
     std::fs::write(
         dir.join("package-lock.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1252,7 +1252,7 @@ fn preflight_blocks_unresolved_workspace_npm_dependencies() {
         .expect_err("workspace npm dependencies must resolve to a scanned local project");
     let msg = err.to_string();
     assert!(msg.contains("workspace-lib"));
-    assert!(msg.contains("scan root"));
+    assert!(msg.contains("workspaces"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1262,6 +1262,16 @@ fn preflight_accepts_local_npm_dependencies_within_scan_root() {
     let dir = unique_dir();
     std::fs::create_dir_all(dir.join("apps/web")).unwrap();
     std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","workspaces":["apps/*","packages/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root"}}}"#,
+    )
+    .unwrap();
     std::fs::write(
         dir.join("apps/web/package.json"),
         r#"{"dependencies":{"workspace-lib":"workspace:*","local-lib":"file:../../packages/workspace-lib"}}"#,
@@ -1279,12 +1289,185 @@ fn preflight_accepts_local_npm_dependencies_within_scan_root() {
     .unwrap();
     std::fs::write(
         dir.join("packages/workspace-lib/package-lock.json"),
-        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
 
     let warnings = preflight_scan_inputs(&dir, None)
         .expect("local npm dependencies within the scan root must be accepted when discoverable");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_nested_npm_project_under_ancestor_foreign_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("ancestor pnpm/yarn lockfiles must block trusting nested npm lockfiles");
+    let msg = err.to_string();
+    assert!(msg.contains("pnpm-lock.yaml"));
+    assert!(msg.contains("apps/web/package.json"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_workspace_dependency_without_declared_workspace_root() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"workspace-lib":"workspace:*"}},"node_modules/workspace-lib":{"resolved":"../../packages/workspace-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package-lock.json"),
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace:* deps must resolve through an ancestor npm workspaces declaration");
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("workspaces"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_workspace_dependency_outside_declared_workspace_set() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"workspace-lib":"workspace:*"}},"node_modules/workspace-lib":{"resolved":"../../packages/workspace-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package-lock.json"),
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None).expect_err(
+        "workspace:* deps must only resolve to directories declared by the workspace root",
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("workspaces"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_missing_integrity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry npm lockfile entries without integrity must block scanning");
+    let msg = err.to_string();
+    assert!(msg.contains("integrity"));
+    assert!(msg.contains("react"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_foreign_resolved_url() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://evil.example/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("foreign npm tarball URLs must block lockfile trust");
+    let msg = err.to_string();
+    assert!(msg.contains("resolved"));
+    assert!(msg.contains("evil.example"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_npm_lockfile_entries_with_registry_resolved_and_integrity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm"))
+        .expect("registry npm lockfile entries with integrity should remain trusted");
     assert!(warnings.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
