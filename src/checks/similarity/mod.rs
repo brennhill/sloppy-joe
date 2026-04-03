@@ -304,11 +304,15 @@ pub(crate) async fn check_similarity_with_options(
         .collect();
 
     // ---- Phase 0: Scope squatting (no registry needed) ----
+    let configured_scopes = config.trusted_scopes(ecosystem.as_str());
     for dep in deps {
         if let Some(scope) = extract_scope(dep.package_name(), ecosystem) {
-            let scopes = known_scopes(ecosystem);
             let scope_lower = scope.to_lowercase();
-            for &known in scopes {
+            for known in known_scopes(ecosystem)
+                .iter()
+                .copied()
+                .chain(configured_scopes.iter().map(String::as_str))
+            {
                 let known_lower = known.to_lowercase();
                 if scope_lower == known_lower {
                     // Exact match to a known scope -- safe
@@ -355,13 +359,36 @@ pub(crate) async fn check_similarity_with_options(
     } else {
         generators::default_generators()
     };
+    let configured_roots = config.similarity_roots(ecosystem.as_str());
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
+    let dep_downloads = dep_metadata
+        .map(|lookups| {
+            lookups
+                .iter()
+                .filter_map(|lookup| {
+                    Some((lookup.package.clone(), lookup.metadata.as_ref()?.downloads?))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     for dep in deps {
         if !flagged.contains(dep.package_name()) {
-            all_mutations.insert(
-                dep.package_name().to_string(),
-                generate_mutations_with(&generators, dep.package_name(), ecosystem),
-            );
+            let mut mutations = generate_mutations_with(&generators, dep.package_name(), ecosystem);
+            for candidate in generators::segment_overlap_variants_with_additional_roots(
+                dep.package_name(),
+                ecosystem,
+                &configured_roots,
+            ) {
+                mutations
+                    .entry(candidate)
+                    .and_modify(|existing| {
+                        if generator_severity("segment-overlap") > generator_severity(existing) {
+                            *existing = "segment-overlap";
+                        }
+                    })
+                    .or_insert("segment-overlap");
+            }
+            all_mutations.insert(dep.package_name().to_string(), mutations);
         }
     }
 
@@ -567,20 +594,15 @@ pub(crate) async fn check_similarity_with_options(
 
                 // Download disparity: if original dep has >10K downloads and
                 // candidate has <1000, this is high confidence typosquatting
-                if let Some(candidate_downloads) = meta.downloads {
-                    let original_downloads = dep_metadata
-                        .and_then(|lookups| lookups.iter().find(|l| l.package == dep_name))
-                        .and_then(|l| l.metadata.as_ref())
-                        .and_then(|m| m.downloads);
-                    if let Some(orig_dl) = original_downloads
-                        && orig_dl > 10_000
-                        && candidate_downloads < 1_000
-                    {
-                        evidence_parts.push(format!(
-                            "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
-                            dep_name, orig_dl, candidate_downloads, candidate
-                        ));
-                    }
+                if let Some(candidate_downloads) = meta.downloads
+                    && let Some(orig_dl) = dep_downloads.get(&dep_name).copied()
+                    && orig_dl > 10_000
+                    && candidate_downloads < 1_000
+                {
+                    evidence_parts.push(format!(
+                        "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
+                        dep_name, orig_dl, candidate_downloads, candidate
+                    ));
                 }
 
                 if !evidence_parts.is_empty() {

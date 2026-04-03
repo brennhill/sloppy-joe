@@ -3,88 +3,186 @@ use anyhow::{Result, bail};
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
-    let csproj = find_csproj(project_dir)?;
-    parse_file(&csproj)
+    let mut deps = Vec::new();
+    for csproj in find_csproj_files(project_dir)? {
+        deps.extend(parse_file(&csproj)?);
+    }
+    Ok(deps)
 }
 
 pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(csproj, super::MAX_MANIFEST_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
+    let content = strip_xml_comments(&content);
 
     let mut deps = Vec::new();
-    let mut current_name: Option<String> = None;
-    let mut current_version: Option<String> = None;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.contains("<PackageReference") {
-            if let Some(name) = extract_include(line) {
-                let version = extract_attr(line, "Version");
-                if line.contains("/>") || version.is_some() {
-                    let dep = Dependency {
-                        name,
-                        version,
-                        ecosystem: crate::Ecosystem::Dotnet,
-                        actual_name: None,
-                    };
-                    super::validate_dependency(&dep, csproj)?;
-                    deps.push(dep);
-                } else {
-                    current_name = Some(name);
-                    current_version = None;
-                }
-            }
-            continue;
+    let mut search_start = 0usize;
+    while let Some(open_idx) = find_package_reference_start(&content, search_start) {
+        let (tag_end, self_closing) = find_tag_end(&content, open_idx)?;
+        let tag_content = &content[open_idx + "<PackageReference".len()..tag_end];
+        if let Some(name) = extract_attr(tag_content, "Include") {
+            let version = if self_closing {
+                extract_attr(tag_content, "Version")
+            } else {
+                let close_idx = content[tag_end + 1..]
+                    .find("</PackageReference>")
+                    .map(|idx| tag_end + 1 + idx)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Unterminated <PackageReference> element in {}",
+                            csproj.display()
+                        )
+                    })?;
+                let body = &content[tag_end + 1..close_idx];
+                extract_attr(tag_content, "Version").or_else(|| extract_xml_value(body, "Version"))
+            };
+            let dep = Dependency {
+                name,
+                version,
+                ecosystem: crate::Ecosystem::Dotnet,
+                actual_name: None,
+            };
+            super::validate_dependency(&dep, csproj)?;
+            deps.push(dep);
         }
-
-        if current_name.is_some() {
-            if let Some(version) = extract_xml_value(line, "Version") {
-                current_version = Some(version);
-            }
-            if line.contains("</PackageReference>") {
-                let dep = Dependency {
-                    name: current_name.take().unwrap(),
-                    version: current_version.take(),
-                    ecosystem: crate::Ecosystem::Dotnet,
-                    actual_name: None,
-                };
-                super::validate_dependency(&dep, csproj)?;
-                deps.push(dep);
-            }
-        }
+        search_start = tag_end + 1;
     }
 
     Ok(deps)
 }
 
-fn find_csproj(dir: &Path) -> Result<std::path::PathBuf> {
-    let entries = std::fs::read_dir(dir)?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if let Some(ext) = path.extension()
-            && ext == "csproj"
-        {
-            return Ok(path);
+fn strip_xml_comments(content: &str) -> String {
+    let mut sanitized = String::with_capacity(content.len());
+    let mut index = 0usize;
+
+    while let Some(start) = content[index..].find("<!--") {
+        let start = index + start;
+        sanitized.push_str(&content[index..start]);
+        if let Some(end) = content[start + 4..].find("-->") {
+            index = start + 4 + end + 3;
+        } else {
+            break;
         }
     }
-    bail!("No .csproj file found in {}", dir.display())
+
+    sanitized.push_str(&content[index..]);
+    sanitized
 }
 
-fn extract_include(line: &str) -> Option<String> {
-    extract_attr(line, "Include")
+fn find_package_reference_start(content: &str, start: usize) -> Option<usize> {
+    let mut search = start;
+    while let Some(found) = content[search..].find("<PackageReference") {
+        let found = search + found;
+        let boundary = content[found + "<PackageReference".len()..]
+            .chars()
+            .next()
+            .is_none_or(|ch| ch.is_whitespace() || matches!(ch, '/' | '>'));
+        if boundary {
+            return Some(found);
+        }
+        search = found + "<PackageReference".len();
+    }
+    None
 }
 
-fn extract_attr(line: &str, attr: &str) -> Option<String> {
-    let pattern = format!("{}=\"", attr);
-    let start = line.find(&pattern)? + pattern.len();
-    let rest = &line[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+fn find_csproj_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut files = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "csproj"))
+        .collect::<Vec<_>>();
+    files.sort();
+    if files.is_empty() {
+        bail!("No .csproj file found in {}", dir.display());
+    }
+    Ok(files)
 }
 
-fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
-    super::extract_xml_value(line, tag)
+fn find_tag_end(content: &str, start: usize) -> Result<(usize, bool)> {
+    let bytes = content.as_bytes();
+    let mut index = start;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'>' if !in_single && !in_double => {
+                let self_closing = content[start..index].trim_end().ends_with('/');
+                return Ok((index, self_closing));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    bail!("Unterminated XML tag")
+}
+
+fn extract_attr(tag_content: &str, attr: &str) -> Option<String> {
+    let mut chars = tag_content.char_indices().peekable();
+
+    while let Some((start, ch)) = chars.next() {
+        if ch.is_whitespace() || ch == '/' {
+            continue;
+        }
+        let name_start = start;
+        let mut name_end = start + ch.len_utf8();
+        while let Some(&(idx, next)) = chars.peek() {
+            if next.is_whitespace() || matches!(next, '=' | '/' | '>') {
+                break;
+            }
+            name_end = idx + next.len_utf8();
+            chars.next();
+        }
+        let name = &tag_content[name_start..name_end];
+        while let Some(&(_, next)) = chars.peek() {
+            if !next.is_whitespace() {
+                break;
+            }
+            chars.next();
+        }
+        if !matches!(chars.peek(), Some((_, '='))) {
+            continue;
+        }
+        chars.next();
+        while let Some(&(_, next)) = chars.peek() {
+            if !next.is_whitespace() {
+                break;
+            }
+            chars.next();
+        }
+        let (_, quote) = chars.next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let value_start = chars
+            .peek()
+            .map(|(idx, _)| *idx)
+            .unwrap_or(tag_content.len());
+        while let Some(&(idx, next)) = chars.peek() {
+            if next == quote {
+                let value = &tag_content[value_start..idx];
+                if name == attr {
+                    return Some(value.to_string());
+                }
+                chars.next();
+                break;
+            }
+            chars.next();
+        }
+    }
+
+    None
+}
+
+fn extract_xml_value(content: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = content.find(&open)? + open.len();
+    let end = content[start..].find(&close)? + start;
+    Some(content[start..end].trim().to_string())
 }
 
 #[cfg(test)]
@@ -146,11 +244,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_all_csproj_files_in_directory() {
+        let dir = setup_dir(
+            r#"
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>
+"#,
+        );
+        std::fs::write(
+            dir.join("second.csproj"),
+            r#"
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="3.0.0" />
+  </ItemGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().any(|dep| dep.name == "Newtonsoft.Json"));
+        assert!(deps.iter().any(|dep| dep.name == "Serilog"));
+        cleanup(&dir);
+    }
+
+    #[test]
     fn extract_attr_works() {
-        let line = r#"<PackageReference Include="Foo" Version="1.0" />"#;
-        assert_eq!(extract_attr(line, "Include"), Some("Foo".to_string()));
-        assert_eq!(extract_attr(line, "Version"), Some("1.0".to_string()));
-        assert_eq!(extract_attr(line, "Missing"), None);
+        let tag = r#" Include="Foo" Version='1.0' /"#;
+        assert_eq!(extract_attr(tag, "Include"), Some("Foo".to_string()));
+        assert_eq!(extract_attr(tag, "Version"), Some("1.0".to_string()));
+        assert_eq!(extract_attr(tag, "Missing"), None);
     }
 
     #[test]
@@ -188,6 +316,62 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "SomePackage");
         assert_eq!(deps[0].version, Some("1.2.3".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_single_quoted_attributes() {
+        let dir = setup_dir(
+            r#"
+<Project Sdk='Microsoft.NET.Sdk'>
+  <ItemGroup>
+    <PackageReference Include='Newtonsoft.Json' Version='13.0.1' />
+  </ItemGroup>
+</Project>
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "Newtonsoft.Json");
+        assert_eq!(deps[0].version, Some("13.0.1".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_multiline_package_reference_attributes() {
+        let dir = setup_dir(
+            r#"
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference
+      Include="Newtonsoft.Json"
+      Version="13.0.1" />
+  </ItemGroup>
+</Project>
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "Newtonsoft.Json");
+        assert_eq!(deps[0].version, Some("13.0.1".to_string()));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn ignore_commented_package_references() {
+        let dir = setup_dir(
+            r#"
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- <PackageReference Include="Commented" Version="9.9.9" /> -->
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "Newtonsoft.Json");
         cleanup(&dir);
     }
 }

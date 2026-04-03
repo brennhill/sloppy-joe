@@ -68,11 +68,17 @@ pub const RESOLUTION_LOCKFILE_OUT_OF_SYNC: &str = "resolution/lockfile-out-of-sy
 pub const RESOLUTION_AMBIGUOUS: &str = "resolution/ambiguous";
 pub const RESOLUTION_NO_EXACT_VERSION: &str = "resolution/no-exact-version";
 pub const RESOLUTION_NO_TRUSTED_LOCKFILE: &str = "resolution/no-trusted-lockfile";
+pub const RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC: &str = "resolution/no-trusted-lockfile-sync";
 pub const RESOLUTION_NPM_ALIAS: &str = "resolution/npm-alias";
 pub const RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE: &str =
     "resolution/no-trusted-transitive-coverage";
 pub const RESOLUTION_LOCAL_DEPENDENCY_SOURCE: &str = "resolution/local-dependency-source";
+pub const RESOLUTION_UNTRUSTED_REGISTRY_SOURCE: &str = "resolution/untrusted-registry-source";
+pub const RESOLUTION_UNTRUSTED_GIT_SOURCE: &str = "resolution/untrusted-git-source";
+pub const RESOLUTION_BLOCKED_PROVENANCE_REWRITE: &str = "resolution/blocked-provenance-rewrite";
+pub const RESOLUTION_REDUCED_CONFIDENCE_GIT: &str = "resolution/reduced-confidence-git";
 pub const RESOLUTION_PYTHON_LEGACY_MANIFEST: &str = "resolution/python-legacy-manifest";
+pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
 
 #[cfg(test)]
 mod tests {
@@ -117,10 +123,16 @@ mod tests {
             RESOLUTION_AMBIGUOUS,
             RESOLUTION_NO_EXACT_VERSION,
             RESOLUTION_NO_TRUSTED_LOCKFILE,
+            RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC,
             RESOLUTION_NPM_ALIAS,
             RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,
             RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+            RESOLUTION_UNTRUSTED_GIT_SOURCE,
+            RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+            RESOLUTION_REDUCED_CONFIDENCE_GIT,
             RESOLUTION_PYTHON_LEGACY_MANIFEST,
+            CONFIG_LOCAL_OVERLAY_RELAXATION,
         ]
     }
 

@@ -64,8 +64,8 @@ impl super::RegistryMetadata for PackagistRegistry {
             }
         }
 
-        // If no specific version matched, use the first entry (latest)
-        if latest_version_date.is_none() {
+        // Only use the latest version when no specific version was requested.
+        if latest_version_date.is_none() && target_ver.is_none() {
             latest_version_date = versions
                 .first()
                 .and_then(|v| v["time"].as_str())

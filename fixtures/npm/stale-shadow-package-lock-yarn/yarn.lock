@@ -1,0 +1,4 @@
+# This file is intentionally minimal. The fixture only needs to prove that a
+# foreign package manager lockfile is present beside a stale package-lock.json.
+"react@npm:^18.3.1":
+  version: 18.3.1

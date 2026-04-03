@@ -88,26 +88,61 @@ fn epoch_secs_to_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
     (year, month, day, hour, min, sec)
 }
 
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_month(year: i64, month: i64) -> Option<i64> {
+    Some(match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => return None,
+    })
+}
+
 /// Convert date components to epoch seconds. Inverse of epoch_secs_to_parts.
 /// Handles leap years. Used by metadata age_in_hours.
 pub fn date_to_epoch(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64 {
+    checked_date_to_epoch(year, month, day, hour, min, sec).unwrap_or(0)
+}
+
+/// Convert date components to epoch seconds if they form a valid UTC timestamp.
+pub fn checked_date_to_epoch(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    min: i64,
+    sec: i64,
+) -> Option<i64> {
+    if year < 1970
+        || !(1..=12).contains(&month)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&min)
+        || !(0..=59).contains(&sec)
+    {
+        return None;
+    }
+    let max_day = days_in_month(year, month)?;
+    if !(1..=max_day).contains(&day) {
+        return None;
+    }
+
     let days_per_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut days: i64 = 0;
     for y in 1970..year {
-        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
+        days += if is_leap_year(y) { 366 } else { 365 };
     }
     for m in 0..((month - 1) as usize) {
         days += days_per_month.get(m).copied().unwrap_or(30) as i64;
     }
-    if month > 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+    if month > 2 && is_leap_year(year) {
         days += 1;
     }
     days += day - 1;
-    days * 86400 + hour * 3600 + min * 60 + sec
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
 }
 
 /// Convert epoch milliseconds to ISO 8601 string. Returns None for negative timestamps.

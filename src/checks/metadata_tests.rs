@@ -77,6 +77,17 @@ fn age_in_hours_returns_none_for_garbage() {
     assert!(age_in_hours("").is_none());
 }
 
+#[test]
+fn age_in_hours_returns_none_for_invalid_calendar_dates() {
+    assert!(age_in_hours("2026-02-30T00:00:00Z").is_none());
+    assert!(age_in_hours("2026-13-01T00:00:00Z").is_none());
+}
+
+#[test]
+fn age_in_hours_returns_none_for_future_dates() {
+    assert!(age_in_hours("2999-01-01T00:00:00Z").is_none());
+}
+
 #[tokio::test]
 async fn version_too_new_is_blocked() {
     let now = chrono_free_now();
@@ -494,6 +505,33 @@ async fn small_increase_not_flagged() {
         metadata_response: Some(PackageMetadata {
             dependency_count: Some(5),
             previous_dependency_count: Some(3),
+            ..default_meta()
+        }),
+        owners_response: None,
+    };
+    let deps = vec![dep_with_version("some-pkg", "1.2.3")];
+    let issues = check_metadata(
+        &registry,
+        &deps,
+        &config_with_age(72),
+        &empty_similarity(),
+        &no_resolution(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.check == "metadata/dependency-explosion")
+    );
+}
+
+#[tokio::test]
+async fn dependency_explosion_handles_extreme_metadata_counts() {
+    let registry = FakeRegistry {
+        metadata_response: Some(PackageMetadata {
+            dependency_count: Some(u64::MAX),
+            previous_dependency_count: Some(u64::MAX - 5),
             ..default_meta()
         }),
         owners_response: None,

@@ -1,0 +1,6 @@
+{
+  "name": "web",
+  "dependencies": {
+    "local-lib": "file:../../packages/local-lib"
+  }
+}

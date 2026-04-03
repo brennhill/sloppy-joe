@@ -211,6 +211,57 @@ fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn fixture_dir(case: &str) -> std::path::PathBuf {
+    repo_root().join("fixtures").join("npm").join(case)
+}
+
+fn fixture_config(case: &str) -> config::SloppyJoeConfig {
+    let path = fixture_dir(case).join("sloppy-joe.json");
+    config::load_config(Some(&path)).expect("fixture config should remain valid")
+}
+
+async fn scan_fixture_with_fake_services(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config: config::SloppyJoeConfig,
+    registry: &dyn Registry,
+    osv_client: &dyn OsvClient,
+    opts: &ScanOptions<'_>,
+) -> Result<ScanReport> {
+    let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
+    let preflight_warnings = preflight_project_inputs(project_dir, &specs, &config)?;
+    let projects = parse_project_inputs(project_dir, &specs, &config)?;
+
+    let mut total_packages = 0;
+    let mut all_issues = preflight_warnings;
+    let mut all_review_candidates = Vec::new();
+
+    for project in &projects {
+        if project.deps.is_empty() {
+            continue;
+        }
+        let report = scan_with_services_inner_for_kind(
+            Some(project.spec.kind),
+            project.spec.project_dir(),
+            config.clone(),
+            project.deps.clone(),
+            registry,
+            osv_client,
+            opts,
+        )
+        .await?;
+        total_packages += report.packages_checked;
+        all_issues.extend(report.issues);
+        all_review_candidates.extend(report.review_candidates);
+    }
+
+    Ok(ScanReport::from_issues_with_review_candidates(
+        total_packages,
+        all_issues,
+        all_review_candidates,
+    ))
+}
+
 #[cfg(unix)]
 fn symlink_path(link: &std::path::Path, target: &std::path::Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
@@ -426,7 +477,7 @@ fn preflight_accepts_npm_shrinkwrap_as_required_lockfile() {
     .unwrap();
     std::fs::write(
         dir.join("npm-shrinkwrap.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
 
@@ -465,7 +516,7 @@ fn preflight_accepts_peer_dependencies_in_npm_lockfile_roots() {
     .unwrap();
     std::fs::write(
         dir.join("package-lock.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","peerDependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","peerDependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
 
@@ -571,6 +622,40 @@ async fn scan_with_config_warns_for_legacy_requirements_projects_by_default() {
         issue.severity == Severity::Warning
             && issue.message.contains("requirements.txt")
             && issue.message.contains("Poetry")
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_with_config_reports_active_local_overlay_relaxations() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let report = scan_with_config(
+        &dir,
+        Some("cargo"),
+        config::SloppyJoeConfig {
+            active_local_overlay_relaxations: vec!["host-local Cargo config trust".to_string()],
+            ..Default::default()
+        },
+        &ScanOptions::default(),
+    )
+    .await
+    .expect("local overlay relaxations should be reported as warnings, not block the scan");
+
+    assert!(report.issues.iter().any(|issue| {
+        issue.severity == Severity::Warning
+            && issue.message.contains("local-only overlay")
+            && issue.message.contains("host-local Cargo config trust")
     }));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -685,7 +770,7 @@ fn preflight_allows_go_without_go_sum_for_stdlib_only_modules() {
 }
 
 #[test]
-fn preflight_allows_go_without_go_sum_when_all_deps_are_local_replaces() {
+fn preflight_blocks_go_projects_with_local_replace_targets() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("go.mod"),
@@ -693,8 +778,9 @@ fn preflight_allows_go_without_go_sum_when_all_deps_are_local_replaces() {
     )
     .unwrap();
 
-    let warnings = preflight_scan_inputs(&dir, Some("go")).unwrap();
-    assert!(warnings.is_empty());
+    let err = preflight_scan_inputs(&dir, Some("go"))
+        .expect_err("go projects with local replace targets must fail closed");
+    assert!(err.to_string().contains("local go.mod replace target"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -789,7 +875,7 @@ fn parse_project_inputs_dedupes_requirement_files_included_by_other_entrypoints(
     std::fs::write(dir.join("requirements-base.txt"), "requests==2.31.0\n").unwrap();
 
     let specs = detected_project_inputs(&dir, None).unwrap();
-    let projects = parse_project_inputs(&dir, &specs)
+    let projects = parse_project_inputs(&dir, &specs, &config::SloppyJoeConfig::default())
         .expect("included requirement files must not be scanned as standalone projects");
 
     assert_eq!(projects.len(), 1);
@@ -912,7 +998,7 @@ async fn repo_root_scans_warn_for_legacy_python_manifests_instead_of_skipping_th
         .unwrap();
         std::fs::write(
             dir.join("apps/web/package-lock.json"),
-            r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+            r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"react":"^18.0.0"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -994,7 +1080,7 @@ fn parse_project_inputs_extracts_dependencies_from_legacy_python_manifests() {
         std::fs::write(dir.join(manifest_name), manifest_content).unwrap();
 
         let specs = detected_project_inputs(&dir, Some("pypi")).unwrap();
-        let projects = parse_project_inputs(&dir, &specs)
+        let projects = parse_project_inputs(&dir, &specs, &config::SloppyJoeConfig::default())
             .expect("legacy Python manifests must parse into dependencies");
         assert_eq!(projects.len(), 1);
 
@@ -1102,7 +1188,7 @@ fn detected_project_inputs_ignore_installed_packages_inside_node_modules_without
     .unwrap();
     std::fs::write(
         dir.join("package-lock.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1144,7 +1230,7 @@ fn preflight_ignores_python_vendor_manifests_inside_node_modules() {
     .unwrap();
     std::fs::write(
         dir.join("package-lock.json"),
-        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1201,7 +1287,7 @@ fn preflight_blocks_unresolved_workspace_npm_dependencies() {
         .expect_err("workspace npm dependencies must resolve to a scanned local project");
     let msg = err.to_string();
     assert!(msg.contains("workspace-lib"));
-    assert!(msg.contains("scan root"));
+    assert!(msg.contains("workspaces"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1211,6 +1297,16 @@ fn preflight_accepts_local_npm_dependencies_within_scan_root() {
     let dir = unique_dir();
     std::fs::create_dir_all(dir.join("apps/web")).unwrap();
     std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","workspaces":["apps/*","packages/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root"}}}"#,
+    )
+    .unwrap();
     std::fs::write(
         dir.join("apps/web/package.json"),
         r#"{"dependencies":{"workspace-lib":"workspace:*","local-lib":"file:../../packages/workspace-lib"}}"#,
@@ -1228,12 +1324,404 @@ fn preflight_accepts_local_npm_dependencies_within_scan_root() {
     .unwrap();
     std::fs::write(
         dir.join("packages/workspace-lib/package-lock.json"),
-        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
     )
     .unwrap();
 
     let warnings = preflight_scan_inputs(&dir, None)
         .expect("local npm dependencies within the scan root must be accepted when discoverable");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_nested_npm_project_under_ancestor_foreign_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("ancestor pnpm/yarn lockfiles must block trusting nested npm lockfiles");
+    let msg = err.to_string();
+    assert!(msg.contains("pnpm-lock.yaml"));
+    assert!(msg.contains("apps/web/package.json"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_nested_npm_project_under_ancestor_bun_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(dir.join("bun.lock"), "dummy\n").unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("ancestor bun lockfiles must block trusting nested npm lockfiles");
+    let msg = err.to_string();
+    assert!(msg.contains("bun.lock"));
+    assert!(msg.contains("apps/web/package.json"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_workspace_dependency_without_declared_workspace_root() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"workspace-lib":"workspace:*"}},"node_modules/workspace-lib":{"resolved":"../../packages/workspace-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package-lock.json"),
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace:* deps must resolve through an ancestor npm workspaces declaration");
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("workspaces"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_workspace_dependency_when_lockfile_target_mismatches_verified_workspace() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/other-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","workspaces":["apps/*","packages/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"workspace-lib":"workspace:*"}},"node_modules/workspace-lib":{"resolved":"../../packages/other-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package-lock.json"),
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package.json"),
+        r#"{"name":"other-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package-lock.json"),
+        r#"{"name":"other-lib","lockfileVersion":3,"packages":{"":{"name":"other-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace lockfile links must point at the verified workspace target");
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("other-lib"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_workspace_dependency_outside_declared_workspace_set() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"workspace-lib":"workspace:*"}},"node_modules/workspace-lib":{"resolved":"../../packages/workspace-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package-lock.json"),
+        r#"{"name":"workspace-lib","lockfileVersion":3,"packages":{"":{"name":"workspace-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None).expect_err(
+        "workspace:* deps must only resolve to directories declared by the workspace root",
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("workspaces"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_file_dependency_when_lockfile_target_mismatches_manifest_target() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/local-lib")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/other-lib")).unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"local-lib":"file:../../packages/local-lib"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"local-lib":"file:../../packages/local-lib"}},"node_modules/local-lib":{"resolved":"../../packages/other-lib","link":true}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/local-lib/package.json"),
+        r#"{"name":"local-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/local-lib/package-lock.json"),
+        r#"{"name":"local-lib","lockfileVersion":3,"packages":{"":{"name":"local-lib"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package.json"),
+        r#"{"name":"other-lib"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/other-lib/package-lock.json"),
+        r#"{"name":"other-lib","lockfileVersion":3,"packages":{"":{"name":"other-lib"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("file/link lockfile entries must point at the manifest-verified local target");
+    let msg = err.to_string();
+    assert!(msg.contains("local-lib"));
+    assert!(msg.contains("other-lib"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_missing_integrity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry npm lockfile entries without integrity must block scanning");
+    let msg = err.to_string();
+    assert!(msg.contains("integrity"));
+    assert!(msg.contains("react"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_wrong_package_identity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"name":"lodash","version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("lockfile entries must not claim a different package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_foreign_resolved_url() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://evil.example/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("foreign npm tarball URLs must block lockfile trust");
+    let msg = err.to_string();
+    assert!(msg.contains("resolved"));
+    assert!(msg.contains("evil.example"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_registry_url_for_different_package() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/lodash/-/lodash-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_npm_lockfile_entries_with_registry_url_for_different_version() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-99.0.0.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked version");
+    let msg = err.to_string();
+    assert!(msg.contains("18.3.1"));
+    assert!(msg.contains("99.0.0"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_bundled_npm_lockfile_entries() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","bundled":true}}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("bundled npm entries must not silently bypass provenance checks");
+    let msg = err.to_string();
+    assert!(msg.contains("bundled"));
+    assert!(msg.contains("react"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_npm_lockfile_entries_with_registry_resolved_and_integrity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm"))
+        .expect("registry npm lockfile entries with integrity should remain trusted");
     assert!(warnings.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1597,12 +2085,16 @@ async fn scan_reports_out_of_sync_lockfile_state() {
 #[tokio::test]
 async fn scan_versionless_dependency_blocks_by_default() {
     let dir = unique_dir();
-    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = { workspace = true }\n").unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"latest"}}"#,
+    )
+    .unwrap();
 
     let metadata_versions = Arc::new(Mutex::new(Vec::new()));
     let osv_versions = Arc::new(Mutex::new(Vec::new()));
     let registry = RecordingRegistry {
-        existing: vec!["serde".to_string()],
+        existing: vec!["react".to_string()],
         versions: metadata_versions,
     };
     let osv = RecordingOsvClient {
@@ -1610,7 +2102,7 @@ async fn scan_versionless_dependency_blocks_by_default() {
     };
 
     let report =
-        scan_with_services_no_osv_cache(&dir, Some("cargo"), Default::default(), &registry, &osv)
+        scan_with_services_no_osv_cache(&dir, Some("npm"), Default::default(), &registry, &osv)
             .await
             .unwrap();
 
@@ -1630,10 +2122,14 @@ async fn scan_versionless_dependency_blocks_by_default() {
 #[tokio::test]
 async fn scan_versionless_dependency_warns_when_allowed() {
     let dir = unique_dir();
-    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = { workspace = true }\n").unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"latest"}}"#,
+    )
+    .unwrap();
 
     let registry = RecordingRegistry {
-        existing: vec!["serde".to_string()],
+        existing: vec!["react".to_string()],
         versions: Arc::new(Mutex::new(Vec::new())),
     };
     let osv = RecordingOsvClient {
@@ -1644,7 +2140,7 @@ async fn scan_versionless_dependency_warns_when_allowed() {
         ..Default::default()
     };
 
-    let report = scan_with_services_no_osv_cache(&dir, Some("cargo"), config, &registry, &osv)
+    let report = scan_with_services_no_osv_cache(&dir, Some("npm"), config, &registry, &osv)
         .await
         .unwrap();
 
@@ -1657,6 +2153,43 @@ async fn scan_versionless_dependency_warns_when_allowed() {
     assert!(report.has_issues());
     assert!(!report.has_errors());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unresolved_version_policy_only_skips_matching_lockfile_sync_issue_keys() {
+    let dep_a = Dependency {
+        name: "react".to_string(),
+        version: Some("^18.2.0".to_string()),
+        ecosystem: Ecosystem::Npm,
+        actual_name: None,
+    };
+    let dep_b = Dependency {
+        name: "react".to_string(),
+        version: Some("^19.0.0".to_string()),
+        ecosystem: Ecosystem::Npm,
+        actual_name: None,
+    };
+
+    let mut resolution = lockfiles::ResolutionResult::default();
+    resolution.push_issue_for(
+        &dep_a,
+        report::Issue::new(
+            "react",
+            checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC,
+            report::Severity::Error,
+        )
+        .message("unsynced")
+        .fix("fix"),
+    );
+
+    let issues = unresolved_version_policy_issues(
+        &[dep_a.clone(), dep_b.clone()],
+        &resolution,
+        &config::SloppyJoeConfig::default(),
+    );
+
+    assert_eq!(issues.len(), 1);
+    assert!(issues[0].message.contains("^19.0.0"));
 }
 
 /// Proves that non-metadata ecosystems (Go) make exactly 1 registry call per dep,
@@ -2301,6 +2834,252 @@ async fn transitive_internal_deps_are_skipped() {
 }
 
 #[tokio::test]
+async fn npm_fixture_stale_shadow_package_lock_in_pnpm_repo_blocks() {
+    let dir = fixture_dir("stale-shadow-package-lock-pnpm");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("pnpm projects with a shadow package-lock must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("pnpm"));
+    assert!(msg.contains("package-lock"));
+}
+
+#[tokio::test]
+async fn npm_fixture_stale_shadow_package_lock_in_yarn_repo_blocks() {
+    let dir = fixture_dir("stale-shadow-package-lock-yarn");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("yarn projects with a shadow package-lock must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("yarn"));
+    assert!(msg.contains("package-lock"));
+}
+
+#[tokio::test]
+async fn npm_fixture_stale_shadow_package_lock_in_bun_repo_blocks() {
+    let dir = fixture_dir("stale-shadow-package-lock-bun");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("bun projects with a shadow package-lock must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("bun"));
+    assert!(msg.contains("package-lock"));
+}
+
+#[tokio::test]
+async fn npm_fixture_override_only_drift_blocks_until_strict_verification_exists() {
+    let dir = fixture_dir("override-only-drift");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("overrides must not silently bypass strict lockfile trust");
+    let msg = err.to_string();
+    assert!(msg.contains("overrides"));
+    assert!(msg.contains("package.json"));
+}
+
+#[tokio::test]
+async fn npm_fixture_v1_range_drift_blocks_by_default() {
+    let dir = fixture_dir("v1-range-drift");
+    let err = scan_with_source_full(&dir, Some("npm"), None, false, false, true, None)
+        .await
+        .expect_err("legacy npm v1 lockfiles must block by default");
+    let msg = err.to_string();
+    assert!(msg.contains("legacy npm v5/v6 lockfile"));
+    assert!(msg.contains("modern npm"));
+}
+
+#[tokio::test]
+async fn npm_fixture_v1_range_drift_can_be_explicitly_allowed() {
+    let dir = fixture_dir("v1-range-drift");
+    let config = config::SloppyJoeConfig {
+        allow_legacy_npm_v1_lockfile: true,
+        ..Default::default()
+    };
+    let registry = FakeRegistry {
+        existing: vec!["react".to_string()],
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config,
+        &registry,
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("explicit opt-in should allow legacy npm v1 lockfiles");
+
+    assert_eq!(report.packages_checked, 1);
+    assert!(report.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE
+            && issue.severity == Severity::Warning
+    }));
+    assert!(report.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE
+            && issue.severity == Severity::Warning
+    }));
+}
+
+#[test]
+fn npm_fixture_workspace_lock_target_mismatch_blocks() {
+    let dir = fixture_dir("workspace-lock-target-mismatch");
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace lockfile links must point at the verified workspace target");
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("other-lib"));
+}
+
+#[test]
+fn npm_fixture_file_lock_target_mismatch_blocks() {
+    let dir = fixture_dir("file-lock-target-mismatch");
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("file/link lockfile entries must point at the manifest-verified local target");
+    let msg = err.to_string();
+    assert!(msg.contains("local-lib"));
+    assert!(msg.contains("other-lib"));
+}
+
+#[test]
+fn npm_fixture_wrong_package_identity_blocks() {
+    let dir = fixture_dir("wrong-package-identity");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("lockfile entries must not claim a different package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+}
+
+#[test]
+fn npm_fixture_registry_url_wrong_package_blocks() {
+    let dir = fixture_dir("registry-url-wrong-package");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked package identity");
+    let msg = err.to_string();
+    assert!(msg.contains("react"));
+    assert!(msg.contains("lodash"));
+}
+
+#[test]
+fn npm_fixture_registry_url_wrong_version_blocks() {
+    let dir = fixture_dir("registry-url-wrong-version");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("registry tarball URLs must match the locked version");
+    let msg = err.to_string();
+    assert!(msg.contains("18.3.1"));
+    assert!(msg.contains("99.0.0"));
+}
+
+#[test]
+fn npm_fixture_bundled_entry_blocks() {
+    let dir = fixture_dir("bundled-entry");
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("bundled npm entries must not silently bypass provenance checks");
+    let msg = err.to_string();
+    assert!(msg.contains("bundled"));
+    assert!(msg.contains("react"));
+}
+
+#[tokio::test]
+async fn npm_fixture_transitive_typosquat_flags_similarity_without_deep() {
+    let dir = fixture_dir("transitive-typosquat");
+    let registry = FakeRegistry {
+        existing: vec![
+            "react".to_string(),
+            "express".to_string(),
+            "expresss".to_string(),
+        ],
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fixture scan should succeed");
+
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.package == "expresss"
+                && issue.check.starts_with("similarity/")
+                && issue.source.as_deref() == Some("transitive")
+        }),
+        "transitive npm typosquat should trigger similarity without --deep"
+    );
+}
+
+#[tokio::test]
+async fn npm_fixture_private_scope_typo_uses_configured_trusted_scope() {
+    let dir = fixture_dir("private-scope-typo");
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        fixture_config("private-scope-typo"),
+        &FakeRegistry {
+            existing: vec!["@acmf/widget".to_string()],
+        },
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fixture scan should succeed");
+
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.package == "@acmf/widget"
+                && issue.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING
+        }),
+        "repo-configured trusted scopes should participate in npm scope-squatting detection"
+    );
+}
+
+#[tokio::test]
+async fn npm_fixture_long_tail_combo_squat_uses_configured_package_roots() {
+    let dir = fixture_dir("long-tail-combo-squat");
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        fixture_config("long-tail-combo-squat"),
+        &FakeRegistry {
+            existing: vec!["acme-widget".to_string(), "acme-widget-utils".to_string()],
+        },
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fixture scan should succeed");
+
+    assert!(
+        report.issues.iter().any(|issue| {
+            issue.package == "acme-widget-utils"
+                && issue.check == crate::checks::names::SIMILARITY_SEGMENT_OVERLAP
+        }),
+        "repo-configured trusted package roots should participate in npm combo-squatting detection"
+    );
+}
+
+#[tokio::test]
 async fn internal_packages_still_get_osv_checked() {
     // Internal packages should skip similarity/existence/canonical/metadata
     // but still get vulnerability (OSV) checks
@@ -2498,6 +3277,108 @@ fn scan_hash_changes_with_lockfile() {
 }
 
 #[test]
+fn scan_hash_for_projects_changes_when_policy_changes() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let specs =
+        detected_project_inputs_with_config(&dir, Some("npm"), &config::SloppyJoeConfig::default())
+            .unwrap();
+    let projects = parse_project_inputs(&dir, &specs, &config::SloppyJoeConfig::default()).unwrap();
+
+    let default_hash = scan_hash_for_projects_with_policy(
+        &projects,
+        &config::SloppyJoeConfig::default(),
+        &ScanOptions::default(),
+    )
+    .unwrap();
+    let allowed_hash = scan_hash_for_projects_with_policy(
+        &projects,
+        &config::SloppyJoeConfig {
+            allowed: std::collections::HashMap::from([(
+                "npm".to_string(),
+                vec!["react".to_string()],
+            )]),
+            ..Default::default()
+        },
+        &ScanOptions::default(),
+    )
+    .unwrap();
+
+    assert_ne!(
+        default_hash, allowed_hash,
+        "policy changes must invalidate the dependency-hash shortcut"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scan_hash_for_projects_changes_when_result_shaping_options_change() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+
+    let specs =
+        detected_project_inputs_with_config(&dir, Some("npm"), &config::SloppyJoeConfig::default())
+            .unwrap();
+    let projects = parse_project_inputs(&dir, &specs, &config::SloppyJoeConfig::default()).unwrap();
+
+    let default_hash = scan_hash_for_projects_with_policy(
+        &projects,
+        &config::SloppyJoeConfig::default(),
+        &ScanOptions::default(),
+    )
+    .unwrap();
+    let deep_hash = scan_hash_for_projects_with_policy(
+        &projects,
+        &config::SloppyJoeConfig::default(),
+        &ScanOptions {
+            deep: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let review_hash = scan_hash_for_projects_with_policy(
+        &projects,
+        &config::SloppyJoeConfig::default(),
+        &ScanOptions {
+            review_exceptions: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_ne!(
+        default_hash, deep_hash,
+        "--deep must invalidate the dependency-hash shortcut"
+    );
+    assert_ne!(
+        default_hash, review_hash,
+        "--review-exceptions must invalidate the dependency-hash shortcut"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn scan_hash_ignores_shadowed_package_lock_when_shrinkwrap_exists() {
     let dir = unique_dir();
     let deps = vec![Dependency {
@@ -2531,6 +3412,2384 @@ fn scan_hash_ignores_shadowed_package_lock_when_shrinkwrap_exists() {
         hash_before, hash_after,
         "shadowed package-lock.json must not affect the hash when npm-shrinkwrap.json is authoritative"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cargo_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+    )
+    .unwrap();
+
+    let deps = parsers::cargo_toml::parse(&dir).unwrap();
+    let data = lockfiles::LockfileData::parse(&dir, &deps).unwrap();
+
+    assert!(
+        data.resolution.exact_version(&deps[0]).is_none(),
+        "non-exact Cargo direct deps must not be trusted from Cargo.lock without sync proof"
+    );
+    assert!(data.resolution.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "serde"
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn composer_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{"require":{"laravel/framework":"^10.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("composer.lock"),
+        r#"{"packages":[{"name":"laravel/framework","version":"10.48.29"}]}"#,
+    )
+    .unwrap();
+
+    let deps = parsers::composer_json::parse(&dir).unwrap();
+    let data = lockfiles::LockfileData::parse(&dir, &deps).unwrap();
+
+    assert!(
+        data.resolution.exact_version(&deps[0]).is_none(),
+        "non-exact Composer direct deps must not be trusted from composer.lock without sync proof"
+    );
+    assert!(data.resolution.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "laravel/framework"
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ruby_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Gemfile"),
+        "source 'https://rubygems.org'\ngem 'rails', '~> 7.0'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Gemfile.lock"),
+        r#"GEM
+  remote: https://rubygems.org/
+  specs:
+    rails (7.0.4)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rails (~> 7.0)
+"#,
+    )
+    .unwrap();
+
+    let deps = parsers::gemfile::parse(&dir).unwrap();
+    let data = lockfiles::LockfileData::parse(&dir, &deps).unwrap();
+
+    assert!(
+        data.resolution.exact_version(&deps[0]).is_none(),
+        "non-exact Gemfile deps must not be trusted from Gemfile.lock without sync proof"
+    );
+    assert!(data.resolution.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "rails"
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gradle_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("build.gradle"),
+        "repositories {\n  mavenCentral()\n}\ndependencies {\n  implementation 'com.google.guava:guava:[31.0,32.0)'\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("gradle.lockfile"),
+        "com.google.guava:guava:31.1-jre=runtimeClasspath\n",
+    )
+    .unwrap();
+
+    let deps = parsers::jvm::parse_manifest(&dir.join("build.gradle")).unwrap();
+    let data = lockfiles::LockfileData::parse_for_kind(&dir, Some(ProjectInputKind::Gradle), &deps)
+        .unwrap();
+
+    assert!(
+        data.resolution.exact_version(&deps[0]).is_none(),
+        "non-exact Gradle direct deps must not be trusted from gradle.lockfile without sync proof"
+    );
+    assert!(data.resolution.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "com.google.guava:guava"
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dotnet_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("app.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.0,14.0.0)" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages.lock.json"),
+        r#"{"version":1,"dependencies":{"net8.0":{"Newtonsoft.Json":{"type":"Direct","requested":"[13.0.0,14.0.0)","resolved":"13.0.1"}}}}"#,
+    )
+    .unwrap();
+
+    let deps = parsers::csproj::parse_file(&dir.join("app.csproj")).unwrap();
+    let data = lockfiles::LockfileData::parse_for_kind(&dir, Some(ProjectInputKind::Dotnet), &deps)
+        .unwrap();
+
+    assert!(
+        data.resolution.exact_version(&deps[0]).is_none(),
+        "non-exact .NET direct deps must not be trusted from packages.lock.json without sync proof"
+    );
+    assert!(data.resolution.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "Newtonsoft.Json"
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "^2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+
+[metadata]
+lock-version = "2.0"
+"#,
+    )
+    .unwrap();
+
+    let deps = parsers::pyproject_toml::parse_poetry(&dir).unwrap();
+    let data = lockfiles::LockfileData::parse_for_kind(
+        &dir,
+        Some(ProjectInputKind::PyProjectPoetry),
+        &deps,
+    )
+    .unwrap();
+
+    assert!(
+        data.resolution.exact_version(&deps[0]).is_none(),
+        "non-exact Poetry direct deps must not be trusted from poetry.lock without sync proof"
+    );
+    assert!(data.resolution.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "requests"
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_git_dependency_sources() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = { git = "https://github.com/serde-rs/serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("cargo"))
+        .expect_err("Cargo git dependencies must block strict scanning");
+    assert!(err.to_string().contains("git"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_cargo_workspace_inheritance_from_in_scope_root() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app"]
+
+[workspace.dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app").join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "workspace-inherited Cargo deps should be allowed when the in-scope workspace root and lockfile prove trusted provenance: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_workspace_inherited_cargo_dep_through_workspace_root_patch_rewrite() {
+    let dir = unique_dir();
+    let app = dir.join("app");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "patched-serde"]
+
+[workspace.dependencies]
+serde = "=1.0.228"
+
+[patch.crates-io]
+serde = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "workspace-inherited Cargo deps must still flow through workspace-root rewrites: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_workspace_inheritance_for_non_member_crate() {
+    let dir = unique_dir();
+    let member = dir.join("member");
+    let rogue = dir.join("rogue");
+    std::fs::create_dir_all(&member).unwrap();
+    std::fs::create_dir_all(&rogue).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["member"]
+
+[workspace.dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        member.join("Cargo.toml"),
+        r#"[package]
+name = "member"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        rogue.join("Cargo.toml"),
+        r#"[package]
+name = "rogue"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(rogue.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let err = detected_project_inputs_with_config(&dir, Some("cargo"), &config)
+        .expect_err("non-member crates must not inherit workspace dependencies or lockfile trust");
+    assert!(err.to_string().contains("no in-scope workspace root"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detected_project_inputs_include_workspace_root_patch_target_for_workspace_inherited_dep() {
+    let dir = unique_dir();
+    let app = dir.join("app");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "patched-serde"]
+
+[workspace.dependencies]
+serde = "=1.0.228"
+
+[patch.crates-io]
+serde = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { workspace = true }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let specs = detected_project_inputs_with_config(
+        &dir,
+        Some("cargo"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .unwrap();
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.manifest_path == patched.join("Cargo.toml")),
+        "workspace-root rewrite targets for workspace-inherited deps must be scanned as first-class Cargo projects"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_cargo_in_root_path_dependency() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::create_dir_all(dir.join("util")).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "util"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app").join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+util = { path = "../util" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("util").join("Cargo.toml"),
+        r#"[package]
+name = "util"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "in-root Cargo path deps should be allowed and treated as first-party local crates: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_path_dependency_with_mismatched_package_name() {
+    let dir = unique_dir();
+    let local = dir.join("local-crate");
+    std::fs::create_dir_all(&local).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { path = "local-crate" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        local.join("Cargo.toml"),
+        r#"[package]
+name = "not-serde"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(local.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let specs = detected_project_inputs_with_config(
+        &dir,
+        Some("cargo"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .unwrap();
+    let err = preflight_project_inputs(&dir, &specs, &config::SloppyJoeConfig::default())
+        .expect_err("mismatched local Cargo crate identity must block");
+    assert!(err.to_string().contains("declares package"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_exact_path_dependency_with_mismatched_target_version() {
+    let dir = unique_dir();
+    let local = dir.join("local-crate");
+    std::fs::create_dir_all(&local).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { path = "local-crate", version = "=1.0.228" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        local.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "9.9.9"
+"#,
+    )
+    .unwrap();
+    std::fs::write(local.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("exact local Cargo path dependencies must bind target version too");
+    assert!(err.to_string().contains("declares version"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_cargo_allowlisted_external_path_dependency() {
+    let dir = unique_dir();
+    let external = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = {{ path = "{}" }}
+"#,
+            external.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        external.join("Cargo.toml"),
+        r#"[package]
+name = "shared"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(external.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_local_paths: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![external.display().to_string()],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "allowlisted external Cargo path deps should pass strict preflight: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&external);
+}
+
+#[test]
+fn preflight_does_not_apply_crates_io_patch_to_private_registry_dependency() {
+    let dir = unique_dir();
+    let patched = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = {{ version = "1.0.0", registry = "company" }}
+
+[patch.crates-io]
+serde = {{ path = "{}" }}
+"#,
+            patched.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "crates.io patches must not rewrite private-registry dependencies: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&patched);
+}
+
+#[test]
+fn preflight_allows_cargo_allowlisted_private_registry_dependency() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+internal-crate = { registry = "company", version = "=1.2.3" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "internal-crate"
+version = "1.2.3"
+source = "registry+https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "allowlisted Cargo private registries should pass strict preflight when Cargo.lock proves the exact source: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn cargo_private_registry_dependency_scans_with_trusted_lockfile_source() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+internal-crate = { registry = "company", version = "=1.2.3" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "internal-crate"
+version = "1.2.3"
+source = "registry+https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("cargo"),
+        config,
+        &FakeRegistry {
+            existing: vec!["internal-crate".to_string()],
+        },
+        &FakeOsvClient,
+        &ScanOptions::default(),
+    )
+    .await
+    .expect("trusted Cargo private registries should survive the full scan path");
+
+    assert_eq!(report.packages_checked, 1);
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check.starts_with("resolution/")),
+        "trusted Cargo private registry dependency should not degrade into a resolution failure: {:?}",
+        report.issues
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_warns_for_cargo_allowlisted_pinned_git_dependency() {
+    let dir = unique_dir();
+    let rev = "0123456789abcdef0123456789abcdef01234567";
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = {{ git = "https://github.com/yourorg/shared-crate", rev = "{rev}" }}
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!(
+            r#"version = 4
+
+[[package]]
+name = "shared"
+version = "0.1.0"
+source = "git+https://github.com/yourorg/shared-crate?rev={rev}#{rev}"
+"#
+        ),
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        cargo_git_policy: config::CargoGitPolicy::WarnPinned,
+        trusted_git_sources: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec!["https://github.com/yourorg/shared-crate".to_string()],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let warnings = preflight_project_inputs(&dir, &specs, &config)
+        .expect("allowlisted pinned Cargo git deps should continue in reduced-confidence mode");
+    assert!(warnings.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_REDUCED_CONFIDENCE_GIT
+            && issue.package == "shared"
+            && issue.severity == Severity::Warning
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_trusted_cargo_patch_rewrite_to_local_path() {
+    let dir = unique_dir();
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&patched).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[patch.crates-io]
+serde = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "trusted repo-visible Cargo patch rewrites to local crates should pass strict preflight: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_workspace_root_cargo_patch_rewrite_for_member() {
+    let dir = unique_dir();
+    let app = dir.join("app");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "patched-serde"]
+
+[patch.crates-io]
+serde = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "workspace-root Cargo patch rewrites must apply to member crates: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_ignores_member_local_cargo_patch_rewrites() {
+    let dir = unique_dir();
+    let app = dir.join("app");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "patched-serde"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[patch.crates-io]
+serde = { path = "../patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("member-local Cargo [patch] should be ignored like Cargo itself");
+    assert!(err.to_string().contains("Cargo.lock"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detected_project_inputs_include_workspace_root_cargo_patch_local_crate() {
+    let dir = unique_dir();
+    let app = dir.join("app");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "patched-serde"]
+
+[patch.crates-io]
+serde = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+
+    let specs = detected_project_inputs_with_config(
+        &dir,
+        Some("cargo"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .unwrap();
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.manifest_path == patched.join("Cargo.toml")),
+        "workspace-root Cargo patch targets must be discovered as first-class Cargo projects"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_repo_local_cargo_config_named_source_chain_to_trusted_registry() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { version = "=1.0.228", registry = "company" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[source.company]
+replace-with = "mirror"
+
+[source.mirror]
+registry = "https://cargo.company.mirror/index"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://cargo.company.mirror/index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![
+                config::TrustedRegistry {
+                    name: "company".to_string(),
+                    source: "registry+https://cargo.company.example/index".to_string(),
+                },
+                config::TrustedRegistry {
+                    name: "mirror".to_string(),
+                    source: "registry+https://cargo.company.mirror/index".to_string(),
+                },
+            ],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "trusted Cargo named-source replacement chains must pass strict preflight: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_repo_local_cargo_config_directory_source_rewrite() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let vendor = dir.join("vendor");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&vendor).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[source.crates-io]
+replace-with = "vendored"
+
+[source.vendored]
+directory = "../vendor"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let err = detected_project_inputs_with_config(&dir, Some("cargo"), &config)
+        .expect_err("unsupported Cargo directory source rewrites must block");
+    assert!(err.to_string().contains("unsupported directory source"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_repo_local_cargo_config_patch_rewrite_to_trusted_local_crate() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[patch.crates-io]
+serde = { path = "../patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "repo-local Cargo config patch rewrites to trusted local crates must pass strict preflight: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detected_project_inputs_include_repo_local_cargo_config_patch_local_crate() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[patch.crates-io]
+serde = { path = "../patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let specs = detected_project_inputs_with_config(
+        &dir,
+        Some("cargo"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .unwrap();
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.manifest_path == patched.join("Cargo.toml")),
+        "repo-local Cargo config patch targets must be discovered as first-class Cargo projects"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_conflicting_cargo_patch_rewrites_for_same_scope() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let patched_a = dir.join("patched-serde-a");
+    let patched_b = dir.join("patched-serde-b");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&patched_a).unwrap();
+    std::fs::create_dir_all(&patched_b).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[patch.crates-io]
+serde = { path = "patched-serde-a" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[patch.crates-io]
+serde = { path = "../patched-serde-b" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        patched_a.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        patched_b.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+
+    let err = detected_project_inputs_with_config(
+        &dir,
+        Some("cargo"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .expect_err("conflicting Cargo rewrites for the same package/scope must fail closed");
+    assert!(err.to_string().contains("Conflicting Cargo rewrite"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_cargo_replace_rewrite_with_package_id_spec() {
+    let dir = unique_dir();
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[replace]
+"serde:1.0.228" = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "Cargo [replace] entries with package ID specs must resolve through the trusted local rewrite model: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_replace_target_with_mismatched_package_id_version() {
+    let dir = unique_dir();
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[replace]
+"serde:1.0.228" = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "9.9.9"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("Cargo [replace] targets must match the exact replaced package ID version");
+    assert!(err.to_string().contains("declares version"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_does_not_apply_cargo_replace_with_mismatched_package_id_version() {
+    let dir = unique_dir();
+    let external = unique_dir();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.229"
+
+[replace]
+"serde:1.0.228" = {{ path = "{}" }}
+"#,
+            external.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.229"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        external.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "Cargo [replace] must not apply when the package ID version does not match: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&external);
+}
+
+#[test]
+fn preflight_allows_cargo_replace_with_fully_qualified_package_id_source() {
+    let dir = unique_dir();
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = { version = "=1.0.228", registry = "company" }
+
+[replace]
+"registry+https://cargo.company.example/index#serde@1.0.228" = { path = "patched-serde" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "fully qualified Cargo [replace] package IDs must resolve through the trusted local rewrite model: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_registry_replace_with_mismatched_lockfile_version() {
+    let dir = unique_dir();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[replace]
+"serde:1.0.228" = { registry = "company" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde"
+version = "9.9.9"
+source = "registry+https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("Cargo registry rewrites must still bind the exact replaced package version");
+    assert!(err.to_string().contains("Cargo.lock"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_cargo_git_replace_with_mismatched_lockfile_version() {
+    let dir = unique_dir();
+    let rev = "0123456789abcdef0123456789abcdef01234567";
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let lockfile = toml::from_str::<toml::Value>(&format!(
+        r#"version = 4
+
+[[package]]
+name = "shared"
+version = "9.9.9"
+source = "git+https://github.com/yourorg/shared-crate?rev={rev}#{rev}"
+"#
+    ))
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        cargo_git_policy: config::CargoGitPolicy::WarnPinned,
+        trusted_git_sources: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec!["https://github.com/yourorg/shared-crate".to_string()],
+        )]),
+        ..Default::default()
+    };
+    let rewrite = EffectiveCargoRewrite {
+        package_name: "shared".to_string(),
+        patch_scope: None,
+        replace_source: Some(format!(
+            "git+https://github.com/yourorg/shared-crate?rev={rev}#{rev}"
+        )),
+        replace_version: Some("0.1.0".to_string()),
+        spec: parsers::cargo_toml::CargoDependencySpec {
+            manifest_name: "shared".to_string(),
+            package_name: "shared".to_string(),
+            version: None,
+            source: parsers::cargo_toml::CargoSourceSpec::Git {
+                url: "https://github.com/yourorg/shared-crate".to_string(),
+                rev: Some(rev.to_string()),
+                branch: None,
+                tag: None,
+            },
+            workspace_member_invalid_keys: Vec::new(),
+        },
+        base_dir: dir.clone(),
+    };
+    let err = validate_cargo_effective_rewrite(&dir, &rewrite, &config, &lockfile)
+        .expect_err("Cargo git rewrites must still bind the exact replaced package version");
+    assert!(err.to_string().contains("Cargo.lock"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_source_qualified_cargo_replace_to_untrusted_local_path() {
+    let dir = unique_dir();
+    let external = unique_dir();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+foo = "=1.0.0"
+
+[replace]
+"registry+https://github.com/rust-lang/crates.io-index#serde@1.0.228" = {{ path = "{}" }}
+"#,
+            external.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "foo"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        external.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(external.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let err = preflight_project_inputs(&dir, &specs, &config).expect_err(
+        "source-qualified Cargo rewrites to local paths must not skip trust validation when the final lockfile entry loses its source",
+    );
+    assert!(err.to_string().contains("outside the scan root"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&external);
+}
+
+#[test]
+fn preflight_allows_cargo_registry_index_dependency_when_trusted() {
+    let dir = unique_dir();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+internal-crate = { registry-index = "https://cargo.company.example/index", version = "=1.2.3" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "internal-crate"
+version = "1.2.3"
+source = "registry+https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "Cargo registry-index dependencies should normalize to the trusted lockfile source model: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_does_not_apply_git_scoped_cargo_replace_with_mismatched_rev() {
+    let dir = unique_dir();
+    let patched = dir.join("patched-shared");
+    let replace_rev = "0123456789abcdef0123456789abcdef01234567";
+    let actual_rev = "fedcba9876543210fedcba9876543210fedcba98";
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = {{ git = "https://github.com/yourorg/shared-crate", rev = "{actual_rev}" }}
+
+[replace]
+"git+https://github.com/yourorg/shared-crate?rev={replace_rev}#{replace_rev}#shared@0.1.0" = {{ path = "patched-shared" }}
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!(
+            r#"version = 4
+
+[[package]]
+name = "shared"
+version = "0.1.0"
+source = "git+https://github.com/yourorg/shared-crate?rev={actual_rev}#{actual_rev}"
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "shared"
+version = "9.9.9"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig {
+        cargo_git_policy: config::CargoGitPolicy::WarnPinned,
+        trusted_git_sources: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec!["https://github.com/yourorg/shared-crate".to_string()],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "source-qualified Cargo [replace] rules must not match different git revisions: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_cargo_replace_path_with_version_field_without_rewrite_loop() {
+    let dir = unique_dir();
+    let patched = dir.join("patched-serde");
+    std::fs::create_dir_all(&patched).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[replace]
+"serde:1.0.228" = { path = "patched-serde", version = "=1.0.228" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        patched.join("Cargo.toml"),
+        r#"[package]
+name = "serde"
+version = "1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(patched.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "Cargo rewrite resolution must not loop when a [replace] target is already in its effective final form: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_repo_local_cargo_config_paths_rewrite_to_trusted_local_crate() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let shared = dir.join("shared");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = "=0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"paths = ["../shared"]"#,
+    )
+    .unwrap();
+    std::fs::write(
+        shared.join("Cargo.toml"),
+        r#"[package]
+name = "shared"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(shared.join("Cargo.lock"), "version = 4\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "trusted repo-local Cargo config paths rewrites should pass strict preflight: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_repo_local_cargo_config_paths_with_ambiguous_package_name() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let shared_a = dir.join("shared-a");
+    let shared_b = dir.join("shared-b");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&shared_a).unwrap();
+    std::fs::create_dir_all(&shared_b).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = "=0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"paths = ["../shared-a", "../shared-b"]"#,
+    )
+    .unwrap();
+    std::fs::write(
+        shared_a.join("Cargo.toml"),
+        r#"[package]
+name = "shared"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        shared_b.join("Cargo.toml"),
+        r#"[package]
+name = "shared"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+
+    let err = detected_project_inputs_with_config(
+        &dir,
+        Some("cargo"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .expect_err("ambiguous Cargo config paths rewrites for the same package must block");
+    assert!(err.to_string().contains("multiple local path rewrites"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_allows_repo_local_cargo_config_registry_rewrite_when_trusted() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+internal-crate = "=1.2.3"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "internal-crate"
+version = "1.2.3"
+source = "registry+https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[source.crates-io]
+replace-with = "company"
+
+[source.company]
+registry = "https://cargo.company.example/index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "trusted repo-local Cargo registry rewrites should pass strict preflight: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_repo_local_cargo_config_alias_with_unsupported_source_definition() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let vendor = dir.join("vendor");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&vendor).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[source.crates-io]
+replace-with = "company"
+
+[source.company]
+directory = "../vendor"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        trusted_registries: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec![config::TrustedRegistry {
+                name: "company".to_string(),
+                source: "registry+https://cargo.company.example/index".to_string(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let err = detected_project_inputs_with_config(&dir, Some("cargo"), &config)
+        .expect_err("repo-local source definitions must not be masked by allowlisted alias names");
+    assert!(err.to_string().contains("unsupported directory source"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn host_local_cargo_config_rewrites_block_by_default() {
+    let home = unique_dir();
+    let cargo_home = home.join(".cargo");
+    std::fs::create_dir_all(&cargo_home).unwrap();
+    std::fs::write(cargo_home.join("config.toml"), r#"paths = ["../shared"]"#).unwrap();
+
+    let err = cargo_host_local_config_rewrites_for_test(&home, &config::SloppyJoeConfig::default())
+        .expect_err("host-local Cargo config must block by default");
+    assert!(err.to_string().contains("host-local"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
+async fn cargo_scan_allows_mixed_registry_and_allowlisted_git_deps_in_reduced_confidence_mode() {
+    let dir = unique_dir();
+    let rev = "0123456789abcdef0123456789abcdef01234567";
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+shared = {{ git = "https://github.com/yourorg/shared-crate", rev = "{rev}" }}
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!(
+            r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "shared"
+version = "0.1.0"
+source = "git+https://github.com/yourorg/shared-crate?rev={rev}#{rev}"
+"#
+        ),
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        cargo_git_policy: config::CargoGitPolicy::WarnPinned,
+        trusted_git_sources: std::collections::HashMap::from([(
+            "cargo".to_string(),
+            vec!["https://github.com/yourorg/shared-crate".to_string()],
+        )]),
+        ..Default::default()
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("cargo"),
+        config,
+        &FakeRegistry {
+            existing: vec!["serde".to_string()],
+        },
+        &FakeOsvClient,
+        &ScanOptions::default(),
+    )
+    .await
+    .expect("allowlisted pinned Cargo git deps should not break the full scan path");
+
+    assert!(report.issues.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_REDUCED_CONFIDENCE_GIT
+            && issue.package == "shared"
+            && issue.severity == Severity::Warning
+    }));
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check == checks::names::RESOLUTION_PARSE_FAILED),
+        "mixed Cargo registry+git scans must not degrade into lockfile parse failures: {:?}",
+        report.issues
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn host_local_cargo_config_rewrites_warn_when_local_overlay_allows_them() {
+    let home = unique_dir();
+    let cargo_home = home.join(".cargo");
+    std::fs::create_dir_all(&cargo_home).unwrap();
+    std::fs::write(
+        cargo_home.join("config.toml"),
+        r#"[source.crates-io]
+replace-with = "company"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        allow_host_local_cargo_config: true,
+        ..Default::default()
+    };
+    let (rewrites, warnings) = cargo_host_local_config_rewrites_for_test(&home, &config)
+        .expect("local-only Cargo overlay should be able to trust host-local Cargo config");
+
+    assert_eq!(
+        rewrites
+            .source_replace_with
+            .get("crates-io")
+            .map(String::as_str),
+        Some("company")
+    );
+    assert!(
+        !warnings.is_empty(),
+        "trusting host-local Cargo config must emit a warning on every run"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn load_effective_cargo_config_rewrites_blocks_host_local_conflicts_with_repo_visible_config() {
+    let dir = unique_dir();
+    let cargo_config_dir = dir.join(".cargo");
+    let home = unique_dir();
+    let home_cargo = home.join(".cargo");
+    std::fs::create_dir_all(&cargo_config_dir).unwrap();
+    std::fs::create_dir_all(&home_cargo).unwrap();
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::write(
+        cargo_config_dir.join("config.toml"),
+        r#"[source.crates-io]
+replace-with = "company"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        home_cargo.join("config.toml"),
+        r#"[source.crates-io]
+replace-with = "mirror"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig {
+        allow_host_local_cargo_config: true,
+        ..Default::default()
+    };
+    let err = load_effective_cargo_config_rewrites_for_test(
+        &dir,
+        &dir.join("Cargo.toml"),
+        &config,
+        Some(home.join(".cargo")),
+    )
+    .expect_err("host-local Cargo config must not override repo-visible rewrite state");
+    assert!(err.to_string().contains("conflicts with repo-visible"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn preflight_blocks_composer_custom_repository_sources() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{
+  "repositories":[{"type":"vcs","url":"https://github.com/acme/fork"}],
+  "require":{"acme/pkg":"^1.0"}
+}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("composer.lock"), r#"{"packages":[]}"#).unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("php"))
+        .expect_err("Composer custom repositories must block strict scanning");
+    assert!(err.to_string().contains("repositories"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_gradle_custom_repository_sources() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("build.gradle"),
+        r#"repositories { maven { url "https://evil.example/maven" } }
+dependencies { implementation "com.google.guava:guava:31.1-jre" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("gradle.lockfile"),
+        "com.google.guava:guava:31.1-jre=runtimeClasspath\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("Gradle custom repositories must block strict scanning");
+    assert!(err.to_string().contains("repository"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_multiline_gradle_custom_repository_sources() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("build.gradle"),
+        r#"repositories
+{
+  maven
+  {
+    url "https://evil.example/maven"
+  }
+}
+
+dependencies {
+  implementation "com.google.guava:guava:31.1-jre"
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("gradle.lockfile"),
+        "com.google.guava:guava:31.1-jre=runtimeClasspath\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("multiline Gradle custom repositories must still block strict scanning");
+    assert!(err.to_string().contains("repository"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_multiline_gradle_local_project_dependency_sources() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("build.gradle"),
+        r#"repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation(
+    project(":shared")
+  )
+}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("gradle.lockfile"), "").unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("multiline Gradle project dependencies must still block strict scanning");
+    assert!(err.to_string().contains("local project"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_maven_custom_repository_sources() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <repositories>
+    <repository>
+      <id>evil</id>
+      <url>https://evil.example/maven</url>
+    </repository>
+  </repositories>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>31.1-jre</version>
+    </dependency>
+  </dependencies>
+</project>"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("Maven custom repositories must block strict scanning");
+    assert!(err.to_string().contains("repository"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_maven_repository_tags_with_whitespace() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <repositories
+  >
+    <repository
+    >
+      <id>evil</id>
+      <url>https://evil.example/maven</url>
+    </repository>
+  </repositories>
+</project>"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("whitespace-padded Maven repository tags must still block strict scanning");
+    assert!(err.to_string().contains("repository"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_maven_system_path_tags_with_whitespace() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pom.xml"),
+        r#"<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>local-jar</artifactId>
+      <version>1.0.0</version>
+      <systemPath
+      >/tmp/local.jar</systemPath>
+    </dependency>
+  </dependencies>
+</project>"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("jvm"))
+        .expect_err("whitespace-padded Maven systemPath tags must still block strict scanning");
+    assert!(err.to_string().contains("systemPath"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

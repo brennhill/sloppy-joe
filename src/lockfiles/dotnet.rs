@@ -6,13 +6,23 @@ use std::path::Path;
 #[cfg(test)]
 use super::add_manifest_exact_fallbacks;
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue, out_of_sync_issue,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue,
+    no_trusted_lockfile_sync_issue, out_of_sync_issue,
 };
 
+#[cfg(test)]
 pub(super) fn resolve_from_value(
     parsed: &serde_json::Value,
     deps: &[Dependency],
+) -> Result<ResolutionResult> {
+    resolve_from_value_with_mode(parsed, deps, ResolutionMode::Direct)
+}
+
+pub(super) fn resolve_from_value_with_mode(
+    parsed: &serde_json::Value,
+    deps: &[Dependency],
+    mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
     let packages = extract_packages(parsed);
     let mut versions_by_name: HashMap<String, Vec<String>> = HashMap::new();
@@ -32,9 +42,7 @@ pub(super) fn resolve_from_value(
     let mut result = ResolutionResult::default();
     for dep in deps {
         let Some(versions) = versions_by_name.get(&dep.name.to_ascii_lowercase()) else {
-            result
-                .issues
-                .push(missing_entry_issue(dep, "packages.lock.json"));
+            result.push_issue_for(dep, missing_entry_issue(dep, "packages.lock.json"));
             add_manifest_exact_fallback(&mut result, dep);
             continue;
         };
@@ -44,8 +52,18 @@ pub(super) fn resolve_from_value(
             if let Some(exact_manifest) = dep.exact_version()
                 && exact_manifest != *version
             {
-                result.issues.push(out_of_sync_issue(dep, version));
+                result.push_issue_for(dep, out_of_sync_issue(dep, version));
                 add_manifest_exact_fallback(&mut result, dep);
+                continue;
+            }
+            if mode == ResolutionMode::Direct
+                && dep.version.is_some()
+                && dep.exact_version().is_none()
+            {
+                result.push_issue_for(
+                    dep,
+                    no_trusted_lockfile_sync_issue(dep, "packages.lock.json"),
+                );
                 continue;
             }
             result.exact_versions.insert(
@@ -60,7 +78,11 @@ pub(super) fn resolve_from_value(
 
         let exact = dep
             .exact_version()
-            .or_else(|| dep.version.clone())
+            .or_else(|| {
+                (mode == ResolutionMode::Transitive)
+                    .then(|| dep.version.clone())
+                    .flatten()
+            })
             .filter(|version| versions.iter().any(|candidate| candidate == version));
 
         if let Some(version) = exact {
@@ -72,12 +94,10 @@ pub(super) fn resolve_from_value(
                 },
             );
         } else if dep.exact_version().is_some() {
-            result
-                .issues
-                .push(out_of_sync_issue(dep, &versions.join(", ")));
+            result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
             add_manifest_exact_fallback(&mut result, dep);
         } else {
-            result.issues.push(ambiguous_issue(dep));
+            result.push_issue_for(dep, ambiguous_issue(dep));
         }
     }
 

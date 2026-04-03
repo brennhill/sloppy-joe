@@ -65,7 +65,7 @@ pub(crate) fn check_new_package(lookup: &MetadataLookup, meta: &PackageMetadata)
                 lookup.package, age_days, if age_days == 1 { "" } else { "s" }
             ))
             .fix(format!(
-                "Verify '{}' at its registry page and source repository. If it's legitimate, add it to the 'allowed' list in your config.",
+                "Verify '{}' at its registry page, source repository, maintainers, and release history before relying on it.",
                 lookup.package
             ))
             .registry_url(registry_url(lookup.ecosystem, &lookup.package)),
@@ -89,7 +89,7 @@ pub(crate) fn check_low_downloads(
                 lookup.package, downloads
             ))
             .fix(format!(
-                "Verify '{}' is the package you intend to use. If it's legitimate, add it to the 'allowed' list.",
+                "Verify '{}' is the exact package you intend to use, and review its maintainers and source provenance manually.",
                 lookup.package
             )),
     )
@@ -165,11 +165,11 @@ pub(crate) fn check_dependency_explosion(
         (Some(c), Some(p)) => (c, p),
         _ => return None,
     };
-    if current < previous + 10 {
+    let added = current.saturating_sub(previous);
+    if added < 10 {
         return None;
     }
 
-    let added = current - previous;
     Some(
         Issue::new(&lookup.package, super::names::METADATA_DEPENDENCY_EXPLOSION, Severity::Error)
             .message(format!(
@@ -240,8 +240,29 @@ const KNOWN_CODE_HOSTS: &[&str] = &[
 
 /// Check if a repository URL is plausible (points to a known code host).
 fn is_plausible_repo_url(url: &str) -> bool {
-    let lower = url.to_lowercase();
-    KNOWN_CODE_HOSTS.iter().any(|host| lower.contains(host))
+    let Some(host) = repository_host(url) else {
+        return false;
+    };
+    KNOWN_CODE_HOSTS.iter().any(|known| *known == host)
+}
+
+fn repository_host(url: &str) -> Option<String> {
+    if let Some(scp_like) = parse_scp_like_host(url) {
+        return Some(scp_like);
+    }
+
+    let parsed = reqwest::Url::parse(url.trim_start_matches("git+")).ok()?;
+    parsed.host_str().map(|host| host.to_ascii_lowercase())
+}
+
+fn parse_scp_like_host(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let (_, rest) = trimmed.split_once('@')?;
+    let (host, path) = rest.split_once(':')?;
+    if host.is_empty() || path.is_empty() || path.contains("://") {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
 }
 
 use crate::registry::VERSION_HISTORY_WINDOW_HOURS;
@@ -313,7 +334,7 @@ pub(crate) fn check_publisher_script_combo(
             Severity::Error,
         )
         .message(message)
-        .fix("Wait 30 days after the install scripts were added. Audit the install scripts. Verify the publisher change was legitimate. If verified, add to the allowed list."),
+        .fix("Wait 30 days after the install scripts were added. Audit the install scripts. Verify the publisher change and the install scripts manually before proceeding."),
     )
 }
 
@@ -352,7 +373,7 @@ pub(crate) fn check_no_repository(
                 reasons.join(" and ")
             ))
             .fix(format!(
-                "Verify '{}' at its registry page. If it's legitimate, add it to the 'allowed' list.",
+                "Verify '{}' at its registry page and source provenance manually before relying on it.",
                 lookup.package
             )),
     )
@@ -519,6 +540,66 @@ mod tests {
         assert!(issue.is_none(), "Should not fire when no publisher change");
     }
 
+    #[test]
+    fn metadata_fix_text_does_not_claim_allowed_suppresses_metadata_findings() {
+        let low_download_meta = PackageMetadata {
+            downloads: Some(5),
+            ..base_meta()
+        };
+        let (lookup, low_download_meta) = make_lookup("tiny-pkg", false, low_download_meta);
+        let low_download_issue = check_low_downloads(&lookup, &low_download_meta).unwrap();
+        assert!(
+            !low_download_issue.fix.contains("allowed"),
+            "low-download remediation must not suggest a config that does not suppress metadata checks"
+        );
+
+        let new_package_meta = PackageMetadata {
+            created: Some(months_ago(0)),
+            ..base_meta()
+        };
+        let (lookup, new_package_meta) = make_lookup("fresh-pkg", false, new_package_meta);
+        let new_package_issue = check_new_package(&lookup, &new_package_meta).unwrap();
+        assert!(
+            !new_package_issue.fix.contains("allowed"),
+            "new-package remediation must not suggest a config that does not suppress metadata checks"
+        );
+
+        let combo_meta = PackageMetadata {
+            has_install_scripts: true,
+            version_history: vec![
+                VersionRecord {
+                    version: "1.0.0".to_string(),
+                    publisher: Some("alice".to_string()),
+                    has_install_scripts: false,
+                    date: Some(months_ago(8)),
+                },
+                VersionRecord {
+                    version: "1.1.0".to_string(),
+                    publisher: Some("bob".to_string()),
+                    has_install_scripts: false,
+                    date: Some(months_ago(6)),
+                },
+                VersionRecord {
+                    version: "2.0.0".to_string(),
+                    publisher: Some("bob".to_string()),
+                    has_install_scripts: true,
+                    date: Some(months_ago(1)),
+                },
+            ],
+            ..base_meta()
+        };
+        let (lookup, combo_meta) = make_lookup("combo-pkg", false, combo_meta);
+        let combo_issue = check_publisher_script_combo(&lookup, &combo_meta).unwrap();
+        assert!(
+            !combo_issue.fix.contains("allowed"),
+            "publisher-script-combo remediation must not suggest a config that does not suppress metadata checks"
+        );
+        assert!(
+            !combo_issue.fix.contains("metadata_exceptions"),
+            "publisher-script-combo remediation must not suggest a config path that sloppy-joe does not honor for this check"
+        );
+    }
+
     // Test 3: Does NOT fire when publisher change is >12 months old
     #[test]
     fn no_fire_publisher_change_old() {
@@ -651,5 +732,17 @@ mod tests {
         let (lookup, meta) = make_lookup("empty-history-pkg", false, meta);
         let issue = check_publisher_script_combo(&lookup, &meta);
         assert!(issue.is_none(), "Should skip when version_history is empty");
+    }
+
+    #[test]
+    fn plausible_repo_url_requires_exact_known_host() {
+        assert!(is_plausible_repo_url("https://github.com/example/pkg"));
+        assert!(is_plausible_repo_url("git@github.com:example/pkg.git"));
+        assert!(!is_plausible_repo_url(
+            "https://github.com.evil.example/pkg"
+        ));
+        assert!(!is_plausible_repo_url(
+            "https://evil.example/github.com/pkg"
+        ));
     }
 }

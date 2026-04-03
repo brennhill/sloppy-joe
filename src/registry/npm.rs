@@ -12,14 +12,26 @@ fn metadata_from_body(
 ) -> Option<super::PackageMetadata> {
     let time = &body["time"];
     let created = time["created"].as_str().map(|s| s.to_string());
+    let repository_url = body["repository"]["url"]
+        .as_str()
+        .or_else(|| body["repository"].as_str())
+        .map(|s| s.to_string());
+
+    let requested_ver = version.map(strip_version_prefix);
+    if let Some(ref requested_ver) = requested_ver
+        && !body["versions"][requested_ver.as_str()].is_object()
+    {
+        return Some(super::PackageMetadata {
+            created,
+            repository_url,
+            ..Default::default()
+        });
+    }
 
     // If a specific version is requested, look up its publish date
     let latest_version_date = if let Some(ver) = version {
         let base_ver = strip_version_prefix(ver);
-        time[&base_ver]
-            .as_str()
-            .or_else(|| time["modified"].as_str())
-            .map(|s| s.to_string())
+        time[&base_ver].as_str().map(|s| s.to_string())
     } else {
         time["modified"].as_str().map(|s| s.to_string())
     };
@@ -27,15 +39,12 @@ fn metadata_from_body(
     let downloads = None;
 
     let version_list = ordered_versions(time);
-    let selected_ver = version
-        .map(strip_version_prefix)
-        .filter(|ver| body["versions"][ver.as_str()].is_object())
-        .or_else(|| {
-            body["dist-tags"]["latest"]
-                .as_str()
-                .map(|s| s.to_string())
-                .or_else(|| version_list.last().cloned())
-        })?;
+    let selected_ver = requested_ver.or_else(|| {
+        body["dist-tags"]["latest"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| version_list.last().cloned())
+    })?;
 
     let previous_ver = version_list
         .iter()
@@ -73,11 +82,6 @@ fn metadata_from_body(
             .as_str()
             .map(|s| s.to_string())
     });
-
-    let repository_url = body["repository"]["url"]
-        .as_str()
-        .or_else(|| body["repository"].as_str())
-        .map(|s| s.to_string());
 
     // Build version history: collect publisher + scripts + date for versions within 12 months
     let version_history =
@@ -556,5 +560,34 @@ mod tests {
         assert_eq!(metadata.current_publisher, Some("alice".to_string()));
         assert_eq!(metadata.previous_dependency_count, None);
         assert_eq!(metadata.previous_publisher, None);
+    }
+
+    #[test]
+    fn metadata_does_not_fallback_to_latest_when_requested_version_is_missing() {
+        let body = serde_json::json!({
+            "time": {
+                "created": "2020-01-01T00:00:00Z",
+                "modified": "2024-02-01T00:00:00Z",
+                "1.1.0": "2020-02-01T00:00:00Z"
+            },
+            "dist-tags": { "latest": "1.1.0" },
+            "repository": { "url": "https://github.com/example/pkg" },
+            "versions": {
+                "1.1.0": {
+                    "scripts": { "postinstall": "node setup.js" },
+                    "dependencies": { "a": "^1.0.0", "b": "^2.0.0" },
+                    "_npmUser": { "name": "bob" }
+                }
+            }
+        });
+
+        let metadata = metadata_from_body(&body, Some("1.0.0")).unwrap();
+        assert_eq!(metadata.latest_version_date, None);
+        assert!(!metadata.has_install_scripts);
+        assert_eq!(metadata.current_publisher, None);
+        assert_eq!(
+            metadata.repository_url.as_deref(),
+            Some("https://github.com/example/pkg")
+        );
     }
 }

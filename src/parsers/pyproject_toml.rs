@@ -168,13 +168,26 @@ fn parse_poetry_dependency(
     let requirement = match value {
         toml::Value::String(spec) => compose_poetry_requirement(name, Some(spec.as_str())),
         toml::Value::Table(table) => {
-            for forbidden in ["git", "path", "url", "file", "develop", "directory"] {
+            for forbidden in [
+                "git",
+                "path",
+                "url",
+                "file",
+                "develop",
+                "directory",
+                "source",
+            ] {
                 if table.contains_key(forbidden) {
+                    let source_kind = if forbidden == "source" {
+                        "alternate package indexes"
+                    } else {
+                        forbidden
+                    };
                     bail!(
                         "Unsupported Poetry dependency '{}' in {}: {} sources are not supported",
                         crate::report::sanitize_for_terminal(name),
                         source_path.display(),
-                        forbidden
+                        source_kind
                     );
                 }
             }
@@ -260,6 +273,26 @@ mod tests {
         assert!(names.contains(&"requests"));
         assert!(names.contains(&"pytest"));
 
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_poetry_source_overrides() {
+        let dir = setup_test_dir(
+            "pyproject-poetry-source",
+            "pyproject.toml",
+            r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+private-lib = { version = "^1.0.0", source = "internal" }
+"#,
+        );
+
+        let err = parse_poetry(&dir).unwrap_err();
+        assert!(err.to_string().contains("alternate package indexes"));
         cleanup(&dir);
     }
 

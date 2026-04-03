@@ -19,6 +19,12 @@ pub enum ResolutionSource {
     ManifestExact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResolutionMode {
+    Direct,
+    Transitive,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedVersion {
     pub version: String,
@@ -44,6 +50,7 @@ impl From<&Dependency> for ResolutionKey {
 pub struct ResolutionResult {
     pub exact_versions: HashMap<ResolutionKey, ResolvedVersion>,
     pub issues: Vec<Issue>,
+    issue_keys: HashSet<(String, ResolutionKey)>,
 }
 
 impl ResolutionResult {
@@ -59,12 +66,31 @@ impl ResolutionResult {
     pub fn is_unresolved(&self, dep: &Dependency) -> bool {
         dep.has_unresolved_version() && self.exact_version(dep).is_none()
     }
+
+    pub fn has_issue_for(&self, dep: &Dependency, check: &str) -> bool {
+        self.issue_keys
+            .contains(&(check.to_string(), ResolutionKey::from(dep)))
+    }
+
+    pub fn push_issue(&mut self, issue: Issue) {
+        self.issues.push(issue);
+    }
+
+    pub fn push_issue_for(&mut self, dep: &Dependency, issue: Issue) {
+        self.issue_keys
+            .insert((issue.check.clone(), ResolutionKey::from(dep)));
+        self.issues.push(issue);
+    }
 }
 
 /// In-memory representation of a parsed lockfile.
 /// Parsed once, used for both version resolution and transitive dep extraction.
 enum ParsedLockfile {
     Npm {
+        value: serde_json::Value,
+        file_name: String,
+    },
+    NpmLegacy {
         value: serde_json::Value,
         file_name: String,
     },
@@ -95,20 +121,30 @@ impl LockfileData {
         Self::parse_for_kind(project_dir, None, direct_deps)
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn parse_for_kind(
         project_dir: &Path,
         project_kind: Option<crate::ProjectInputKind>,
         direct_deps: &[Dependency],
     ) -> Result<Self> {
+        Self::parse_for_kind_with_lockfile(project_dir, project_kind, direct_deps, None)
+    }
+
+    pub fn parse_for_kind_with_lockfile(
+        project_dir: &Path,
+        project_kind: Option<crate::ProjectInputKind>,
+        direct_deps: &[Dependency],
+        lockfile_override: Option<&Path>,
+    ) -> Result<Self> {
         let ecosystem = direct_deps.first().map(|d| d.ecosystem);
 
         // Read and parse the lockfile once
-        let parsed = read_lockfile(project_dir, ecosystem, project_kind)?;
+        let parsed = read_lockfile(project_dir, ecosystem, project_kind, lockfile_override)?;
 
         // Resolve direct dep versions from the parsed data
-        let resolution = resolve_from_parsed(&parsed, direct_deps)?;
+        let resolution = resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct)?;
 
-        // Extract all deps from the parsed data
         let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps)?;
 
         // Filter to transitive only
@@ -142,7 +178,7 @@ impl LockfileData {
     /// Resolve versions for transitive deps from the already-parsed lockfile.
     /// Eliminates the redundant disk read that `resolve_versions()` would do.
     pub fn resolve_transitive(&self, deps: &[Dependency]) -> Result<ResolutionResult> {
-        resolve_from_parsed(&self.parsed, deps)
+        resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive)
     }
 }
 
@@ -151,9 +187,10 @@ fn read_lockfile(
     project_dir: &Path,
     ecosystem: Option<Ecosystem>,
     project_kind: Option<crate::ProjectInputKind>,
+    lockfile_override: Option<&Path>,
 ) -> Result<ParsedLockfile> {
     if let Some(kind) = project_kind {
-        return read_lockfile_for_project_kind(project_dir, kind);
+        return read_lockfile_for_project_kind(project_dir, kind, lockfile_override);
     }
 
     match ecosystem {
@@ -170,12 +207,18 @@ fn read_lockfile(
                 .to_string();
             let content =
                 crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-            let value = serde_json::from_str(&content)
+            let value: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
-            Ok(ParsedLockfile::Npm { value, file_name })
+            if value["lockfileVersion"].as_u64() == Some(1) {
+                Ok(ParsedLockfile::NpmLegacy { value, file_name })
+            } else {
+                Ok(ParsedLockfile::Npm { value, file_name })
+            }
         }
         Some(Ecosystem::Cargo) => {
-            let path = project_dir.join("Cargo.lock");
+            let path = lockfile_override
+                .map(PathBuf::from)
+                .unwrap_or_else(|| project_dir.join("Cargo.lock"));
             if !crate::parsers::path_detected(&path)? {
                 return Ok(ParsedLockfile::None);
             }
@@ -212,39 +255,66 @@ fn read_lockfile(
 fn read_lockfile_for_project_kind(
     project_dir: &Path,
     project_kind: crate::ProjectInputKind,
+    lockfile_override: Option<&Path>,
 ) -> Result<ParsedLockfile> {
     match project_kind {
-        crate::ProjectInputKind::Npm => read_lockfile(project_dir, Some(Ecosystem::Npm), None),
+        crate::ProjectInputKind::Npm => {
+            read_lockfile(project_dir, Some(Ecosystem::Npm), None, lockfile_override)
+        }
         crate::ProjectInputKind::PyProjectPoetry => {
-            read_lockfile(project_dir, Some(Ecosystem::PyPI), None)
+            read_lockfile(project_dir, Some(Ecosystem::PyPI), None, lockfile_override)
         }
         crate::ProjectInputKind::PyRequirements
         | crate::ProjectInputKind::PyProjectLegacy
         | crate::ProjectInputKind::PyPipfile
         | crate::ProjectInputKind::PySetupPy
         | crate::ProjectInputKind::PySetupCfg => Ok(ParsedLockfile::None),
-        crate::ProjectInputKind::Cargo => read_lockfile(project_dir, Some(Ecosystem::Cargo), None),
-        crate::ProjectInputKind::Go => read_lockfile(project_dir, Some(Ecosystem::Go), None),
-        crate::ProjectInputKind::Ruby => read_lockfile(project_dir, Some(Ecosystem::Ruby), None),
-        crate::ProjectInputKind::Php => read_lockfile(project_dir, Some(Ecosystem::Php), None),
-        crate::ProjectInputKind::Gradle => read_lockfile(project_dir, Some(Ecosystem::Jvm), None),
-        crate::ProjectInputKind::Maven => Ok(ParsedLockfile::None),
-        crate::ProjectInputKind::Dotnet => {
-            read_lockfile(project_dir, Some(Ecosystem::Dotnet), None)
+        crate::ProjectInputKind::Cargo => {
+            read_lockfile(project_dir, Some(Ecosystem::Cargo), None, lockfile_override)
         }
+        crate::ProjectInputKind::Go => {
+            read_lockfile(project_dir, Some(Ecosystem::Go), None, lockfile_override)
+        }
+        crate::ProjectInputKind::Ruby => {
+            read_lockfile(project_dir, Some(Ecosystem::Ruby), None, lockfile_override)
+        }
+        crate::ProjectInputKind::Php => {
+            read_lockfile(project_dir, Some(Ecosystem::Php), None, lockfile_override)
+        }
+        crate::ProjectInputKind::Gradle => {
+            read_lockfile(project_dir, Some(Ecosystem::Jvm), None, lockfile_override)
+        }
+        crate::ProjectInputKind::Maven => Ok(ParsedLockfile::None),
+        crate::ProjectInputKind::Dotnet => read_lockfile(
+            project_dir,
+            Some(Ecosystem::Dotnet),
+            None,
+            lockfile_override,
+        ),
     }
 }
 
 /// Resolve versions from a pre-parsed lockfile.
-fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<ResolutionResult> {
+fn resolve_from_parsed(
+    parsed: &ParsedLockfile,
+    deps: &[Dependency],
+    mode: ResolutionMode,
+) -> Result<ResolutionResult> {
     match parsed {
         ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
-        ParsedLockfile::Cargo(value) => cargo::resolve_from_value(value, deps),
-        ParsedLockfile::Composer(value) => composer::resolve_from_value(value, deps),
-        ParsedLockfile::Dotnet(value) => dotnet::resolve_from_value(value, deps),
-        ParsedLockfile::Gradle(content) => gradle::resolve_from_content(content, deps),
-        ParsedLockfile::Python(value) => python::resolve_from_value(value, deps),
-        ParsedLockfile::Ruby(content) => ruby::resolve_from_content(content, deps),
+        ParsedLockfile::NpmLegacy { value, file_name } => {
+            npm::resolve_from_value(value, deps, file_name)
+        }
+        ParsedLockfile::Cargo(value) => cargo::resolve_from_value_with_mode(value, deps, mode),
+        ParsedLockfile::Composer(value) => {
+            composer::resolve_from_value_with_mode(value, deps, mode)
+        }
+        ParsedLockfile::Dotnet(value) => dotnet::resolve_from_value_with_mode(value, deps, mode),
+        ParsedLockfile::Gradle(content) => {
+            gradle::resolve_from_content_with_mode(content, deps, mode)
+        }
+        ParsedLockfile::Python(value) => python::resolve_from_value_with_mode(value, deps, mode),
+        ParsedLockfile::Ruby(content) => ruby::resolve_from_content_with_mode(content, deps, mode),
         ParsedLockfile::None => {
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
@@ -257,6 +327,7 @@ fn resolve_from_parsed(parsed: &ParsedLockfile, deps: &[Dependency]) -> Result<R
 fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
+        ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
         ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
         ParsedLockfile::Composer(value) => composer::parse_all_from_value(value),
         ParsedLockfile::Dotnet(value) => dotnet::parse_all_from_value(value),
@@ -273,6 +344,7 @@ fn parse_all_from_parsed_for_project(
 ) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
+        ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
         _ => parse_all_from_parsed(parsed),
     }
 }
@@ -374,6 +446,24 @@ fn ambiguous_issue(dep: &Dependency) -> Issue {
             dep.name
         ))
         .fix("Pin an exact manifest version or regenerate the lockfile so the direct dependency version is unambiguous.")
+}
+
+fn no_trusted_lockfile_sync_issue(dep: &Dependency, lockfile: &str) -> Issue {
+    Issue::new(
+        &dep.name,
+        crate::checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC,
+        Severity::Error,
+    )
+    .message(format!(
+        "'{}' uses the non-exact requirement '{}' in the manifest, so sloppy-joe cannot prove that '{}' is synchronized to one exact reviewed direct dependency version.",
+        dep.name,
+        dep.version.as_deref().unwrap_or(""),
+        lockfile
+    ))
+    .fix(format!(
+        "Pin '{}' exactly in the manifest or regenerate '{}' after switching to an exact direct dependency requirement.",
+        dep.name, lockfile
+    ))
 }
 
 #[cfg(test)]
@@ -527,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn npm_v1_parse_retains_nested_transitive_dependencies() {
+    fn npm_v1_lockfile_data_disables_transitive_extraction() {
         let dir = unique_dir();
         std::fs::write(
             dir.join("package-lock.json"),
@@ -537,13 +627,11 @@ mod tests {
 
         let direct = vec![npm_dep("react", "18.3.1")];
         let data = LockfileData::parse(&dir, &direct)
-            .expect("legacy npm lockfiles must recurse nested transitive dependencies");
+            .expect("legacy npm lockfiles should still parse for reduced-trust direct resolution");
 
         assert!(
-            data.transitive_deps
-                .iter()
-                .any(|dep| dep.name == "loose-envify" && dep.version.as_deref() == Some("1.4.0")),
-            "nested v1 transitive dependencies must remain visible"
+            data.transitive_deps.is_empty(),
+            "legacy npm v1 lockfiles must not claim trusted transitive coverage"
         );
     }
 
@@ -624,7 +712,7 @@ mod tests {
             "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n",
         )
         .unwrap();
-        let deps = vec![cargo_dep("serde", "1")];
+        let deps = vec![cargo_dep("serde", "=1.0.203")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert_eq!(
             result.resolved_version(&deps[0]).unwrap().version,
@@ -650,18 +738,15 @@ mod tests {
 
     #[test]
     fn cargo_lock_resolves_lockfile_extracted_version_against_multiple() {
-        // Transitive deps from parse_all have version "0.52.0" (no = prefix).
-        // When re-resolved against a lockfile with multiple versions of the same
-        // package, the version should match directly — not emit ambiguous.
         let dir = unique_dir();
         std::fs::write(
             dir.join("Cargo.lock"),
-            "[[package]]\nname = \"windows-sys\"\nversion = \"0.52.0\"\n\n[[package]]\nname = \"windows-sys\"\nversion = \"0.59.0\"\n",
+            "[[package]]\nname = \"serde\"\nversion = \"1.0.203\"\n\n[[package]]\nname = \"windows-sys\"\nversion = \"0.52.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"windows-sys\"\nversion = \"0.59.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
         ).unwrap();
-        // This is what parse_all_from_value produces: version without = prefix
+        let direct = vec![cargo_dep("serde", "=1.0.203")];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
         let deps = vec![cargo_dep("windows-sys", "0.52.0")];
-        let result = resolve_versions(&dir, &deps).unwrap();
-        // Should resolve successfully — the version matches exactly
+        let result = data.resolve_transitive(&deps).unwrap();
         assert_eq!(
             result.resolved_version(&deps[0]).unwrap().version,
             "0.52.0",
@@ -745,11 +830,15 @@ mod tests {
         let dir = unique_dir();
         std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"../malicious\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"safe-pkg\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"foo\\u0000bar\"\nversion = \"1.0.0\"\n").unwrap();
         let deps = vec![
-            cargo_dep("../malicious", "1.0.0"),
-            cargo_dep("safe-pkg", "1.0.0"),
+            cargo_dep("../malicious", "=1.0.0"),
+            cargo_dep("safe-pkg", "=1.0.0"),
         ];
         let result = resolve_versions(&dir, &deps).unwrap();
-        assert!(result.resolved_version(&deps[0]).is_none());
+        assert!(
+            result
+                .resolved_version(&deps[0])
+                .is_none_or(|resolved| resolved.source == ResolutionSource::ManifestExact)
+        );
         assert_eq!(result.resolved_version(&deps[1]).unwrap().version, "1.0.0");
     }
 
@@ -777,6 +866,50 @@ mod tests {
         assert_eq!(data.resolution.exact_version(&direct[0]), Some("18.3.1"));
         assert_eq!(data.transitive_deps.len(), 1);
         assert_eq!(data.transitive_deps[0].name, "loose-envify");
+    }
+
+    #[test]
+    fn lockfile_data_parse_keeps_transitive_coverage_when_one_direct_dep_lacks_trusted_sync() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            r#"version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "rand"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "libc"
+version = "0.2.170"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+        let direct = vec![
+            cargo_dep("serde", "1.0.228"),
+            Dependency {
+                name: "rand".to_string(),
+                version: Some("0.8".to_string()),
+                ecosystem: Ecosystem::Cargo,
+                actual_name: None,
+            },
+        ];
+        let data = LockfileData::parse(&dir, &direct).unwrap();
+
+        assert!(data.resolution.issues.iter().any(|issue| issue.check
+            == crate::checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            && issue.package == "rand"));
+        assert!(
+            data.transitive_deps.iter().any(|dep| dep.name == "libc"),
+            "transitive lockfile coverage should remain available for the rest of the graph even when one direct dependency lacks trusted lockfile sync"
+        );
     }
 
     // ── Ruby lockfile path tests ──
@@ -843,7 +976,7 @@ mod tests {
             "GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.0.4)\n    pg (1.4.5)\n\nPLATFORMS\n  ruby\n",
         )
         .unwrap();
-        let deps = vec![ruby_dep("rails", "~> 7.0"), ruby_dep("pg", "1.4.5")];
+        let deps = vec![ruby_dep("rails", "7.0.4"), ruby_dep("pg", "1.4.5")];
         let result = resolve_versions(&dir, &deps).unwrap();
         assert_eq!(result.resolved_version(&deps[0]).unwrap().version, "7.0.4");
         assert_eq!(result.resolved_version(&deps[1]).unwrap().version, "1.4.5");
@@ -970,7 +1103,7 @@ mod tests {
             "GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.0.4)\n    actioncable (7.0.4)\n    pg (1.4.5)\n\nPLATFORMS\n  ruby\n",
         )
         .unwrap();
-        let direct = vec![ruby_dep("rails", "~> 7.0")];
+        let direct = vec![ruby_dep("rails", "7.0.4")];
         let data = LockfileData::parse(&dir, &direct).unwrap();
         assert_eq!(data.resolution.exact_version(&direct[0]), Some("7.0.4"));
         // actioncable and pg are transitive
@@ -1016,7 +1149,7 @@ mod tests {
 }"#,
         )
         .unwrap();
-        let direct = vec![php_dep("laravel/framework", Some("^10.0"))];
+        let direct = vec![php_dep("laravel/framework", Some("v10.0.0"))];
         let data = LockfileData::parse(&dir, &direct).unwrap();
         let resolved = data.resolution.resolved_version(&direct[0]).unwrap();
         assert_eq!(resolved.version, "v10.0.0");

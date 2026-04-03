@@ -27,10 +27,6 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     let year: i64 = date_parts[0].parse().ok()?;
     let month: i64 = date_parts[1].parse().ok()?;
     let day: i64 = date_parts[2].parse().ok()?;
-    // Guard against malformed dates that would cause loops in rough_epoch
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1970 {
-        return None;
-    }
     let hour: i64 = time_parts[0].parse().ok()?;
     let min: i64 = time_parts[1].split('.').next()?.parse().ok()?;
     let sec: i64 = time_parts
@@ -38,12 +34,12 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
         .and_then(|s| s.split('.').next()?.parse().ok())
         .unwrap_or(0);
 
-    let pkg_epoch = crate::cache::date_to_epoch(year, month, day, hour, min, sec);
+    let pkg_epoch = crate::cache::checked_date_to_epoch(year, month, day, hour, min, sec)?;
     let now = crate::cache::now_epoch() as i64;
 
     let diff_seconds = now - pkg_epoch;
     if diff_seconds < 0 {
-        return Some(0);
+        return None;
     }
     Some((diff_seconds / 3600) as u64)
 }
@@ -210,7 +206,10 @@ pub(crate) async fn review_candidates_from_lookups(
     lookups: &[MetadataLookup],
     config: &SloppyJoeConfig,
 ) -> Vec<ReviewExceptionCandidate> {
+    use std::collections::HashMap;
+
     let mut candidates = Vec::new();
+    let mut candidate_indices = Vec::new();
 
     for lookup in lookups {
         let Some(meta) = lookup.metadata.as_ref() else {
@@ -242,14 +241,7 @@ pub(crate) async fn review_candidates_from_lookups(
         ) else {
             continue;
         };
-
-        let owners = registry
-            .owners(&lookup.package)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-
+        candidate_indices.push((lookup.package.clone(), candidates.len()));
         candidates.push(ReviewExceptionCandidate {
             ecosystem: lookup.ecosystem.as_str().to_string(),
             package: lookup.package.clone(),
@@ -257,7 +249,7 @@ pub(crate) async fn review_candidates_from_lookups(
             version: version.to_string(),
             previous_publisher: previous_publisher.to_string(),
             current_publisher: current_publisher.to_string(),
-            owners,
+            owners: Vec::new(),
             repository_url: meta.repository_url.clone(),
             metadata_exception: crate::config::MetadataException {
                 package: lookup.package.clone(),
@@ -271,6 +263,33 @@ pub(crate) async fn review_candidates_from_lookups(
                 ),
             },
         });
+    }
+
+    let mut owner_cache: HashMap<String, Vec<String>> = HashMap::new();
+    let owner_results: Vec<_> = stream::iter(
+        candidate_indices
+            .iter()
+            .map(|(package, _)| package.clone())
+            .collect::<HashSet<_>>(),
+    )
+    .map(|package| async move {
+        let owners = registry
+            .owners(&package)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        (package, owners)
+    })
+    .buffer_unordered(10)
+    .collect()
+    .await;
+    owner_cache.extend(owner_results);
+
+    for (package, index) in candidate_indices {
+        if let Some(owners) = owner_cache.get(&package) {
+            candidates[index].owners = owners.clone();
+        }
     }
 
     candidates

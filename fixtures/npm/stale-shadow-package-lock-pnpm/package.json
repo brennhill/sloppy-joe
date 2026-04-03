@@ -1,0 +1,7 @@
+{
+  "name": "pnpm-shadow-lock",
+  "packageManager": "pnpm@9.0.0",
+  "dependencies": {
+    "react": "^18.3.1"
+  }
+}

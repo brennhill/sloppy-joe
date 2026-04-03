@@ -33,6 +33,42 @@ impl super::RegistryMetadata for PypiRegistry {
         }
         let body: serde_json::Value = resp.json().await?;
 
+        if let Some(ver) = version {
+            let base_ver = super::strip_version_prefix(ver);
+            let has_exact_release = body["releases"][base_ver]
+                .as_array()
+                .is_some_and(|entries| !entries.is_empty());
+            if !has_exact_release {
+                return Ok(Some(super::PackageMetadata {
+                    created: body["releases"]
+                        .as_object()
+                        .and_then(|releases| {
+                            releases
+                                .values()
+                                .filter_map(|files| {
+                                    files.as_array()?.first()?.get("upload_time")?.as_str()
+                                })
+                                .min()
+                                .map(|s| s.to_string())
+                        })
+                        .or_else(|| body["info"]["upload_time"].as_str().map(|s| s.to_string())),
+                    repository_url: body["info"]["project_urls"]["Repository"]
+                        .as_str()
+                        .or_else(|| body["info"]["project_urls"]["Source"].as_str())
+                        .or_else(|| body["info"]["project_urls"]["Source Code"].as_str())
+                        .or_else(|| {
+                            body["info"]["home_page"].as_str().filter(|u| {
+                                u.contains("github.com")
+                                    || u.contains("gitlab.com")
+                                    || u.contains("bitbucket.org")
+                            })
+                        })
+                        .map(|s| s.to_string()),
+                    ..Default::default()
+                }));
+            }
+        }
+
         let created = body["releases"]
             .as_object()
             .and_then(|releases| {
@@ -50,7 +86,6 @@ impl super::RegistryMetadata for PypiRegistry {
                 .as_array()
                 .and_then(|arr| arr.first())
                 .and_then(|v| v["upload_time"].as_str())
-                .or_else(|| body["info"]["upload_time"].as_str())
                 .map(|s| s.to_string())
         } else {
             body["info"]["upload_time"].as_str().map(|s| s.to_string())

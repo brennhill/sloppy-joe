@@ -64,7 +64,7 @@ nix profile install github:brennhill/sloppy-joe
 
 | Ecosystem | Required manifest | Lockfile policy |
 |---|---|---|
-| npm | `package.json` | strict: `package-lock.json` or `npm-shrinkwrap.json` |
+| npm | `package.json` | strict: `package-lock.json` or `npm-shrinkwrap.json`; legacy v1 lockfiles blocked by default |
 | PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted: Poetry requires `poetry.lock`; legacy manifests allowed with warnings |
 | Cargo | `Cargo.toml` | strict: `Cargo.lock` |
 | Go | `go.mod` | conditional: `go.sum` required for external deps |
@@ -418,6 +418,7 @@ sloppy-joe check --json
     ]
   },
   "min_version_age_hours": 72,
+  "allow_legacy_npm_v1_lockfile": false,
   "python_enforcement": "prefer_poetry"
 }
 ```
@@ -435,6 +436,8 @@ sloppy-joe check --json
 Use `sloppy-joe check --review-exceptions` when you need to review maintainer-change blockers. The scan still blocks normally, but human output adds a `REVIEW EXCEPTIONS` section with owners, repository URL, and a ready-to-paste `metadata_exceptions` snippet. `--json` includes the same data in a top-level `review_candidates` field.
 
 **`min_version_age_hours`** — block any version published less than this many hours ago. Default: 72 (3 days). Set to 0 to disable. Internal packages are exempt.
+
+**`allow_legacy_npm_v1_lockfile`** — allow `lockfileVersion: 1` npm lockfiles from npm v5/v6 in reduced-confidence mode. Default: `false`. Keep this off unless you are intentionally stuck on legacy npm and accept loud warnings plus reduced trusted npm transitive coverage.
 
 **`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects and warns on every run for legacy manifests like `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml`. `poetry_only` blocks those legacy manifests and requires Poetry.
 

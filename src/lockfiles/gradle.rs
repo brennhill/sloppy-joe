@@ -6,19 +6,27 @@ use std::path::Path;
 #[cfg(test)]
 use super::add_manifest_exact_fallbacks;
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue, out_of_sync_issue,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue,
+    no_trusted_lockfile_sync_issue, out_of_sync_issue,
 };
 
+#[cfg(test)]
 pub(super) fn resolve_from_content(content: &str, deps: &[Dependency]) -> Result<ResolutionResult> {
+    resolve_from_content_with_mode(content, deps, ResolutionMode::Direct)
+}
+
+pub(super) fn resolve_from_content_with_mode(
+    content: &str,
+    deps: &[Dependency],
+    mode: ResolutionMode,
+) -> Result<ResolutionResult> {
     let versions = parse_versions(content);
     let mut result = ResolutionResult::default();
 
     for dep in deps {
         let Some(candidates) = versions.get(&dep.name) else {
-            result
-                .issues
-                .push(missing_entry_issue(dep, "gradle.lockfile"));
+            result.push_issue_for(dep, missing_entry_issue(dep, "gradle.lockfile"));
             add_manifest_exact_fallback(&mut result, dep);
             continue;
         };
@@ -28,8 +36,15 @@ pub(super) fn resolve_from_content(content: &str, deps: &[Dependency]) -> Result
             if let Some(exact_manifest) = dep.exact_version()
                 && exact_manifest != *version
             {
-                result.issues.push(out_of_sync_issue(dep, version));
+                result.push_issue_for(dep, out_of_sync_issue(dep, version));
                 add_manifest_exact_fallback(&mut result, dep);
+                continue;
+            }
+            if mode == ResolutionMode::Direct
+                && dep.version.is_some()
+                && dep.exact_version().is_none()
+            {
+                result.push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "gradle.lockfile"));
                 continue;
             }
             result.exact_versions.insert(
@@ -44,7 +59,11 @@ pub(super) fn resolve_from_content(content: &str, deps: &[Dependency]) -> Result
 
         let exact = dep
             .exact_version()
-            .or_else(|| dep.version.clone())
+            .or_else(|| {
+                (mode == ResolutionMode::Transitive)
+                    .then(|| dep.version.clone())
+                    .flatten()
+            })
             .filter(|version| candidates.iter().any(|candidate| candidate == version));
 
         if let Some(version) = exact {
@@ -56,12 +75,10 @@ pub(super) fn resolve_from_content(content: &str, deps: &[Dependency]) -> Result
                 },
             );
         } else if dep.exact_version().is_some() {
-            result
-                .issues
-                .push(out_of_sync_issue(dep, &candidates.join(", ")));
+            result.push_issue_for(dep, out_of_sync_issue(dep, &candidates.join(", ")));
             add_manifest_exact_fallback(&mut result, dep);
         } else {
-            result.issues.push(ambiguous_issue(dep));
+            result.push_issue_for(dep, ambiguous_issue(dep));
         }
     }
 
