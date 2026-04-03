@@ -400,6 +400,24 @@ fn repo_ci_self_check_scans_repo_cargo_project_explicitly() {
     );
 }
 
+#[test]
+fn repo_ci_self_check_uses_isolated_cargo_workspace() {
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("CI workflow must exist");
+    assert!(
+        workflow.contains("install -m 0644 Cargo.toml /tmp/sloppy-joe-self-check/Cargo.toml"),
+        "self-check CI should stage an isolated Cargo.toml for repo-only scanning"
+    );
+    assert!(
+        workflow.contains("install -m 0644 Cargo.lock /tmp/sloppy-joe-self-check/Cargo.lock"),
+        "self-check CI should stage an isolated Cargo.lock for repo-only scanning"
+    );
+    assert!(
+        workflow.contains("working-directory: /tmp/sloppy-joe-self-check"),
+        "self-check CI should run from the isolated workspace instead of the repo root"
+    );
+}
+
 fn tracked_repo_files() -> std::collections::HashSet<std::path::PathBuf> {
     let output = std::process::Command::new("git")
         .args(["ls-files", "-z"])
