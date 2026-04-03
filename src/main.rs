@@ -28,8 +28,10 @@ Examples:
   sloppy-joe check --dir ./project              Check a specific directory
   sloppy-joe check --config /etc/sj/config.json Enforce canonical rules
   sloppy-joe check --json                       JSON output for CI
-  sloppy-joe init > /etc/sj/config.json         Generate config template
-  sloppy-joe init --register                    Create config + register cwd
+  sloppy-joe init --register                    Create config + register cwd safely
+  sloppy-joe init --greenfield --ecosystem npm   Create an ecosystem-specific starter policy
+  sloppy-joe init --from-current                 Seed config from the current repo
+  sloppy-joe init > /secure/sloppy-joe.json    Generate config template at a safe path
   sloppy-joe register                           Register cwd with existing config
   sloppy-joe list                               Show registered repos
 
@@ -148,16 +150,31 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
     },
-    /// Print a template config to stdout
+    /// Create a config template or register a safe per-repo config
     ///
     /// Without flags, prints a JSON config template to stdout.
-    /// Use --register to create a config file and register the current repo.
+    /// Write that file outside the repo, or use --register to create and
+    /// register a safe per-repo config automatically.
     /// Use --global to create a global default config.
     ///
-    ///   sloppy-joe init > /etc/sloppy-joe/config.json
+    ///   sloppy-joe init > /secure/sloppy-joe/config.json
     ///   sloppy-joe init --register
+    ///   sloppy-joe init --greenfield --ecosystem npm
+    ///   sloppy-joe init --from-current
     ///   sloppy-joe init --global
     Init {
+        /// Create an opinionated starter policy for a specific ecosystem
+        #[arg(long, requires = "ecosystem", conflicts_with_all = ["from_current", "global"])]
+        greenfield: bool,
+
+        /// Ecosystem to use for greenfield bootstrap
+        #[arg(long = "ecosystem", value_name = "ECO", requires = "greenfield")]
+        ecosystem: Option<String>,
+
+        /// Seed config from the current repository
+        #[arg(long, conflicts_with_all = ["greenfield", "global"])]
+        from_current: bool,
+
         /// Create config at config home and register current directory
         #[arg(long)]
         register: bool,
@@ -236,12 +253,11 @@ fn repo_dirname(git_root: &std::path::Path) -> String {
         .unwrap_or_else(|| "project".to_string())
 }
 
-/// Write the template config to a path, exiting on error.
-fn write_template_config(config_path: &std::path::Path) {
-    let template = sloppy_joe::config::template_json();
-    let template_value: serde_json::Value =
-        serde_json::from_str(&template).expect("template_json produces valid JSON");
-    if let Err(e) = sloppy_joe::cache::atomic_write_json_checked(config_path, &template_value) {
+/// Write a config JSON string to a path, exiting on error.
+fn write_config_json(config_path: &std::path::Path, config_json: &str) {
+    let config_value: serde_json::Value =
+        serde_json::from_str(config_json).expect("bootstrap helpers must produce valid JSON");
+    if let Err(e) = sloppy_joe::cache::atomic_write_json_checked(config_path, &config_value) {
         eprintln!(
             "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
             config_path.display(),
@@ -249,6 +265,32 @@ fn write_template_config(config_path: &std::path::Path) {
         );
         process::exit(2);
     }
+}
+
+fn init_config_json(
+    greenfield: bool,
+    ecosystem: Option<&str>,
+    from_current: bool,
+    project_dir: &std::path::Path,
+) -> String {
+    if greenfield {
+        return sloppy_joe::config::greenfield_json(
+            ecosystem.expect("--greenfield requires --ecosystem"),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {}", e);
+            process::exit(2);
+        });
+    }
+
+    if from_current {
+        return sloppy_joe::config::discover_current_json(project_dir).unwrap_or_else(|e| {
+            eprintln!("Error: {}", e);
+            process::exit(2);
+        });
+    }
+
+    sloppy_joe::config::template_json()
 }
 
 #[tokio::main]
@@ -350,7 +392,13 @@ async fn main() {
                 }
             }
         }
-        Commands::Init { register, global } => {
+        Commands::Init {
+            greenfield,
+            ecosystem,
+            from_current,
+            register,
+            global,
+        } => {
             if register && global {
                 eprintln!(
                     "Error: Use --register or --global, not both.\n  Fix: --register creates per-project config, --global creates a shared default."
@@ -358,7 +406,7 @@ async fn main() {
                 process::exit(2);
             }
 
-            if register {
+            if register || from_current {
                 // Create config at {config_home}/{dirname}/config.json and register cwd
                 let dir = match std::env::current_dir() {
                     Ok(d) => d,
@@ -374,7 +422,7 @@ async fn main() {
                     Ok(Some(root)) => root,
                     Ok(None) => {
                         eprintln!(
-                            "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo, or use `sloppy-joe init > config.json` to create a template manually.",
+                            "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo, or write a template to a safe external path with `sloppy-joe init > /secure/sloppy-joe.json`.",
                             dir.display()
                         );
                         process::exit(2);
@@ -394,6 +442,8 @@ async fn main() {
                 let dirname = repo_dirname(&git_root);
                 let config_dir = config_home.join(&dirname);
                 let config_path = config_dir.join("config.json");
+                let config_json =
+                    init_config_json(greenfield, ecosystem.as_deref(), from_current, &git_root);
 
                 // Don't overwrite existing config
                 if config_path.exists() {
@@ -413,7 +463,7 @@ async fn main() {
                     process::exit(2);
                 }
 
-                write_template_config(&config_path);
+                write_config_json(&config_path, &config_json);
 
                 if let Err(e) = sloppy_joe::config::registry::register(&git_root, &config_path) {
                     eprintln!("Error: {}", e);
@@ -426,7 +476,17 @@ async fn main() {
                     git_root.display(),
                     config_path.display()
                 );
-                eprintln!("Edit the config to add your canonical rules.");
+                if from_current {
+                    eprintln!(
+                        "Seeded config from the current repo state. Review bootstrap_review suggestions before enforcing canonicals."
+                    );
+                } else if greenfield {
+                    eprintln!(
+                        "Created an ecosystem-specific starter policy. Review and tighten it before pushing."
+                    );
+                } else {
+                    eprintln!("Edit the config to add your policy.");
+                }
             } else if global {
                 // Create global default config at {config_home}/default/config.json
                 let config_home = match sloppy_joe::config::registry::config_home() {
@@ -448,11 +508,16 @@ async fn main() {
                     process::exit(2);
                 }
 
-                write_template_config(&config_path);
+                write_config_json(&config_path, &sloppy_joe::config::template_json());
 
                 eprintln!("Global default config created: {}", config_path.display());
-                eprintln!("Edit the config to add your canonical rules.");
+                eprintln!("Edit the config to add your policy.");
                 eprintln!("Any unregistered repo will use this config as fallback.");
+            } else if greenfield {
+                println!(
+                    "{}",
+                    init_config_json(true, ecosystem.as_deref(), false, std::path::Path::new("."))
+                );
             } else {
                 // No flags: print template to stdout (backward compat)
                 sloppy_joe::config::print_template();
@@ -680,5 +745,131 @@ mod tests {
             Err(err) => err,
         };
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn init_cli_parses_greenfield_with_ecosystem() {
+        let cli = Cli::try_parse_from(["sloppy-joe", "init", "--greenfield", "--ecosystem", "npm"])
+            .expect("init command should parse greenfield with ecosystem");
+
+        match cli.command {
+            Commands::Init {
+                greenfield,
+                from_current,
+                ecosystem,
+                register,
+                global,
+            } => {
+                assert!(greenfield);
+                assert!(!from_current);
+                assert_eq!(ecosystem.as_deref(), Some("npm"));
+                assert!(!register);
+                assert!(!global);
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn init_cli_parses_from_current() {
+        let cli = Cli::try_parse_from(["sloppy-joe", "init", "--from-current"])
+            .expect("init command should parse from-current");
+
+        match cli.command {
+            Commands::Init {
+                greenfield,
+                from_current,
+                ecosystem,
+                register,
+                global,
+            } => {
+                assert!(!greenfield);
+                assert!(from_current);
+                assert_eq!(ecosystem, None);
+                assert!(!register);
+                assert!(!global);
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn init_cli_rejects_greenfield_without_ecosystem() {
+        let err = match Cli::try_parse_from(["sloppy-joe", "init", "--greenfield"]) {
+            Ok(_) => panic!("init command should require ecosystem for greenfield"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn init_cli_rejects_greenfield_and_from_current_together() {
+        let err = match Cli::try_parse_from([
+            "sloppy-joe",
+            "init",
+            "--greenfield",
+            "--ecosystem",
+            "npm",
+            "--from-current",
+        ]) {
+            Ok(_) => panic!("init command should reject conflicting bootstrap modes"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn init_cli_rejects_greenfield_with_global() {
+        let err = match Cli::try_parse_from([
+            "sloppy-joe",
+            "init",
+            "--greenfield",
+            "--ecosystem",
+            "npm",
+            "--global",
+        ]) {
+            Ok(_) => panic!("init command should reject greenfield with global"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn init_cli_rejects_from_current_with_global() {
+        let err = match Cli::try_parse_from(["sloppy-joe", "init", "--from-current", "--global"]) {
+            Ok(_) => panic!("init command should reject from-current with global"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn init_cli_allows_greenfield_with_register() {
+        let cli = Cli::try_parse_from([
+            "sloppy-joe",
+            "init",
+            "--greenfield",
+            "--ecosystem",
+            "npm",
+            "--register",
+        ])
+        .expect("init command should allow greenfield with register");
+
+        match cli.command {
+            Commands::Init {
+                greenfield,
+                from_current,
+                ecosystem,
+                register,
+                global,
+            } => {
+                assert!(greenfield);
+                assert!(!from_current);
+                assert_eq!(ecosystem.as_deref(), Some("npm"));
+                assert!(register);
+                assert!(!global);
+            }
+            _ => panic!("expected init command"),
+        }
     }
 }

@@ -26,13 +26,14 @@ If neither is set, sloppy-joe runs with default settings (no canonical rules, no
 
 ## Config Format
 
-JSON file with eight top-level keys. All are optional.
+JSON file with optional top-level keys. The most common policy keys are:
 
 ```json
 {
   "canonical": { ... },
   "internal": { ... },
   "allowed": { ... },
+  "bootstrap_review": { ... },
   "similarity_exceptions": { ... },
   "metadata_exceptions": { ... },
   "min_version_age_hours": 72,
@@ -107,6 +108,29 @@ Lists vetted external packages that should skip existence and similarity checks 
 - Metadata signals (install scripts + other risk factors, dependency explosion, maintainer changes)
 
 **When to use:** For legitimate external packages that trigger false positives on similarity checks (e.g., a package with a name close to a popular one that you've manually verified).
+
+### `bootstrap_review`
+
+Carries review-only bootstrap suggestions produced by `sloppy-joe init --from-current`.
+
+```json
+{
+  "bootstrap_review": {
+    "candidate_canonical_groups": {
+      "npm": [
+        {
+          "packages": ["dayjs", "moment"],
+          "reason": "Multiple packages from the same solution family are already in use."
+        }
+      ]
+    }
+  }
+}
+```
+
+**What it does:** Nothing at scan time. This section is informational only.
+
+**When to use:** Keep it while reviewing bootstrap output from `--from-current`. Move reviewed decisions into `canonical` when you are ready to enforce them.
 
 **Difference from internal:** Internal packages skip everything. Allowed packages skip only existence and similarity.
 
@@ -219,13 +243,42 @@ Valid values:
 
 Legacy Python support still fails closed on unsafe forms. For example, direct URLs, editable requirements, local paths, VCS sources, and unsupported dynamic dependency declarations are rejected rather than silently skipped.
 
-## Generating a Template
+## Bootstrap Modes
 
 ```bash
-sloppy-joe init > config.json
+sloppy-joe init --register
 ```
 
-This outputs a starter config with example values for all ecosystems.
+This creates a neutral starter config outside the repo and registers it for the current git root.
+
+For new projects, use an ecosystem-specific greenfield starter:
+
+```bash
+sloppy-joe init --greenfield --ecosystem npm
+sloppy-joe init --greenfield --ecosystem cargo --register
+```
+
+For existing repos, seed config from the current codebase:
+
+```bash
+sloppy-joe init --from-current
+```
+
+`--from-current` writes the config outside the repo, registers it automatically, and populates:
+
+- likely `internal` package patterns for local/workspace packages
+- trusted local Cargo paths discovered from the current repo
+- `bootstrap_review.candidate_canonical_groups` suggestions for families that need human review before becoming enforced canonicals
+
+Those `bootstrap_review` suggestions are informational. They do not change enforcement until you move them into `canonical`.
+
+If you need to manage the file yourself, write it to a secure location outside the project directory:
+
+```bash
+sloppy-joe init > /secure/location/sloppy-joe.json
+```
+
+Do not write the config into the repo itself. sloppy-joe intentionally refuses in-repo config files.
 
 ## CI Integration
 
