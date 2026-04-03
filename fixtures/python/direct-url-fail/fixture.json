@@ -1,0 +1,1 @@
+{"id":"python-direct-url-fail","ecosystem":"python","expected":"fail","reason":"Direct URL requirements must fail closed."}

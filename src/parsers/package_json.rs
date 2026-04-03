@@ -89,6 +89,14 @@ fn parse_dependency(
         );
     }
 
+    if version.starts_with("portal:") || version.starts_with("patch:") {
+        anyhow::bail!(
+            "Unsupported non-registry npm dependency '{}' in {}",
+            crate::report::sanitize_for_terminal(version),
+            source_path.display()
+        );
+    }
+
     if version.starts_with("workspace:")
         || version.starts_with("file:")
         || version.starts_with("link:")

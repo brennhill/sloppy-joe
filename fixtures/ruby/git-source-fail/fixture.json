@@ -1,0 +1,1 @@
+{"id":"ruby-git-source-fail","ecosystem":"ruby","expected":"fail","reason":"Git-sourced gems should not be trusted as RubyGems packages."}

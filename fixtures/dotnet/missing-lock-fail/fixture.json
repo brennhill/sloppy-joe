@@ -1,0 +1,1 @@
+{"id":"dotnet-missing-lock-fail","ecosystem":"dotnet","expected":"fail","reason":"PackageReference projects must commit packages.lock.json under the strict policy."}

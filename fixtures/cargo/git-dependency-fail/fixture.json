@@ -1,0 +1,1 @@
+{"id":"cargo-git-dependency-fail","ecosystem":"cargo","expected":"fail","reason":"Git dependencies are blocked by default unless explicitly relaxed and pinned."}

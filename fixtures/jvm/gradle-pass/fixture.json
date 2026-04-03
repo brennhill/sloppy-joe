@@ -1,0 +1,1 @@
+{"id":"jvm-gradle-pass","ecosystem":"jvm","expected":"pass","reason":"Gradle project pinned by gradle.lockfile and default Maven Central provenance."}

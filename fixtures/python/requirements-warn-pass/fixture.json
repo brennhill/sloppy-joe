@@ -1,0 +1,1 @@
+{"id":"python-requirements-warn-pass","ecosystem":"python","expected":"warn","reason":"Legacy requirements.txt remains allowed but should warn every run."}

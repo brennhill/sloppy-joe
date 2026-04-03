@@ -1,0 +1,1 @@
+{"id":"php-custom-repository-fail","ecosystem":"php","expected":"fail","reason":"Composer repositories override normal Packagist provenance and must fail closed until modeled."}

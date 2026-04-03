@@ -306,7 +306,7 @@ fn preflight_project_inputs(
         })?;
 
         match spec.kind {
-            ProjectInputKind::Npm => ensure_authoritative_npm_lockfile_readable(spec)?,
+            ProjectInputKind::Npm => ensure_authoritative_js_lockfile_readable(spec)?,
             ProjectInputKind::PyProjectPoetry => ensure_lockfile_readable(
                 &spec.project_dir().join("poetry.lock"),
                 spec.kind.missing_lockfile_help().unwrap(),
@@ -390,22 +390,62 @@ fn preflight_project_inputs(
         if spec.kind == ProjectInputKind::Npm {
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_supported_js_manager(spec)?;
-            validate_npm_manifest_security_policy(spec, manifest)?;
-            let allowed_alias_targets = selected_lockfile_path(spec)
-                .and_then(|path| npm_alias_targets.get(&path))
-                .cloned()
-                .unwrap_or_default();
-            let (lockfile, npm_warnings) =
-                read_validated_npm_lockfile(spec, manifest, config, &allowed_alias_targets)?;
-            warnings.extend(npm_warnings);
-            let npm_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
-            validate_local_npm_dependencies(
-                &npm_scope_root,
-                spec,
-                manifest,
-                &lockfile,
-                &npm_index,
-            )?;
+            match spec
+                .js_binding
+                .as_ref()
+                .map(|binding| binding.manager)
+                .unwrap_or(JsPackageManager::Npm)
+            {
+                JsPackageManager::Npm => {
+                    validate_npm_manifest_security_policy(spec, manifest)?;
+                    let allowed_alias_targets = selected_lockfile_path(spec)
+                        .and_then(|path| npm_alias_targets.get(&path))
+                        .cloned()
+                        .unwrap_or_default();
+                    let (lockfile, npm_warnings) = read_validated_npm_lockfile(
+                        spec,
+                        manifest,
+                        config,
+                        &allowed_alias_targets,
+                    )?;
+                    warnings.extend(npm_warnings);
+                    let npm_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
+                    validate_local_npm_dependencies(
+                        &npm_scope_root,
+                        spec,
+                        manifest,
+                        &lockfile,
+                        &npm_index,
+                    )?;
+                }
+                JsPackageManager::Pnpm => {
+                    let lockfile = read_validated_pnpm_lockfile(spec, manifest)?;
+                    let pnpm_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
+                    validate_local_pnpm_dependencies(
+                        &pnpm_scope_root,
+                        spec,
+                        manifest,
+                        &lockfile,
+                        &npm_index,
+                    )?;
+                }
+                JsPackageManager::Bun => {
+                    let lockfile = read_validated_bun_lockfile(spec, manifest)?;
+                    let bun_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
+                    validate_local_bun_dependencies(
+                        &bun_scope_root,
+                        spec,
+                        manifest,
+                        &lockfile,
+                        &npm_index,
+                    )?;
+                }
+                JsPackageManager::Yarn => {
+                    let lockfile = read_validated_yarn_lockfile(spec, manifest)?;
+                    let yarn_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
+                    validate_local_yarn_dependencies(&yarn_scope_root, spec, manifest, &lockfile)?;
+                }
+            }
         } else {
             validate_lockfile_syntax(scan_root, spec, npm_manifest, config)?;
         }
@@ -490,11 +530,103 @@ fn read_validated_npm_lockfile(
     Ok((lockfile, warnings))
 }
 
+fn read_validated_pnpm_lockfile(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+) -> Result<serde_yaml::Value> {
+    let path =
+        selected_lockfile_path(spec).expect("pnpm preflight should guarantee a lockfile exists");
+    let content =
+        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is unreadable: {}",
+                path.display(),
+                err
+            )
+        })?;
+    let lockfile: serde_yaml::Value = serde_yaml::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
+    Ok(lockfile)
+}
+
+fn read_validated_bun_lockfile(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let path =
+        selected_lockfile_path(spec).expect("bun preflight should guarantee a lockfile exists");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("bun.lock");
+    if file_name == "bun.lockb" {
+        anyhow::bail!(
+            "Legacy Bun binary lockfile '{}' is not supported yet. Regenerate and commit the text bun.lock.",
+            path.display()
+        );
+    }
+    let content =
+        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is unreadable: {}",
+                path.display(),
+                err
+            )
+        })?;
+    let lockfile: serde_json::Value = json5::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    validate_bun_lockfile_consistency(spec, manifest, &lockfile, &path)?;
+    Ok(lockfile)
+}
+
+fn read_validated_yarn_lockfile(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+) -> Result<crate::lockfiles::yarn::ParsedYarnLock> {
+    let path =
+        selected_lockfile_path(spec).expect("Yarn preflight should guarantee a lockfile exists");
+    let content =
+        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is unreadable: {}",
+                path.display(),
+                err
+            )
+        })?;
+    let project_name = manifest
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Broken manifest '{}': Yarn projects must declare a package name.",
+                spec.manifest_path.display()
+            )
+        })?;
+    let lockfile =
+        crate::lockfiles::yarn::parse_lockfile(&content, path.clone(), spec.project_dir())
+            .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    crate::lockfiles::yarn::validate_manifest_consistency(
+        &lockfile,
+        manifest,
+        spec.npm_lockfile_package_key(),
+        project_name,
+    )?;
+    crate::lockfiles::yarn::validate_provenance(&lockfile)?;
+    Ok(lockfile)
+}
+
 fn validate_supported_js_manager(spec: &ProjectInputSpec) -> Result<()> {
     let Some(binding) = &spec.js_binding else {
         return Ok(());
     };
-    if binding.manager == JsPackageManager::Npm {
+    if matches!(
+        binding.manager,
+        JsPackageManager::Npm
+            | JsPackageManager::Pnpm
+            | JsPackageManager::Bun
+            | JsPackageManager::Yarn
+    ) {
         return Ok(());
     }
     anyhow::bail!(
@@ -601,7 +733,7 @@ fn resolve_js_project_binding(
         )
     })?;
     let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
-    let workspace_root = find_npm_workspace_root(&ancestry_root, &canonical_project_dir)?;
+    let workspace_root = find_js_workspace_root(&ancestry_root, &canonical_project_dir)?;
     let root_manifest_path = workspace_root
         .as_ref()
         .map(|root| root.manifest_path.clone())
@@ -613,13 +745,33 @@ fn resolve_js_project_binding(
     let canonical_root_dir = std::fs::canonicalize(root_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
     let manager = detect_js_manager(root_dir, &root_manifest_path, &root_manifest)?;
-    let lockfile_path = if manager == JsPackageManager::Npm {
-        first_existing_lockfile(root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
-    } else {
-        None
+    let lockfile_path = match manager {
+        JsPackageManager::Npm => {
+            first_existing_lockfile(root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
+        }
+        JsPackageManager::Pnpm => {
+            let path = root_dir.join("pnpm-lock.yaml");
+            parsers::path_detected(&path)?.then_some(path)
+        }
+        JsPackageManager::Yarn => {
+            let path = root_dir.join("yarn.lock");
+            parsers::path_detected(&path)?.then_some(path)
+        }
+        JsPackageManager::Bun => {
+            let text = root_dir.join("bun.lock");
+            if parsers::path_detected(&text)? {
+                Some(text)
+            } else {
+                let binary = root_dir.join("bun.lockb");
+                parsers::path_detected(&binary)?.then_some(binary)
+            }
+        }
     };
     let package_entry_key = if canonical_project_dir == canonical_root_dir {
-        String::new()
+        match manager {
+            JsPackageManager::Pnpm => ".".to_string(),
+            _ => String::new(),
+        }
     } else {
         relative_package_entry_key(&canonical_root_dir, &canonical_project_dir)?
     };
@@ -893,6 +1045,197 @@ fn validate_local_npm_dependencies(
     Ok(())
 }
 
+fn validate_local_pnpm_dependencies(
+    trusted_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+    lockfile: &serde_yaml::Value,
+    npm_index: &NpmProjectIndex,
+) -> Result<()> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+
+    for (name, local_spec) in npm_dependency_entries(manifest)
+        .into_iter()
+        .filter(|(_, spec)| {
+            spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
+        })
+    {
+        let expected_target = if local_spec.starts_with("workspace:") {
+            validate_workspace_pnpm_dependency(trusted_root, spec, &name, &canonical_project_dir)?
+        } else {
+            let canonical_target = resolve_local_npm_target(
+                trusted_root,
+                spec,
+                &name,
+                &local_spec,
+                &canonical_project_dir,
+            )?;
+            if !npm_index.dirs.contains(&canonical_target) {
+                anyhow::bail!(
+                    "Local pnpm dependency '{}' in '{}' resolves to '{}' inside the scan root, but no scanned package.json was found there.",
+                    name,
+                    spec.manifest_path.display(),
+                    local_spec
+                );
+            }
+            if npm_index
+                .names_by_dir
+                .get(&canonical_target)
+                .is_none_or(|target_name| target_name != &name)
+            {
+                let actual = npm_index
+                    .names_by_dir
+                    .get(&canonical_target)
+                    .cloned()
+                    .unwrap_or_else(|| "<missing package name>".to_string());
+                anyhow::bail!(
+                    "Local pnpm dependency '{}' in '{}' resolves to '{}', but that project declares package name '{}'. Local file:/link: targets must match the dependency package identity exactly.",
+                    name,
+                    spec.manifest_path.display(),
+                    canonical_target.display(),
+                    crate::report::sanitize_for_terminal(&actual)
+                );
+            }
+            canonical_target
+        };
+
+        validate_local_pnpm_lockfile_target(spec, lockfile, &name, &local_spec, &expected_target)?;
+    }
+
+    Ok(())
+}
+
+fn validate_local_bun_dependencies(
+    trusted_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+    lockfile: &serde_json::Value,
+    npm_index: &NpmProjectIndex,
+) -> Result<()> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+
+    for (name, local_spec) in npm_dependency_entries(manifest)
+        .into_iter()
+        .filter(|(_, spec)| {
+            spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
+        })
+    {
+        let expected_target = if local_spec.starts_with("workspace:") {
+            validate_workspace_bun_dependency(trusted_root, spec, &name, &canonical_project_dir)?
+        } else {
+            let canonical_target = resolve_local_npm_target(
+                trusted_root,
+                spec,
+                &name,
+                &local_spec,
+                &canonical_project_dir,
+            )?;
+            if !npm_index.dirs.contains(&canonical_target) {
+                anyhow::bail!(
+                    "Local Bun dependency '{}' in '{}' resolves to '{}' inside the scan root, but no scanned package.json was found there.",
+                    name,
+                    spec.manifest_path.display(),
+                    local_spec
+                );
+            }
+            if npm_index
+                .names_by_dir
+                .get(&canonical_target)
+                .is_none_or(|target_name| target_name != &name)
+            {
+                let actual = npm_index
+                    .names_by_dir
+                    .get(&canonical_target)
+                    .cloned()
+                    .unwrap_or_else(|| "<missing package name>".to_string());
+                anyhow::bail!(
+                    "Local Bun dependency '{}' in '{}' resolves to '{}', but that project declares package name '{}'. Local file:/link: targets must match the dependency package identity exactly.",
+                    name,
+                    spec.manifest_path.display(),
+                    canonical_target.display(),
+                    crate::report::sanitize_for_terminal(&actual)
+                );
+            }
+            canonical_target
+        };
+
+        validate_local_bun_lockfile_target(spec, lockfile, &name, &local_spec, &expected_target)?;
+    }
+
+    Ok(())
+}
+
+fn validate_local_yarn_dependencies(
+    trusted_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+    lockfile: &crate::lockfiles::yarn::ParsedYarnLock,
+) -> Result<()> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+
+    for (name, local_spec) in npm_dependency_entries(manifest)
+        .into_iter()
+        .filter(|(_, spec)| {
+            spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
+        })
+    {
+        if !local_spec.starts_with("workspace:") {
+            anyhow::bail!(
+                "Local Yarn dependency '{}' in '{}' uses unsupported spec '{}'. sloppy-joe currently supports Yarn workspace: dependencies, but file:/link: targets remain blocked until their lockfile provenance is modeled exactly.",
+                name,
+                spec.manifest_path.display(),
+                crate::report::sanitize_for_terminal(&local_spec)
+            );
+        }
+
+        let expected_target =
+            validate_workspace_yarn_dependency(trusted_root, spec, &name, &canonical_project_dir)?;
+        let relative_target = if expected_target == *trusted_root {
+            ".".to_string()
+        } else {
+            expected_target
+                .strip_prefix(trusted_root)
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Local Yarn dependency '{}' in '{}' resolved outside the trusted Yarn root '{}'.",
+                        name,
+                        spec.manifest_path.display(),
+                        trusted_root.display()
+                    )
+                })?
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+
+        crate::lockfiles::yarn::validate_workspace_target(lockfile, &name, &relative_target)?;
+    }
+
+    Ok(())
+}
+
 fn validate_local_npm_lockfile_target(
     spec: &ProjectInputSpec,
     lockfile: &serde_json::Value,
@@ -964,6 +1307,163 @@ fn validate_local_npm_lockfile_target(
             dep_name,
             resolved,
             local_spec,
+            expected_target.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_local_pnpm_lockfile_target(
+    spec: &ProjectInputSpec,
+    lockfile: &serde_yaml::Value,
+    dep_name: &str,
+    local_spec: &str,
+    expected_target: &std::path::Path,
+) -> Result<()> {
+    let lockfile_path = selected_lockfile_path(spec)
+        .expect("pnpm projects must have a selected lockfile during preflight");
+    let importer_key = spec
+        .js_binding
+        .as_ref()
+        .map(|binding| binding.package_entry_key.as_str())
+        .unwrap_or(".");
+    let importer = lockfile
+        .get("importers")
+        .and_then(|value| value.get(importer_key))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is out of sync: importer '{}' is missing.",
+                lockfile_path.display(),
+                importer_key
+            )
+        })?;
+    let version = pnpm_importer_entry(importer, dep_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' is out of sync: local pnpm dependency '{}' is missing from importer '{}'.",
+            lockfile_path.display(),
+            dep_name,
+            importer_key
+        )
+    })?;
+    let resolved = version
+        .strip_prefix("link:")
+        .or_else(|| version.strip_prefix("file:"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' importer '{}' records '{}' as '{}', but local pnpm dependencies must resolve through link:/file: entries.",
+                lockfile_path.display(),
+                importer_key,
+                dep_name,
+                crate::report::sanitize_for_terminal(version)
+            )
+        })?;
+    let lockfile_dir = lockfile_path
+        .parent()
+        .expect("lockfile paths should always have a parent directory");
+    let importer_dir = if importer_key == "." {
+        lockfile_dir.to_path_buf()
+    } else {
+        lockfile_dir.join(importer_key)
+    };
+    let candidate = if std::path::Path::new(resolved).is_absolute() {
+        std::path::PathBuf::from(resolved)
+    } else {
+        importer_dir.join(resolved)
+    };
+    let normalized = normalize_filesystem_path(&candidate);
+    let canonical_lockfile_target = std::fs::canonicalize(&normalized).map_err(|err| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' importer '{}' points '{}' at '{}' but that target is missing or unreadable: {}.",
+            lockfile_path.display(),
+            importer_key,
+            dep_name,
+            resolved,
+            err
+        )
+    })?;
+    if canonical_lockfile_target != expected_target {
+        anyhow::bail!(
+            "Required lockfile '{}' importer '{}' points '{}' to '{}' for '{}', but the manifest-verified local target is '{}'. Regenerate pnpm-lock.yaml so the local dependency binding matches exactly.",
+            lockfile_path.display(),
+            importer_key,
+            dep_name,
+            resolved,
+            local_spec,
+            expected_target.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_local_bun_lockfile_target(
+    spec: &ProjectInputSpec,
+    lockfile: &serde_json::Value,
+    dep_name: &str,
+    local_spec: &str,
+    expected_target: &std::path::Path,
+) -> Result<()> {
+    let lockfile_path = selected_lockfile_path(spec)
+        .expect("Bun projects must have a selected lockfile during preflight");
+    let descriptor = lockfile
+        .get("packages")
+        .and_then(|packages| packages.get(dep_name))
+        .and_then(|value| value.as_array())
+        .and_then(|value| value.first())
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is out of sync with package.json: local Bun dependency '{}' is missing its lockfile package entry.",
+                lockfile_path.display(),
+                dep_name
+            )
+        })?;
+
+    let (prefix, label) = if local_spec.starts_with("workspace:") {
+        ("@workspace:", "workspace:")
+    } else if local_spec.starts_with("file:") {
+        ("@file:", "file:")
+    } else if local_spec.starts_with("link:") {
+        ("@link:", "link:")
+    } else {
+        anyhow::bail!(
+            "Local Bun dependency '{}' in '{}' uses unsupported spec '{}'.",
+            dep_name,
+            spec.manifest_path.display(),
+            crate::report::sanitize_for_terminal(local_spec)
+        );
+    };
+
+    let expected_prefix = format!("{dep_name}{prefix}");
+    let Some(relative_target) = descriptor.strip_prefix(&expected_prefix) else {
+        anyhow::bail!(
+            "Required lockfile '{}' is out of sync with package.json: local Bun dependency '{}' should resolve via {}, but the lockfile recorded '{}'.",
+            lockfile_path.display(),
+            dep_name,
+            label,
+            crate::report::sanitize_for_terminal(descriptor)
+        );
+    };
+
+    let lockfile_root = lockfile_path
+        .parent()
+        .expect("lockfile paths should always have a parent directory");
+    let canonical_lock_target = std::fs::canonicalize(lockfile_root.join(relative_target))
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' points local Bun dependency '{}' at '{}', but that target is unreadable: {}",
+                lockfile_path.display(),
+                dep_name,
+                crate::report::sanitize_for_terminal(relative_target),
+                err
+            )
+        })?;
+    if canonical_lock_target != expected_target {
+        anyhow::bail!(
+            "Required lockfile '{}' is out of sync with package.json: local Bun dependency '{}' points to '{}', but package.json resolves to '{}'. Regenerate bun.lock from the Bun workspace root.",
+            lockfile_path.display(),
+            dep_name,
+            canonical_lock_target.display(),
             expected_target.display()
         );
     }
@@ -2657,25 +3157,48 @@ fn validate_lockfile_syntax(
 
     match spec.kind {
         ProjectInputKind::Npm => {
-            let path = selected_lockfile_path(spec)
-                .expect("npm preflight should guarantee a lockfile exists");
-            let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-            let lockfile = serde_json::from_str::<serde_json::Value>(&content).map_err(|err| {
-                anyhow::anyhow!(
-                    "Broken lockfile '{}': failed to parse JSON: {}",
-                    path.display(),
-                    err
-                )
-            })?;
-            validate_npm_lockfile_version(&lockfile, &path, config)?;
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
-            validate_npm_lockfile_consistency(
-                manifest,
-                &lockfile,
-                &path,
-                spec.npm_lockfile_package_key(),
-            )?;
-            validate_npm_lockfile_provenance(&lockfile, &path, &std::collections::HashMap::new())?;
+            match spec
+                .js_binding
+                .as_ref()
+                .map(|binding| binding.manager)
+                .unwrap_or(JsPackageManager::Npm)
+            {
+                JsPackageManager::Npm => {
+                    let path = selected_lockfile_path(spec)
+                        .expect("npm preflight should guarantee a lockfile exists");
+                    let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
+                    let lockfile =
+                        serde_json::from_str::<serde_json::Value>(&content).map_err(|err| {
+                            anyhow::anyhow!(
+                                "Broken lockfile '{}': failed to parse JSON: {}",
+                                path.display(),
+                                err
+                            )
+                        })?;
+                    validate_npm_lockfile_version(&lockfile, &path, config)?;
+                    validate_npm_lockfile_consistency(
+                        manifest,
+                        &lockfile,
+                        &path,
+                        spec.npm_lockfile_package_key(),
+                    )?;
+                    validate_npm_lockfile_provenance(
+                        &lockfile,
+                        &path,
+                        &std::collections::HashMap::new(),
+                    )?;
+                }
+                JsPackageManager::Pnpm => {
+                    let _ = read_validated_pnpm_lockfile(spec, manifest)?;
+                }
+                JsPackageManager::Bun => {
+                    let _ = read_validated_bun_lockfile(spec, manifest)?;
+                }
+                JsPackageManager::Yarn => {
+                    let _ = read_validated_yarn_lockfile(spec, manifest)?;
+                }
+            }
         }
         ProjectInputKind::Cargo => {
             let path = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
@@ -2746,6 +3269,7 @@ struct WorkspaceRoot {
     manifest_path: std::path::PathBuf,
     project_dir: std::path::PathBuf,
     patterns: Vec<String>,
+    manager: JsPackageManager,
 }
 
 fn validate_workspace_npm_dependency(
@@ -2796,7 +3320,180 @@ fn validate_workspace_npm_dependency(
     }
 }
 
+fn validate_workspace_pnpm_dependency(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    dep_name: &str,
+    canonical_project_dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let Some(workspace_root) = find_pnpm_workspace_root(scan_root, canonical_project_dir)? else {
+        anyhow::bail!(
+            "Local pnpm dependency '{}' in '{}' uses workspace:, but no ancestor pnpm-workspace.yaml with a matching packages declaration was found. Scan the workspace root, or replace the workspace reference with a dependency source sloppy-joe can verify exactly.",
+            dep_name,
+            spec.manifest_path.display()
+        );
+    };
+
+    let matching_dirs = workspace_manifest_paths(&workspace_root)?
+        .into_iter()
+        .filter_map(|manifest_path| {
+            let project_dir = manifest_path.parent()?.to_path_buf();
+            let canonical_dir = std::fs::canonicalize(&project_dir).ok()?;
+            if canonical_dir == canonical_project_dir {
+                return None;
+            }
+            let manifest = read_npm_manifest_value(&manifest_path).ok()?;
+            let name = manifest.get("name").and_then(|value| value.as_str())?;
+            (name == dep_name).then_some(canonical_dir)
+        })
+        .collect::<Vec<_>>();
+
+    match matching_dirs.len() {
+        1 => Ok(matching_dirs[0].clone()),
+        0 => anyhow::bail!(
+            "Local pnpm dependency '{}' in '{}' does not resolve to any workspace package declared by '{}'. Keep workspace targets inside pnpm-workspace.yaml, or remove the workspace reference.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root
+                .project_dir
+                .join("pnpm-workspace.yaml")
+                .display()
+        ),
+        _ => anyhow::bail!(
+            "Local pnpm dependency '{}' in '{}' resolves ambiguously to multiple workspace packages declared by '{}'. Each pnpm workspace package name must be unique.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root
+                .project_dir
+                .join("pnpm-workspace.yaml")
+                .display()
+        ),
+    }
+}
+
+fn validate_workspace_bun_dependency(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    dep_name: &str,
+    canonical_project_dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let Some(workspace_root) = find_bun_workspace_root(scan_root, canonical_project_dir)? else {
+        anyhow::bail!(
+            "Local Bun dependency '{}' in '{}' uses workspace:, but no ancestor Bun workspace root with a matching workspaces declaration was found. Scan the workspace root, or replace the workspace reference with a dependency source sloppy-joe can verify exactly.",
+            dep_name,
+            spec.manifest_path.display()
+        );
+    };
+
+    let matching_dirs = workspace_manifest_paths(&workspace_root)?
+        .into_iter()
+        .filter_map(|manifest_path| {
+            let project_dir = manifest_path.parent()?.to_path_buf();
+            let canonical_dir = std::fs::canonicalize(&project_dir).ok()?;
+            if canonical_dir == canonical_project_dir {
+                return None;
+            }
+            let manifest = read_npm_manifest_value(&manifest_path).ok()?;
+            let name = manifest.get("name").and_then(|value| value.as_str())?;
+            (name == dep_name).then_some(canonical_dir)
+        })
+        .collect::<Vec<_>>();
+
+    match matching_dirs.len() {
+        1 => Ok(matching_dirs[0].clone()),
+        0 => anyhow::bail!(
+            "Local Bun dependency '{}' in '{}' does not resolve to any workspace package declared by '{}'. Keep workspace targets inside the Bun workspaces set, or remove the workspace reference.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root.manifest_path.display()
+        ),
+        _ => anyhow::bail!(
+            "Local Bun dependency '{}' in '{}' resolves ambiguously to multiple workspace packages declared by '{}'. Each Bun workspace package name must be unique within the workspace root.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root.manifest_path.display()
+        ),
+    }
+}
+
+fn validate_workspace_yarn_dependency(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    dep_name: &str,
+    canonical_project_dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let Some(workspace_root) = find_yarn_workspace_root(scan_root, canonical_project_dir)? else {
+        anyhow::bail!(
+            "Local Yarn dependency '{}' in '{}' uses workspace:, but no ancestor Yarn workspace root with a matching workspaces declaration was found. Scan the workspace root, or replace the workspace reference with a dependency source sloppy-joe can verify exactly.",
+            dep_name,
+            spec.manifest_path.display()
+        );
+    };
+
+    let matching_dirs = workspace_manifest_paths(&workspace_root)?
+        .into_iter()
+        .filter_map(|manifest_path| {
+            let project_dir = manifest_path.parent()?.to_path_buf();
+            let canonical_dir = std::fs::canonicalize(&project_dir).ok()?;
+            if canonical_dir == canonical_project_dir {
+                return None;
+            }
+            let manifest = read_npm_manifest_value(&manifest_path).ok()?;
+            let name = manifest.get("name").and_then(|value| value.as_str())?;
+            (name == dep_name).then_some(canonical_dir)
+        })
+        .collect::<Vec<_>>();
+
+    match matching_dirs.len() {
+        1 => Ok(matching_dirs[0].clone()),
+        0 => anyhow::bail!(
+            "Local Yarn dependency '{}' in '{}' does not resolve to any workspace package declared by '{}'. Keep workspace targets inside the Yarn workspaces set, or remove the workspace reference.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root.manifest_path.display()
+        ),
+        _ => anyhow::bail!(
+            "Local Yarn dependency '{}' in '{}' resolves ambiguously to multiple workspace packages declared by '{}'. Each Yarn workspace package name must be unique within the workspace root.",
+            dep_name,
+            spec.manifest_path.display(),
+            workspace_root.manifest_path.display()
+        ),
+    }
+}
+
+fn find_pnpm_workspace_root(
+    scan_root: &std::path::Path,
+    canonical_project_dir: &std::path::Path,
+) -> Result<Option<WorkspaceRoot>> {
+    Ok(find_js_workspace_root(scan_root, canonical_project_dir)?
+        .filter(|root| root.manager == JsPackageManager::Pnpm))
+}
+
+fn find_yarn_workspace_root(
+    scan_root: &std::path::Path,
+    canonical_project_dir: &std::path::Path,
+) -> Result<Option<WorkspaceRoot>> {
+    Ok(find_js_workspace_root(scan_root, canonical_project_dir)?
+        .filter(|root| root.manager == JsPackageManager::Yarn))
+}
+
+fn find_bun_workspace_root(
+    scan_root: &std::path::Path,
+    canonical_project_dir: &std::path::Path,
+) -> Result<Option<WorkspaceRoot>> {
+    Ok(find_js_workspace_root(scan_root, canonical_project_dir)?
+        .filter(|root| root.manager == JsPackageManager::Bun))
+}
+
 fn find_npm_workspace_root(
+    scan_root: &std::path::Path,
+    canonical_project_dir: &std::path::Path,
+) -> Result<Option<WorkspaceRoot>> {
+    Ok(find_js_workspace_root(scan_root, canonical_project_dir)?
+        .filter(|root| root.manager == JsPackageManager::Npm))
+}
+
+fn find_js_workspace_root(
     scan_root: &std::path::Path,
     canonical_project_dir: &std::path::Path,
 ) -> Result<Option<WorkspaceRoot>> {
@@ -2807,7 +3504,10 @@ fn find_npm_workspace_root(
         }
 
         let manifest = read_npm_manifest_value(&manifest_path)?;
-        let Some(patterns) = parse_npm_workspaces(&manifest_path, &manifest)? else {
+        let manager = detect_js_manager(&ancestor_dir, &manifest_path, &manifest)?;
+        let Some(patterns) =
+            parse_js_workspace_patterns(&ancestor_dir, &manifest_path, &manifest, manager)?
+        else {
             continue;
         };
 
@@ -2822,11 +3522,93 @@ fn find_npm_workspace_root(
                 manifest_path: manifest_path.clone(),
                 project_dir: ancestor_dir,
                 patterns,
+                manager,
             }));
         }
     }
 
     Ok(None)
+}
+
+fn parse_js_workspace_patterns(
+    workspace_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    manifest: &serde_json::Value,
+    manager: JsPackageManager,
+) -> Result<Option<Vec<String>>> {
+    match manager {
+        JsPackageManager::Npm => parse_npm_workspaces(manifest_path, manifest),
+        JsPackageManager::Pnpm => parse_pnpm_workspaces(workspace_dir),
+        JsPackageManager::Yarn | JsPackageManager::Bun => {
+            parse_npm_workspaces(manifest_path, manifest)
+        }
+    }
+}
+
+fn parse_pnpm_workspaces(workspace_dir: &std::path::Path) -> Result<Option<Vec<String>>> {
+    let path = workspace_dir.join("pnpm-workspace.yaml");
+    if !parsers::path_detected(&path)? {
+        return Ok(None);
+    }
+    let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
+    let value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken manifest '{}': failed to parse YAML: {}",
+            path.display(),
+            err
+        )
+    })?;
+    let packages = value
+        .get("packages")
+        .and_then(|value| value.as_sequence())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Broken manifest '{}': packages must be an array of strings.",
+                path.display()
+            )
+        })?;
+    let mut patterns = Vec::with_capacity(packages.len());
+    for entry in packages {
+        let Some(pattern) = entry.as_str() else {
+            anyhow::bail!(
+                "Broken manifest '{}': packages entries must be strings.",
+                path.display()
+            );
+        };
+        patterns.push(pattern.to_string());
+    }
+    Ok(Some(patterns))
+}
+
+fn workspace_manifest_paths(workspace_root: &WorkspaceRoot) -> Result<Vec<std::path::PathBuf>> {
+    let root = std::fs::canonicalize(&workspace_root.project_dir).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            workspace_root.project_dir.display(),
+            err
+        )
+    })?;
+    let mut visited = std::collections::HashSet::new();
+    let mut specs = Vec::new();
+    walk_project_tree(
+        &workspace_root.project_dir,
+        &root,
+        &mut visited,
+        &mut specs,
+        false,
+    )?;
+    Ok(specs
+        .into_iter()
+        .filter(|spec| {
+            spec.kind == ProjectInputKind::Npm
+                && workspace_patterns_match(
+                    &workspace_root.project_dir,
+                    spec.project_dir(),
+                    workspace_root.patterns.iter().map(String::as_str),
+                )
+        })
+        .map(|spec| spec.manifest_path)
+        .collect())
 }
 
 fn parse_npm_workspaces(
@@ -3129,18 +3911,15 @@ fn ensure_one_lockfile_readable(
     )
 }
 
-fn ensure_authoritative_npm_lockfile_readable(spec: &ProjectInputSpec) -> Result<()> {
-    let help = spec.kind.missing_lockfile_help().unwrap();
+fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec) -> Result<()> {
+    let help = js_lockfile_help(spec);
     let Some(binding) = &spec.js_binding else {
         return ensure_one_lockfile_readable(
             spec.project_dir(),
             &["npm-shrinkwrap.json", "package-lock.json"],
-            help,
+            &help,
         );
     };
-    if binding.manager != JsPackageManager::Npm {
-        return Ok(());
-    }
     let root_dir = binding
         .root_manifest_path
         .parent()
@@ -3154,16 +3933,40 @@ fn ensure_authoritative_npm_lockfile_readable(spec: &ProjectInputSpec) -> Result
     })?;
     let canonical_root_dir = std::fs::canonicalize(root_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
-    if canonical_project_dir != canonical_root_dir
-        && let Some(shadow) = first_existing_lockfile(
-            spec.project_dir(),
-            &["npm-shrinkwrap.json", "package-lock.json"],
-        )
-    {
+    let shadow_lockfile = if canonical_project_dir != canonical_root_dir {
+        match binding.manager {
+            JsPackageManager::Npm => first_existing_lockfile(
+                spec.project_dir(),
+                &["npm-shrinkwrap.json", "package-lock.json"],
+            ),
+            JsPackageManager::Pnpm => {
+                let path = spec.project_dir().join("pnpm-lock.yaml");
+                parsers::path_detected(&path)?.then_some(path)
+            }
+            JsPackageManager::Yarn => {
+                let path = spec.project_dir().join("yarn.lock");
+                parsers::path_detected(&path)?.then_some(path)
+            }
+            JsPackageManager::Bun => {
+                let text = spec.project_dir().join("bun.lock");
+                if parsers::path_detected(&text)? {
+                    Some(text)
+                } else {
+                    let binary = spec.project_dir().join("bun.lockb");
+                    parsers::path_detected(&binary)?.then_some(binary)
+                }
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(shadow) = shadow_lockfile {
         anyhow::bail!(
-            "Found shadow npm lockfile '{}' under workspace project '{}'. The authoritative npm lockfile lives at '{}'. Remove the child lockfile and keep the workspace root lockfile as the single source of truth.",
+            "Found shadow {} lockfile '{}' under workspace project '{}'. The authoritative {} lockfile lives at '{}'. Remove the child lockfile and keep the workspace root lockfile as the single source of truth.",
+            binding.manager.as_str(),
             shadow.display(),
             spec.manifest_path.display(),
+            binding.manager.as_str(),
             binding
                 .lockfile_path
                 .as_ref()
@@ -3172,12 +3975,21 @@ fn ensure_authoritative_npm_lockfile_readable(spec: &ProjectInputSpec) -> Result
         );
     }
     let Some(path) = &binding.lockfile_path else {
+        let expected = match binding.manager {
+            JsPackageManager::Npm => "'npm-shrinkwrap.json' or 'package-lock.json'",
+            JsPackageManager::Pnpm => "'pnpm-lock.yaml'",
+            JsPackageManager::Yarn => "'yarn.lock'",
+            JsPackageManager::Bun => "'bun.lock' or 'bun.lockb'",
+        };
         anyhow::bail!(
-            "Required lockfile 'npm-shrinkwrap.json' or 'package-lock.json' is missing. Fix: {}",
+            "Required lockfile {} is missing for {} project '{}'. Fix: {}",
+            expected,
+            binding.manager.as_str(),
+            spec.manifest_path.display(),
             help
         );
     };
-    ensure_lockfile_readable(path, help)
+    ensure_lockfile_readable(path, &help)
 }
 
 fn validate_npm_lockfile_consistency(
@@ -3309,6 +4121,220 @@ fn validate_npm_lockfile_consistency(
     }
 
     Ok(())
+}
+
+fn validate_pnpm_lockfile_consistency(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+    lockfile: &serde_yaml::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    fn manifest_section_map(value: &serde_json::Value, section: &str) -> BTreeMap<String, String> {
+        value
+            .get(section)
+            .and_then(|section| section.as_object())
+            .map(|section| {
+                section
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .as_str()
+                            .map(|version| (name.clone(), version.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn importer_section_map(
+        importer: &serde_yaml::Value,
+        section: &str,
+    ) -> Result<BTreeMap<String, String>> {
+        let Some(entries) = importer.get(section) else {
+            return Ok(BTreeMap::new());
+        };
+        let Some(entries) = entries.as_mapping() else {
+            anyhow::bail!(
+                "Broken lockfile importer section '{}': expected a mapping of dependencies.",
+                section
+            );
+        };
+        let mut out = BTreeMap::new();
+        for (name, value) in entries {
+            let Some(name) = name.as_str() else {
+                anyhow::bail!(
+                    "Broken lockfile importer section '{}': dependency names must be strings.",
+                    section
+                );
+            };
+            let specifier = value
+                .get("specifier")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Broken lockfile importer section '{}': dependency '{}' is missing its specifier.",
+                        section,
+                        name
+                    )
+                })?;
+            out.insert(name.to_string(), specifier.to_string());
+        }
+        Ok(out)
+    }
+
+    let importer_key = spec
+        .js_binding
+        .as_ref()
+        .map(|binding| binding.package_entry_key.as_str())
+        .unwrap_or(".");
+    let importer = lockfile
+        .get("importers")
+        .and_then(|value| value.get(importer_key))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is missing importer '{}'. Regenerate pnpm-lock.yaml from the workspace root so it records this project explicitly.",
+                lockfile_path.display(),
+                importer_key
+            )
+        })?;
+
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
+        let manifest_entries = manifest_section_map(manifest, section);
+        let lock_entries = importer_section_map(importer, section)?;
+        if manifest_entries != lock_entries {
+            anyhow::bail!(
+                "Required lockfile '{}' is out of sync with package.json: importer '{}' does not match its '{}' declarations. Regenerate pnpm-lock.yaml so it matches the manifest exactly.",
+                lockfile_path.display(),
+                importer_key,
+                section
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_bun_lockfile_consistency(
+    spec: &ProjectInputSpec,
+    manifest: &serde_json::Value,
+    lockfile: &serde_json::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    fn manifest_section_map(value: &serde_json::Value, section: &str) -> BTreeMap<String, String> {
+        value
+            .get(section)
+            .and_then(|section| section.as_object())
+            .map(|section| {
+                section
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .as_str()
+                            .map(|version| (name.clone(), version.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn workspace_section_map(
+        workspace: &serde_json::Value,
+        section: &str,
+    ) -> Result<BTreeMap<String, String>> {
+        let Some(entries) = workspace.get(section) else {
+            return Ok(BTreeMap::new());
+        };
+        let Some(entries) = entries.as_object() else {
+            anyhow::bail!(
+                "Broken lockfile workspace section '{}': expected a mapping of dependencies.",
+                section
+            );
+        };
+        let mut out = BTreeMap::new();
+        for (name, value) in entries {
+            let Some(specifier) = value.as_str() else {
+                anyhow::bail!(
+                    "Broken lockfile workspace section '{}': dependency '{}' must have a string specifier.",
+                    section,
+                    name
+                );
+            };
+            out.insert(name.to_string(), specifier.to_string());
+        }
+        Ok(out)
+    }
+
+    let workspace_key = spec
+        .js_binding
+        .as_ref()
+        .map(|binding| binding.package_entry_key.as_str())
+        .unwrap_or("");
+    let workspace = lockfile
+        .get("workspaces")
+        .and_then(|value| value.get(workspace_key))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is missing workspace '{}'. Regenerate bun.lock from the workspace root so it records this project explicitly.",
+                lockfile_path.display(),
+                if workspace_key.is_empty() {
+                    "<root>"
+                } else {
+                    workspace_key
+                }
+            )
+        })?;
+
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
+        let manifest_entries = manifest_section_map(manifest, section);
+        let lock_entries = workspace_section_map(workspace, section)?;
+        if manifest_entries != lock_entries {
+            anyhow::bail!(
+                "Required lockfile '{}' is out of sync with package.json: workspace '{}' does not match its '{}' declarations. Regenerate bun.lock so it matches the manifest exactly.",
+                lockfile_path.display(),
+                if workspace_key.is_empty() {
+                    "<root>"
+                } else {
+                    workspace_key
+                },
+                section
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn pnpm_importer_entry<'a>(importer: &'a serde_yaml::Value, dep_name: &str) -> Option<&'a str> {
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
+        let version = importer
+            .get(section)
+            .and_then(|value| value.get(dep_name))
+            .and_then(|value| value.get("version"))
+            .and_then(|value| value.as_str());
+        if version.is_some() {
+            return version;
+        }
+    }
+    None
 }
 
 fn validate_npm_lockfile_provenance(
@@ -3977,9 +5003,13 @@ fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf>
     }
     let project_dir = spec.project_dir();
     match spec.kind {
-        ProjectInputKind::Npm => {
-            first_existing_lockfile(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
-        }
+        ProjectInputKind::Npm => spec
+            .js_binding
+            .as_ref()
+            .and_then(|binding| binding.lockfile_path.clone())
+            .or_else(|| {
+                first_existing_lockfile(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
+            }),
         ProjectInputKind::Cargo => Some(project_dir.join("Cargo.lock")),
         ProjectInputKind::Go => Some(project_dir.join("go.sum")),
         ProjectInputKind::Ruby => Some(project_dir.join("Gemfile.lock")),
@@ -3993,6 +5023,25 @@ fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf>
         | ProjectInputKind::PySetupPy
         | ProjectInputKind::PySetupCfg
         | ProjectInputKind::Maven => None,
+    }
+}
+
+fn js_lockfile_help(spec: &ProjectInputSpec) -> String {
+    match spec.js_binding.as_ref().map(|binding| binding.manager) {
+        Some(JsPackageManager::Pnpm) => {
+            "Run `pnpm install --lockfile-only` and commit pnpm-lock.yaml.".to_string()
+        }
+        Some(JsPackageManager::Yarn) => {
+            "Commit the authoritative yarn.lock for this project.".to_string()
+        }
+        Some(JsPackageManager::Bun) => {
+            "Commit the authoritative bun.lock or bun.lockb for this project.".to_string()
+        }
+        _ => spec
+            .kind
+            .missing_lockfile_help()
+            .unwrap_or("Commit the authoritative lockfile for this project.")
+            .to_string(),
     }
 }
 

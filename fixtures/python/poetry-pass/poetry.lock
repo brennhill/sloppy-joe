@@ -1,0 +1,12 @@
+[[package]]
+name = "requests"
+version = "2.32.3"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "fixture-poetry-pass"

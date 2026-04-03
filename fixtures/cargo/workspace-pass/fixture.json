@@ -1,0 +1,1 @@
+{"id":"cargo-workspace-pass","ecosystem":"cargo","expected":"pass","reason":"Workspace-local provenance should be trusted and scanned as first-party code."}

@@ -240,16 +240,8 @@ async fn scan_fixture_with_fake_services(
         if project.deps.is_empty() {
             continue;
         }
-        let report = scan_with_services_inner_for_kind(
-            Some(project.spec.kind),
-            project.spec.project_dir(),
-            config.clone(),
-            project.deps.clone(),
-            registry,
-            osv_client,
-            opts,
-        )
-        .await?;
+        let report =
+            scan_parsed_project(project, config.clone(), registry, osv_client, opts).await?;
         total_packages += report.packages_checked;
         all_issues.extend(report.issues);
         all_review_candidates.extend(report.review_candidates);
@@ -1397,7 +1389,7 @@ fn preflight_blocks_shadow_child_lockfile_inside_npm_workspace() {
 }
 
 #[test]
-fn preflight_blocks_nested_npm_project_under_ancestor_foreign_lockfile() {
+fn preflight_accepts_supported_pnpm_root_alongside_unrelated_nested_npm_project() {
     let dir = unique_dir();
     std::fs::create_dir_all(dir.join(".git")).unwrap();
     std::fs::create_dir_all(dir.join("apps/web")).unwrap();
@@ -1406,29 +1398,37 @@ fn preflight_blocks_nested_npm_project_under_ancestor_foreign_lockfile() {
         r#"{"name":"root","packageManager":"pnpm@9.0.0","workspaces":["apps/*"]}"#,
     )
     .unwrap();
-    std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .: {}\n",
+    )
+    .unwrap();
     std::fs::write(
         dir.join("apps/web/package.json"),
         r#"{"name":"web","dependencies":{"react":"18.3.1"}}"#,
     )
     .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
 
-    let err = preflight_scan_inputs(&dir, None)
-        .expect_err("unsupported JS manager roots must block npm trust");
-    let msg = err.to_string();
-    assert!(msg.contains("pnpm"));
+    let warnings = preflight_scan_inputs(&dir, None)
+        .expect("supported pnpm roots should coexist with unrelated nested npm projects");
+    assert!(warnings.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn preflight_blocks_subdir_npm_scan_when_repo_root_declares_pnpm_workspace() {
+fn preflight_allows_nested_npm_project_when_ancestor_pnpm_root_does_not_claim_it() {
     let dir = unique_dir();
     std::fs::create_dir_all(dir.join(".git")).unwrap();
     std::fs::create_dir_all(dir.join("apps/web")).unwrap();
     std::fs::write(
         dir.join("package.json"),
-        r#"{"name":"root","packageManager":"pnpm@9.0.0","workspaces":["apps/*"]}"#,
+        r#"{"name":"root","packageManager":"pnpm@9.0.0"}"#,
     )
     .unwrap();
     std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
@@ -1443,11 +1443,256 @@ fn preflight_blocks_subdir_npm_scan_when_repo_root_declares_pnpm_workspace() {
     )
     .unwrap();
 
-    let err = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
-        .expect_err("subdir npm scans must classify the real JS manager above the scan root");
+    let warnings = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
+        .expect("ancestor pnpm state should not capture unrelated nested npm projects");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_standalone_pnpm_project_with_pnpm_lockfile() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"pnpm@9.0.0","dependencies":{"react":"^18.3.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        r#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+packages:
+  react@18.3.1:
+    resolution:
+      integrity: sha512-react
+"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm"))
+        .expect("standalone pnpm projects with pnpm-lock.yaml should be accepted");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_pnpm_workspace_child_with_root_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"pnpm@9.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        r#"lockfileVersion: '9.0'
+importers:
+  .: {}
+  apps/web:
+    dependencies:
+      workspace-lib:
+        specifier: workspace:*
+        version: link:../../packages/workspace-lib
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+  packages/workspace-lib: {}
+packages:
+  react@18.3.1:
+    resolution:
+      integrity: sha512-react
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*","react":"^18.3.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
+        .expect("pnpm workspace children should bind to the root pnpm-lock.yaml");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_shadow_child_pnpm_lockfile_inside_workspace() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"pnpm@9.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("pnpm-workspace.yaml"), "packages:\n  - 'apps/*'\n").unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  apps/web: {}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("apps/web/package.json"), r#"{"name":"web"}"#).unwrap();
+    std::fs::write(
+        dir.join("apps/web/pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .: {}\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace children must not carry shadow pnpm lockfiles");
     let msg = err.to_string();
-    assert!(msg.contains("pnpm"));
-    assert!(msg.contains("not implemented yet") || msg.contains("pnpm-lock.yaml"));
+    assert!(msg.contains("apps/web/pnpm-lock.yaml"));
+    assert!(msg.contains("workspace"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_uses_pnpm_lockfile_exact_versions_for_direct_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"pnpm@9.0.0","dependencies":{"react":"^18.3.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        r#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+packages:
+  react@18.3.1:
+    resolution:
+      integrity: sha512-react
+"#,
+    )
+    .unwrap();
+
+    let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+    let osv_versions = Arc::new(Mutex::new(Vec::new()));
+    let registry = RecordingRegistry {
+        existing: vec!["react".to_string()],
+        versions: metadata_versions.clone(),
+    };
+    let osv = RecordingOsvClient {
+        versions: osv_versions.clone(),
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pnpm lockfiles should drive exact direct versions");
+
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check == "resolution/no-exact-version")
+    );
+    let metadata_versions = metadata_versions.lock().unwrap().clone();
+    let osv_versions = osv_versions.lock().unwrap().clone();
+    assert!(metadata_versions.contains(&Some("18.3.1".to_string())));
+    assert!(osv_versions.contains(&Some("18.3.1".to_string())));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_uses_pnpm_lockfile_for_transitive_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"pnpm@9.0.0","dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        r#"lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: 18.3.1
+        version: 18.3.1
+packages:
+  react@18.3.1:
+    resolution:
+      integrity: sha512-react
+  evil-transitive@1.0.0:
+    resolution:
+      integrity: sha512-evil
+snapshots:
+  react@18.3.1:
+    dependencies:
+      evil-transitive: 1.0.0
+"#,
+    )
+    .unwrap();
+
+    let registry = FakeRegistry {
+        existing: vec!["react".to_string(), "evil-transitive".to_string()],
+    };
+    let osv = VulnOsvClient {
+        vulnerable: vec!["evil-transitive".to_string()],
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("pnpm lockfiles should provide trusted transitive coverage");
+
+    let trans_issue = report.issues.iter().find(|issue| {
+        issue.package == "evil-transitive" && issue.source.as_deref() == Some("transitive")
+    });
+    assert!(
+        trans_issue.is_some(),
+        "pnpm transitive dependencies should enter the scan pipeline"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1468,11 +1713,688 @@ fn preflight_blocks_nested_npm_project_under_ancestor_bun_lockfile() {
         r#"{"name":"web","dependencies":{"react":"18.3.1"}}"#,
     )
     .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package-lock.json"),
+        r#"{"name":"web","lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
 
     let err = preflight_scan_inputs(&dir, None)
         .expect_err("unsupported JS manager roots must block npm trust");
     let msg = err.to_string();
     assert!(msg.contains("bun"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_standalone_bun_project_with_bun_lock() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"bun@1.3.9","dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("bun.lock"),
+        r#"{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "demo",
+      "dependencies": {
+        "react": "18.3.1",
+      },
+    },
+  },
+  "packages": {
+    "react": ["react@18.3.1", "", { "dependencies": { "loose-envify": "^1.1.0" } }, "sha512-react"],
+    "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" } }, "sha512-loose"],
+    "js-tokens": ["js-tokens@4.0.0", "", {}, "sha512-js-tokens"],
+  }
+}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm"))
+        .expect("standalone bun projects with bun.lock should be accepted");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_bun_workspace_child_with_root_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"bun@1.3.9","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("bun.lock"),
+        r#"{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "root",
+    },
+    "apps/web": {
+      "name": "web",
+      "dependencies": {
+        "react": "^18.0.0",
+      },
+    },
+  },
+  "packages": {
+    "react": ["react@18.3.1", "", { "dependencies": { "loose-envify": "^1.1.0" } }, "sha512-react"],
+    "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" } }, "sha512-loose"],
+    "js-tokens": ["js-tokens@4.0.0", "", {}, "sha512-js-tokens"],
+    "web": ["web@workspace:apps/web"],
+  }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
+        .expect("bun workspace children should bind to the root bun.lock");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_shadow_child_bun_lock_inside_workspace() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"bun@1.3.9","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("bun.lock"),
+        r#"{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": { "name": "root" },
+    "apps/web": { "name": "web" },
+  },
+  "packages": {
+    "web": ["web@workspace:apps/web"],
+  }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("apps/web/package.json"), r#"{"name":"web"}"#).unwrap();
+    std::fs::write(
+        dir.join("apps/web/bun.lock"),
+        r#"{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": { "name": "web" },
+  },
+  "packages": {}
+}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace children must not carry shadow bun lockfiles");
+    let msg = err.to_string();
+    assert!(msg.contains("apps/web/bun.lock"));
+    assert!(msg.contains("workspace"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_uses_bun_lock_exact_versions_for_direct_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"bun@1.3.9","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("bun.lock"),
+        r#"{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "demo",
+      "dependencies": {
+        "react": "^18.0.0",
+      },
+    },
+  },
+  "packages": {
+    "react": ["react@18.3.1", "", { "dependencies": { "loose-envify": "^1.1.0" } }, "sha512-react"],
+    "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" } }, "sha512-loose"],
+    "js-tokens": ["js-tokens@4.0.0", "", {}, "sha512-js-tokens"],
+  }
+}"#,
+    )
+    .unwrap();
+
+    let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+    let osv_versions = Arc::new(Mutex::new(Vec::new()));
+    let registry = RecordingRegistry {
+        existing: vec!["react".to_string()],
+        versions: metadata_versions.clone(),
+    };
+    let osv = RecordingOsvClient {
+        versions: osv_versions.clone(),
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("bun lockfiles should drive exact direct versions");
+
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check == "resolution/no-exact-version")
+    );
+    let metadata_versions = metadata_versions.lock().unwrap().clone();
+    let osv_versions = osv_versions.lock().unwrap().clone();
+    assert!(metadata_versions.contains(&Some("18.3.1".to_string())));
+    assert!(osv_versions.contains(&Some("18.3.1".to_string())));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_standalone_yarn_classic_project_with_yarn_lock() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"yarn@1.22.22","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+"js-tokens@^3.0.0 || ^4.0.0":
+  version "4.0.0"
+  resolved "https://registry.yarnpkg.com/js-tokens/-/js-tokens-4.0.0.tgz#19203fb59991df98e3a287050d4647cdeaf32499"
+  integrity sha512-js-tokens
+
+loose-envify@^1.1.0:
+  version "1.4.0"
+  resolved "https://registry.yarnpkg.com/loose-envify/-/loose-envify-1.4.0.tgz#71ee51fa7be4caec1a63839f7e682d8132d30caf"
+  integrity sha512-loose
+  dependencies:
+    js-tokens "^3.0.0 || ^4.0.0"
+
+react@^18.0.0:
+  version "18.3.1"
+  resolved "https://registry.yarnpkg.com/react/-/react-18.3.1.tgz#49ab892009c53933625bd16b2533fc754cab2891"
+  integrity sha512-react
+  dependencies:
+    loose-envify "^1.1.0"
+"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm"))
+        .expect("standalone Yarn classic projects with yarn.lock should be accepted");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_uses_yarn_classic_lock_exact_versions_for_direct_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"yarn@1.22.22","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+"js-tokens@^3.0.0 || ^4.0.0":
+  version "4.0.0"
+  resolved "https://registry.yarnpkg.com/js-tokens/-/js-tokens-4.0.0.tgz#19203fb59991df98e3a287050d4647cdeaf32499"
+  integrity sha512-js-tokens
+
+loose-envify@^1.1.0:
+  version "1.4.0"
+  resolved "https://registry.yarnpkg.com/loose-envify/-/loose-envify-1.4.0.tgz#71ee51fa7be4caec1a63839f7e682d8132d30caf"
+  integrity sha512-loose
+  dependencies:
+    js-tokens "^3.0.0 || ^4.0.0"
+
+react@^18.0.0:
+  version "18.3.1"
+  resolved "https://registry.yarnpkg.com/react/-/react-18.3.1.tgz#49ab892009c53933625bd16b2533fc754cab2891"
+  integrity sha512-react
+  dependencies:
+    loose-envify "^1.1.0"
+"#,
+    )
+    .unwrap();
+
+    let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+    let osv_versions = Arc::new(Mutex::new(Vec::new()));
+    let registry = RecordingRegistry {
+        existing: vec!["react".to_string()],
+        versions: metadata_versions.clone(),
+    };
+    let osv = RecordingOsvClient {
+        versions: osv_versions.clone(),
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("Yarn classic lockfiles should drive exact direct versions");
+
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check == "resolution/no-exact-version")
+    );
+    let metadata_versions = metadata_versions.lock().unwrap().clone();
+    let osv_versions = osv_versions.lock().unwrap().clone();
+    assert!(metadata_versions.contains(&Some("18.3.1".to_string())));
+    assert!(osv_versions.contains(&Some("18.3.1".to_string())));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_standalone_yarn_berry_project_with_yarn_lock() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"yarn@4.9.2","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# This file is generated by running "yarn install" inside your project.
+# Manual changes might be lost - proceed with caution!
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"js-tokens@npm:^3.0.0 || ^4.0.0":
+  version: 4.0.0
+  resolution: "js-tokens@npm:4.0.0"
+  checksum: 10c0/js-tokens
+  languageName: node
+  linkType: hard
+
+"loose-envify@npm:^1.1.0":
+  version: 1.4.0
+  resolution: "loose-envify@npm:1.4.0"
+  dependencies:
+    js-tokens: "npm:^3.0.0 || ^4.0.0"
+  checksum: 10c0/loose
+  languageName: node
+  linkType: hard
+
+"react@npm:^18.0.0":
+  version: 18.3.1
+  resolution: "react@npm:18.3.1"
+  dependencies:
+    loose-envify: "npm:^1.1.0"
+  checksum: 10c0/react
+  languageName: node
+  linkType: hard
+
+"demo@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "demo@workspace:."
+  dependencies:
+    react: "npm:^18.0.0"
+  languageName: unknown
+  linkType: soft
+"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("npm"))
+        .expect("standalone Yarn Berry projects with yarn.lock should be accepted");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_uses_yarn_berry_lock_exact_versions_for_direct_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"yarn@4.9.2","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# This file is generated by running "yarn install" inside your project.
+# Manual changes might be lost - proceed with caution!
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"js-tokens@npm:^3.0.0 || ^4.0.0":
+  version: 4.0.0
+  resolution: "js-tokens@npm:4.0.0"
+  checksum: 10c0/js-tokens
+  languageName: node
+  linkType: hard
+
+"loose-envify@npm:^1.1.0":
+  version: 1.4.0
+  resolution: "loose-envify@npm:1.4.0"
+  dependencies:
+    js-tokens: "npm:^3.0.0 || ^4.0.0"
+  checksum: 10c0/loose
+  languageName: node
+  linkType: hard
+
+"react@npm:^18.0.0":
+  version: 18.3.1
+  resolution: "react@npm:18.3.1"
+  dependencies:
+    loose-envify: "npm:^1.1.0"
+  checksum: 10c0/react
+  languageName: node
+  linkType: hard
+
+"demo@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "demo@workspace:."
+  dependencies:
+    react: "npm:^18.0.0"
+  languageName: unknown
+  linkType: soft
+"#,
+    )
+    .unwrap();
+
+    let metadata_versions = Arc::new(Mutex::new(Vec::new()));
+    let osv_versions = Arc::new(Mutex::new(Vec::new()));
+    let registry = RecordingRegistry {
+        existing: vec!["react".to_string()],
+        versions: metadata_versions.clone(),
+    };
+    let osv = RecordingOsvClient {
+        versions: osv_versions.clone(),
+    };
+
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("Yarn Berry lockfiles should drive exact direct versions");
+
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check == "resolution/no-exact-version")
+    );
+    let metadata_versions = metadata_versions.lock().unwrap().clone();
+    let osv_versions = osv_versions.lock().unwrap().clone();
+    assert!(metadata_versions.contains(&Some("18.3.1".to_string())));
+    assert!(osv_versions.contains(&Some("18.3.1".to_string())));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_yarn_workspace_child_with_root_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"yarn@4.9.2","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# This file is generated by running "yarn install" inside your project.
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"react@npm:^18.0.0":
+  version: 18.3.1
+  resolution: "react@npm:18.3.1"
+  checksum: 10c0/react
+  languageName: node
+  linkType: hard
+
+"web@workspace:apps/web":
+  version: 0.0.0-use.local
+  resolution: "web@workspace:apps/web"
+  dependencies:
+    react: "npm:^18.0.0"
+  languageName: unknown
+  linkType: soft
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
+        .expect("Yarn workspace children should bind to the root yarn.lock");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_accepts_yarn_workspace_local_dependency_with_exact_lock_target() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/workspace-lib")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"yarn@4.9.2","workspaces":["apps/*","packages/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# This file is generated by running "yarn install" inside your project.
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"react@npm:^18.0.0":
+  version: 18.3.1
+  resolution: "react@npm:18.3.1"
+  checksum: 10c0/react
+  languageName: node
+  linkType: hard
+
+"web@workspace:apps/web":
+  version: 0.0.0-use.local
+  resolution: "web@workspace:apps/web"
+  dependencies:
+    react: "npm:^18.0.0"
+    workspace-lib: "workspace:*"
+  languageName: unknown
+  linkType: soft
+
+"workspace-lib@workspace:*, workspace-lib@workspace:packages/workspace-lib":
+  version: 0.0.0-use.local
+  resolution: "workspace-lib@workspace:packages/workspace-lib"
+  languageName: unknown
+  linkType: soft
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"react":"^18.0.0","workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/workspace-lib/package.json"),
+        r#"{"name":"workspace-lib"}"#,
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
+        .expect("Yarn workspace local dependencies should be validated against the root yarn.lock");
+    assert!(warnings.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_yarn_workspace_dependency_without_matching_workspace_package() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"yarn@4.9.2","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# This file is generated by running "yarn install" inside your project.
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"web@workspace:apps/web":
+  version: 0.0.0-use.local
+  resolution: "web@workspace:apps/web"
+  dependencies:
+    workspace-lib: "workspace:*"
+  languageName: unknown
+  linkType: soft
+
+"workspace-lib@workspace:*, workspace-lib@workspace:packages/workspace-lib":
+  version: 0.0.0-use.local
+  resolution: "workspace-lib@workspace:packages/workspace-lib"
+  languageName: unknown
+  linkType: soft
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("apps/web/package.json"),
+        r#"{"name":"web","dependencies":{"workspace-lib":"workspace:*"}}"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir.join("apps/web"), Some("npm")).expect_err(
+        "Yarn workspace dependencies without a matching declared workspace package must block",
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("workspace-lib"));
+    assert!(msg.contains("workspace"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_shadow_child_yarn_lock_inside_workspace() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"yarn@4.9.2","workspaces":["apps/*"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("yarn.lock"),
+        r#"# This file is generated by running "yarn install" inside your project.
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"web@workspace:apps/web":
+  version: 0.0.0-use.local
+  resolution: "web@workspace:apps/web"
+  languageName: unknown
+  linkType: soft
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("apps/web/package.json"), r#"{"name":"web"}"#).unwrap();
+    std::fs::write(
+        dir.join("apps/web/yarn.lock"),
+        r#"# yarn lockfile v1
+"web@1.0.0":
+  version "1.0.0"
+"#,
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, None)
+        .expect_err("workspace children must not carry shadow yarn.lock files");
+    let msg = err.to_string();
+    assert!(msg.contains("apps/web/yarn.lock"));
+    assert!(msg.contains("workspace"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
