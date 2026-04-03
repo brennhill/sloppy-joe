@@ -1,1 +1,1 @@
-{"id":"go-local-replace-pass","ecosystem":"go","expected":"pass","reason":"Purely local replace targets should remain first-party and not require external go.sum coverage."}
+{"id":"go-local-replace-fail","ecosystem":"go","expected":"fail","reason":"Local replace targets are still blocked until Go local provenance is modeled explicitly."}

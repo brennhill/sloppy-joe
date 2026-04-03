@@ -547,6 +547,7 @@ fn read_validated_pnpm_lockfile(
     let lockfile: serde_yaml::Value = serde_yaml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
+    crate::lockfiles::pnpm::validate_provenance(&lockfile, &path)?;
     Ok(lockfile)
 }
 
@@ -577,6 +578,7 @@ fn read_validated_bun_lockfile(
     let lockfile: serde_json::Value = json5::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_bun_lockfile_consistency(spec, manifest, &lockfile, &path)?;
+    crate::lockfiles::bun::validate_provenance(&lockfile, &path)?;
     Ok(lockfile)
 }
 
@@ -734,20 +736,27 @@ fn resolve_js_project_binding(
     })?;
     let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
     let workspace_root = find_js_workspace_root(&ancestry_root, &canonical_project_dir)?;
-    let root_manifest_path = workspace_root
-        .as_ref()
-        .map(|root| root.manifest_path.clone())
-        .unwrap_or_else(|| spec.manifest_path.clone());
-    let root_manifest = read_npm_manifest_value(&root_manifest_path)?;
-    let root_dir = root_manifest_path
-        .parent()
-        .expect("package.json should always have a parent directory");
-    let canonical_root_dir = std::fs::canonicalize(root_dir)
+    let (root_manifest_path, root_dir, manager) = if let Some(root) = workspace_root.as_ref() {
+        (
+            root.manifest_path.clone(),
+            root.project_dir.clone(),
+            root.manager,
+        )
+    } else {
+        let root_manifest_path = spec.manifest_path.clone();
+        let root_manifest = read_npm_manifest_value(&root_manifest_path)?;
+        let root_dir = root_manifest_path
+            .parent()
+            .expect("package.json should always have a parent directory")
+            .to_path_buf();
+        let manager = detect_js_manager(&root_dir, &root_manifest_path, &root_manifest)?;
+        (root_manifest_path, root_dir, manager)
+    };
+    let canonical_root_dir = std::fs::canonicalize(&root_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
-    let manager = detect_js_manager(root_dir, &root_manifest_path, &root_manifest)?;
     let lockfile_path = match manager {
         JsPackageManager::Npm => {
-            first_existing_lockfile(root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
+            first_existing_lockfile(&root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
         }
         JsPackageManager::Pnpm => {
             let path = root_dir.join("pnpm-lock.yaml");
@@ -3499,15 +3508,36 @@ fn find_js_workspace_root(
 ) -> Result<Option<WorkspaceRoot>> {
     for ancestor_dir in ancestor_dirs_inclusive(canonical_project_dir, scan_root)? {
         let manifest_path = ancestor_dir.join("package.json");
-        if !parsers::path_detected(&manifest_path)? {
-            continue;
+        if parsers::path_detected(&manifest_path)? {
+            let manifest = read_npm_manifest_value(&manifest_path)?;
+            let manager = detect_js_manager(&ancestor_dir, &manifest_path, &manifest)?;
+            let Some(patterns) =
+                parse_js_workspace_patterns(&ancestor_dir, &manifest_path, &manifest, manager)?
+            else {
+                continue;
+            };
+
+            if ancestor_dir == canonical_project_dir
+                || workspace_patterns_match(
+                    &ancestor_dir,
+                    canonical_project_dir,
+                    patterns.iter().map(String::as_str),
+                )
+            {
+                return Ok(Some(WorkspaceRoot {
+                    manifest_path: manifest_path.clone(),
+                    project_dir: ancestor_dir.clone(),
+                    patterns,
+                    manager,
+                }));
+            }
         }
 
-        let manifest = read_npm_manifest_value(&manifest_path)?;
-        let manager = detect_js_manager(&ancestor_dir, &manifest_path, &manifest)?;
-        let Some(patterns) =
-            parse_js_workspace_patterns(&ancestor_dir, &manifest_path, &manifest, manager)?
-        else {
+        let pnpm_workspace_path = ancestor_dir.join("pnpm-workspace.yaml");
+        if !parsers::path_detected(&pnpm_workspace_path)? {
+            continue;
+        }
+        let Some(patterns) = parse_pnpm_workspaces(&ancestor_dir)? else {
             continue;
         };
 
@@ -3519,10 +3549,10 @@ fn find_js_workspace_root(
             )
         {
             return Ok(Some(WorkspaceRoot {
-                manifest_path: manifest_path.clone(),
+                manifest_path: pnpm_workspace_path,
                 project_dir: ancestor_dir,
                 patterns,
-                manager,
+                manager: JsPackageManager::Pnpm,
             }));
         }
     }
@@ -3934,36 +3964,23 @@ fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec) -> Result<
     let canonical_root_dir = std::fs::canonicalize(root_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
     let shadow_lockfile = if canonical_project_dir != canonical_root_dir {
-        match binding.manager {
-            JsPackageManager::Npm => first_existing_lockfile(
-                spec.project_dir(),
-                &["npm-shrinkwrap.json", "package-lock.json"],
-            ),
-            JsPackageManager::Pnpm => {
-                let path = spec.project_dir().join("pnpm-lock.yaml");
-                parsers::path_detected(&path)?.then_some(path)
-            }
-            JsPackageManager::Yarn => {
-                let path = spec.project_dir().join("yarn.lock");
-                parsers::path_detected(&path)?.then_some(path)
-            }
-            JsPackageManager::Bun => {
-                let text = spec.project_dir().join("bun.lock");
-                if parsers::path_detected(&text)? {
-                    Some(text)
-                } else {
-                    let binary = spec.project_dir().join("bun.lockb");
-                    parsers::path_detected(&binary)?.then_some(binary)
-                }
-            }
-        }
+        first_existing_lockfile(
+            spec.project_dir(),
+            &[
+                "npm-shrinkwrap.json",
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "bun.lock",
+                "bun.lockb",
+            ],
+        )
     } else {
         None
     };
     if let Some(shadow) = shadow_lockfile {
         anyhow::bail!(
-            "Found shadow {} lockfile '{}' under workspace project '{}'. The authoritative {} lockfile lives at '{}'. Remove the child lockfile and keep the workspace root lockfile as the single source of truth.",
-            binding.manager.as_str(),
+            "Found shadow JS lockfile '{}' under workspace project '{}'. The authoritative {} lockfile lives at '{}'. Remove the child lockfile and keep the workspace root lockfile as the single source of truth.",
             shadow.display(),
             spec.manifest_path.display(),
             binding.manager.as_str(),

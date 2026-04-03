@@ -1,10 +1,10 @@
-mod bun;
+pub(crate) mod bun;
 mod cargo;
 mod composer;
 mod dotnet;
 mod gradle;
 mod npm;
-mod pnpm;
+pub(crate) mod pnpm;
 mod python;
 mod ruby;
 pub(crate) mod yarn;
@@ -157,7 +157,7 @@ impl LockfileData {
         // Resolve direct dep versions from the parsed data
         let resolution = resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct)?;
 
-        let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps)?;
+        let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir)?;
 
         // Filter to transitive only
         let direct_versions: HashSet<(String, String)> = direct_deps
@@ -409,13 +409,22 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
 fn parse_all_from_parsed_for_project(
     parsed: &ParsedLockfile,
     direct_deps: &[Dependency],
+    _project_dir: &Path,
 ) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
         ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
-        ParsedLockfile::Pnpm { value, .. } => pnpm::parse_all_from_value(value),
-        ParsedLockfile::Bun { value, .. } => bun::parse_all_from_value(value),
-        ParsedLockfile::Yarn(parsed) => yarn::parse_all_from_parsed(parsed),
+        ParsedLockfile::Pnpm {
+            value,
+            importer_key,
+        } => pnpm::parse_all_from_value_for_importer(value, importer_key),
+        ParsedLockfile::Bun {
+            value,
+            importer_key,
+        } => bun::parse_all_from_value_for_importer(value, importer_key),
+        ParsedLockfile::Yarn(parsed) => {
+            yarn::parse_all_from_parsed_for_project(parsed, direct_deps)
+        }
         _ => parse_all_from_parsed(parsed),
     }
 }
