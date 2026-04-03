@@ -5,25 +5,43 @@ use std::path::Path;
 #[cfg(test)]
 use super::add_manifest_exact_fallbacks;
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, missing_entry_issue, no_trusted_lockfile_sync_issue,
+    out_of_sync_issue,
 };
 
+#[cfg(test)]
 pub(super) fn resolve_from_value(
     parsed: &serde_json::Value,
     deps: &[Dependency],
+) -> Result<ResolutionResult> {
+    resolve_from_value_with_mode(parsed, deps, ResolutionMode::Direct)
+}
+
+pub(super) fn resolve_from_value_with_mode(
+    parsed: &serde_json::Value,
+    deps: &[Dependency],
+    mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
     let packages = extract_packages(parsed);
     let mut result = ResolutionResult::default();
 
     for dep in deps {
-        match packages.iter().find(|(name, _)| name == &dep.name) {
-            Some((_, version)) => {
+        match packages.get(&dep.name) {
+            Some(version) => {
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != *version
                 {
-                    result.issues.push(out_of_sync_issue(dep, version));
+                    result.push_issue_for(dep, out_of_sync_issue(dep, version));
                     add_manifest_exact_fallback(&mut result, dep);
+                    continue;
+                }
+                if mode == ResolutionMode::Direct
+                    && dep.version.is_some()
+                    && dep.exact_version().is_none()
+                {
+                    result
+                        .push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "composer.lock"));
                     continue;
                 }
                 result.exact_versions.insert(
@@ -35,9 +53,7 @@ pub(super) fn resolve_from_value(
                 );
             }
             None => {
-                result
-                    .issues
-                    .push(missing_entry_issue(dep, "composer.lock"));
+                result.push_issue_for(dep, missing_entry_issue(dep, "composer.lock"));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         }
@@ -79,8 +95,8 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
     resolve_from_value(&parsed, deps)
 }
 
-fn extract_packages(parsed: &serde_json::Value) -> Vec<(String, String)> {
-    let mut packages = Vec::new();
+fn extract_packages(parsed: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    let mut packages = std::collections::HashMap::new();
 
     for section in ["packages", "packages-dev"] {
         let Some(entries) = parsed.get(section).and_then(|value| value.as_array()) else {
@@ -97,7 +113,7 @@ fn extract_packages(parsed: &serde_json::Value) -> Vec<(String, String)> {
             let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
                 continue;
             };
-            packages.push((name.to_string(), version.to_string()));
+            packages.insert(name.to_string(), version.to_string());
         }
     }
 

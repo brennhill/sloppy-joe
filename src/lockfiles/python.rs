@@ -1,6 +1,7 @@
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, missing_entry_issue, out_of_sync_issue,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
+    add_manifest_exact_fallback, missing_entry_issue, no_trusted_lockfile_sync_issue,
+    out_of_sync_issue,
 };
 use crate::Dependency;
 use anyhow::Result;
@@ -10,9 +11,18 @@ use std::path::Path;
 use super::add_manifest_exact_fallbacks;
 
 /// Resolve versions from a pre-parsed poetry.lock TOML value.
+#[cfg(test)]
 pub(super) fn resolve_from_value(
     parsed: &toml::Value,
     deps: &[Dependency],
+) -> Result<ResolutionResult> {
+    resolve_from_value_with_mode(parsed, deps, ResolutionMode::Direct)
+}
+
+pub(super) fn resolve_from_value_with_mode(
+    parsed: &toml::Value,
+    deps: &[Dependency],
+    mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
     let packages = extract_packages(parsed);
     let mut result = ResolutionResult::default();
@@ -28,8 +38,15 @@ pub(super) fn resolve_from_value(
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != *version
                 {
-                    result.issues.push(out_of_sync_issue(dep, version));
+                    result.push_issue_for(dep, out_of_sync_issue(dep, version));
                     add_manifest_exact_fallback(&mut result, dep);
+                    continue;
+                }
+                if mode == ResolutionMode::Direct
+                    && dep.version.is_some()
+                    && dep.exact_version().is_none()
+                {
+                    result.push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "poetry.lock"));
                     continue;
                 }
                 result.exact_versions.insert(
@@ -41,7 +58,7 @@ pub(super) fn resolve_from_value(
                 );
             }
             None => {
-                result.issues.push(missing_entry_issue(dep, "poetry.lock"));
+                result.push_issue_for(dep, missing_entry_issue(dep, "poetry.lock"));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         }

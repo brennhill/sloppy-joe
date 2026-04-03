@@ -31,9 +31,7 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
         Ok(parsed) => parsed,
         Err(err) => {
             let mut result = ResolutionResult::default();
-            result
-                .issues
-                .push(parse_failed_issue(&file_name, err.to_string()));
+            result.push_issue(parse_failed_issue(&file_name, err.to_string()));
             add_manifest_exact_fallbacks(&mut result, deps);
             return Ok(result);
         }
@@ -54,7 +52,7 @@ pub(super) fn resolve_from_value(
         .and_then(|value| value.as_object());
     if packages.is_none() && dependencies.is_none() {
         let mut result = ResolutionResult::default();
-        result.issues.push(parse_failed_issue(
+        result.push_issue(parse_failed_issue(
             file_name,
             "lockfile did not contain a supported packages or dependencies section".to_string(),
         ));
@@ -77,7 +75,7 @@ pub(super) fn resolve_from_value(
 
         let resolved = if packages.is_some() {
             if !entry_matches_dependency(dep, package_entry) {
-                result.issues.push(missing_entry_issue(dep, file_name));
+                result.push_issue_for(dep, missing_entry_issue(dep, file_name));
                 add_manifest_exact_fallback(&mut result, dep);
                 continue;
             }
@@ -86,7 +84,7 @@ pub(super) fn resolve_from_value(
                 .and_then(|value| value.as_str())
         } else {
             if !entry_matches_dependency(dep, dependency_entry) {
-                result.issues.push(missing_entry_issue(dep, file_name));
+                result.push_issue_for(dep, missing_entry_issue(dep, file_name));
                 add_manifest_exact_fallback(&mut result, dep);
                 continue;
             }
@@ -100,7 +98,7 @@ pub(super) fn resolve_from_value(
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != version
                 {
-                    result.issues.push(out_of_sync_issue(dep, version));
+                    result.push_issue_for(dep, out_of_sync_issue(dep, version));
                     add_manifest_exact_fallback(&mut result, dep);
                     continue;
                 }
@@ -113,7 +111,7 @@ pub(super) fn resolve_from_value(
                 );
             }
             None => {
-                result.issues.push(missing_entry_issue(dep, file_name));
+                result.push_issue_for(dep, missing_entry_issue(dep, file_name));
                 add_manifest_exact_fallback(&mut result, dep);
             }
         }

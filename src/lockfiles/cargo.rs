@@ -5,10 +5,14 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
     add_manifest_exact_fallback, add_manifest_exact_fallbacks, ambiguous_issue,
-    missing_entry_issue, out_of_sync_issue, parse_failed_issue,
+    missing_entry_issue, no_trusted_lockfile_sync_issue, out_of_sync_issue, parse_failed_issue,
 };
+
+fn is_supported_registry_source(source: &str) -> bool {
+    source.starts_with("registry+")
+}
 
 /// Read + parse + resolve in one step (used by resolve_versions test API).
 #[cfg(test)]
@@ -25,25 +29,23 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
         Ok(parsed) => parsed,
         Err(err) => {
             let mut result = ResolutionResult::default();
-            result
-                .issues
-                .push(parse_failed_issue("Cargo.lock", err.to_string()));
+            result.push_issue(parse_failed_issue("Cargo.lock", err.to_string()));
             add_manifest_exact_fallbacks(&mut result, deps);
             return Ok(result);
         }
     };
 
-    resolve_from_value(&parsed, deps)
+    resolve_from_value_with_mode(&parsed, deps, ResolutionMode::Direct)
 }
 
-/// Resolve versions from a pre-parsed Cargo.lock TOML value.
-pub(super) fn resolve_from_value(
+pub(super) fn resolve_from_value_with_mode(
     parsed: &toml::Value,
     deps: &[Dependency],
+    mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
     let Some(packages) = parsed.get("package").and_then(|value| value.as_array()) else {
         let mut result = ResolutionResult::default();
-        result.issues.push(parse_failed_issue(
+        result.push_issue(parse_failed_issue(
             "Cargo.lock",
             "lockfile did not contain a package array".to_string(),
         ));
@@ -62,6 +64,11 @@ pub(super) fn resolve_from_value(
         if name.contains("..") || name.contains('\0') {
             continue;
         }
+        if let Some(source) = table.get("source").and_then(|value| value.as_str())
+            && !is_supported_registry_source(source)
+        {
+            continue;
+        }
         let Some(version) = table.get("version").and_then(|value| value.as_str()) else {
             continue;
         };
@@ -74,7 +81,7 @@ pub(super) fn resolve_from_value(
     let mut result = ResolutionResult::default();
     for dep in deps {
         let Some(versions) = versions_by_name.get(&dep.name) else {
-            result.issues.push(missing_entry_issue(dep, "Cargo.lock"));
+            result.push_issue_for(dep, missing_entry_issue(dep, "Cargo.lock"));
             add_manifest_exact_fallback(&mut result, dep);
             continue;
         };
@@ -84,8 +91,15 @@ pub(super) fn resolve_from_value(
             if let Some(exact_manifest) = dep.exact_version()
                 && exact_manifest != *version
             {
-                result.issues.push(out_of_sync_issue(dep, version));
+                result.push_issue_for(dep, out_of_sync_issue(dep, version));
                 add_manifest_exact_fallback(&mut result, dep);
+                continue;
+            }
+            if mode == ResolutionMode::Direct
+                && dep.version.is_some()
+                && dep.exact_version().is_none()
+            {
+                result.push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "Cargo.lock"));
                 continue;
             }
             result.exact_versions.insert(
@@ -98,12 +112,13 @@ pub(super) fn resolve_from_value(
             continue;
         }
 
-        // Try exact_version first (manifest with = prefix),
-        // then fall back to raw version string (lockfile-extracted versions
-        // like "0.52.0" don't have = prefix but ARE exact).
         let exact = dep
             .exact_version()
-            .or_else(|| dep.version.clone())
+            .or_else(|| {
+                (mode == ResolutionMode::Transitive)
+                    .then(|| dep.version.clone())
+                    .flatten()
+            })
             .filter(|v| versions.iter().any(|lv| lv == v));
 
         if let Some(matched) = exact {
@@ -115,13 +130,11 @@ pub(super) fn resolve_from_value(
                 },
             );
         } else if let Some(exact_manifest) = dep.exact_version() {
-            result
-                .issues
-                .push(out_of_sync_issue(dep, &versions.join(", ")));
+            result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
             add_manifest_exact_fallback(&mut result, dep);
             let _ = exact_manifest; // used for the branch condition
         } else {
-            result.issues.push(ambiguous_issue(dep));
+            result.push_issue_for(dep, ambiguous_issue(dep));
         }
     }
 
@@ -147,25 +160,28 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
         let Some(table) = package.as_table() else {
             continue;
         };
-        if table.get("source").and_then(|v| v.as_str()).is_none() {
-            continue;
-        }
         let Some(name) = table.get("name").and_then(|v| v.as_str()) else {
             continue;
         };
         if name.contains("..") || name.contains('\0') {
             continue;
         }
-        let version = table
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        deps.push(Dependency {
-            name: name.to_string(),
-            version,
-            ecosystem: crate::Ecosystem::Cargo,
-            actual_name: None,
-        });
+        match table.get("source").and_then(|v| v.as_str()) {
+            Some(source) if is_supported_registry_source(source) => {
+                let version = table
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                deps.push(Dependency {
+                    name: name.to_string(),
+                    version,
+                    ecosystem: crate::Ecosystem::Cargo,
+                    actual_name: None,
+                });
+            }
+            Some(_) => continue,
+            None => continue,
+        }
     }
 
     Ok(deps)

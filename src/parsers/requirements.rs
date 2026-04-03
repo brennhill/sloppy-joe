@@ -116,7 +116,17 @@ fn requirement_include_target(line: &str) -> Option<&str> {
             return Some(rest);
         }
     }
+    if let Some(rest) = trimmed.strip_prefix("--requirement=") {
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(rest);
+        }
+        return None;
+    }
     if let Some(rest) = trimmed.strip_prefix("--requirement") {
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            return None;
+        }
         let rest = rest.trim();
         if !rest.is_empty() {
             return Some(rest);
@@ -297,7 +307,7 @@ pub(crate) fn parse_requirement_spec(raw: &str, source_path: &Path) -> Result<Op
         );
     }
 
-    let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!']) {
+    let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!', '^']) {
         let name = normalize_distribution_name(&line[..pos]);
         let version_part = line[pos..].trim();
         (name, Some(version_part.to_string()))
@@ -371,6 +381,25 @@ mod tests {
     #[test]
     fn parse_include_flag_with_following_dependency() {
         let dir = setup_dir("-r other.txt\nrequests==1.0");
+        std::fs::write(dir.join("other.txt"), "flask==2.0\n").unwrap();
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().any(|dep| dep.name == "requests"));
+        assert!(deps.iter().any(|dep| dep.name == "flask"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_malformed_long_requirement_directive() {
+        let dir = setup_dir("--requirementother.txt\nrequests==1.0");
+        let err = parse(&dir).expect_err("malformed long requirement directives must not parse");
+        assert!(err.to_string().contains("--requirementother.txt"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_long_requirement_equals_syntax() {
+        let dir = setup_dir("--requirement=other.txt\nrequests==1.0");
         std::fs::write(dir.join("other.txt"), "flask==2.0\n").unwrap();
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);

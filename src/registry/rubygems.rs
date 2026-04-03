@@ -62,7 +62,7 @@ impl super::RegistryMetadata for RubyGemsRegistry {
         let latest_version_date = if let Some(ver_resp_result) = version_resp_opt {
             let version_resp = ver_resp_result?;
             if version_resp.status() == reqwest::StatusCode::NOT_FOUND {
-                body["version_created_at"].as_str().map(|s| s.to_string())
+                None
             } else if !version_resp.status().is_success() {
                 anyhow::bail!(
                     "RubyGems version metadata lookup for '{}' {} returned HTTP {}",

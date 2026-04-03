@@ -136,6 +136,7 @@ pub(crate) enum ProjectInputKind {
 struct ProjectInputSpec {
     kind: ProjectInputKind,
     manifest_path: std::path::PathBuf,
+    lockfile_path_override: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -251,94 +252,22 @@ fn preflight_project_inputs(
     let mut warnings = Vec::new();
 
     for spec in specs {
-        let manifest_content =
-            parsers::read_file_limited(&spec.manifest_path, parsers::MAX_MANIFEST_BYTES).map_err(
-                |err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                },
-            )?;
-
+        let npm_manifest = npm_manifests.get(&spec.manifest_path);
         match spec.kind {
-            ProjectInputKind::PyProjectPoetry => {
-                parsers::pyproject_toml::parse_poetry_file(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
+            ProjectInputKind::Npm => {
+                let manifest =
+                    npm_manifest.expect("npm manifests should be parsed during preflight");
+                parsers::package_json::parse_manifest_value(&spec.manifest_path, manifest)
             }
-            ProjectInputKind::PyRequirements => {
-                parsers::requirements::parse_file(&spec.manifest_path, scan_root).map_err(
-                    |err| {
-                        anyhow::anyhow!(
-                            "Broken manifest '{}': {}",
-                            spec.manifest_path.display(),
-                            err
-                        )
-                    },
-                )?;
-            }
-            ProjectInputKind::PyProjectLegacy => {
-                parsers::pyproject_toml::parse_legacy_file(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
-            }
-            ProjectInputKind::PyPipfile => {
-                parsers::pipfile::parse_file(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
-            }
-            ProjectInputKind::PySetupPy => {
-                parsers::setup_py::parse_file(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
-            }
-            ProjectInputKind::PySetupCfg => {
-                parsers::setup_cfg::parse_file(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
-            }
-            ProjectInputKind::Gradle | ProjectInputKind::Maven => {
-                parsers::jvm::validate_manifest(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
-            }
-            ProjectInputKind::Dotnet => {
-                parsers::csproj::parse_file(&spec.manifest_path).map_err(|err| {
-                    anyhow::anyhow!(
-                        "Broken manifest '{}': {}",
-                        spec.manifest_path.display(),
-                        err
-                    )
-                })?;
-            }
-            _ => {}
+            _ => parse_project_input_with_config(scan_root, spec, config),
         }
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Broken manifest '{}': {}",
+                spec.manifest_path.display(),
+                err
+            )
+        })?;
 
         match spec.kind {
             ProjectInputKind::Npm => ensure_one_lockfile_readable(
@@ -364,10 +293,21 @@ fn preflight_project_inputs(
                 warnings.push(python_legacy_warning(spec));
             }
             ProjectInputKind::Cargo => ensure_lockfile_readable(
-                &spec.project_dir().join("Cargo.lock"),
+                &authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?,
                 spec.kind.missing_lockfile_help().unwrap(),
             )?,
             ProjectInputKind::Go => {
+                let manifest_content = parsers::read_file_limited(
+                    &spec.manifest_path,
+                    parsers::MAX_MANIFEST_BYTES,
+                )
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "Broken manifest '{}': {}",
+                        spec.manifest_path.display(),
+                        err
+                    )
+                })?;
                 if parsers::go_mod::requires_go_sum(&manifest_content) {
                     ensure_lockfile_readable(
                         &spec.project_dir().join("go.sum"),
@@ -407,11 +347,14 @@ fn preflight_project_inputs(
             ),
         }
 
+        if spec.kind == ProjectInputKind::Cargo {
+            warnings.extend(validate_cargo_source_policy(scan_root, spec, config)?);
+        }
+
         if spec.kind == ProjectInputKind::PyProjectPoetry {
             warnings.extend(poetry_preference_warnings(spec)?);
         }
 
-        let npm_manifest = npm_manifests.get(&spec.manifest_path);
         if spec.kind == ProjectInputKind::Npm {
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_npm_package_manager_policy(&canonical_root, spec, manifest)?;
@@ -426,7 +369,7 @@ fn preflight_project_inputs(
                 &npm_index,
             )?;
         } else {
-            validate_lockfile_syntax(spec, npm_manifest, config)?;
+            validate_lockfile_syntax(scan_root, spec, npm_manifest, config)?;
         }
     }
 
@@ -807,6 +750,1559 @@ fn normalize_filesystem_path(path: &std::path::Path) -> std::path::PathBuf {
     normalized
 }
 
+fn cargo_trusted_scope_root(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<std::path::PathBuf> {
+    let canonical_root = std::fs::canonicalize(scan_root)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", scan_root.display(), err))?;
+    let manifest_dir = manifest_path
+        .parent()
+        .expect("Cargo.toml should always have a parent directory");
+    let canonical_manifest_dir = std::fs::canonicalize(manifest_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", manifest_dir.display(), err))?;
+
+    if canonical_manifest_dir.starts_with(&canonical_root) {
+        return Ok(canonical_root);
+    }
+
+    if cargo_allowlisted_local_target(scan_root, &canonical_manifest_dir, config)? {
+        return Ok(canonical_manifest_dir);
+    }
+
+    anyhow::bail!(
+        "Path '{}' is outside scan root '{}' and not exactly allowlisted for Cargo local provenance.",
+        canonical_manifest_dir.display(),
+        canonical_root.display()
+    );
+}
+
+fn find_in_scope_cargo_workspace_root(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<Option<parsers::cargo_toml::CargoManifest>> {
+    let manifest_dir = manifest_path
+        .parent()
+        .expect("Cargo.toml should always have a parent directory");
+    let canonical_manifest_dir = std::fs::canonicalize(manifest_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", manifest_dir.display(), err))?;
+    let trusted_root = cargo_trusted_scope_root(scan_root, manifest_path, config)?;
+
+    for ancestor in ancestor_dirs_inclusive(&canonical_manifest_dir, &trusted_root)? {
+        let candidate = ancestor.join("Cargo.toml");
+        if !parsers::path_detected(&candidate)? {
+            continue;
+        }
+        let manifest = parsers::cargo_toml::parse_manifest_file(&candidate)?;
+        if manifest.has_workspace
+            && cargo_workspace_contains_manifest(&manifest, &canonical_manifest_dir)?
+        {
+            return Ok(Some(manifest));
+        }
+    }
+
+    Ok(None)
+}
+
+fn cargo_workspace_contains_manifest(
+    workspace: &parsers::cargo_toml::CargoManifest,
+    canonical_manifest_dir: &std::path::Path,
+) -> Result<bool> {
+    let workspace_dir = workspace
+        .manifest_path
+        .parent()
+        .expect("workspace manifest should always have a parent directory");
+    let canonical_workspace_dir = std::fs::canonicalize(workspace_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", workspace_dir.display(), err))?;
+
+    if canonical_manifest_dir == canonical_workspace_dir {
+        return Ok(true);
+    }
+    if !canonical_manifest_dir.starts_with(&canonical_workspace_dir) {
+        return Ok(false);
+    }
+    if workspace.workspace_members.is_empty() {
+        return Ok(false);
+    }
+
+    let excluded = workspace_patterns_match(
+        &canonical_workspace_dir,
+        canonical_manifest_dir,
+        workspace.workspace_exclude.iter().map(String::as_str),
+    );
+    if excluded {
+        return Ok(false);
+    }
+
+    Ok(workspace_patterns_match(
+        &canonical_workspace_dir,
+        canonical_manifest_dir,
+        workspace.workspace_members.iter().map(String::as_str),
+    ))
+}
+
+fn authoritative_cargo_lockfile_path(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<std::path::PathBuf> {
+    if let Some(workspace_root) =
+        find_in_scope_cargo_workspace_root(scan_root, manifest_path, config)?
+    {
+        let workspace_dir = workspace_root
+            .manifest_path
+            .parent()
+            .expect("workspace manifest should always have a parent directory");
+        return Ok(workspace_dir.join("Cargo.lock"));
+    }
+
+    Ok(manifest_path
+        .parent()
+        .expect("Cargo.toml should always have a parent directory")
+        .join("Cargo.lock"))
+}
+
+fn cargo_lockfile_value(lockfile_path: &std::path::Path) -> Result<toml::Value> {
+    let content = parsers::read_file_limited(lockfile_path, parsers::MAX_MANIFEST_BYTES)?;
+    toml::from_str::<toml::Value>(&content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken lockfile '{}': failed to parse TOML: {}",
+            lockfile_path.display(),
+            err
+        )
+    })
+}
+
+fn cargo_lockfile_entries(lockfile: &toml::Value) -> Vec<&toml::value::Table> {
+    lockfile
+        .get("package")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flat_map(|packages| packages.iter())
+        .filter_map(|package| package.as_table())
+        .collect()
+}
+
+fn cargo_issue_message_prefix(check: &str) -> &'static str {
+    match check {
+        checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE => "Cargo local dependency source",
+        checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE => "Cargo registry source",
+        checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE => "Cargo git source",
+        checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE => "Cargo provenance rewrite",
+        _ => "Cargo dependency source",
+    }
+}
+
+fn cargo_fail(check: &str, message: impl Into<String>) -> anyhow::Error {
+    anyhow::anyhow!("{}: {}", cargo_issue_message_prefix(check), message.into())
+}
+
+fn cargo_dependency_exact_version(
+    spec: &parsers::cargo_toml::CargoDependencySpec,
+) -> Option<String> {
+    version::exact_version(spec.version.as_deref()?, Ecosystem::Cargo)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffectiveCargoDependency {
+    spec: parsers::cargo_toml::CargoDependencySpec,
+    base_dir: std::path::PathBuf,
+    expected_exact_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffectiveCargoRewrite {
+    package_name: String,
+    patch_scope: Option<parsers::cargo_toml::CargoPatchScope>,
+    replace_source: Option<String>,
+    replace_version: Option<String>,
+    spec: parsers::cargo_toml::CargoDependencySpec,
+    base_dir: std::path::PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct CargoConfigRewrites {
+    local_paths: std::collections::HashMap<String, std::path::PathBuf>,
+    source_replace_with: std::collections::HashMap<String, String>,
+    source_definitions: std::collections::HashMap<String, CargoConfigSourceDefinition>,
+    rewrite_targets: Vec<EffectiveCargoRewrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CargoConfigSourceDefinition {
+    Registry(String),
+    Unsupported { kind: String, detail: String },
+}
+
+fn cargo_package_name_from_manifest(manifest_path: &std::path::Path) -> Result<Option<String>> {
+    let content = parsers::read_file_limited(manifest_path, parsers::MAX_MANIFEST_BYTES)?;
+    let value = toml::from_str::<toml::Value>(&content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken manifest '{}': failed to parse TOML: {}",
+            manifest_path.display(),
+            err
+        )
+    })?;
+    Ok(value
+        .get("package")
+        .and_then(|value| value.as_table())
+        .and_then(|package| package.get("name"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string))
+}
+
+fn merge_cargo_config_rewrites(into: &mut CargoConfigRewrites, from: CargoConfigRewrites) {
+    into.local_paths.extend(from.local_paths);
+    into.source_replace_with.extend(from.source_replace_with);
+    into.source_definitions.extend(from.source_definitions);
+    into.rewrite_targets.extend(from.rewrite_targets);
+}
+
+fn ensure_additive_cargo_config_rewrites(
+    base: &CargoConfigRewrites,
+    overlay: &CargoConfigRewrites,
+    origin: &std::path::Path,
+) -> Result<()> {
+    for (package, path) in &overlay.local_paths {
+        if let Some(existing) = base.local_paths.get(package)
+            && existing != path
+        {
+            return Err(cargo_fail(
+                checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                format!(
+                    "Host-local Cargo config '{}' conflicts with repo-visible local path trust for crate '{}'. sloppy-joe only allows additive host-local Cargo relaxations.",
+                    origin.display(),
+                    package
+                ),
+            ));
+        }
+    }
+
+    for (source_name, alias) in &overlay.source_replace_with {
+        if let Some(existing) = base.source_replace_with.get(source_name)
+            && existing != alias
+        {
+            return Err(cargo_fail(
+                checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                format!(
+                    "Host-local Cargo config '{}' conflicts with repo-visible source replacement for '{}'. sloppy-joe only allows additive host-local Cargo relaxations.",
+                    origin.display(),
+                    source_name
+                ),
+            ));
+        }
+    }
+
+    for (source_name, definition) in &overlay.source_definitions {
+        if let Some(existing) = base.source_definitions.get(source_name)
+            && existing != definition
+        {
+            return Err(cargo_fail(
+                checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                format!(
+                    "Host-local Cargo config '{}' conflicts with repo-visible source definition for '{}'. sloppy-joe only allows additive host-local Cargo relaxations.",
+                    origin.display(),
+                    source_name
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn cargo_registry_source_for_alias<'a>(
+    alias: &str,
+    config: &'a config::SloppyJoeConfig,
+) -> Option<&'a str> {
+    config
+        .trusted_registries("cargo")
+        .iter()
+        .find(|entry| entry.name == alias)
+        .map(|entry| entry.source.as_str())
+}
+
+fn cargo_normalize_registry_source(source: &str) -> String {
+    let trimmed = source.trim();
+    if trimmed.starts_with("registry+") || trimmed.starts_with("sparse+") {
+        trimmed.to_string()
+    } else {
+        format!("registry+{trimmed}")
+    }
+}
+
+fn cargo_git_source_id(
+    url: &str,
+    rev: Option<&str>,
+    branch: Option<&str>,
+    tag: Option<&str>,
+) -> String {
+    if let Some(rev) = rev {
+        return format!("git+{url}?rev={rev}#{rev}");
+    }
+    if let Some(branch) = branch {
+        return format!("git+{url}?branch={branch}");
+    }
+    if let Some(tag) = tag {
+        return format!("git+{url}?tag={tag}");
+    }
+    format!("git+{url}")
+}
+
+fn cargo_dependency_source_id(
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    config: &config::SloppyJoeConfig,
+) -> Option<String> {
+    match &dep.source {
+        parsers::cargo_toml::CargoSourceSpec::CratesIo => {
+            Some("registry+https://github.com/rust-lang/crates.io-index".to_string())
+        }
+        parsers::cargo_toml::CargoSourceSpec::RegistryAlias(alias) => {
+            cargo_registry_source_for_alias(alias, config).map(str::to_string)
+        }
+        parsers::cargo_toml::CargoSourceSpec::RegistryIndex(source) => Some(source.clone()),
+        parsers::cargo_toml::CargoSourceSpec::Git {
+            url,
+            rev,
+            branch,
+            tag,
+        } => Some(cargo_git_source_id(
+            url,
+            rev.as_deref(),
+            branch.as_deref(),
+            tag.as_deref(),
+        )),
+        parsers::cargo_toml::CargoSourceSpec::Path(_)
+        | parsers::cargo_toml::CargoSourceSpec::Workspace => None,
+    }
+}
+
+fn cargo_config_source_name(source: &parsers::cargo_toml::CargoSourceSpec) -> Option<&str> {
+    match source {
+        parsers::cargo_toml::CargoSourceSpec::CratesIo => Some("crates-io"),
+        parsers::cargo_toml::CargoSourceSpec::RegistryAlias(alias) => Some(alias.as_str()),
+        _ => None,
+    }
+}
+
+fn resolve_cargo_config_source_target(
+    source_name: &str,
+    rewrites: &CargoConfigRewrites,
+    config: &config::SloppyJoeConfig,
+    seen: &mut std::collections::HashSet<String>,
+) -> Result<Option<parsers::cargo_toml::CargoSourceSpec>> {
+    if !seen.insert(source_name.to_string()) {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+            format!(
+                "Cargo source replacement cycle detected at source '{}'.",
+                source_name
+            ),
+        ));
+    }
+
+    if let Some(definition) = rewrites.source_definitions.get(source_name) {
+        return match definition {
+            CargoConfigSourceDefinition::Registry(url) => {
+                let expected_source = format!("registry+{url}");
+                if config
+                    .trusted_registries("cargo")
+                    .iter()
+                    .any(|entry| entry.name == source_name && entry.source == expected_source)
+                {
+                    Ok(Some(parsers::cargo_toml::CargoSourceSpec::RegistryAlias(
+                        source_name.to_string(),
+                    )))
+                } else {
+                    Err(cargo_fail(
+                        checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+                        format!(
+                            "Cargo source '{}' resolves to registry '{}' but that alias/source pair is not trusted by config.",
+                            source_name, expected_source
+                        ),
+                    ))
+                }
+            }
+            CargoConfigSourceDefinition::Unsupported { kind, detail } => Err(cargo_fail(
+                checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                format!(
+                    "Cargo source '{}' uses unsupported {} source '{}'.",
+                    source_name, kind, detail
+                ),
+            )),
+        };
+    }
+
+    if let Some(target_name) = rewrites.source_replace_with.get(source_name) {
+        if rewrites.source_definitions.contains_key(target_name)
+            || rewrites.source_replace_with.contains_key(target_name)
+        {
+            return resolve_cargo_config_source_target(target_name, rewrites, config, seen);
+        }
+        if config
+            .trusted_registries("cargo")
+            .iter()
+            .any(|entry| entry.name == *target_name)
+        {
+            return Ok(Some(parsers::cargo_toml::CargoSourceSpec::RegistryAlias(
+                target_name.clone(),
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+fn apply_cargo_config_source_rewrite(
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    rewrites: &CargoConfigRewrites,
+    config: &config::SloppyJoeConfig,
+) -> Result<Option<parsers::cargo_toml::CargoSourceSpec>> {
+    let Some(source_name) = cargo_config_source_name(&dep.source) else {
+        return Ok(None);
+    };
+    resolve_cargo_config_source_target(
+        source_name,
+        rewrites,
+        config,
+        &mut std::collections::HashSet::new(),
+    )
+}
+
+fn cargo_patch_scope_matches(
+    scope: &parsers::cargo_toml::CargoPatchScope,
+    source: &parsers::cargo_toml::CargoSourceSpec,
+    config: &config::SloppyJoeConfig,
+) -> bool {
+    match (scope, source) {
+        (
+            parsers::cargo_toml::CargoPatchScope::CratesIo,
+            parsers::cargo_toml::CargoSourceSpec::CratesIo,
+        ) => true,
+        (
+            parsers::cargo_toml::CargoPatchScope::RegistryName(expected),
+            parsers::cargo_toml::CargoSourceSpec::RegistryAlias(actual),
+        ) => expected == actual,
+        (
+            parsers::cargo_toml::CargoPatchScope::SourceUrl(expected),
+            parsers::cargo_toml::CargoSourceSpec::RegistryIndex(actual),
+        ) => cargo_normalize_registry_source(expected) == *actual,
+        (
+            parsers::cargo_toml::CargoPatchScope::SourceUrl(expected),
+            parsers::cargo_toml::CargoSourceSpec::RegistryAlias(alias),
+        ) => cargo_registry_source_for_alias(alias, config) == Some(expected.as_str()),
+        (
+            parsers::cargo_toml::CargoPatchScope::SourceUrl(expected),
+            parsers::cargo_toml::CargoSourceSpec::Git { url, .. },
+        ) => expected == url,
+        (
+            parsers::cargo_toml::CargoPatchScope::RegistryName(_),
+            parsers::cargo_toml::CargoSourceSpec::CratesIo,
+        )
+        | (
+            parsers::cargo_toml::CargoPatchScope::SourceUrl(_),
+            parsers::cargo_toml::CargoSourceSpec::CratesIo,
+        )
+        | (
+            parsers::cargo_toml::CargoPatchScope::CratesIo,
+            parsers::cargo_toml::CargoSourceSpec::RegistryAlias(_),
+        )
+        | (
+            parsers::cargo_toml::CargoPatchScope::CratesIo,
+            parsers::cargo_toml::CargoSourceSpec::RegistryIndex(_),
+        )
+        | (
+            parsers::cargo_toml::CargoPatchScope::CratesIo,
+            parsers::cargo_toml::CargoSourceSpec::Git { .. },
+        )
+        | (
+            parsers::cargo_toml::CargoPatchScope::RegistryName(_),
+            parsers::cargo_toml::CargoSourceSpec::RegistryIndex(_),
+        )
+        | (
+            parsers::cargo_toml::CargoPatchScope::RegistryName(_),
+            parsers::cargo_toml::CargoSourceSpec::Git { .. },
+        )
+        | (_, parsers::cargo_toml::CargoSourceSpec::Path(_))
+        | (_, parsers::cargo_toml::CargoSourceSpec::Workspace) => false,
+    }
+}
+
+fn cargo_patch_scope_matches_lockfile_source(
+    scope: &parsers::cargo_toml::CargoPatchScope,
+    lockfile_source: &str,
+    config: &config::SloppyJoeConfig,
+) -> bool {
+    match scope {
+        parsers::cargo_toml::CargoPatchScope::CratesIo => {
+            lockfile_source == "registry+https://github.com/rust-lang/crates.io-index"
+        }
+        parsers::cargo_toml::CargoPatchScope::RegistryName(alias) => {
+            cargo_registry_source_for_alias(alias, config)
+                .map(|source| lockfile_source == source)
+                .unwrap_or(false)
+        }
+        parsers::cargo_toml::CargoPatchScope::SourceUrl(url) => {
+            lockfile_source == format!("registry+{url}")
+                || lockfile_source.starts_with(&format!("git+{url}"))
+        }
+    }
+}
+
+fn cargo_rewrite_matches_lockfile_scope(
+    rewrite: &EffectiveCargoRewrite,
+    lockfile: &toml::Value,
+    config: &config::SloppyJoeConfig,
+) -> bool {
+    let entries = cargo_lockfile_entries(lockfile);
+    let has_direct_match = entries.iter().copied().any(|package| {
+        let same_name = package.get("name").and_then(|value| value.as_str())
+            == Some(rewrite.package_name.as_str());
+        if !same_name {
+            return false;
+        }
+        let version_matches = rewrite.replace_version.as_ref().is_none_or(|expected| {
+            package.get("version").and_then(|value| value.as_str()) == Some(expected.as_str())
+        });
+        if !version_matches {
+            return false;
+        }
+        let source_matches = rewrite.replace_source.as_ref().is_none_or(|expected| {
+            package
+                .get("source")
+                .and_then(|value| value.as_str())
+                .map(|source| source == expected)
+                .unwrap_or(false)
+        });
+        if !source_matches {
+            return false;
+        }
+
+        rewrite
+            .patch_scope
+            .as_ref()
+            .and_then(|scope| {
+                package
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    .map(|source| cargo_patch_scope_matches_lockfile_source(scope, source, config))
+            })
+            .unwrap_or(true)
+    });
+    if has_direct_match {
+        return true;
+    }
+
+    if !matches!(
+        rewrite.spec.source,
+        parsers::cargo_toml::CargoSourceSpec::Path(_)
+    ) || (rewrite.replace_source.is_none() && rewrite.patch_scope.is_none())
+    {
+        return false;
+    }
+
+    let has_localized_target = entries.iter().copied().any(|package| {
+        let same_name = package.get("name").and_then(|value| value.as_str())
+            == Some(rewrite.package_name.as_str());
+        if !same_name {
+            return false;
+        }
+        let version_matches = rewrite.replace_version.as_ref().is_none_or(|expected| {
+            package.get("version").and_then(|value| value.as_str()) == Some(expected.as_str())
+        });
+        version_matches
+            && package
+                .get("source")
+                .and_then(|value| value.as_str())
+                .is_none()
+    });
+    if !has_localized_target {
+        return false;
+    }
+
+    !entries.iter().copied().any(|package| {
+        let same_name = package.get("name").and_then(|value| value.as_str())
+            == Some(rewrite.package_name.as_str());
+        if !same_name {
+            return false;
+        }
+        let version_matches = rewrite.replace_version.as_ref().is_none_or(|expected| {
+            package.get("version").and_then(|value| value.as_str()) == Some(expected.as_str())
+        });
+        version_matches
+            && package
+                .get("source")
+                .and_then(|value| value.as_str())
+                .is_some()
+    })
+}
+
+fn parse_cargo_config_rewrites(config_path: &std::path::Path) -> Result<CargoConfigRewrites> {
+    let content = parsers::read_file_limited(config_path, parsers::MAX_MANIFEST_BYTES)?;
+    let value = toml::from_str::<toml::Value>(&content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken Cargo config '{}': failed to parse TOML: {}",
+            config_path.display(),
+            err
+        )
+    })?;
+
+    let mut rewrites = CargoConfigRewrites::default();
+    let config_dir = config_path
+        .parent()
+        .expect("Cargo config file should always have a parent directory");
+
+    if let Some(paths) = value.get("paths").and_then(|value| value.as_array()) {
+        for path in paths {
+            let Some(path) = path.as_str() else {
+                anyhow::bail!(
+                    "Broken Cargo config '{}': paths entries must be strings.",
+                    config_path.display()
+                );
+            };
+            let candidate = normalize_filesystem_path(&config_dir.join(path));
+            let manifest_path = candidate.join("Cargo.toml");
+            if !parsers::path_detected(&manifest_path)? {
+                continue;
+            }
+            if let Some(package_name) = cargo_package_name_from_manifest(&manifest_path)?
+                && let Some(existing) = rewrites
+                    .local_paths
+                    .insert(package_name.clone(), candidate.clone())
+                && existing != candidate
+            {
+                return Err(cargo_fail(
+                    checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                    format!(
+                        "Cargo config '{}' declares multiple local path rewrites for crate '{}': '{}' and '{}'. sloppy-joe refuses ambiguous local provenance.",
+                        config_path.display(),
+                        package_name,
+                        existing.display(),
+                        candidate.display()
+                    ),
+                ));
+            }
+        }
+    }
+
+    if let Some(source_table) = value.get("source").and_then(|value| value.as_table()) {
+        for (name, entry) in source_table
+            .iter()
+            .filter_map(|(name, value)| value.as_table().map(|table| (name.as_str(), table)))
+        {
+            if let Some(alias) = entry.get("replace-with").and_then(|value| value.as_str()) {
+                rewrites
+                    .source_replace_with
+                    .insert(name.to_string(), alias.to_string());
+            }
+            if let Some(url) = entry.get("registry").and_then(|value| value.as_str()) {
+                rewrites.source_definitions.insert(
+                    name.to_string(),
+                    CargoConfigSourceDefinition::Registry(url.to_string()),
+                );
+            } else if let Some(path) = entry.get("directory").and_then(|value| value.as_str()) {
+                rewrites.source_definitions.insert(
+                    name.to_string(),
+                    CargoConfigSourceDefinition::Unsupported {
+                        kind: "directory".to_string(),
+                        detail: path.to_string(),
+                    },
+                );
+            } else if let Some(path) = entry.get("local-registry").and_then(|value| value.as_str())
+            {
+                rewrites.source_definitions.insert(
+                    name.to_string(),
+                    CargoConfigSourceDefinition::Unsupported {
+                        kind: "local-registry".to_string(),
+                        detail: path.to_string(),
+                    },
+                );
+            } else if let Some(url) = entry.get("git").and_then(|value| value.as_str()) {
+                rewrites.source_definitions.insert(
+                    name.to_string(),
+                    CargoConfigSourceDefinition::Unsupported {
+                        kind: "git".to_string(),
+                        detail: url.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
+    for rewrite in parsers::cargo_toml::collect_rewrites(config_path, &value, "patch")?
+        .into_iter()
+        .chain(parsers::cargo_toml::collect_rewrites(
+            config_path,
+            &value,
+            "replace",
+        )?)
+    {
+        rewrites.rewrite_targets.push(EffectiveCargoRewrite {
+            package_name: rewrite.package_name,
+            patch_scope: rewrite.patch_scope,
+            replace_source: rewrite.replace_source,
+            replace_version: rewrite.replace_version,
+            spec: rewrite.dependency,
+            base_dir: config_dir.to_path_buf(),
+        });
+    }
+
+    Ok(rewrites)
+}
+
+fn load_repo_visible_cargo_config_rewrites(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<CargoConfigRewrites> {
+    let manifest_dir = manifest_path
+        .parent()
+        .expect("Cargo.toml should always have a parent directory");
+    let canonical_manifest_dir = std::fs::canonicalize(manifest_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", manifest_dir.display(), err))?;
+    let trusted_root = cargo_trusted_scope_root(scan_root, manifest_path, config)?;
+    let mut rewrites = CargoConfigRewrites::default();
+
+    let mut ancestors = ancestor_dirs_inclusive(&canonical_manifest_dir, &trusted_root)?;
+    ancestors.reverse();
+    for ancestor in ancestors {
+        for config_name in ["config.toml", "config"] {
+            let config_path = ancestor.join(".cargo").join(config_name);
+            if parsers::path_detected(&config_path)? {
+                merge_cargo_config_rewrites(
+                    &mut rewrites,
+                    parse_cargo_config_rewrites(&config_path)?,
+                );
+            }
+        }
+    }
+
+    Ok(rewrites)
+}
+
+fn host_local_cargo_home() -> Option<std::path::PathBuf> {
+    if let Some(cargo_home) = std::env::var_os("CARGO_HOME") {
+        return Some(std::path::PathBuf::from(cargo_home));
+    }
+    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cargo"))
+}
+
+fn load_host_local_cargo_config_rewrites_from_home(
+    cargo_home: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
+    let mut rewrites = CargoConfigRewrites::default();
+    let mut warnings = Vec::new();
+    let mut found = Vec::new();
+
+    for config_name in ["config.toml", "config"] {
+        let path = cargo_home.join(config_name);
+        if parsers::path_detected(&path)? {
+            found.push(path.clone());
+            merge_cargo_config_rewrites(&mut rewrites, parse_cargo_config_rewrites(&path)?);
+        }
+    }
+
+    if found.is_empty() {
+        return Ok((rewrites, warnings));
+    }
+
+    if !config.allow_host_local_cargo_config {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+            format!(
+                "Found host-local Cargo config outside the repo at {}. sloppy-joe blocks hidden machine-local Cargo provenance by default.",
+                found[0].display()
+            ),
+        ));
+    }
+
+    warnings.push(
+        Issue::new(
+            "<cargo-config>",
+            checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+            Severity::Warning,
+        )
+        .message(format!(
+            "Host-local Cargo config '{}' was trusted via a local-only overlay. This run depends on machine-local Cargo provenance and may differ from CI.",
+            found[0].display()
+        ))
+        .fix(
+            "Prefer repo-visible Cargo config for reviewed provenance. Keep local-only host Cargo config relaxations out of CI.",
+        ),
+    );
+
+    Ok((rewrites, warnings))
+}
+
+fn load_effective_cargo_config_rewrites_inner(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    cargo_home_override: Option<&std::path::Path>,
+) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
+    let mut rewrites = load_repo_visible_cargo_config_rewrites(scan_root, manifest_path, config)?;
+    let mut warnings = Vec::new();
+    if let Some(cargo_home) = cargo_home_override
+        .map(std::path::Path::to_path_buf)
+        .or_else(host_local_cargo_home)
+    {
+        let (host_rewrites, host_warnings) =
+            load_host_local_cargo_config_rewrites_from_home(&cargo_home, config)?;
+        ensure_additive_cargo_config_rewrites(
+            &rewrites,
+            &host_rewrites,
+            &cargo_home.join("config.toml"),
+        )?;
+        merge_cargo_config_rewrites(&mut rewrites, host_rewrites);
+        warnings.extend(host_warnings);
+    }
+    Ok((rewrites, warnings))
+}
+
+fn load_effective_cargo_config_rewrites(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
+    load_effective_cargo_config_rewrites_inner(scan_root, manifest_path, config, None)
+}
+
+#[cfg(test)]
+fn load_effective_cargo_config_rewrites_for_test(
+    scan_root: &std::path::Path,
+    manifest_path: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    cargo_home_override: Option<std::path::PathBuf>,
+) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
+    load_effective_cargo_config_rewrites_inner(
+        scan_root,
+        manifest_path,
+        config,
+        cargo_home_override.as_deref(),
+    )
+}
+
+#[cfg(test)]
+fn cargo_host_local_config_rewrites_for_test(
+    home_dir: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
+    load_host_local_cargo_config_rewrites_from_home(&home_dir.join(".cargo"), config)
+}
+
+fn cargo_rewrite_matches(
+    rewrite: &EffectiveCargoRewrite,
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    config: &config::SloppyJoeConfig,
+) -> bool {
+    rewrite.package_name == dep.package_name
+        && rewrite.replace_source.as_ref().is_none_or(|source| {
+            cargo_dependency_source_id(dep, config).as_deref() == Some(source.as_str())
+        })
+        && rewrite.replace_version.as_ref().is_none_or(|version| {
+            cargo_dependency_exact_version(dep).as_deref() == Some(version.as_str())
+        })
+        && rewrite
+            .patch_scope
+            .as_ref()
+            .is_none_or(|scope| cargo_patch_scope_matches(scope, &dep.source, config))
+}
+
+fn cargo_manifest_rewrites(
+    manifest: &parsers::cargo_toml::CargoManifest,
+    base_dir: &std::path::Path,
+) -> Vec<EffectiveCargoRewrite> {
+    manifest
+        .patches
+        .iter()
+        .chain(manifest.replaces.iter())
+        .map(|rewrite| EffectiveCargoRewrite {
+            package_name: rewrite.package_name.clone(),
+            patch_scope: rewrite.patch_scope.clone(),
+            replace_source: rewrite.replace_source.clone(),
+            replace_version: rewrite.replace_version.clone(),
+            spec: rewrite.dependency.clone(),
+            base_dir: base_dir.to_path_buf(),
+        })
+        .collect()
+}
+
+fn push_effective_cargo_rewrite(
+    rewrites: &mut Vec<EffectiveCargoRewrite>,
+    candidate: EffectiveCargoRewrite,
+) -> Result<()> {
+    if let Some(existing) = rewrites.iter().find(|rewrite| {
+        rewrite.package_name == candidate.package_name
+            && rewrite.patch_scope == candidate.patch_scope
+            && rewrite.replace_source == candidate.replace_source
+            && rewrite.replace_version == candidate.replace_version
+    }) {
+        if existing != &candidate {
+            return Err(cargo_fail(
+                checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                format!(
+                    "Conflicting Cargo rewrite for package '{}' and scope '{:?}'. sloppy-joe refuses to guess rewrite precedence across multiple provenance sources.",
+                    candidate.package_name, candidate.patch_scope
+                ),
+            ));
+        }
+        return Ok(());
+    }
+
+    rewrites.push(candidate);
+    Ok(())
+}
+
+fn collect_effective_cargo_rewrites(
+    scan_root: &std::path::Path,
+    manifest: &parsers::cargo_toml::CargoManifest,
+    config: &config::SloppyJoeConfig,
+    cargo_config_rewrites: &CargoConfigRewrites,
+) -> Result<Vec<EffectiveCargoRewrite>> {
+    let mut rewrites = Vec::new();
+    let manifest_dir = manifest
+        .manifest_path
+        .parent()
+        .expect("Cargo.toml should always have a parent directory");
+    if let Some(workspace_root) =
+        find_in_scope_cargo_workspace_root(scan_root, &manifest.manifest_path, config)?
+    {
+        if workspace_root.manifest_path == manifest.manifest_path {
+            for rewrite in cargo_manifest_rewrites(manifest, manifest_dir) {
+                push_effective_cargo_rewrite(&mut rewrites, rewrite)?;
+            }
+        } else {
+            let workspace_dir = workspace_root
+                .manifest_path
+                .parent()
+                .expect("workspace root should have a parent directory");
+            for rewrite in cargo_manifest_rewrites(&workspace_root, workspace_dir) {
+                push_effective_cargo_rewrite(&mut rewrites, rewrite)?;
+            }
+        }
+    } else {
+        for rewrite in cargo_manifest_rewrites(manifest, manifest_dir) {
+            push_effective_cargo_rewrite(&mut rewrites, rewrite)?;
+        }
+    }
+
+    for rewrite in cargo_config_rewrites.rewrite_targets.iter().cloned() {
+        push_effective_cargo_rewrite(&mut rewrites, rewrite)?;
+    }
+    Ok(rewrites)
+}
+
+fn resolve_cargo_effective_dependencies(
+    scan_root: &std::path::Path,
+    manifest: &parsers::cargo_toml::CargoManifest,
+    config: &config::SloppyJoeConfig,
+) -> Result<Vec<EffectiveCargoDependency>> {
+    let manifest_dir = manifest
+        .manifest_path
+        .parent()
+        .expect("Cargo.toml should always have a parent directory");
+    let cargo_config_rewrites =
+        load_effective_cargo_config_rewrites(scan_root, &manifest.manifest_path, config)?.0;
+    let rewrites =
+        collect_effective_cargo_rewrites(scan_root, manifest, config, &cargo_config_rewrites)?;
+
+    let mut effective = Vec::new();
+    for dep in &manifest.dependencies {
+        let mut current = dep.clone();
+        let mut current_base_dir = manifest_dir.to_path_buf();
+        let mut expected_exact_version = cargo_dependency_exact_version(dep);
+        let mut workspace_hops = 0usize;
+
+        loop {
+            let rewritten = rewrites
+                .iter()
+                .rfind(|rewrite| cargo_rewrite_matches(rewrite, &current, config));
+            if let Some(rewrite) = rewritten {
+                let next_expected_exact_version = rewrite
+                    .replace_version
+                    .clone()
+                    .or(expected_exact_version.clone());
+                if rewrite.spec != current
+                    || rewrite.base_dir != current_base_dir
+                    || next_expected_exact_version != expected_exact_version
+                {
+                    expected_exact_version = next_expected_exact_version;
+                    current = rewrite.spec.clone();
+                    current_base_dir = rewrite.base_dir.clone();
+                }
+            }
+
+            if matches!(
+                current.source,
+                parsers::cargo_toml::CargoSourceSpec::CratesIo
+            ) && let Some(path) = cargo_config_rewrites.local_paths.get(&current.package_name)
+            {
+                current.source =
+                    parsers::cargo_toml::CargoSourceSpec::Path(path.display().to_string());
+            }
+            if let Some(rewritten_source) =
+                apply_cargo_config_source_rewrite(&current, &cargo_config_rewrites, config)?
+            {
+                current.source = rewritten_source;
+            }
+
+            if !matches!(
+                current.source,
+                parsers::cargo_toml::CargoSourceSpec::Workspace
+            ) {
+                let expected_exact_version =
+                    expected_exact_version.or_else(|| cargo_dependency_exact_version(&current));
+                effective.push(EffectiveCargoDependency {
+                    spec: current,
+                    base_dir: current_base_dir,
+                    expected_exact_version,
+                });
+                break;
+            }
+
+            if !current.workspace_member_invalid_keys.is_empty() {
+                return Err(cargo_fail(
+                    checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+                    format!(
+                        "'{}' uses workspace = true with unsupported member-local keys: {}.",
+                        current.package_name,
+                        current.workspace_member_invalid_keys.join(", ")
+                    ),
+                ));
+            }
+            let Some(workspace_root) =
+                find_in_scope_cargo_workspace_root(scan_root, &manifest.manifest_path, config)?
+            else {
+                return Err(cargo_fail(
+                    checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+                    format!(
+                        "'{}' uses workspace = true but no in-scope workspace root was found.",
+                        current.package_name
+                    ),
+                ));
+            };
+            let Some(inherited) = workspace_root
+                .workspace_dependencies
+                .get(&current.package_name)
+                .cloned()
+            else {
+                return Err(cargo_fail(
+                    checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+                    format!(
+                        "'{}' uses workspace = true but the nearest in-scope [workspace.dependencies] entry is missing.",
+                        current.package_name
+                    ),
+                ));
+            };
+            let workspace_dir = workspace_root
+                .manifest_path
+                .parent()
+                .expect("workspace root should have a parent directory");
+            expected_exact_version =
+                expected_exact_version.or_else(|| cargo_dependency_exact_version(&inherited));
+            current = inherited;
+            current_base_dir = workspace_dir.to_path_buf();
+            workspace_hops += 1;
+            if workspace_hops > 8 {
+                return Err(cargo_fail(
+                    checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+                    format!(
+                        "'{}' exceeded Cargo workspace inheritance resolution depth.",
+                        dep.package_name
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(effective)
+}
+
+fn cargo_allowlisted_local_target(
+    scan_root: &std::path::Path,
+    target: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+) -> Result<bool> {
+    let canonical_target = std::fs::canonicalize(target)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", target.display(), err))?;
+    let canonical_root = std::fs::canonicalize(scan_root)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", scan_root.display(), err))?;
+    if canonical_target.starts_with(&canonical_root) {
+        return Ok(true);
+    }
+
+    for allowlisted in config.trusted_local_paths("cargo") {
+        let candidate = normalize_filesystem_path(std::path::Path::new(allowlisted));
+        let Ok(canonical_allowlisted) = std::fs::canonicalize(&candidate) else {
+            continue;
+        };
+        if canonical_allowlisted == canonical_target {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn cargo_local_target_manifest(
+    scan_root: &std::path::Path,
+    manifest_dir: &std::path::Path,
+    path: &str,
+    expected_package_name: &str,
+    config: &config::SloppyJoeConfig,
+) -> Result<Option<std::path::PathBuf>> {
+    let candidate = normalize_filesystem_path(&manifest_dir.join(path));
+    let allowlisted = match cargo_allowlisted_local_target(scan_root, &candidate, config) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    if !allowlisted {
+        return Ok(None);
+    }
+
+    let Ok(canonical_target) = std::fs::canonicalize(&candidate) else {
+        return Ok(None);
+    };
+    let manifest_path = canonical_target.join("Cargo.toml");
+    if !parsers::path_detected(&manifest_path)? {
+        return Ok(None);
+    }
+    if cargo_package_name_from_manifest(&manifest_path)?.as_deref() != Some(expected_package_name) {
+        return Ok(None);
+    }
+
+    Ok(Some(manifest_path))
+}
+
+fn validate_cargo_local_target(
+    scan_root: &std::path::Path,
+    manifest_dir: &std::path::Path,
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    path: &str,
+    expected_exact_version: Option<&str>,
+    config: &config::SloppyJoeConfig,
+) -> Result<()> {
+    let candidate = normalize_filesystem_path(&manifest_dir.join(path));
+    let allowlisted = cargo_allowlisted_local_target(scan_root, &candidate, config)?;
+    if !allowlisted {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' resolves to '{}' which is outside the scan root and not exactly allowlisted.",
+                dep.package_name,
+                candidate.display()
+            ),
+        ));
+    }
+
+    let canonical_target = std::fs::canonicalize(&candidate).map_err(|err| {
+        cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' points to '{}' but that target is missing or unreadable: {}.",
+                dep.package_name,
+                candidate.display(),
+                err
+            ),
+        )
+    })?;
+
+    let manifest_path = canonical_target.join("Cargo.toml");
+    if !parsers::path_detected(&manifest_path)? {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' points to '{}' which is not a valid Cargo crate directory.",
+                dep.package_name,
+                canonical_target.display()
+            ),
+        ));
+    }
+
+    let manifest_value = toml::from_str::<toml::Value>(&parsers::read_file_limited(
+        &manifest_path,
+        parsers::MAX_MANIFEST_BYTES,
+    )?)
+    .map_err(|err| {
+        cargo_fail(
+            checks::names::RESOLUTION_PARSE_FAILED,
+            format!(
+                "Failed to parse local Cargo target '{}': {}.",
+                manifest_path.display(),
+                err
+            ),
+        )
+    })?;
+
+    if manifest_value
+        .get("package")
+        .and_then(|value| value.as_table())
+        .is_none()
+    {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' points to '{}' but that target does not declare a [package] crate.",
+                dep.package_name,
+                canonical_target.display()
+            ),
+        ));
+    }
+
+    let actual_name = manifest_value
+        .get("package")
+        .and_then(|value| value.as_table())
+        .and_then(|package| package.get("name"))
+        .and_then(|value| value.as_str());
+    if actual_name != Some(dep.package_name.as_str()) {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' points to '{}' but that target declares package '{}' instead of '{}'.",
+                dep.package_name,
+                canonical_target.display(),
+                actual_name.unwrap_or("<missing>"),
+                dep.package_name
+            ),
+        ));
+    }
+
+    let actual_version = manifest_value
+        .get("package")
+        .and_then(|value| value.as_table())
+        .and_then(|package| package.get("version"))
+        .and_then(|value| value.as_str());
+    if let Some(expected_version) = expected_exact_version
+        && actual_version != Some(expected_version)
+    {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' points to '{}' but that target declares version '{}' instead of '{}'.",
+                dep.package_name,
+                canonical_target.display(),
+                actual_version.unwrap_or("<missing>"),
+                expected_version
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_cargo_registry_source(
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    expected_exact_version: Option<&str>,
+    alias: Option<&str>,
+    source: &str,
+    lockfile: &toml::Value,
+    config: &config::SloppyJoeConfig,
+) -> Result<()> {
+    let trusted = if let Some(alias) = alias {
+        config
+            .trusted_registries("cargo")
+            .iter()
+            .any(|entry| entry.name == alias && entry.source == source)
+    } else {
+        source == "registry+https://github.com/rust-lang/crates.io-index"
+            || config
+                .trusted_registries("cargo")
+                .iter()
+                .any(|entry| entry.source == source)
+    };
+
+    if !trusted {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+            format!(
+                "'{}' uses registry source '{}' which is not trusted by config.",
+                dep.package_name, source
+            ),
+        ));
+    }
+
+    let exact_version = expected_exact_version
+        .map(str::to_string)
+        .or_else(|| cargo_dependency_exact_version(dep));
+    let matched = cargo_lockfile_entries(lockfile).into_iter().any(|package| {
+        let same_name =
+            package.get("name").and_then(|value| value.as_str()) == Some(dep.package_name.as_str());
+        let same_source = package.get("source").and_then(|value| value.as_str()) == Some(source);
+        let version_ok = exact_version.as_ref().is_none_or(|expected| {
+            package.get("version").and_then(|value| value.as_str()) == Some(expected.as_str())
+        });
+        same_name && same_source && version_ok
+    });
+
+    if !matched {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY,
+            format!(
+                "Cargo.lock did not prove a trusted registry entry for '{}' with source '{}'.",
+                dep.package_name, source
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_cargo_git_source(
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    expected_exact_version: Option<&str>,
+    source: &parsers::cargo_toml::CargoSourceSpec,
+    lockfile: &toml::Value,
+    config: &config::SloppyJoeConfig,
+) -> Result<Issue> {
+    let parsers::cargo_toml::CargoSourceSpec::Git {
+        url,
+        rev,
+        branch,
+        tag,
+    } = source
+    else {
+        unreachable!("validate_cargo_git_source must only be called for git specs");
+    };
+    if config.cargo_git_policy != config::CargoGitPolicy::WarnPinned {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE,
+            format!(
+                "'{}' uses git source '{}' but cargo_git_policy blocks git dependencies by default.",
+                dep.package_name, url
+            ),
+        ));
+    }
+    if branch.is_some() || tag.is_some() || rev.is_none() {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE,
+            format!(
+                "'{}' must pin git dependencies to an exact rev; branch, tag, or unspecified refs are not allowed.",
+                dep.package_name
+            ),
+        ));
+    }
+    let rev = rev.as_deref().expect("checked above");
+    let is_exact_rev = rev.len() == 40
+        && rev
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+    if !is_exact_rev {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE,
+            format!(
+                "'{}' uses git rev '{}' which is not a full lowercase 40-character commit SHA.",
+                dep.package_name, rev
+            ),
+        ));
+    }
+    if !config
+        .trusted_git_sources("cargo")
+        .iter()
+        .any(|trusted| trusted.trim() == url.trim())
+    {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE,
+            format!(
+                "'{}' uses git source '{}' which is not allowlisted.",
+                dep.package_name, url
+            ),
+        ));
+    }
+
+    let expected_source = format!("git+{url}?rev={rev}#{rev}");
+    let matched = cargo_lockfile_entries(lockfile).into_iter().any(|package| {
+        package.get("name").and_then(|value| value.as_str()) == Some(dep.package_name.as_str())
+            && package.get("source").and_then(|value| value.as_str())
+                == Some(expected_source.as_str())
+            && expected_exact_version.is_none_or(|expected| {
+                package.get("version").and_then(|value| value.as_str()) == Some(expected)
+            })
+    });
+    if !matched {
+        return Err(cargo_fail(
+            checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE,
+            format!(
+                "Cargo.lock did not prove the exact git repo and commit for '{}' as '{}'.",
+                dep.package_name, expected_source
+            ),
+        ));
+    }
+
+    Ok(
+        Issue::new(
+            &dep.package_name,
+            checks::names::RESOLUTION_REDUCED_CONFIDENCE_GIT,
+            Severity::Warning,
+        )
+        .message(format!(
+            "'{}' uses an allowlisted git dependency pinned to exact rev {} from '{}'. sloppy-joe continues in reduced-confidence mode because git provenance is outside normal registry trust.",
+            dep.package_name, rev, url
+        ))
+        .fix(
+            "Prefer a reviewed registry release when available. If git is required, keep the repo URL and exact revision under explicit review.",
+        ),
+    )
+}
+
+fn validate_cargo_dependency_spec(
+    scan_root: &std::path::Path,
+    manifest_dir: &std::path::Path,
+    dep: &parsers::cargo_toml::CargoDependencySpec,
+    expected_exact_version: Option<&str>,
+    config: &config::SloppyJoeConfig,
+    lockfile: &toml::Value,
+) -> Result<Vec<Issue>> {
+    match &dep.source {
+        parsers::cargo_toml::CargoSourceSpec::CratesIo => validate_cargo_registry_source(
+            dep,
+            expected_exact_version,
+            None,
+            "registry+https://github.com/rust-lang/crates.io-index",
+            lockfile,
+            config,
+        )
+        .map(|_| Vec::new()),
+        parsers::cargo_toml::CargoSourceSpec::Path(path) => {
+            validate_cargo_local_target(
+                scan_root,
+                manifest_dir,
+                dep,
+                path,
+                expected_exact_version,
+                config,
+            )?;
+            Ok(Vec::new())
+        }
+        parsers::cargo_toml::CargoSourceSpec::RegistryAlias(alias) => {
+            let Some(source) = config
+                .trusted_registries("cargo")
+                .iter()
+                .find(|entry| entry.name == *alias)
+                .map(|entry| entry.source.as_str())
+            else {
+                return Err(cargo_fail(
+                    checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+                    format!(
+                        "'{}' uses registry alias '{}' which is not trusted by config.",
+                        dep.package_name, alias
+                    ),
+                ));
+            };
+            validate_cargo_registry_source(
+                dep,
+                expected_exact_version,
+                Some(alias),
+                source,
+                lockfile,
+                config,
+            )?;
+            Ok(Vec::new())
+        }
+        parsers::cargo_toml::CargoSourceSpec::RegistryIndex(source) => {
+            validate_cargo_registry_source(
+                dep,
+                expected_exact_version,
+                None,
+                source,
+                lockfile,
+                config,
+            )?;
+            Ok(Vec::new())
+        }
+        parsers::cargo_toml::CargoSourceSpec::Git { .. } => {
+            validate_cargo_git_source(dep, expected_exact_version, &dep.source, lockfile, config)
+                .map(|issue| vec![issue])
+        }
+        parsers::cargo_toml::CargoSourceSpec::Workspace => Err(cargo_fail(
+            checks::names::RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
+            format!(
+                "'{}' uses workspace = true but no in-scope workspace dependency was resolved.",
+                dep.package_name
+            ),
+        )),
+    }
+}
+
+fn validate_cargo_effective_rewrite(
+    scan_root: &std::path::Path,
+    rewrite: &EffectiveCargoRewrite,
+    config: &config::SloppyJoeConfig,
+    lockfile: &toml::Value,
+) -> Result<Vec<Issue>> {
+    let exact_version = cargo_dependency_exact_version(&rewrite.spec);
+    let expected_version = rewrite
+        .replace_version
+        .as_deref()
+        .or(exact_version.as_deref());
+    match &rewrite.spec.source {
+        parsers::cargo_toml::CargoSourceSpec::Path(path) => {
+            validate_cargo_local_target(
+                scan_root,
+                &rewrite.base_dir,
+                &rewrite.spec,
+                path,
+                expected_version,
+                config,
+            )?;
+            Ok(Vec::new())
+        }
+        _ => validate_cargo_dependency_spec(
+            scan_root,
+            &rewrite.base_dir,
+            &rewrite.spec,
+            expected_version,
+            config,
+            lockfile,
+        ),
+    }
+}
+
+fn validate_cargo_source_policy(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<Vec<Issue>> {
+    let manifest = parsers::cargo_toml::parse_manifest_file(&spec.manifest_path)?;
+    let authoritative_lockfile =
+        authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
+    ensure_lockfile_readable(
+        &authoritative_lockfile,
+        spec.kind.missing_lockfile_help().unwrap(),
+    )?;
+    let lockfile = cargo_lockfile_value(&authoritative_lockfile)?;
+    let (cargo_config_rewrites, config_warnings) =
+        load_effective_cargo_config_rewrites(scan_root, &spec.manifest_path, config)?;
+    let rewrites =
+        collect_effective_cargo_rewrites(scan_root, &manifest, config, &cargo_config_rewrites)?;
+    let mut warnings = config_warnings;
+
+    for dep in resolve_cargo_effective_dependencies(scan_root, &manifest, config)? {
+        let dep_warnings = validate_cargo_dependency_spec(
+            scan_root,
+            &dep.base_dir,
+            &dep.spec,
+            dep.expected_exact_version.as_deref(),
+            config,
+            &lockfile,
+        )?;
+        warnings.extend(dep_warnings);
+    }
+
+    for rewrite in rewrites
+        .into_iter()
+        .filter(|rewrite| cargo_rewrite_matches_lockfile_scope(rewrite, &lockfile, config))
+    {
+        warnings.extend(validate_cargo_effective_rewrite(
+            scan_root, &rewrite, config, &lockfile,
+        )?);
+    }
+
+    Ok(warnings)
+}
+
 fn ancestor_dirs_inclusive(
     start: &std::path::Path,
     root: &std::path::Path,
@@ -842,6 +2338,7 @@ fn ancestor_dirs_inclusive(
 }
 
 fn validate_lockfile_syntax(
+    scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
     npm_manifest: Option<&serde_json::Value>,
     config: &config::SloppyJoeConfig,
@@ -866,15 +2363,8 @@ fn validate_lockfile_syntax(
             validate_npm_lockfile_provenance(&lockfile, &path)?;
         }
         ProjectInputKind::Cargo => {
-            let path = project_dir.join("Cargo.lock");
-            let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-            toml::from_str::<toml::Value>(&content).map_err(|err| {
-                anyhow::anyhow!(
-                    "Broken lockfile '{}': failed to parse TOML: {}",
-                    path.display(),
-                    err
-                )
-            })?;
+            let path = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
+            cargo_lockfile_value(&path)?;
         }
         ProjectInputKind::Php => {
             let path = project_dir.join("composer.lock");
@@ -1699,7 +3189,7 @@ fn detected_project_inputs(
 fn detected_project_inputs_with_config(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
-    _config: &config::SloppyJoeConfig,
+    config: &config::SloppyJoeConfig,
 ) -> Result<Vec<ProjectInputSpec>> {
     let mut specs = discover_project_inputs(project_dir)?;
     specs.retain(|spec| match project_type {
@@ -1717,6 +3207,7 @@ fn detected_project_inputs_with_config(
         Some(_) => false,
         None => true,
     });
+    expand_cargo_project_inputs(project_dir, &mut specs, config)?;
     prune_included_requirement_specs(project_dir, &mut specs)?;
     prefer_poetry_project_inputs(&mut specs);
 
@@ -1751,6 +3242,82 @@ fn detected_project_inputs_with_config(
     }
 
     Ok(specs)
+}
+
+fn expand_cargo_project_inputs(
+    scan_root: &std::path::Path,
+    specs: &mut Vec<ProjectInputSpec>,
+    config: &config::SloppyJoeConfig,
+) -> Result<()> {
+    let mut seen = specs
+        .iter()
+        .map(|spec| spec.manifest_path.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut index = 0usize;
+    while index < specs.len() {
+        if specs[index].kind != ProjectInputKind::Cargo {
+            index += 1;
+            continue;
+        }
+
+        let manifest_path = specs[index].manifest_path.clone();
+        specs[index].lockfile_path_override = Some(authoritative_cargo_lockfile_path(
+            scan_root,
+            &manifest_path,
+            config,
+        )?);
+
+        let manifest = parsers::cargo_toml::parse_manifest_file(&manifest_path)?;
+        let (cargo_config_rewrites, _) =
+            load_effective_cargo_config_rewrites(scan_root, &manifest_path, config)?;
+        let rewrites =
+            collect_effective_cargo_rewrites(scan_root, &manifest, config, &cargo_config_rewrites)?;
+        let effective = resolve_cargo_effective_dependencies(scan_root, &manifest, config)?;
+
+        for dep in effective {
+            if let parsers::cargo_toml::CargoSourceSpec::Path(path) = dep.spec.source
+                && let Some(target_manifest) = cargo_local_target_manifest(
+                    scan_root,
+                    &dep.base_dir,
+                    &path,
+                    &dep.spec.package_name,
+                    config,
+                )?
+                && seen.insert(target_manifest.clone())
+            {
+                specs.push(ProjectInputSpec {
+                    kind: ProjectInputKind::Cargo,
+                    manifest_path: target_manifest,
+                    lockfile_path_override: None,
+                });
+            }
+        }
+
+        for rewrite in rewrites {
+            if let parsers::cargo_toml::CargoSourceSpec::Path(path) = &rewrite.spec.source
+                && let Some(target_manifest) = cargo_local_target_manifest(
+                    scan_root,
+                    &rewrite.base_dir,
+                    path,
+                    &rewrite.spec.package_name,
+                    config,
+                )?
+                && seen.insert(target_manifest.clone())
+            {
+                specs.push(ProjectInputSpec {
+                    kind: ProjectInputKind::Cargo,
+                    manifest_path: target_manifest,
+                    lockfile_path_override: None,
+                });
+            }
+        }
+
+        index += 1;
+    }
+
+    specs.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
+    Ok(())
 }
 
 fn discover_project_inputs(project_dir: &std::path::Path) -> Result<Vec<ProjectInputSpec>> {
@@ -1900,6 +3467,7 @@ fn project_input_from_path(
     Ok(Some(ProjectInputSpec {
         kind,
         manifest_path: path.to_path_buf(),
+        lockfile_path_override: None,
     }))
 }
 
@@ -1998,15 +3566,56 @@ fn prune_included_requirement_specs(
 fn parse_project_inputs(
     scan_root: &std::path::Path,
     specs: &[ProjectInputSpec],
+    config: &config::SloppyJoeConfig,
 ) -> Result<Vec<ParsedProject>> {
     let mut projects = Vec::new();
     for spec in specs {
         projects.push(ParsedProject {
             spec: spec.clone(),
-            deps: parse_project_input(scan_root, spec)?,
+            deps: parse_project_input_with_config(scan_root, spec, config)?,
         });
     }
     Ok(projects)
+}
+
+fn parse_project_input_with_config(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<Vec<Dependency>> {
+    match spec.kind {
+        ProjectInputKind::Cargo => parse_cargo_project_dependencies(scan_root, spec, config),
+        _ => parse_project_input(scan_root, spec),
+    }
+}
+
+fn parse_cargo_project_dependencies(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<Vec<Dependency>> {
+    let manifest = parsers::cargo_toml::parse_manifest_file(&spec.manifest_path)?;
+    let mut deps = Vec::new();
+    for dep in resolve_cargo_effective_dependencies(scan_root, &manifest, config)? {
+        match dep.spec.source {
+            parsers::cargo_toml::CargoSourceSpec::CratesIo
+            | parsers::cargo_toml::CargoSourceSpec::RegistryAlias(_)
+            | parsers::cargo_toml::CargoSourceSpec::RegistryIndex(_) => {
+                let dependency = Dependency {
+                    name: dep.spec.package_name,
+                    version: dep.spec.version,
+                    ecosystem: Ecosystem::Cargo,
+                    actual_name: None,
+                };
+                parsers::validate_dependency(&dependency, &spec.manifest_path)?;
+                deps.push(dependency);
+            }
+            parsers::cargo_toml::CargoSourceSpec::Path(_)
+            | parsers::cargo_toml::CargoSourceSpec::Git { .. }
+            | parsers::cargo_toml::CargoSourceSpec::Workspace => {}
+        }
+    }
+    Ok(deps)
 }
 
 fn parse_project_input(
@@ -2039,6 +3648,9 @@ fn parse_project_input(
 }
 
 fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf> {
+    if let Some(path) = &spec.lockfile_path_override {
+        return Some(path.clone());
+    }
     let project_dir = spec.project_dir();
     match spec.kind {
         ProjectInputKind::Npm => {
@@ -2064,7 +3676,67 @@ fn lockfile_paths_for_project(spec: &ProjectInputSpec) -> Vec<std::path::PathBuf
     selected_lockfile_path(spec).into_iter().collect()
 }
 
-fn scan_hash_for_projects(projects: &[ParsedProject]) -> std::result::Result<u64, String> {
+fn hash_json_value_canonical(
+    value: &serde_json::Value,
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+) {
+    use std::hash::Hash;
+
+    match value {
+        serde_json::Value::Null => 0u8.hash(hasher),
+        serde_json::Value::Bool(flag) => {
+            1u8.hash(hasher);
+            flag.hash(hasher);
+        }
+        serde_json::Value::Number(number) => {
+            2u8.hash(hasher);
+            number.to_string().hash(hasher);
+        }
+        serde_json::Value::String(string) => {
+            3u8.hash(hasher);
+            string.hash(hasher);
+        }
+        serde_json::Value::Array(items) => {
+            4u8.hash(hasher);
+            items.len().hash(hasher);
+            for item in items {
+                hash_json_value_canonical(item, hasher);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            5u8.hash(hasher);
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            keys.len().hash(hasher);
+            for key in keys {
+                key.hash(hasher);
+                hash_json_value_canonical(&map[key], hasher);
+            }
+        }
+    }
+}
+
+fn policy_hash_value(
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> std::result::Result<serde_json::Value, String> {
+    serde_json::to_value(serde_json::json!({
+        "config": config,
+        "options": {
+            "deep": opts.deep,
+            "paranoid": opts.paranoid,
+            "review_exceptions": opts.review_exceptions,
+        },
+        "hash_contract_version": 2u8,
+    }))
+    .map_err(|err| format!("cannot serialize scan policy for hashing: {err}"))
+}
+
+fn scan_hash_for_projects(
+    projects: &[ParsedProject],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> std::result::Result<u64, String> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -2125,19 +3797,33 @@ fn scan_hash_for_projects(projects: &[ParsedProject]) -> std::result::Result<u64
         }
     }
 
+    let policy = policy_hash_value(config, opts)?;
+    hash_json_value_canonical(&policy, &mut hasher);
+
     Ok(hasher.finish())
 }
 
 fn scan_hash_matches_cache_for_projects(
     projects: &[ParsedProject],
     cache_base: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
 ) -> std::result::Result<bool, String> {
-    let hash = scan_hash_for_projects(projects)?;
+    let hash = scan_hash_for_projects(projects, config, opts)?;
     let hash_path = cache_base.join("scan-hash.json");
     Ok(matches!(
         cache::read_json_cache::<ScanHashCache>(&hash_path, 7 * 24 * 3600, |c| c.timestamp),
         Some(cached) if cached.hash == hash
     ))
+}
+
+#[cfg(test)]
+fn scan_hash_for_projects_with_policy(
+    projects: &[ParsedProject],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> std::result::Result<u64, String> {
+    scan_hash_for_projects(projects, config, opts)
 }
 
 /// Compute a hash of dependency tuples + lockfile content for change detection.
@@ -2224,6 +3910,27 @@ fn scan_hash_matches_cache(
     ))
 }
 
+fn local_overlay_relaxation_issues(config: &config::SloppyJoeConfig) -> Vec<Issue> {
+    config
+        .active_local_overlay_relaxations
+        .iter()
+        .map(|relaxation| {
+            Issue::new(
+                "<local-overlay>",
+                checks::names::CONFIG_LOCAL_OVERLAY_RELAXATION,
+                Severity::Warning,
+            )
+            .message(format!(
+                "This scan used a local-only overlay relaxation: {}. Results may differ from CI.",
+                relaxation
+            ))
+            .fix(
+                "Keep local-only provenance relaxations out of CI. Prefer repo-visible, reviewed provenance whenever possible.",
+            )
+        })
+        .collect()
+}
+
 async fn scan_with_config(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
@@ -2231,8 +3938,9 @@ async fn scan_with_config(
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
     let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
-    let preflight_warnings = preflight_project_inputs(project_dir, &specs, &config)?;
-    let projects = parse_project_inputs(project_dir, &specs)?;
+    let mut preflight_warnings = preflight_project_inputs(project_dir, &specs, &config)?;
+    preflight_warnings.extend(local_overlay_relaxation_issues(&config));
+    let projects = parse_project_inputs(project_dir, &specs, &config)?;
 
     if projects.is_empty() {
         parsers::parse_dependencies(project_dir, project_type)?;
@@ -2245,7 +3953,7 @@ async fn scan_with_config(
             .cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-        match scan_hash_matches_cache_for_projects(&projects, &cache_base) {
+        match scan_hash_matches_cache_for_projects(&projects, &cache_base, &config, opts) {
             Ok(true) => {
                 eprintln!("Dependencies unchanged, skipping scan.");
                 return Ok(ScanReport::from_issues(0, preflight_warnings));
@@ -2273,16 +3981,8 @@ async fn scan_with_config(
         }
         let ecosystem = project.deps[0].ecosystem;
         let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
-        let report = scan_with_services_inner_for_kind(
-            Some(project.spec.kind),
-            project.spec.project_dir(),
-            config.clone(),
-            project.deps.clone(),
-            &*registry,
-            &osv_client,
-            opts,
-        )
-        .await?;
+        let report =
+            scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await?;
         total_packages += report.packages_checked;
         all_issues.extend(report.issues);
         all_review_candidates.extend(report.review_candidates);
@@ -2300,7 +4000,7 @@ async fn scan_with_config(
             .cache_dir
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-        match scan_hash_for_projects(&projects) {
+        match scan_hash_for_projects(&projects, &config, opts) {
             Ok(hash) => {
                 let hash_path = cache_base.join("scan-hash.json");
                 cache::atomic_write_json(
@@ -2323,6 +4023,116 @@ async fn scan_with_config(
     Ok(report)
 }
 
+async fn scan_parsed_project(
+    project: &ParsedProject,
+    config: config::SloppyJoeConfig,
+    registry: &dyn Registry,
+    osv_client: &dyn OsvClient,
+    opts: &ScanOptions<'_>,
+) -> Result<ScanReport> {
+    if project.deps.is_empty() {
+        return Ok(ScanReport::empty());
+    }
+
+    let ecosystem = project.deps[0].ecosystem;
+    let (checkable, non_internal, internal) = classify_deps(&project.deps, &config, ecosystem);
+    let mut lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile(
+        project.spec.project_dir(),
+        Some(project.spec.kind),
+        &non_internal,
+        project.spec.lockfile_path_override.as_deref(),
+    )?;
+
+    let pipeline = checks::pipeline::default_pipeline();
+    let ctx = checks::CheckContext {
+        checkable_deps: &checkable,
+        non_internal_deps: &non_internal,
+        config: &config,
+        registry,
+        osv_client,
+        resolution: &lockfile_data.resolution,
+        ecosystem,
+        opts,
+    };
+    let mut acc = checks::ScanAccumulator::new();
+    acc.issues.extend(alias_identity_issues(&non_internal));
+    for check in &pipeline {
+        check.run(&ctx, &mut acc).await?;
+    }
+    mark_source(&mut acc.issues, "direct");
+
+    if !internal.is_empty() {
+        let internal_resolution = lockfiles::LockfileData::parse_for_kind_with_lockfile(
+            project.spec.project_dir(),
+            Some(project.spec.kind),
+            &internal,
+            project.spec.lockfile_path_override.as_deref(),
+        )
+        .map(|ld| ld.resolution)
+        .unwrap_or_default();
+        let internal_ctx = checks::CheckContext {
+            checkable_deps: &[],
+            non_internal_deps: &internal,
+            config: &config,
+            registry,
+            osv_client,
+            resolution: &internal_resolution,
+            ecosystem,
+            opts,
+        };
+        let mut internal_acc = checks::ScanAccumulator::new();
+        let osv_check: Box<dyn checks::Check> = Box::new(checks::pipeline::MaliciousCheck);
+        osv_check.run(&internal_ctx, &mut internal_acc).await?;
+        mark_source(&mut internal_acc.issues, "direct");
+        acc.issues.extend(internal_acc.issues);
+    }
+
+    let mut transitive_deps = std::mem::take(&mut lockfile_data.transitive_deps);
+    transitive_deps.retain(|dep| {
+        !config.is_internal(ecosystem.as_str(), dep.package_name())
+            && !config.is_allowed(ecosystem.as_str(), dep.package_name())
+    });
+
+    if !transitive_deps.is_empty() {
+        let trans_resolution = lockfile_data.resolve_transitive(&transitive_deps)?;
+        let trans_pipeline: Vec<Box<dyn checks::Check>> =
+            if opts.deep || ecosystem == Ecosystem::Npm {
+                checks::pipeline::default_pipeline()
+            } else {
+                vec![
+                    Box::new(checks::pipeline::CanonicalCheck),
+                    Box::new(checks::pipeline::MetadataCheck),
+                    Box::new(checks::pipeline::ExistenceCheck),
+                    Box::new(checks::pipeline::MaliciousCheck),
+                ]
+            };
+
+        let trans_ctx = checks::CheckContext {
+            checkable_deps: &transitive_deps,
+            non_internal_deps: &transitive_deps,
+            config: &config,
+            registry,
+            osv_client,
+            resolution: &trans_resolution,
+            ecosystem,
+            opts,
+        };
+        let mut trans_acc = checks::ScanAccumulator::new();
+        trans_acc.similarity_flagged = acc.similarity_flagged.clone();
+        for check in &trans_pipeline {
+            check.run(&trans_ctx, &mut trans_acc).await?;
+        }
+        mark_source(&mut trans_acc.issues, "transitive");
+        acc.issues.extend(trans_acc.issues);
+    }
+
+    Ok(ScanReport::from_issues_with_review_candidates(
+        non_internal.len() + transitive_deps.len(),
+        acc.issues,
+        acc.review_candidates,
+    ))
+}
+
 #[cfg(test)]
 async fn scan_with_services_inner(
     project_dir: &std::path::Path,
@@ -2336,6 +4146,8 @@ async fn scan_with_services_inner(
         .await
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn scan_with_services_inner_for_kind(
     project_kind: Option<ProjectInputKind>,
     project_dir: &std::path::Path,
@@ -2588,7 +4400,10 @@ pub(crate) fn unresolved_version_policy_issues(
     };
 
     deps.iter()
-        .filter(|dep| resolution.is_unresolved(dep))
+        .filter(|dep| {
+            resolution.is_unresolved(dep)
+                && !resolution.has_issue_for(dep, checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC)
+        })
         .map(|dep| {
             let message = if let Some(requirement) = dep.version.as_deref() {
                 format!(

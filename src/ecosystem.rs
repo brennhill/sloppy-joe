@@ -109,6 +109,97 @@ impl Ecosystem {
             Self::Dotnet => format!("https://www.nuget.org/packages/{}", name),
         }
     }
+
+    /// Whether the package name matches the expected shape for this ecosystem.
+    pub fn has_valid_package_name_shape(&self, name: &str) -> bool {
+        match self {
+            Self::Npm => valid_npm_name(name),
+            Self::PyPI => valid_simple_name(name),
+            Self::Cargo => valid_simple_name(name),
+            Self::Go => valid_go_name(name),
+            Self::Ruby => valid_simple_name(name),
+            Self::Php => valid_php_name(name),
+            Self::Jvm => valid_jvm_name(name),
+            Self::Dotnet => valid_simple_name(name),
+        }
+    }
+}
+
+fn valid_simple_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+}
+
+fn valid_npm_name(name: &str) -> bool {
+    let (scope, package) = if let Some(rest) = name.strip_prefix('@') {
+        let (scope, package) = match rest.split_once('/') {
+            Some(parts) => parts,
+            None => return false,
+        };
+        if package.contains('/') {
+            return false;
+        }
+        (Some(scope), package)
+    } else {
+        if name.contains('/') {
+            return false;
+        }
+        (None, name)
+    };
+
+    let valid_segment = |segment: &str| {
+        !segment.is_empty()
+            && !segment.starts_with('.')
+            && !segment.starts_with('_')
+            && segment
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~'))
+    };
+
+    scope.is_none_or(valid_segment) && valid_segment(package)
+}
+
+fn valid_go_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.ends_with('/')
+        && name
+            .split('/')
+            .all(|segment| !segment.is_empty() && valid_go_segment(segment))
+}
+
+fn valid_go_segment(segment: &str) -> bool {
+    segment
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~'))
+}
+
+fn valid_php_name(name: &str) -> bool {
+    let Some((vendor, package)) = name.split_once('/') else {
+        return false;
+    };
+    !vendor.is_empty()
+        && !package.is_empty()
+        && !package.contains('/')
+        && valid_simple_name(vendor)
+        && valid_simple_name(package)
+}
+
+fn valid_jvm_name(name: &str) -> bool {
+    let Some((group, artifact)) = name.split_once(':') else {
+        return false;
+    };
+    !group.is_empty()
+        && !artifact.is_empty()
+        && !artifact.contains(':')
+        && group
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        && artifact
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 impl fmt::Display for Ecosystem {

@@ -2,7 +2,7 @@ pub mod registry;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Config format:
 /// ```json
@@ -43,6 +43,21 @@ use std::path::Path;
 ///   "min_version_age_hours": 72,
 ///   "allow_unresolved_versions": false,
 ///   "allow_legacy_npm_v1_lockfile": false,
+///   "trusted_local_paths": {
+///     "cargo": ["/opt/company/shared-crate"]
+///   },
+///   "trusted_registries": {
+///     "cargo": [
+///       {
+///         "name": "company",
+///         "source": "registry+https://cargo.company.example/index"
+///       }
+///     ]
+///   },
+///   "trusted_git_sources": {
+///     "cargo": ["https://github.com/yourorg/shared-crate"]
+///   },
+///   "cargo_git_policy": "block",
 ///   "python_enforcement": "prefer_poetry"
 /// }
 /// ```
@@ -63,6 +78,14 @@ use std::path::Path;
 ///   to warnings, but still emit them. Default: false.
 /// - `allow_legacy_npm_v1_lockfile`: allow legacy npm v5/v6
 ///   `lockfileVersion: 1` lockfiles in reduced-confidence mode. Default: false.
+/// - `trusted_local_paths`: exact local dependency directories trusted for
+///   provenance-sensitive ecosystems like Cargo.
+/// - `trusted_registries`: exact manifest alias + lockfile source bindings for
+///   trusted private registries.
+/// - `trusted_git_sources`: exact allowlist of git repository URLs permitted in
+///   reduced-confidence modes.
+/// - `cargo_git_policy`: Cargo git dependency policy. `block` (default) or
+///   `warn_pinned`.
 /// - `python_enforcement`: controls how strictly sloppy-joe enforces trusted
 ///   Python manifest workflows. `prefer_poetry` (default) trusts Poetry when
 ///   present and warns on legacy manifests. `poetry_only` blocks non-Poetry
@@ -76,6 +99,38 @@ pub enum PythonEnforcement {
 
 fn default_python_enforcement() -> PythonEnforcement {
     PythonEnforcement::PreferPoetry
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CargoGitPolicy {
+    Block,
+    WarnPinned,
+}
+
+fn default_cargo_git_policy() -> CargoGitPolicy {
+    CargoGitPolicy::Block
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedRegistry {
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalOverlayConfig {
+    #[serde(default)]
+    trusted_local_paths: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    trusted_registries: HashMap<String, Vec<TrustedRegistry>>,
+    #[serde(default)]
+    trusted_git_sources: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    cargo_git_policy: Option<CargoGitPolicy>,
+    #[serde(default)]
+    allow_host_local_cargo_config: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,8 +198,20 @@ pub struct SloppyJoeConfig {
     pub allow_unresolved_versions: bool,
     #[serde(default)]
     pub allow_legacy_npm_v1_lockfile: bool,
+    #[serde(default)]
+    pub trusted_local_paths: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub trusted_registries: HashMap<String, Vec<TrustedRegistry>>,
+    #[serde(default)]
+    pub trusted_git_sources: HashMap<String, Vec<String>>,
+    #[serde(default = "default_cargo_git_policy")]
+    pub cargo_git_policy: CargoGitPolicy,
     #[serde(default = "default_python_enforcement")]
     pub python_enforcement: PythonEnforcement,
+    #[serde(skip)]
+    pub allow_host_local_cargo_config: bool,
+    #[serde(skip)]
+    pub active_local_overlay_relaxations: Vec<String>,
 }
 
 fn default_min_version_age_hours() -> u64 {
@@ -175,7 +242,13 @@ impl Default for SloppyJoeConfig {
             min_version_age_hours: default_min_version_age_hours(),
             allow_unresolved_versions: false,
             allow_legacy_npm_v1_lockfile: false,
+            trusted_local_paths: HashMap::new(),
+            trusted_registries: HashMap::new(),
+            trusted_git_sources: HashMap::new(),
+            cargo_git_policy: default_cargo_git_policy(),
             python_enforcement: default_python_enforcement(),
+            allow_host_local_cargo_config: false,
+            active_local_overlay_relaxations: Vec::new(),
         }
     }
 }
@@ -314,6 +387,27 @@ impl SloppyJoeConfig {
             })
     }
 
+    pub fn trusted_local_paths(&self, ecosystem: &str) -> &[String] {
+        self.trusted_local_paths
+            .get(ecosystem)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn trusted_registries(&self, ecosystem: &str) -> &[TrustedRegistry] {
+        self.trusted_registries
+            .get(ecosystem)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn trusted_git_sources(&self, ecosystem: &str) -> &[String] {
+        self.trusted_git_sources
+            .get(ecosystem)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Validate config at load time. Returns a list of errors.
     pub fn validate(&self) -> Vec<String> {
         let valid_ecosystems = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
@@ -331,6 +425,18 @@ impl SloppyJoeConfig {
             (
                 "metadata_exceptions",
                 self.metadata_exceptions.keys().collect::<Vec<_>>(),
+            ),
+            (
+                "trusted_local_paths",
+                self.trusted_local_paths.keys().collect::<Vec<_>>(),
+            ),
+            (
+                "trusted_registries",
+                self.trusted_registries.keys().collect::<Vec<_>>(),
+            ),
+            (
+                "trusted_git_sources",
+                self.trusted_git_sources.keys().collect::<Vec<_>>(),
             ),
         ] {
             for key in keys {
@@ -423,6 +529,39 @@ impl SloppyJoeConfig {
                 {
                     errors.push(format!(
                         "Invalid metadata exception in {}: maintainer-change exceptions require exact previous_publisher and current_publisher values",
+                        eco
+                    ));
+                }
+            }
+        }
+
+        for (eco, paths) in &self.trusted_local_paths {
+            for path in paths {
+                if path.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid trusted local path in {}: path must be non-empty",
+                        eco
+                    ));
+                }
+            }
+        }
+
+        for (eco, rules) in &self.trusted_registries {
+            for rule in rules {
+                if rule.name.trim().is_empty() || rule.source.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid trusted registry in {}: name and source must be non-empty",
+                        eco
+                    ));
+                }
+            }
+        }
+
+        for (eco, sources) in &self.trusted_git_sources {
+            for source in sources {
+                if source.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid trusted git source in {}: source must be non-empty",
                         eco
                     ));
                 }
@@ -534,20 +673,23 @@ pub fn load_config_with_project(
     config_path: Option<&Path>,
     project_dir: Option<&Path>,
 ) -> Result<SloppyJoeConfig, String> {
-    let Some(path) = config_path else {
-        return Ok(SloppyJoeConfig::default());
+    let mut config = if let Some(path) = config_path {
+        ensure_config_outside_project(path, project_dir)?;
+
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "Could not read config file: {}\n  Path: {}\n  Fix: Check that the file exists and is readable.\n       Use 'sloppy-joe init > config.json' to generate a template.",
+                e, path.display()
+            )
+        })?;
+
+        parse_config_content(&content, &path.display().to_string())?
+    } else {
+        SloppyJoeConfig::default()
     };
 
-    ensure_config_outside_project(path, project_dir)?;
-
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        format!(
-            "Could not read config file: {}\n  Path: {}\n  Fix: Check that the file exists and is readable.\n       Use 'sloppy-joe init > config.json' to generate a template.",
-            e, path.display()
-        )
-    })?;
-
-    parse_config_content(&content, &path.display().to_string())
+    config = maybe_apply_local_overlay(config)?;
+    Ok(config)
 }
 
 /// Load config from a string source — either a file path or a URL.
@@ -557,24 +699,28 @@ pub async fn load_config_from_source(
     source: Option<&str>,
     project_dir: Option<&Path>,
 ) -> Result<SloppyJoeConfig, String> {
-    let Some(source) = source else {
-        return Ok(SloppyJoeConfig::default());
+    let mut config = if let Some(source) = source {
+        if source.starts_with("http://") {
+            return Err(format!(
+                "Config URL must use HTTPS.\n  URL: {}\n  Fix: Use an https:// URL or a local path outside the project directory.",
+                redact_url_for_display(source)
+            ));
+        } else if source.starts_with("https://") {
+            fetch_config_from_url(source).await?
+        } else {
+            return load_config_with_project(Some(Path::new(source)), project_dir);
+        }
+    } else {
+        SloppyJoeConfig::default()
     };
 
-    if source.starts_with("http://") {
-        Err(format!(
-            "Config URL must use HTTPS.\n  URL: {}\n  Fix: Use an https:// URL or a local path outside the project directory.",
-            source
-        ))
-    } else if source.starts_with("https://") {
-        fetch_config_from_url(source).await
-    } else {
-        load_config_with_project(Some(Path::new(source)), project_dir)
-    }
+    config = maybe_apply_local_overlay(config)?;
+    Ok(config)
 }
 
 /// Fetch config JSON from a URL.
 async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
+    let display_url = redact_url_for_display(url);
     // Use a dedicated client with no redirects to prevent SSRF via redirect chains
     let client = reqwest::Client::builder()
         .user_agent("sloppy-joe")
@@ -585,7 +731,7 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     let response = client.get(url).send().await.map_err(|e| {
         format!(
             "Could not fetch config from URL: {}\n  URL: {}\n  Fix: Check that the URL is reachable and returns valid JSON.\n       For private repos, ensure your CI token has read access.",
-            e, url
+            e, display_url
         )
     })?;
 
@@ -593,7 +739,7 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
         return Err(format!(
             "Config URL returned HTTP {}\n  URL: {}\n  Fix: Check that the URL points to a valid JSON file.\n       For GitHub raw URLs, use: https://raw.githubusercontent.com/org/repo/main/sloppy-joe.json",
             response.status(),
-            url
+            display_url
         ));
     }
 
@@ -605,7 +751,7 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     {
         return Err(format!(
             "Config response too large ({} bytes, max {} bytes)\n  URL: {}",
-            len, MAX_CONFIG_BYTES, url
+            len, MAX_CONFIG_BYTES, display_url
         ));
     }
     // Read body in chunks with a hard size cap to prevent OOM from chunked responses
@@ -614,13 +760,13 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     let mut stream = response.bytes_stream();
     use futures::StreamExt;
     while let Some(chunk) = stream.next().await {
-        let chunk =
-            chunk.map_err(|e| format!("Could not read response body from {}: {}", url, e))?;
+        let chunk = chunk
+            .map_err(|e| format!("Could not read response body from {}: {}", display_url, e))?;
         body.extend_from_slice(&chunk);
         if body.len() as u64 > MAX_CONFIG_BYTES {
             return Err(format!(
                 "Config response too large (>{} bytes)\n  URL: {}",
-                MAX_CONFIG_BYTES, url
+                MAX_CONFIG_BYTES, display_url
             ));
         }
     }
@@ -628,7 +774,18 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     let content = String::from_utf8(bytes)
         .map_err(|e| format!("Config response is not valid UTF-8: {}", e))?;
 
-    parse_config_content(&content, url)
+    parse_config_content(&content, &display_url)
+}
+
+fn redact_url_for_display(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
 }
 
 /// Parse config JSON content with actionable error messages.
@@ -670,6 +827,109 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
     }
 
     Ok(config)
+}
+
+fn parse_local_overlay_content(content: &str, source: &str) -> Result<LocalOverlayConfig, String> {
+    if content.trim().is_empty() {
+        return Err(format!(
+            "Local overlay config is empty.\n  Source: {}\n  Fix: Remove the file or provide valid JSON.",
+            source
+        ));
+    }
+
+    serde_json::from_str(content).map_err(|e| {
+        format!(
+            "Local overlay config is not valid JSON.\n  Source: {}\n  Error: {}\n  Fix: Use a JSON object with only local provenance fields.",
+            source, e
+        )
+    })
+}
+
+fn overlay_relaxation_messages(overlay: &LocalOverlayConfig) -> Vec<String> {
+    let mut messages = Vec::new();
+    if !overlay.trusted_local_paths.is_empty() {
+        messages.push("local trusted Cargo path allowlist".to_string());
+    }
+    if !overlay.trusted_registries.is_empty() {
+        messages.push("local trusted Cargo registry allowlist".to_string());
+    }
+    if !overlay.trusted_git_sources.is_empty() {
+        messages.push("local trusted Cargo git allowlist".to_string());
+    }
+    if overlay.cargo_git_policy == Some(CargoGitPolicy::WarnPinned) {
+        messages.push("reduced-confidence Cargo git policy".to_string());
+    }
+    if overlay.allow_host_local_cargo_config {
+        messages.push("host-local Cargo config trust".to_string());
+    }
+    messages
+}
+
+fn apply_local_overlay(mut base: SloppyJoeConfig, overlay: LocalOverlayConfig) -> SloppyJoeConfig {
+    let relaxation_messages = overlay_relaxation_messages(&overlay);
+    for (ecosystem, paths) in overlay.trusted_local_paths {
+        base.trusted_local_paths
+            .entry(ecosystem)
+            .or_default()
+            .extend(paths);
+    }
+    for (ecosystem, registries) in overlay.trusted_registries {
+        base.trusted_registries
+            .entry(ecosystem)
+            .or_default()
+            .extend(registries);
+    }
+    for (ecosystem, sources) in overlay.trusted_git_sources {
+        base.trusted_git_sources
+            .entry(ecosystem)
+            .or_default()
+            .extend(sources);
+    }
+    if overlay.cargo_git_policy == Some(CargoGitPolicy::WarnPinned) {
+        base.cargo_git_policy = CargoGitPolicy::WarnPinned;
+    }
+    if overlay.allow_host_local_cargo_config {
+        base.allow_host_local_cargo_config = true;
+    }
+    base.active_local_overlay_relaxations = relaxation_messages;
+    base
+}
+
+fn local_overlay_path() -> Result<PathBuf, String> {
+    registry::config_home().map(|home| home.join("local-overlay.json"))
+}
+
+fn running_in_ci() -> bool {
+    std::env::var("CI")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn maybe_apply_local_overlay(config: SloppyJoeConfig) -> Result<SloppyJoeConfig, String> {
+    if running_in_ci() {
+        return Ok(config);
+    }
+
+    let overlay_path = local_overlay_path()?;
+    if !overlay_path.exists() {
+        return Ok(config);
+    }
+
+    load_local_overlay_from_path(config, &overlay_path)
+}
+
+fn load_local_overlay_from_path(
+    base: SloppyJoeConfig,
+    path: &Path,
+) -> Result<SloppyJoeConfig, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "Could not read local overlay config: {}\n  Path: {}\n  Fix: Check file permissions or remove the local overlay file.",
+            e, path.display()
+        )
+    })?;
+    let overlay = parse_local_overlay_content(&content, &path.display().to_string())?;
+    Ok(apply_local_overlay(base, overlay))
 }
 
 fn ensure_config_outside_project(path: &Path, project_dir: Option<&Path>) -> Result<(), String> {
@@ -759,7 +1019,13 @@ fn template_config() -> SloppyJoeConfig {
         min_version_age_hours: 72,
         allow_unresolved_versions: false,
         allow_legacy_npm_v1_lockfile: false,
+        trusted_local_paths: HashMap::new(),
+        trusted_registries: HashMap::new(),
+        trusted_git_sources: HashMap::new(),
+        cargo_git_policy: default_cargo_git_policy(),
         python_enforcement: default_python_enforcement(),
+        allow_host_local_cargo_config: false,
+        active_local_overlay_relaxations: Vec::new(),
     }
 }
 
@@ -776,6 +1042,20 @@ pub fn print_template() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "sloppy-joe-test-{}-{}",
+            label,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn is_internal_exact_match() {
@@ -945,8 +1225,7 @@ mod tests {
 
     #[test]
     fn load_config_valid_file() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-config-v2");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("config-v2");
         let path = dir.join("config.json");
         std::fs::write(
             &path,
@@ -966,13 +1245,114 @@ mod tests {
     }
 
     #[test]
+    fn load_config_parses_cargo_provenance_fields() {
+        let dir = unique_temp_dir("config-cargo-provenance");
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "trusted_local_paths": {
+    "cargo": ["/opt/company/shared-crate"]
+  },
+  "trusted_registries": {
+    "cargo": [
+      {
+        "name": "company",
+        "source": "registry+https://cargo.company.example/index"
+      }
+    ]
+  },
+  "trusted_git_sources": {
+    "cargo": ["https://github.com/yourorg/shared-crate"]
+  },
+  "cargo_git_policy": "warn_pinned"
+}"#,
+        )
+        .unwrap();
+
+        let config = load_config(Some(&path)).unwrap();
+        assert_eq!(
+            config.trusted_local_paths.get("cargo"),
+            Some(&vec!["/opt/company/shared-crate".to_string()])
+        );
+        assert_eq!(config.trusted_registries["cargo"][0].name, "company");
+        assert_eq!(
+            config.trusted_registries["cargo"][0].source,
+            "registry+https://cargo.company.example/index"
+        );
+        assert_eq!(
+            config.trusted_git_sources.get("cargo"),
+            Some(&vec!["https://github.com/yourorg/shared-crate".to_string()])
+        );
+        assert_eq!(config.cargo_git_policy, CargoGitPolicy::WarnPinned);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn local_overlay_adds_cargo_provenance_relaxations_additively() {
+        let dir = unique_temp_dir("local-overlay-cargo");
+        let path = dir.join("local-overlay.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "trusted_local_paths": {
+    "cargo": ["/opt/company/shared-crate"]
+  },
+  "trusted_git_sources": {
+    "cargo": ["https://github.com/yourorg/shared-crate"]
+  },
+  "cargo_git_policy": "warn_pinned",
+  "allow_host_local_cargo_config": true
+}"#,
+        )
+        .unwrap();
+
+        let base = SloppyJoeConfig {
+            trusted_registries: HashMap::from([(
+                "cargo".to_string(),
+                vec![TrustedRegistry {
+                    name: "company".to_string(),
+                    source: "registry+https://cargo.company.example/index".to_string(),
+                }],
+            )]),
+            ..Default::default()
+        };
+        let merged = load_local_overlay_from_path(base, &path).unwrap();
+
+        assert_eq!(
+            merged.trusted_registries["cargo"][0].source,
+            "registry+https://cargo.company.example/index"
+        );
+        assert_eq!(
+            merged.trusted_local_paths["cargo"][0],
+            "/opt/company/shared-crate"
+        );
+        assert_eq!(
+            merged.trusted_git_sources["cargo"][0],
+            "https://github.com/yourorg/shared-crate"
+        );
+        assert_eq!(merged.cargo_git_policy, CargoGitPolicy::WarnPinned);
+        assert!(merged.allow_host_local_cargo_config);
+        assert!(
+            !merged.active_local_overlay_relaxations.is_empty(),
+            "effective config should remember that local-only relaxations are active"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn load_config_rejects_unknown_python_enforcement() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-config-python-mode");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("config-python-mode");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"python_enforcement":"requirements_only"}"#).unwrap();
 
-        let err = load_config(Some(&path)).expect_err("unknown Python enforcement modes must fail");
+        let err = parse_config_content(
+            &std::fs::read_to_string(&path).unwrap(),
+            &path.display().to_string(),
+        )
+        .expect_err("unknown Python enforcement modes must fail");
         assert!(err.contains("prefer_poetry"));
         assert!(err.contains("poetry_only"));
 
@@ -981,19 +1361,17 @@ mod tests {
 
     #[test]
     fn load_config_rejects_project_local_path() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-project-boundary");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("project-boundary");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"canonical":{},"internal":{},"allowed":{}}"#).unwrap();
-        let err = load_config_with_project(Some(&path), Some(&dir)).unwrap_err();
+        let err = ensure_config_outside_project(&path, Some(&dir)).unwrap_err();
         assert!(err.contains("outside the project directory"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn load_config_empty_file_returns_error() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-empty");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("empty");
         let path = dir.join("config.json");
         std::fs::write(&path, "").unwrap();
         let result = load_config(Some(&path));
@@ -1005,8 +1383,7 @@ mod tests {
 
     #[test]
     fn load_config_invalid_json_returns_error_with_hints() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-invalid");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("invalid");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{ "canonical": {}, // this is a comment }"#).unwrap();
         let result = load_config(Some(&path));
@@ -1051,7 +1428,7 @@ mod tests {
         // find no git root and no default config, returning None
         let dir = std::env::temp_dir().join("sj-resolve-test");
         std::fs::create_dir_all(&dir).unwrap();
-        let source = resolve_config_source(None, Some(&dir));
+        let source = registry::lookup(&dir);
         // Should not error — exercising the registry::lookup code path
         assert!(source.is_ok());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1241,8 +1618,7 @@ mod tests {
 
     #[test]
     fn load_config_valid_file_runs_validation() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-validate");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("validate");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"internal":{"nodejs":["pkg"]}}"#).unwrap();
         let result = load_config(Some(&path));
@@ -1258,6 +1634,13 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn redact_url_for_display_strips_credentials_and_query() {
+        let redacted =
+            redact_url_for_display("https://user:secret@example.com/config.json?token=abc#frag");
+        assert_eq!(redacted, "https://example.com/config.json");
     }
 
     // ── parse_config_content edge cases ──
@@ -1380,8 +1763,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_config_from_source_file_path() {
-        let dir = std::env::temp_dir().join("sloppy-joe-test-source-file");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = unique_temp_dir("source-file");
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"canonical":{}}"#).unwrap();
         let config = load_config_from_source(Some(path.to_str().unwrap()), None)

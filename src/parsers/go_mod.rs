@@ -7,6 +7,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("go.mod");
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read go.mod")?;
+    validate_replace_targets(&content, &path)?;
 
     let requirements = parse_requirements(&content, false);
     let mut deps = Vec::new();
@@ -22,6 +23,16 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(deps)
+}
+
+fn validate_replace_targets(content: &str, path: &Path) -> Result<()> {
+    if parse_local_replace_entries(content).next().is_some() {
+        anyhow::bail!(
+            "Unsupported local go.mod replace target in {}: local replace directives are not trusted yet",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Option<String>)> {
@@ -91,6 +102,12 @@ pub(crate) fn requires_go_sum(content: &str) -> bool {
 }
 
 fn parse_local_replace_targets(content: &str) -> HashSet<String> {
+    parse_local_replace_entries(content)
+        .map(|(module, _)| module)
+        .collect()
+}
+
+fn parse_local_replace_entries(content: &str) -> impl Iterator<Item = (String, String)> + '_ {
     let mut replacements = HashSet::new();
     let mut in_replace = false;
 
@@ -106,8 +123,8 @@ fn parse_local_replace_targets(content: &str) -> HashSet<String> {
         }
 
         if let Some(rest) = line.strip_prefix("replace ") {
-            if let Some(module) = parse_local_replace_entry(rest) {
-                replacements.insert(module);
+            if let Some((module, target)) = parse_local_replace_entry(rest) {
+                replacements.insert((module, target));
             }
             continue;
         }
@@ -115,28 +132,32 @@ fn parse_local_replace_targets(content: &str) -> HashSet<String> {
         if in_replace
             && !line.is_empty()
             && !line.starts_with("//")
-            && let Some(module) = parse_local_replace_entry(line)
+            && let Some((module, target)) = parse_local_replace_entry(line)
         {
-            replacements.insert(module);
+            replacements.insert((module, target));
         }
     }
 
-    replacements
+    replacements.into_iter()
 }
 
-fn parse_local_replace_entry(entry: &str) -> Option<String> {
+fn parse_local_replace_entry(entry: &str) -> Option<(String, String)> {
     let (left, right) = entry.split_once("=>")?;
     let old_module = left.split_whitespace().next()?.to_string();
     let right_tokens: Vec<&str> = right.split_whitespace().collect();
-    if right_tokens.len() == 1 {
-        return Some(old_module);
+    if right_tokens.len() == 1 && is_local_replace_target(right_tokens[0]) {
+        return Some((old_module, right_tokens[0].to_string()));
     }
     if let Some(path) = right_tokens.first()
-        && (path.starts_with("./") || path.starts_with("../") || path.starts_with('/'))
+        && is_local_replace_target(path)
     {
-        return Some(old_module);
+        return Some((old_module, (*path).to_string()));
     }
     None
+}
+
+fn is_local_replace_target(path: &str) -> bool {
+    path.starts_with("./") || path.starts_with("../") || path.starts_with('/')
 }
 
 #[cfg(test)]
@@ -311,5 +332,38 @@ require (
 replace example.com/localdep => ../localdep
 "#;
         assert!(!requires_go_sum(content));
+    }
+
+    #[test]
+    fn go_sum_required_when_replace_rhs_is_remote_module() {
+        let content = r#"
+module example.com/myapp
+
+go 1.21
+
+require example.com/a v1.2.3
+
+replace example.com/a => example.com/b
+"#;
+        assert!(requires_go_sum(content));
+    }
+
+    #[test]
+    fn reject_local_replace_targets() {
+        let dir = setup_dir(
+            r#"
+module example.com/myapp
+
+require github.com/acme/lib v1.2.3
+
+replace github.com/acme/lib => ../local-lib
+"#,
+        );
+        let err = parse(&dir).expect_err("local go replace targets must fail closed");
+        assert!(
+            err.to_string()
+                .contains("Unsupported local go.mod replace target")
+        );
+        cleanup(&dir);
     }
 }

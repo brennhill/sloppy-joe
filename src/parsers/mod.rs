@@ -439,9 +439,9 @@ pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Resul
         );
     }
 
-    if !dep.ecosystem.allows_slashes() && dep.name.contains('/') {
+    if !crate::registry::validate_package_name_for_ecosystem(&dep.name, dep.ecosystem) {
         bail!(
-            "invalid package name '{}' in {}: unexpected '/' for {}",
+            "invalid package name '{}' in {}: unexpected shape for {}",
             escaped_name,
             source_path.display(),
             dep.ecosystem

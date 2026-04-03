@@ -72,15 +72,14 @@ pub trait RegistryExistence: Send + Sync {
                 package_name
             );
         }
-        // Reject slashes for ecosystems that don't use them in package names
         let eco = self.ecosystem();
         let eco_parsed: std::result::Result<Ecosystem, _> = eco.parse();
-        let allows_slashes = eco_parsed.map(|e| e.allows_slashes()).unwrap_or(false);
-        if !allows_slashes && package_name.contains('/') {
+        let ecosystem = eco_parsed?;
+        if !ecosystem.has_valid_package_name_shape(package_name) {
             anyhow::bail!(
-                "invalid package name for {} registry: '{}' (unexpected '/')",
+                "invalid package name for {} registry: '{}' (unexpected shape)",
                 eco,
-                package_name
+                package_name,
             );
         }
         Ok(())
@@ -161,6 +160,10 @@ pub(crate) fn validate_package_name(name: &str) -> bool {
         }
     }
     true
+}
+
+pub(crate) fn validate_package_name_for_ecosystem(name: &str, ecosystem: Ecosystem) -> bool {
+    validate_package_name(name) && ecosystem.has_valid_package_name_shape(name)
 }
 
 /// A package name that has passed basic safety validation.
@@ -382,6 +385,66 @@ mod tests {
     #[test]
     fn validate_package_name_rejects_empty() {
         assert!(!validate_package_name(""));
+    }
+
+    #[test]
+    fn ecosystem_validation_rejects_wrong_name_shapes() {
+        assert!(!validate_package_name_for_ecosystem(
+            "react/extra",
+            Ecosystem::Npm
+        ));
+        assert!(!validate_package_name_for_ecosystem(
+            "requests:core",
+            Ecosystem::PyPI
+        ));
+        assert!(!validate_package_name_for_ecosystem(
+            "serde/json",
+            Ecosystem::Cargo
+        ));
+        assert!(!validate_package_name_for_ecosystem(
+            "Newtonsoft.Json",
+            Ecosystem::Jvm
+        ));
+        assert!(!validate_package_name_for_ecosystem(
+            "vendor",
+            Ecosystem::Php
+        ));
+    }
+
+    #[test]
+    fn ecosystem_validation_accepts_expected_shapes() {
+        assert!(validate_package_name_for_ecosystem(
+            "@types/node",
+            Ecosystem::Npm
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "requests",
+            Ecosystem::PyPI
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "serde_json",
+            Ecosystem::Cargo
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "github.com/user/repo",
+            Ecosystem::Go
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "rails",
+            Ecosystem::Ruby
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "vendor/package",
+            Ecosystem::Php
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "org.junit.jupiter:junit-jupiter",
+            Ecosystem::Jvm
+        ));
+        assert!(validate_package_name_for_ecosystem(
+            "Newtonsoft.Json",
+            Ecosystem::Dotnet
+        ));
     }
 
     #[test]

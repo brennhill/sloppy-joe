@@ -9,6 +9,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse package.json")?;
 
+    parse_manifest_value(&path, &parsed)
+}
+
+pub(crate) fn parse_manifest_value(
+    path: &Path,
+    parsed: &serde_json::Value,
+) -> Result<Vec<Dependency>> {
     let mut deps = Vec::new();
 
     for section in [
@@ -19,8 +26,8 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     ] {
         if let Some(obj) = parsed.get(section).and_then(|v| v.as_object()) {
             for (name, version) in obj {
-                if let Some(dep) = parse_dependency(name, version.as_str(), &path)? {
-                    super::validate_dependency(&dep, &path)?;
+                if let Some(dep) = parse_dependency(name, version, path)? {
+                    super::validate_dependency(&dep, path)?;
                     deps.push(dep);
                 }
             }
@@ -32,17 +39,24 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
 fn parse_dependency(
     manifest_name: &str,
-    version: Option<&str>,
+    version: &serde_json::Value,
     source_path: &Path,
 ) -> Result<Option<Dependency>> {
-    let Some(version) = version.map(str::trim) else {
-        return Ok(Some(Dependency {
-            name: manifest_name.to_string(),
-            version: None,
-            ecosystem: crate::Ecosystem::Npm,
-            actual_name: None,
-        }));
-    };
+    let version = version.as_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unsupported npm dependency declaration for '{}' in {}: expected a string version spec",
+            crate::report::sanitize_for_terminal(manifest_name),
+            source_path.display()
+        )
+    })?;
+    let version = version.trim();
+    if version.is_empty() {
+        anyhow::bail!(
+            "Unsupported npm dependency declaration for '{}' in {}: empty version specs are not allowed",
+            crate::report::sanitize_for_terminal(manifest_name),
+            source_path.display()
+        );
+    }
 
     if let Some(alias_spec) = version.strip_prefix("npm:") {
         let (target_name, target_version) = alias_spec.rsplit_once('@').ok_or_else(|| {
@@ -220,6 +234,22 @@ mod tests {
         assert_eq!(deps[0].name, "lodash");
         assert_eq!(deps[0].version, Some("1.2.3".to_string()));
         assert_eq!(deps[0].actual_name.as_deref(), Some("evil-pkg"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_non_string_dependency_specs() {
+        let dir = setup_dir(r#"{"dependencies": {"react": null}}"#);
+        let err = parse(&dir).expect_err("non-string npm dependency specs must fail closed");
+        assert!(err.to_string().contains("expected a string version spec"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_empty_dependency_specs() {
+        let dir = setup_dir(r#"{"dependencies": {"react": "   "}}"#);
+        let err = parse(&dir).expect_err("empty npm dependency specs must fail closed");
+        assert!(err.to_string().contains("empty version specs"));
         cleanup(&dir);
     }
 }

@@ -361,6 +361,16 @@ pub(crate) async fn check_similarity_with_options(
     };
     let configured_roots = config.similarity_roots(ecosystem.as_str());
     let mut all_mutations: HashMap<String, HashMap<String, &'static str>> = HashMap::new();
+    let dep_downloads = dep_metadata
+        .map(|lookups| {
+            lookups
+                .iter()
+                .filter_map(|lookup| {
+                    Some((lookup.package.clone(), lookup.metadata.as_ref()?.downloads?))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     for dep in deps {
         if !flagged.contains(dep.package_name()) {
             let mut mutations = generate_mutations_with(&generators, dep.package_name(), ecosystem);
@@ -584,20 +594,15 @@ pub(crate) async fn check_similarity_with_options(
 
                 // Download disparity: if original dep has >10K downloads and
                 // candidate has <1000, this is high confidence typosquatting
-                if let Some(candidate_downloads) = meta.downloads {
-                    let original_downloads = dep_metadata
-                        .and_then(|lookups| lookups.iter().find(|l| l.package == dep_name))
-                        .and_then(|l| l.metadata.as_ref())
-                        .and_then(|m| m.downloads);
-                    if let Some(orig_dl) = original_downloads
-                        && orig_dl > 10_000
-                        && candidate_downloads < 1_000
-                    {
-                        evidence_parts.push(format!(
-                            "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
-                            dep_name, orig_dl, candidate_downloads, candidate
-                        ));
-                    }
+                if let Some(candidate_downloads) = meta.downloads
+                    && let Some(orig_dl) = dep_downloads.get(&dep_name).copied()
+                    && orig_dl > 10_000
+                    && candidate_downloads < 1_000
+                {
+                    evidence_parts.push(format!(
+                        "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
+                        dep_name, orig_dl, candidate_downloads, candidate
+                    ));
                 }
 
                 if !evidence_parts.is_empty() {

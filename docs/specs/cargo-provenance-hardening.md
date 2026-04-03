@@ -29,8 +29,9 @@ The goal of this spec is to make Cargo support precise:
   exact allowlisted `Cargo.lock` source URLs.
 - Cargo git dependencies remain blocked by default, but can be downgraded to warning
   only for exact pinned revisions from allowlisted repository URLs.
-- Root-level manifest provenance rewrites (`[patch]`, `[replace]`) remain blocked, and
-  `.cargo/config*` source rewrites remain blocked.
+- Cargo provenance rewrites are supported only when the effective rewritten source can
+  be proven by the same trust rules as an ordinary dependency from repo-visible
+  configuration plus `Cargo.lock`.
 
 ## Non-Goals
 
@@ -38,6 +39,7 @@ The goal of this spec is to make Cargo support precise:
 - Trusting manifest-side registry aliases without matching lockfile provenance.
 - Trusting floating git refs like `branch`, `tag`, or unspecified revisions.
 - Supporting broad directory trust for local paths.
+- Trusting hidden host-local Cargo configuration by default.
 
 ## Definitions
 
@@ -283,8 +285,9 @@ In scope:
 - exact trusted Cargo registry alias + source allowlist
 - optional reduced-confidence pinned git policy
 - support for target-specific dependency tables using the same provenance rules
-- explicit blocking of manifest `[patch]` and `[replace]`
-- explicit blocking of `.cargo/config.toml` and `.cargo/config` provenance rewrites
+- support for repo-visible provenance rewrites through `[patch]`, `[replace]`, and
+  repo-local `.cargo/config*` when the effective target is trusted
+- support for a local-only additive overlay for machine-specific Cargo provenance
 - test coverage for all supported and blocked provenance types
 
 Out of scope:
@@ -292,7 +295,8 @@ Out of scope:
 - broad directory trust for local paths
 - wildcard git host trust
 - support for floating git refs
-- support for arbitrary Cargo provenance rewriting features
+- support for arbitrary Cargo provenance rewriting features beyond the supported
+  trusted-source models
 - trusting registry aliases without exact lockfile provenance
 
 ---
@@ -364,6 +368,27 @@ Rules:
 - every allowed pinned git dependency emits `resolution/reduced-confidence-git` as a
   warning issue on every run
 
+### Local-Only Provenance Overlay
+
+The user-local overlay is separate from committed repo policy.
+
+Rules:
+
+- it is additive only; it may extend exact provenance allowlists for local machine use
+- it may add:
+  - `trusted_local_paths.cargo`
+  - `trusted_registries.cargo`
+  - `trusted_git_sources.cargo`
+  - `cargo_git_policy = "warn_pinned"`
+  - `allow_host_local_cargo_config = true`
+- it must not weaken third-party policy:
+  - no `min_version_age_hours` changes
+  - no `allowed`
+  - no `internal`
+  - no similarity or metadata exception overrides
+- every active local-only relaxation must emit a warning in human output and be
+  included in machine-readable output
+
 ---
 
 ## Architecture
@@ -409,13 +434,15 @@ Cargo local dependencies become first-class project links.
 - Scan scheduling is by canonical crate directory. Each local crate directory is queued
   at most once per scan, and cycles in local dependency graphs are broken by this
   canonical-path deduplication.
-- Ancestor `.cargo/config*` inspection runs before provenance trust is granted for a
-  local crate.
+- Repo-visible `.cargo/config*` inspection runs before provenance trust is granted for
+  a local crate. Hidden host-local Cargo config outside the repo is not trusted unless
+  a local-only overlay explicitly opts in.
 
 Unit boundary:
 
 - `src/lib.rs` owns local crate discovery, path canonicalization, trust-boundary
-  checks, ancestor `.cargo/config*` inspection, and scan scheduling.
+  checks, repo-visible `.cargo/config*` inspection, local-only overlay warnings, and
+  scan scheduling.
 
 ### 3. Cargo Registry Provenance
 
@@ -481,6 +508,25 @@ Unit boundary:
 - `src/config/mod.rs` owns allowlist configuration parsing for trusted local paths,
   registries, and git sources.
 
+### 5. Cargo Rewrite Provenance
+
+Rewrite features are handled as effective source edges, not as exemptions.
+
+- `[patch]` and `[replace]` are parsed into replacement provenance entries.
+- repo-local `.cargo/config.toml` and `.cargo/config` `[source.*]`, `[patch.*]`, and
+  `paths = [...]` are parsed only from the repo-visible trust boundary.
+- each rewritten effective target must independently satisfy one of the supported
+  trusted source models:
+  - crates.io
+  - exact allowlisted private registry
+  - in-root local crate
+  - exact allowlisted external local crate
+  - warned pinned git, if enabled
+- if the effective rewritten target cannot be proven exactly by repo-visible config
+  plus the authoritative `Cargo.lock`, the scan blocks
+- host-local Cargo config outside the repo is never part of trusted provenance unless a
+  local-only overlay explicitly opts in, and such runs must warn loudly
+
 ## Provenance Matrix
 
 | Cargo source type | Required evidence | Default | Weak mode | Failure mode |
@@ -493,7 +539,8 @@ Unit boundary:
 | private registry | allowlisted manifest alias plus allowlisted exact `Cargo.lock` source | block | pass | block if alias/source missing or disagree |
 | git exact pinned revision | allowlisted exact repo URL plus manifest `rev` plus matching `Cargo.lock` repo and commit | block | warn | block if repo or commit is not exact |
 | git branch/tag/unspecified | none | block | block | block |
-| root/source rewrites | none | block | block | block |
+| repo-visible rewrite to supported trusted target | repo-visible rewrite declaration plus the evidence required by the rewritten target source type | block unless each effective rewritten target is trusted and provable | pass | block if any effective target is untrusted or hidden |
+| host-local `~/.cargo/config.toml` or `~/.cargo/config` | none by default | block | warn | block unless a local-only overlay explicitly opts in |
 
 ## Direct Registry Resolution Matrix
 
@@ -520,7 +567,8 @@ Unit boundary:
 | manifest alias or exact lockfile registry source not trusted | `resolution/untrusted-registry-source` |
 | git repo URL or pinned commit not trusted | `resolution/untrusted-git-source` |
 | allowed pinned git dependency under `warn_pinned` | `resolution/reduced-confidence-git` |
-| manifest `[patch]`/`[replace]` or `.cargo/config*` rewrite detected | `resolution/blocked-provenance-rewrite` |
+| manifest or repo-local rewrite whose effective target cannot be trusted exactly | `resolution/blocked-provenance-rewrite` |
+| hidden host-local Cargo config without explicit local-only opt-in | `resolution/blocked-provenance-rewrite` |
 | exact manifest version disagrees with exact `Cargo.lock` version | `resolution/lockfile-out-of-sync` |
 | non-exact direct registry dependency whose locked exact version is present but not trusted as synchronized authoritative evidence | `resolution/no-trusted-lockfile-sync` |
 | multiple matching lockfile candidates without exact manifest disambiguation | `resolution/ambiguous` |
@@ -538,7 +586,8 @@ Unit boundary:
 | private registry alias + matching exact lockfile source | block | pass only if both alias and source are allowlisted |
 | git dep pinned to exact revision | block | warn-and-continue only if repo URL is allowlisted and policy is `warn_pinned` |
 | git dep using branch/tag/no revision | block | block |
-| `[patch]`, `[replace]`, `[source]` | block | block |
+| repo-visible `[patch]`, `[replace]`, `.cargo/config* [source]`, or `paths` | block unless every effective rewritten target is trusted and provable | pass only when each effective target satisfies a supported trust model |
+| host-local `~/.cargo/config.toml` or `~/.cargo/config` | block | warn-and-continue only when a local-only overlay explicitly opts in |
 
 ---
 
@@ -550,12 +599,13 @@ subphases:
 1. `workspace/path/rewrite`
    - workspace inheritance
    - local path trust
-   - ancestor `.cargo/config*` rewrite blocking
+   - repo-visible rewrite parsing and validation
    - local crate scan scheduling
-2. `registry/git`
+2. `registry/git/overlay`
    - trusted registry alias + exact source allowlists
    - authoritative lockfile discovery and candidate matching
    - reduced-confidence pinned git policy
+   - local-only provenance overlay wiring
 
 ## TDD Matrix
 
@@ -589,8 +639,12 @@ subphases:
 - pinned git dep + repo/commit mismatch between manifest and lockfile blocks
 - exact manifest version vs exact `Cargo.lock` mismatch emits `resolution/lockfile-out-of-sync`
 - floating git dep blocks
-- manifest `[patch]` and `[replace]` block
-- ancestor `.cargo/config.toml` and `.cargo/config` rewrite rules block
+- trusted repo-visible `[patch]` rewrite to in-root path crate passes
+- trusted repo-visible `[replace]` rewrite to allowlisted registry source passes
+- repo-visible rewrite to untrusted target blocks
+- host-local Cargo config blocks by default
+- host-local Cargo config with local-only overlay warns and continues only when the
+  effective rewritten targets are trusted
 
 ---
 

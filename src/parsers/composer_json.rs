@@ -8,6 +8,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         .context("Failed to read composer.json")?;
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse composer.json")?;
+    validate_supported_sources(&parsed, &path)?;
 
     let mut deps = Vec::new();
 
@@ -18,9 +19,16 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                 if name == "php" || name.starts_with("ext-") {
                     continue;
                 }
+                let version = version.as_str().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Unsupported Composer dependency '{}' in {}: only string version constraints are supported",
+                        crate::report::sanitize_for_terminal(name),
+                        path.display()
+                    )
+                })?;
                 let dep = Dependency {
                     name: name.clone(),
-                    version: version.as_str().map(String::from),
+                    version: Some(version.to_string()),
                     ecosystem: crate::Ecosystem::Php,
                     actual_name: None,
                 };
@@ -31,6 +39,23 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(deps)
+}
+
+fn validate_supported_sources(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+    let has_custom_repositories = parsed.get("repositories").is_some_and(|value| match value {
+        serde_json::Value::Array(entries) => !entries.is_empty(),
+        serde_json::Value::Object(entries) => !entries.is_empty(),
+        _ => true,
+    });
+
+    if has_custom_repositories {
+        anyhow::bail!(
+            "Unsupported Composer repositories in {}: custom package sources are not supported",
+            path.display()
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
