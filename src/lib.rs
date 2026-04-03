@@ -12,6 +12,7 @@ pub mod report;
 mod version;
 
 use anyhow::Result;
+use checks::Check;
 use checks::malicious::OsvClient;
 use registry::Registry;
 use report::{Issue, ScanReport, Severity};
@@ -60,6 +61,7 @@ pub async fn warm_cache(
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let opts = ScanOptions {
+        scan_mode: ScanMode::Full,
         deep,
         paranoid,
         no_cache: false,
@@ -81,6 +83,7 @@ pub async fn scan_with_source_full(
     cache_dir: Option<&std::path::Path>,
 ) -> Result<ScanReport> {
     let opts = ScanOptions {
+        scan_mode: ScanMode::Full,
         deep,
         paranoid,
         no_cache,
@@ -5133,11 +5136,18 @@ fn policy_hash_value(
     .map_err(|err| format!("cannot serialize scan policy for hashing: {err}"))
 }
 
-fn scan_hash_for_projects(
-    projects: &[ParsedProject],
+fn policy_hash_u64(
     config: &config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> std::result::Result<u64, String> {
+    use std::hash::Hasher;
+    let policy = policy_hash_value(config, opts)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hash_json_value_canonical(&policy, &mut hasher);
+    Ok(hasher.finish())
+}
+
+fn project_state_hash_for_projects(projects: &[ParsedProject]) -> std::result::Result<u64, String> {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
@@ -5198,24 +5208,51 @@ fn scan_hash_for_projects(
         }
     }
 
+    Ok(hasher.finish())
+}
+
+fn project_binding_hash_for_projects(projects: &[ParsedProject]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    let mut bindings: Vec<_> = projects
+        .iter()
+        .map(|project| {
+            (
+                project.spec.manifest_path.display().to_string(),
+                project.spec.kind.manifest_label(),
+                project.spec.js_binding.as_ref().map(|binding| {
+                    (
+                        binding.manager.as_str(),
+                        binding.root_manifest_path.display().to_string(),
+                        binding
+                            .lockfile_path
+                            .as_ref()
+                            .map(|path| path.display().to_string()),
+                        binding.package_entry_key.clone(),
+                    )
+                }),
+            )
+        })
+        .collect::<Vec<_>>();
+    bindings.sort();
+    bindings.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn scan_hash_for_projects(
+    projects: &[ParsedProject],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> std::result::Result<u64, String> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    project_state_hash_for_projects(projects)?.hash(&mut hasher);
+
     let policy = policy_hash_value(config, opts)?;
     hash_json_value_canonical(&policy, &mut hasher);
 
     Ok(hasher.finish())
-}
-
-fn scan_hash_matches_cache_for_projects(
-    projects: &[ParsedProject],
-    cache_base: &std::path::Path,
-    config: &config::SloppyJoeConfig,
-    opts: &ScanOptions<'_>,
-) -> std::result::Result<bool, String> {
-    let hash = scan_hash_for_projects(projects, config, opts)?;
-    let hash_path = cache_base.join("scan-hash.json");
-    Ok(matches!(
-        cache::read_json_cache::<ScanHashCache>(&hash_path, 7 * 24 * 3600, |c| c.timestamp),
-        Some(cached) if cached.hash == hash
-    ))
 }
 
 #[cfg(test)]
@@ -5297,6 +5334,109 @@ struct ScanHashCache {
     hash: u64,
 }
 
+const FULL_SCAN_TTL_SECS: u64 = 24 * 3600;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FullScanFingerprintCache {
+    timestamp: u64,
+    project_state_hash: u64,
+    policy_hash: u64,
+    binding_hash: u64,
+}
+
+fn full_scan_fingerprint_cache_path(cache_base: &std::path::Path) -> std::path::PathBuf {
+    cache_base.join("full-scan-fingerprint.json")
+}
+
+fn full_scan_fingerprint_components_for_projects(
+    projects: &[ParsedProject],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+    timestamp: u64,
+) -> std::result::Result<FullScanFingerprintCache, String> {
+    Ok(FullScanFingerprintCache {
+        timestamp,
+        project_state_hash: project_state_hash_for_projects(projects)?,
+        policy_hash: policy_hash_u64(config, opts)?,
+        binding_hash: project_binding_hash_for_projects(projects),
+    })
+}
+
+fn read_full_scan_fingerprint_cache(
+    cache_base: &std::path::Path,
+) -> std::result::Result<Option<FullScanFingerprintCache>, String> {
+    let path = full_scan_fingerprint_cache_path(cache_base);
+    if !path.exists() {
+        return Ok(None);
+    }
+    cache::ensure_no_symlink(&path)
+        .map_err(|err| format!("cannot safely read {}: {}", path.display(), err))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
+    let parsed = serde_json::from_str::<FullScanFingerprintCache>(&content)
+        .map_err(|err| format!("cannot parse {}: {}", path.display(), err))?;
+    Ok(Some(parsed))
+}
+
+fn persist_successful_full_scan_fingerprint(
+    projects: &[ParsedProject],
+    cache_base: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> std::result::Result<(), String> {
+    let fingerprint =
+        full_scan_fingerprint_components_for_projects(projects, config, opts, cache::now_epoch())?;
+    let path = full_scan_fingerprint_cache_path(cache_base);
+    cache::atomic_write_json(&path, &fingerprint);
+    Ok(())
+}
+
+fn full_scan_recommendation_reasons_for_projects(
+    projects: &[ParsedProject],
+    cache_base: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+    now_epoch: u64,
+) -> std::result::Result<Vec<report::FullScanRecommendationReason>, String> {
+    let current = full_scan_fingerprint_components_for_projects(projects, config, opts, now_epoch)?;
+    let Some(previous) = read_full_scan_fingerprint_cache(cache_base)? else {
+        return Ok(vec![
+            report::FullScanRecommendationReason::NoSuccessfulFullScan,
+        ]);
+    };
+
+    let mut reasons = Vec::new();
+    if now_epoch.saturating_sub(previous.timestamp) >= FULL_SCAN_TTL_SECS {
+        reasons.push(report::FullScanRecommendationReason::LastFullScanStale);
+    }
+    if previous.project_state_hash != current.project_state_hash {
+        reasons.push(report::FullScanRecommendationReason::DependencyStateChanged);
+    }
+    if previous.policy_hash != current.policy_hash {
+        reasons.push(report::FullScanRecommendationReason::PolicyChanged);
+    }
+    if previous.binding_hash != current.binding_hash {
+        reasons.push(report::FullScanRecommendationReason::ManagerBindingChanged);
+    }
+    Ok(reasons)
+}
+
+#[cfg(test)]
+fn full_scan_fingerprint_for_projects(
+    projects: &[ParsedProject],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> std::result::Result<u64, String> {
+    use std::hash::{Hash, Hasher};
+    let fingerprint =
+        full_scan_fingerprint_components_for_projects(projects, config, opts, cache::now_epoch())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    fingerprint.project_state_hash.hash(&mut hasher);
+    fingerprint.policy_hash.hash(&mut hasher);
+    fingerprint.binding_hash.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
 #[cfg(test)]
 fn scan_hash_matches_cache(
     project_dir: &std::path::Path,
@@ -5338,6 +5478,10 @@ async fn scan_with_config(
     config: config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
+    let cache_base = opts
+        .cache_dir
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
     let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
     let mut preflight_warnings = preflight_project_inputs(project_dir, &specs, &config)?;
     preflight_warnings.extend(local_overlay_relaxation_issues(&config));
@@ -5347,27 +5491,26 @@ async fn scan_with_config(
         parsers::parse_dependencies(project_dir, project_type)?;
         return Ok(ScanReport::from_issues(0, preflight_warnings));
     }
-
-    // Skip scan if deps haven't changed (manifest + lockfile hash check)
-    if !opts.no_cache && !opts.skip_hash_check {
-        let cache_base = opts
-            .cache_dir
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-        match scan_hash_matches_cache_for_projects(&projects, &cache_base, &config, opts) {
-            Ok(true) => {
-                eprintln!("Dependencies unchanged, skipping scan.");
-                return Ok(ScanReport::from_issues(0, preflight_warnings));
-            }
-            Ok(false) => {}
+    let full_scan_reasons = if matches!(opts.scan_mode, ScanMode::Fast) {
+        match full_scan_recommendation_reasons_for_projects(
+            &projects,
+            &cache_base,
+            &config,
+            opts,
+            cache::now_epoch(),
+        ) {
+            Ok(reasons) => reasons,
             Err(reason) => {
                 eprintln!(
-                    "Skipping dependency-hash shortcut: {}",
+                    "Skipping full-scan recommendation state: {}",
                     report::sanitize_for_terminal(&reason)
                 );
+                vec![report::FullScanRecommendationReason::NoSuccessfulFullScan]
             }
         }
-    }
+    } else {
+        Vec::new()
+    };
 
     // Scan each ecosystem separately, merge reports
     let client = registry::http_client();
@@ -5394,13 +5537,11 @@ async fn scan_with_config(
         all_issues,
         all_review_candidates,
     );
+    let mut report = report;
+    report.full_scan_reasons = full_scan_reasons;
 
     // Save hash after successful scan
     if !opts.no_cache {
-        let cache_base = opts
-            .cache_dir
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
         match scan_hash_for_projects(&projects, &config, opts) {
             Ok(hash) => {
                 let hash_path = cache_base.join("scan-hash.json");
@@ -5419,6 +5560,16 @@ async fn scan_with_config(
                 );
             }
         }
+    }
+
+    if opts.scan_mode.runs_full_checks()
+        && let Err(reason) =
+            persist_successful_full_scan_fingerprint(&projects, &cache_base, &config, opts)
+    {
+        eprintln!(
+            "Not caching successful full-scan fingerprint for this run: {}",
+            report::sanitize_for_terminal(&reason)
+        );
     }
 
     Ok(report)
@@ -5444,7 +5595,6 @@ async fn scan_parsed_project(
         project.spec.lockfile_path_override.as_deref(),
     )?;
 
-    let pipeline = checks::pipeline::default_pipeline();
     let ctx = checks::CheckContext {
         checkable_deps: &checkable,
         non_internal_deps: &non_internal,
@@ -5457,6 +5607,25 @@ async fn scan_parsed_project(
     };
     let mut acc = checks::ScanAccumulator::new();
     acc.issues.extend(alias_identity_issues(&non_internal));
+
+    if !opts.scan_mode.runs_full_checks() {
+        let canonical = checks::pipeline::CanonicalCheck;
+        canonical.run(&ctx, &mut acc).await?;
+        acc.issues.extend(lockfile_data.resolution.issues.clone());
+        acc.issues.extend(unresolved_version_policy_issues(
+            &non_internal,
+            &lockfile_data.resolution,
+            &config,
+        ));
+        mark_source(&mut acc.issues, "direct");
+        return Ok(ScanReport::from_issues_with_review_candidates(
+            non_internal.len(),
+            acc.issues,
+            acc.review_candidates,
+        ));
+    }
+
+    let pipeline = checks::pipeline::default_pipeline();
     for check in &pipeline {
         check.run(&ctx, &mut acc).await?;
     }
@@ -5744,6 +5913,8 @@ fn alias_identity_issues(deps: &[Dependency]) -> Vec<Issue> {
 /// Options that control scan behavior, set from CLI flags.
 #[derive(Debug, Clone, Default)]
 pub struct ScanOptions<'a> {
+    /// High-level scan behavior: fast local guardrail vs full online scan.
+    pub scan_mode: ScanMode,
     /// Enable similarity checks on transitive dependencies (--deep).
     pub deep: bool,
     /// Enable expensive mutation generators like bitflip (--paranoid).
@@ -5758,6 +5929,20 @@ pub struct ScanOptions<'a> {
     pub skip_hash_check: bool,
     /// Emit structured exception review candidates for supported findings.
     pub review_exceptions: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanMode {
+    Fast,
+    #[default]
+    Full,
+    Ci,
+}
+
+impl ScanMode {
+    fn runs_full_checks(self) -> bool {
+        !matches!(self, Self::Fast)
+    }
 }
 
 /// A dependency parsed from a project manifest file (package.json, Cargo.toml, etc.).

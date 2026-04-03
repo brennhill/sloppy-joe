@@ -249,6 +249,20 @@ fn fixture_config(case: &str) -> config::SloppyJoeConfig {
     config::load_config(Some(&path)).expect("fixture config should remain valid")
 }
 
+fn parsed_npm_fixture_projects(
+    case: &str,
+) -> (
+    std::path::PathBuf,
+    config::SloppyJoeConfig,
+    Vec<ParsedProject>,
+) {
+    let dir = fixture_dir(case);
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("npm"), &config).unwrap();
+    let projects = parse_project_inputs(&dir, &specs, &config).unwrap();
+    (dir, config, projects)
+}
+
 async fn scan_fixture_with_fake_services(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
@@ -5088,6 +5102,147 @@ fn scan_hash_is_deterministic() {
     let hash1 = scan_hash(&dir, &deps).unwrap();
     let hash2 = scan_hash(&dir, &deps).unwrap();
     assert_eq!(hash1, hash2);
+}
+
+#[test]
+fn full_scan_recommendation_reasons_include_no_successful_full_scan_when_cache_missing() {
+    let (_dir, config, projects) = parsed_npm_fixture_projects("transitive-typosquat");
+    let cache_dir = unique_dir();
+
+    let reasons = full_scan_recommendation_reasons_for_projects(
+        &projects,
+        &cache_dir,
+        &config,
+        &ScanOptions::default(),
+        cache::now_epoch(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        reasons,
+        vec![report::FullScanRecommendationReason::NoSuccessfulFullScan]
+    );
+}
+
+#[test]
+fn full_scan_fingerprint_changes_when_manager_binding_changes() {
+    let (_dir, config, projects) = parsed_npm_fixture_projects("transitive-typosquat");
+    let original =
+        full_scan_fingerprint_for_projects(&projects, &config, &ScanOptions::default()).unwrap();
+
+    let mut rebound = projects.clone();
+    rebound[0].spec.js_binding.as_mut().unwrap().manager = JsPackageManager::Pnpm;
+    let changed =
+        full_scan_fingerprint_for_projects(&rebound, &config, &ScanOptions::default()).unwrap();
+
+    assert_ne!(original, changed);
+}
+
+#[test]
+fn persisting_successful_full_scan_fingerprint_clears_recommendation() {
+    let (_dir, config, projects) = parsed_npm_fixture_projects("transitive-typosquat");
+    let cache_dir = unique_dir();
+
+    persist_successful_full_scan_fingerprint(
+        &projects,
+        &cache_dir,
+        &config,
+        &ScanOptions::default(),
+    )
+    .unwrap();
+    let reasons = full_scan_recommendation_reasons_for_projects(
+        &projects,
+        &cache_dir,
+        &config,
+        &ScanOptions::default(),
+        cache::now_epoch(),
+    )
+    .unwrap();
+
+    assert!(reasons.is_empty());
+}
+
+#[test]
+fn full_scan_recommendation_reasons_include_last_full_scan_stale_when_timestamp_expired() {
+    let (_dir, config, projects) = parsed_npm_fixture_projects("transitive-typosquat");
+    let cache_dir = unique_dir();
+    let stale = full_scan_fingerprint_components_for_projects(
+        &projects,
+        &config,
+        &ScanOptions::default(),
+        cache::now_epoch().saturating_sub(FULL_SCAN_TTL_SECS + 1),
+    )
+    .unwrap();
+    cache::atomic_write_json(&full_scan_fingerprint_cache_path(&cache_dir), &stale);
+
+    let reasons = full_scan_recommendation_reasons_for_projects(
+        &projects,
+        &cache_dir,
+        &config,
+        &ScanOptions::default(),
+        cache::now_epoch(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        reasons,
+        vec![report::FullScanRecommendationReason::LastFullScanStale]
+    );
+}
+
+#[test]
+fn full_scan_recommendation_reasons_include_policy_changed_when_config_differs() {
+    let (_dir, config, projects) = parsed_npm_fixture_projects("transitive-typosquat");
+    let cache_dir = unique_dir();
+    persist_successful_full_scan_fingerprint(
+        &projects,
+        &cache_dir,
+        &config,
+        &ScanOptions::default(),
+    )
+    .unwrap();
+
+    let mut changed_config = config.clone();
+    changed_config.min_version_age_hours = 1;
+    let reasons = full_scan_recommendation_reasons_for_projects(
+        &projects,
+        &cache_dir,
+        &changed_config,
+        &ScanOptions::default(),
+        cache::now_epoch(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        reasons,
+        vec![report::FullScanRecommendationReason::PolicyChanged]
+    );
+}
+
+#[tokio::test]
+async fn fast_mode_recommends_full_when_no_successful_full_scan_exists() {
+    let dir = fixture_dir("transitive-typosquat");
+    let cache_dir = unique_dir();
+
+    let report = scan_with_config(
+        &dir,
+        Some("npm"),
+        config::SloppyJoeConfig::default(),
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            cache_dir: Some(cache_dir.as_path()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fast mode should complete using local checks");
+
+    assert!(report.full_scan_recommended());
+    assert_eq!(
+        report.full_scan_reasons,
+        vec![report::FullScanRecommendationReason::NoSuccessfulFullScan]
+    );
+    assert!(!report.has_errors());
 }
 
 #[test]

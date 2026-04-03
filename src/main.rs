@@ -21,7 +21,9 @@ Three layers of protection:
 Supports: npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET
 
 Examples:
-  sloppy-joe check                              Auto-detect and check
+  sloppy-joe check                              Fast local guardrail
+  sloppy-joe check --full                       Strict online scan
+  sloppy-joe check --ci                         Strict CI-oriented scan
   sloppy-joe check --type npm                   Check npm only
   sloppy-joe check --dir ./project              Check a specific directory
   sloppy-joe check --config /etc/sj/config.json Enforce canonical rules
@@ -47,6 +49,13 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    Fast,
+    Full,
+    Ci,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Check dependencies for issues
@@ -54,7 +63,18 @@ enum Commands {
     /// Auto-detects project type from manifest files (package.json,
     /// requirements.txt, Cargo.toml, go.mod, Gemfile, composer.json,
     /// build.gradle/pom.xml, *.csproj). Override with --type.
+    ///
+    /// Default mode is a fast local guardrail. Use --full or --ci for the
+    /// strict online scan.
     Check {
+        /// Run the strict full scan mode
+        #[arg(long, conflicts_with = "ci")]
+        full: bool,
+
+        /// Run the strict CI scan mode
+        #[arg(long, conflicts_with = "full")]
+        ci: bool,
+
         /// Project type: npm, pypi, cargo, go, ruby, php, jvm, dotnet
         #[arg(long = "type", value_name = "ECOSYSTEM")]
         project_type: Option<String>,
@@ -176,6 +196,20 @@ enum Commands {
     List,
 }
 
+fn resolve_scan_mode(full: bool, ci: bool) -> Result<ScanMode, String> {
+    if full && ci {
+        return Err("--full and --ci cannot be used together".to_string());
+    }
+
+    if full {
+        Ok(ScanMode::Full)
+    } else if ci {
+        Ok(ScanMode::Ci)
+    } else {
+        Ok(ScanMode::Fast)
+    }
+}
+
 /// Resolve config source, exiting with an error if none is found.
 fn require_config(config: Option<&str>, dir: &std::path::Path) -> Option<String> {
     match sloppy_joe::config::resolve_config_source(config, Some(dir)) {
@@ -223,6 +257,8 @@ async fn main() {
 
     match cli.command {
         Commands::Check {
+            full,
+            ci,
             project_type,
             json,
             review_exceptions,
@@ -233,9 +269,21 @@ async fn main() {
             no_cache,
             cache_dir,
         } => {
+            let scan_mode = match resolve_scan_mode(full, ci) {
+                Ok(mode) => mode,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(2);
+                }
+            };
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
             let config_source = require_config(config.as_deref(), &dir);
             let opts = sloppy_joe::ScanOptions {
+                scan_mode: match scan_mode {
+                    ScanMode::Fast => sloppy_joe::ScanMode::Fast,
+                    ScanMode::Full => sloppy_joe::ScanMode::Full,
+                    ScanMode::Ci => sloppy_joe::ScanMode::Ci,
+                },
                 deep,
                 paranoid,
                 no_cache,
@@ -535,7 +583,77 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    use clap::error::ErrorKind;
+
     use super::*;
+
+    #[test]
+    fn resolve_scan_mode_defaults_to_fast() {
+        assert_eq!(resolve_scan_mode(false, false), Ok(ScanMode::Fast));
+    }
+
+    #[test]
+    fn resolve_scan_mode_selects_full() {
+        assert_eq!(resolve_scan_mode(true, false), Ok(ScanMode::Full));
+    }
+
+    #[test]
+    fn resolve_scan_mode_selects_ci() {
+        assert_eq!(resolve_scan_mode(false, true), Ok(ScanMode::Ci));
+    }
+
+    #[test]
+    fn resolve_scan_mode_rejects_full_and_ci_together() {
+        assert_eq!(
+            resolve_scan_mode(true, true),
+            Err("--full and --ci cannot be used together".to_string())
+        );
+    }
+
+    #[test]
+    fn check_cli_defaults_to_fast_mode() {
+        let cli = Cli::try_parse_from(["sloppy-joe", "check"])
+            .expect("check command should parse without scan mode flags");
+
+        match cli.command {
+            Commands::Check { full, ci, .. } => {
+                assert!(!full);
+                assert!(!ci);
+                assert_eq!(resolve_scan_mode(full, ci), Ok(ScanMode::Fast));
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn check_cli_full_selects_full_mode() {
+        let cli = Cli::try_parse_from(["sloppy-joe", "check", "--full"])
+            .expect("check command should parse --full");
+
+        match cli.command {
+            Commands::Check { full, ci, .. } => {
+                assert!(full);
+                assert!(!ci);
+                assert_eq!(resolve_scan_mode(full, ci), Ok(ScanMode::Full));
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn check_cli_ci_selects_ci_mode() {
+        let cli = Cli::try_parse_from(["sloppy-joe", "check", "--ci"])
+            .expect("check command should parse --ci");
+
+        match cli.command {
+            Commands::Check { full, ci, .. } => {
+                assert!(!full);
+                assert!(ci);
+                assert_eq!(resolve_scan_mode(full, ci), Ok(ScanMode::Ci));
+            }
+            _ => panic!("expected check command"),
+        }
+    }
 
     #[test]
     fn check_cli_parses_review_exceptions_flag() {
@@ -553,5 +671,14 @@ mod tests {
             }
             _ => panic!("expected check command"),
         }
+    }
+
+    #[test]
+    fn check_cli_rejects_full_and_ci_together() {
+        let err = match Cli::try_parse_from(["sloppy-joe", "check", "--full", "--ci"]) {
+            Ok(_) => panic!("check command should reject conflicting scan modes"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 }
