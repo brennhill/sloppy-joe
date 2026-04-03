@@ -137,6 +137,7 @@ struct ProjectInputSpec {
     kind: ProjectInputKind,
     manifest_path: std::path::PathBuf,
     lockfile_path_override: Option<std::path::PathBuf>,
+    js_binding: Option<JsProjectBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,11 +146,45 @@ struct ParsedProject {
     deps: Vec<Dependency>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum JsPackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+    Bun,
+}
+
+impl JsPackageManager {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::Pnpm => "pnpm",
+            Self::Yarn => "yarn",
+            Self::Bun => "bun",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct JsProjectBinding {
+    manager: JsPackageManager,
+    root_manifest_path: std::path::PathBuf,
+    lockfile_path: Option<std::path::PathBuf>,
+    package_entry_key: String,
+}
+
 impl ProjectInputSpec {
     fn project_dir(&self) -> &std::path::Path {
         self.manifest_path
             .parent()
             .expect("manifest paths should always have a parent directory")
+    }
+
+    fn npm_lockfile_package_key(&self) -> &str {
+        self.js_binding
+            .as_ref()
+            .map(|binding| binding.package_entry_key.as_str())
+            .unwrap_or("")
     }
 }
 
@@ -249,6 +284,7 @@ fn preflight_project_inputs(
     })?;
     let npm_manifests = load_npm_manifests(specs)?;
     let npm_index = index_npm_projects(&npm_manifests)?;
+    let npm_alias_targets = npm_alias_targets_by_lockfile(specs, &npm_manifests)?;
     let mut warnings = Vec::new();
 
     for spec in specs {
@@ -270,11 +306,7 @@ fn preflight_project_inputs(
         })?;
 
         match spec.kind {
-            ProjectInputKind::Npm => ensure_one_lockfile_readable(
-                spec.project_dir(),
-                &["npm-shrinkwrap.json", "package-lock.json"],
-                spec.kind.missing_lockfile_help().unwrap(),
-            )?,
+            ProjectInputKind::Npm => ensure_authoritative_npm_lockfile_readable(spec)?,
             ProjectInputKind::PyProjectPoetry => ensure_lockfile_readable(
                 &spec.project_dir().join("poetry.lock"),
                 spec.kind.missing_lockfile_help().unwrap(),
@@ -357,12 +389,18 @@ fn preflight_project_inputs(
 
         if spec.kind == ProjectInputKind::Npm {
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
-            validate_npm_package_manager_policy(&canonical_root, spec, manifest)?;
+            validate_supported_js_manager(spec)?;
             validate_npm_manifest_security_policy(spec, manifest)?;
-            let (lockfile, npm_warnings) = read_validated_npm_lockfile(spec, manifest, config)?;
+            let allowed_alias_targets = selected_lockfile_path(spec)
+                .and_then(|path| npm_alias_targets.get(&path))
+                .cloned()
+                .unwrap_or_default();
+            let (lockfile, npm_warnings) =
+                read_validated_npm_lockfile(spec, manifest, config, &allowed_alias_targets)?;
             warnings.extend(npm_warnings);
+            let npm_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
             validate_local_npm_dependencies(
-                &canonical_root,
+                &npm_scope_root,
                 spec,
                 manifest,
                 &lockfile,
@@ -427,6 +465,7 @@ fn read_validated_npm_lockfile(
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
     config: &config::SloppyJoeConfig,
+    allowed_alias_targets: &std::collections::HashMap<String, String>,
 ) -> Result<(serde_json::Value, Vec<Issue>)> {
     let path =
         selected_lockfile_path(spec).expect("npm preflight should guarantee a lockfile exists");
@@ -439,8 +478,8 @@ fn read_validated_npm_lockfile(
         )
     })?;
     validate_npm_lockfile_version(&lockfile, &path, config)?;
-    validate_npm_lockfile_consistency(manifest, &lockfile, &path)?;
-    validate_npm_lockfile_provenance(&lockfile, &path)?;
+    validate_npm_lockfile_consistency(manifest, &lockfile, &path, spec.npm_lockfile_package_key())?;
+    validate_npm_lockfile_provenance(&lockfile, &path, allowed_alias_targets)?;
 
     let warnings = if npm_lockfile_version(&lockfile) == 1 && config.allow_legacy_npm_v1_lockfile {
         legacy_npm_v1_warnings(&path)
@@ -449,6 +488,38 @@ fn read_validated_npm_lockfile(
     };
 
     Ok((lockfile, warnings))
+}
+
+fn validate_supported_js_manager(spec: &ProjectInputSpec) -> Result<()> {
+    let Some(binding) = &spec.js_binding else {
+        return Ok(());
+    };
+    if binding.manager == JsPackageManager::Npm {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "JS project '{}' is managed by '{}', rooted at '{}'. sloppy-joe detected the manager correctly, but support for {} projects is not implemented yet.",
+        spec.manifest_path.display(),
+        binding.manager.as_str(),
+        binding.root_manifest_path.display(),
+        binding.manager.as_str()
+    );
+}
+
+fn npm_trusted_scope_root(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+) -> Result<std::path::PathBuf> {
+    if let Some(binding) = &spec.js_binding {
+        let root_dir = binding
+            .root_manifest_path
+            .parent()
+            .expect("package.json should always have a parent directory");
+        return std::fs::canonicalize(root_dir)
+            .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err));
+    }
+    std::fs::canonicalize(scan_root)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", scan_root.display(), err))
 }
 
 fn legacy_npm_v1_warnings(lockfile_path: &std::path::Path) -> Vec<Issue> {
@@ -498,7 +569,230 @@ fn load_npm_manifests(
 #[derive(Default)]
 struct NpmProjectIndex {
     dirs: std::collections::HashSet<std::path::PathBuf>,
+    names_by_dir: std::collections::HashMap<std::path::PathBuf, String>,
     by_name: std::collections::HashMap<String, std::collections::HashSet<std::path::PathBuf>>,
+}
+
+fn bind_js_project_inputs(
+    scan_root: &std::path::Path,
+    specs: &mut [ProjectInputSpec],
+) -> Result<()> {
+    for spec in specs.iter_mut() {
+        if spec.kind != ProjectInputKind::Npm {
+            continue;
+        }
+        spec.js_binding = Some(resolve_js_project_binding(scan_root, spec)?);
+        if let Some(binding) = &spec.js_binding {
+            spec.lockfile_path_override = binding.lockfile_path.clone();
+        }
+    }
+    Ok(())
+}
+
+fn resolve_js_project_binding(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+) -> Result<JsProjectBinding> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+    let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
+    let workspace_root = find_npm_workspace_root(&ancestry_root, &canonical_project_dir)?;
+    let root_manifest_path = workspace_root
+        .as_ref()
+        .map(|root| root.manifest_path.clone())
+        .unwrap_or_else(|| spec.manifest_path.clone());
+    let root_manifest = read_npm_manifest_value(&root_manifest_path)?;
+    let root_dir = root_manifest_path
+        .parent()
+        .expect("package.json should always have a parent directory");
+    let canonical_root_dir = std::fs::canonicalize(root_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
+    let manager = detect_js_manager(root_dir, &root_manifest_path, &root_manifest)?;
+    let lockfile_path = if manager == JsPackageManager::Npm {
+        first_existing_lockfile(root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
+    } else {
+        None
+    };
+    let package_entry_key = if canonical_project_dir == canonical_root_dir {
+        String::new()
+    } else {
+        relative_package_entry_key(&canonical_root_dir, &canonical_project_dir)?
+    };
+
+    Ok(JsProjectBinding {
+        manager,
+        root_manifest_path,
+        lockfile_path,
+        package_entry_key,
+    })
+}
+
+fn js_ancestry_root(
+    scan_root: &std::path::Path,
+    project_dir: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    if let Some(git_root) =
+        crate::config::registry::find_git_root(project_dir).map_err(anyhow::Error::msg)?
+    {
+        return Ok(git_root);
+    }
+    std::fs::canonicalize(scan_root)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", scan_root.display(), err))
+}
+
+fn relative_package_entry_key(
+    root_dir: &std::path::Path,
+    canonical_project_dir: &std::path::Path,
+) -> Result<String> {
+    let relative = canonical_project_dir.strip_prefix(root_dir).map_err(|_| {
+        anyhow::anyhow!(
+            "Path '{}' is outside npm root '{}'.",
+            canonical_project_dir.display(),
+            root_dir.display()
+        )
+    })?;
+    let key = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if key.is_empty() {
+        anyhow::bail!(
+            "Could not derive npm workspace entry key for '{}' relative to '{}'.",
+            canonical_project_dir.display(),
+            root_dir.display()
+        );
+    }
+    Ok(key)
+}
+
+fn detect_js_manager(
+    root_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    manifest: &serde_json::Value,
+) -> Result<JsPackageManager> {
+    let mut signals = Vec::new();
+    if let Some(package_manager) = manifest
+        .get("packageManager")
+        .and_then(|value| value.as_str())
+    {
+        let manager = package_manager
+            .split_once('@')
+            .map(|(name, _)| name)
+            .unwrap_or(package_manager);
+        let manager = match manager {
+            "npm" => JsPackageManager::Npm,
+            "pnpm" => JsPackageManager::Pnpm,
+            "yarn" => JsPackageManager::Yarn,
+            "bun" => JsPackageManager::Bun,
+            other => {
+                anyhow::bail!(
+                    "package.json '{}' declares unsupported packageManager '{}'. sloppy-joe only understands npm, pnpm, yarn, and bun at the JS manager layer.",
+                    manifest_path.display(),
+                    other
+                );
+            }
+        };
+        signals.push((
+            manager,
+            format!("packageManager in '{}'", manifest_path.display()),
+        ));
+    }
+    for (marker, manager) in [
+        ("pnpm-lock.yaml", JsPackageManager::Pnpm),
+        ("pnpm-workspace.yaml", JsPackageManager::Pnpm),
+        ("yarn.lock", JsPackageManager::Yarn),
+        (".pnp.cjs", JsPackageManager::Yarn),
+        ("bun.lock", JsPackageManager::Bun),
+        ("bun.lockb", JsPackageManager::Bun),
+        ("npm-shrinkwrap.json", JsPackageManager::Npm),
+        ("package-lock.json", JsPackageManager::Npm),
+    ] {
+        let path = root_dir.join(marker);
+        if parsers::path_detected(&path)? {
+            signals.push((manager, path.display().to_string()));
+        }
+    }
+
+    let distinct = signals
+        .iter()
+        .map(|(manager, _)| *manager)
+        .collect::<std::collections::HashSet<_>>();
+    if distinct.len() > 1 {
+        let details = signals
+            .into_iter()
+            .map(|(manager, source)| format!("{} via {}", manager.as_str(), source))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "JS project rooted at '{}' has conflicting package-manager signals: {}. sloppy-joe requires one authoritative JS manager per root.",
+            manifest_path.display(),
+            details
+        );
+    }
+
+    Ok(signals
+        .into_iter()
+        .next()
+        .map(|(manager, _)| manager)
+        .unwrap_or(JsPackageManager::Npm))
+}
+
+fn npm_alias_targets_by_lockfile(
+    specs: &[ProjectInputSpec],
+    manifests: &std::collections::HashMap<std::path::PathBuf, serde_json::Value>,
+) -> Result<std::collections::HashMap<std::path::PathBuf, std::collections::HashMap<String, String>>>
+{
+    let mut by_lockfile = std::collections::HashMap::new();
+    for spec in specs {
+        if spec.kind != ProjectInputKind::Npm {
+            continue;
+        }
+        let Some(lockfile_path) = selected_lockfile_path(spec) else {
+            continue;
+        };
+        let Some(manifest) = manifests.get(&spec.manifest_path) else {
+            continue;
+        };
+        let aliases = by_lockfile
+            .entry(lockfile_path)
+            .or_insert_with(std::collections::HashMap::new);
+        for (alias_name, raw_spec) in npm_dependency_entries(manifest) {
+            let Some(alias_spec) = raw_spec.strip_prefix("npm:") else {
+                continue;
+            };
+            let (target_name, _) = alias_spec.rsplit_once('@').ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unsupported npm alias '{}' in {}: expected npm:<package>@<version>",
+                    crate::report::sanitize_for_terminal(&raw_spec),
+                    spec.manifest_path.display()
+                )
+            })?;
+            if let Some(existing) = aliases.get(&alias_name)
+                && existing != target_name
+            {
+                anyhow::bail!(
+                    "Npm alias '{}' resolves to both '{}' and '{}' under authoritative lockfile '{}'. sloppy-joe requires alias bindings to be unique per lockfile.",
+                    alias_name,
+                    existing,
+                    target_name,
+                    selected_lockfile_path(spec)
+                        .expect("lockfile path checked above")
+                        .display()
+                );
+            }
+            aliases.insert(alias_name, target_name.to_string());
+        }
+    }
+    Ok(by_lockfile)
 }
 
 fn index_npm_projects(
@@ -515,6 +809,9 @@ fn index_npm_projects(
         index.dirs.insert(project_dir.clone());
         if let Some(name) = manifest.get("name").and_then(|value| value.as_str()) {
             index
+                .names_by_dir
+                .insert(project_dir.clone(), name.to_string());
+            index
                 .by_name
                 .entry(name.to_string())
                 .or_default()
@@ -525,7 +822,7 @@ fn index_npm_projects(
 }
 
 fn validate_local_npm_dependencies(
-    scan_root: &std::path::Path,
+    trusted_root: &std::path::Path,
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
     lockfile: &serde_json::Value,
@@ -547,7 +844,7 @@ fn validate_local_npm_dependencies(
     {
         let expected_target = if local_spec.starts_with("workspace:") {
             validate_workspace_npm_dependency(
-                scan_root,
+                trusted_root,
                 spec,
                 &name,
                 &canonical_project_dir,
@@ -555,7 +852,7 @@ fn validate_local_npm_dependencies(
             )?
         } else {
             let canonical_target = resolve_local_npm_target(
-                scan_root,
+                trusted_root,
                 spec,
                 &name,
                 &local_spec,
@@ -569,17 +866,28 @@ fn validate_local_npm_dependencies(
                     local_spec
                 );
             }
+            if npm_index
+                .names_by_dir
+                .get(&canonical_target)
+                .is_none_or(|target_name| target_name != &name)
+            {
+                let actual = npm_index
+                    .names_by_dir
+                    .get(&canonical_target)
+                    .cloned()
+                    .unwrap_or_else(|| "<missing package name>".to_string());
+                anyhow::bail!(
+                    "Local npm dependency '{}' in '{}' resolves to '{}', but that project declares package name '{}'. Local file:/link: targets must match the dependency package identity exactly.",
+                    name,
+                    spec.manifest_path.display(),
+                    canonical_target.display(),
+                    crate::report::sanitize_for_terminal(&actual)
+                );
+            }
             canonical_target
         };
 
-        validate_local_npm_lockfile_target(
-            spec,
-            lockfile,
-            &name,
-            &local_spec,
-            &canonical_project_dir,
-            &expected_target,
-        )?;
+        validate_local_npm_lockfile_target(spec, lockfile, &name, &local_spec, &expected_target)?;
     }
 
     Ok(())
@@ -590,7 +898,6 @@ fn validate_local_npm_lockfile_target(
     lockfile: &serde_json::Value,
     dep_name: &str,
     local_spec: &str,
-    canonical_project_dir: &std::path::Path,
     expected_target: &std::path::Path,
 ) -> Result<()> {
     let lockfile_path = selected_lockfile_path(spec)
@@ -631,10 +938,13 @@ fn validate_local_npm_lockfile_target(
                 local_spec
             )
         })?;
+    let lockfile_dir = lockfile_path
+        .parent()
+        .expect("lockfile paths should always have a parent directory");
     let candidate = if std::path::Path::new(resolved).is_absolute() {
         std::path::PathBuf::from(resolved)
     } else {
-        canonical_project_dir.join(resolved)
+        lockfile_dir.join(resolved)
     };
     let normalized = normalize_filesystem_path(&candidate);
     let canonical_lockfile_target = std::fs::canonicalize(&normalized).map_err(|err| {
@@ -2359,8 +2669,13 @@ fn validate_lockfile_syntax(
             })?;
             validate_npm_lockfile_version(&lockfile, &path, config)?;
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
-            validate_npm_lockfile_consistency(manifest, &lockfile, &path)?;
-            validate_npm_lockfile_provenance(&lockfile, &path)?;
+            validate_npm_lockfile_consistency(
+                manifest,
+                &lockfile,
+                &path,
+                spec.npm_lockfile_package_key(),
+            )?;
+            validate_npm_lockfile_provenance(&lockfile, &path, &std::collections::HashMap::new())?;
         }
         ProjectInputKind::Cargo => {
             let path = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
@@ -2408,81 +2723,6 @@ fn validate_lockfile_syntax(
         | ProjectInputKind::Ruby
         | ProjectInputKind::Gradle
         | ProjectInputKind::Maven => {}
-    }
-
-    Ok(())
-}
-
-fn validate_npm_package_manager_policy(
-    scan_root: &std::path::Path,
-    spec: &ProjectInputSpec,
-    manifest: &serde_json::Value,
-) -> Result<()> {
-    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
-        anyhow::anyhow!(
-            "Failed to inspect {}: {}",
-            spec.project_dir().display(),
-            err
-        )
-    })?;
-
-    for ancestor_dir in ancestor_dirs_inclusive(&canonical_project_dir, scan_root)? {
-        let manifest_path = ancestor_dir.join("package.json");
-        if ancestor_dir == canonical_project_dir {
-            validate_npm_package_manager_field(&spec.manifest_path, manifest, &spec.manifest_path)?;
-        } else if parsers::path_detected(&manifest_path)? {
-            let ancestor_manifest = read_npm_manifest_value(&manifest_path)?;
-            validate_npm_package_manager_field(
-                &manifest_path,
-                &ancestor_manifest,
-                &spec.manifest_path,
-            )?;
-        }
-
-        for foreign_marker in [
-            "pnpm-lock.yaml",
-            "pnpm-workspace.yaml",
-            "yarn.lock",
-            ".pnp.cjs",
-            "bun.lock",
-            "bun.lockb",
-        ] {
-            let path = ancestor_dir.join(foreign_marker);
-            if parsers::path_detected(&path)? {
-                anyhow::bail!(
-                    "Found foreign package-manager marker '{}' above npm project '{}'. sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json when non-npm lock state is present anywhere in the ancestor tree within the scan root.",
-                    path.display(),
-                    spec.manifest_path.display()
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_npm_package_manager_field(
-    manifest_path: &std::path::Path,
-    manifest: &serde_json::Value,
-    npm_project_manifest: &std::path::Path,
-) -> Result<()> {
-    if let Some(package_manager) = manifest
-        .get("packageManager")
-        .and_then(|value| value.as_str())
-    {
-        let manager = package_manager
-            .split_once('@')
-            .map(|(name, _)| name)
-            .unwrap_or(package_manager);
-        if manager != "npm" {
-            anyhow::bail!(
-                "package.json '{}' declares packageManager '{}'. npm project '{}' sits inside a {}-managed tree, so sloppy-joe refuses to trust package-lock.json or npm-shrinkwrap.json there.",
-                manifest_path.display(),
-                package_manager,
-                npm_project_manifest.display(),
-                manager
-            );
-        }
     }
 
     Ok(())
@@ -2889,10 +3129,62 @@ fn ensure_one_lockfile_readable(
     )
 }
 
+fn ensure_authoritative_npm_lockfile_readable(spec: &ProjectInputSpec) -> Result<()> {
+    let help = spec.kind.missing_lockfile_help().unwrap();
+    let Some(binding) = &spec.js_binding else {
+        return ensure_one_lockfile_readable(
+            spec.project_dir(),
+            &["npm-shrinkwrap.json", "package-lock.json"],
+            help,
+        );
+    };
+    if binding.manager != JsPackageManager::Npm {
+        return Ok(());
+    }
+    let root_dir = binding
+        .root_manifest_path
+        .parent()
+        .expect("package.json should always have a parent directory");
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+    let canonical_root_dir = std::fs::canonicalize(root_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
+    if canonical_project_dir != canonical_root_dir
+        && let Some(shadow) = first_existing_lockfile(
+            spec.project_dir(),
+            &["npm-shrinkwrap.json", "package-lock.json"],
+        )
+    {
+        anyhow::bail!(
+            "Found shadow npm lockfile '{}' under workspace project '{}'. The authoritative npm lockfile lives at '{}'. Remove the child lockfile and keep the workspace root lockfile as the single source of truth.",
+            shadow.display(),
+            spec.manifest_path.display(),
+            binding
+                .lockfile_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<missing>".to_string())
+        );
+    }
+    let Some(path) = &binding.lockfile_path else {
+        anyhow::bail!(
+            "Required lockfile 'npm-shrinkwrap.json' or 'package-lock.json' is missing. Fix: {}",
+            help
+        );
+    };
+    ensure_lockfile_readable(path, help)
+}
+
 fn validate_npm_lockfile_consistency(
     manifest: &serde_json::Value,
     lockfile: &serde_json::Value,
     lockfile_path: &std::path::Path,
+    package_entry_key: &str,
 ) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -2926,24 +3218,36 @@ fn validate_npm_lockfile_consistency(
         ),
     ];
 
-    let root_package = lockfile
+    let package_entry = lockfile
         .get("packages")
-        .and_then(|packages| packages.get(""))
+        .and_then(|packages| packages.get(package_entry_key))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    if root_package.is_object() {
+    if package_entry.is_object() {
         for (section, manifest_entries) in &manifest_sections {
-            let lock_entries = section_map(&root_package, section);
+            let lock_entries = section_map(&package_entry, section);
             if *manifest_entries != lock_entries {
                 anyhow::bail!(
-                    "Required lockfile '{}' is out of sync with package.json: root '{}' entries do not match. Regenerate the lockfile so it matches the manifest exactly.",
+                    "Required lockfile '{}' is out of sync with package.json: package entry '{}' does not match its '{}' declarations. Regenerate the lockfile so it matches the manifest exactly.",
                     lockfile_path.display(),
-                    section
+                    if package_entry_key.is_empty() {
+                        "<root>"
+                    } else {
+                        package_entry_key
+                    },
+                    section,
                 );
             }
         }
     } else {
+        if !package_entry_key.is_empty() {
+            anyhow::bail!(
+                "Required lockfile '{}' is missing workspace package entry '{}'. Regenerate the lockfile from the npm workspace root so it records this project explicitly.",
+                lockfile_path.display(),
+                package_entry_key
+            );
+        }
         let manifest_names: BTreeSet<String> = manifest_sections
             .iter()
             .flat_map(|(_, entries)| entries.keys().cloned())
@@ -3010,10 +3314,11 @@ fn validate_npm_lockfile_consistency(
 fn validate_npm_lockfile_provenance(
     lockfile: &serde_json::Value,
     lockfile_path: &std::path::Path,
+    allowed_alias_targets: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
     if let Some(packages) = lockfile.get("packages").and_then(|value| value.as_object()) {
         for (key, entry) in packages {
-            validate_npm_lockfile_package_entry(key, entry, lockfile_path)?;
+            validate_npm_lockfile_package_entry(key, entry, lockfile_path, allowed_alias_targets)?;
         }
         return Ok(());
     }
@@ -3022,7 +3327,11 @@ fn validate_npm_lockfile_provenance(
         .get("dependencies")
         .and_then(|value| value.as_object())
     {
-        validate_npm_lockfile_dependency_entries(dependencies, lockfile_path)?;
+        validate_npm_lockfile_dependency_entries(
+            dependencies,
+            lockfile_path,
+            allowed_alias_targets,
+        )?;
     }
 
     Ok(())
@@ -3032,6 +3341,7 @@ fn validate_npm_lockfile_package_entry(
     key: &str,
     entry: &serde_json::Value,
     lockfile_path: &std::path::Path,
+    allowed_alias_targets: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
     if key.is_empty() {
         return Ok(());
@@ -3043,12 +3353,18 @@ fn validate_npm_lockfile_package_entry(
             key
         );
     };
+    if !key.contains("node_modules/") {
+        return Ok(());
+    }
     let expected_name = key
         .rsplit_once("node_modules/")
         .map(|(_, name)| name)
         .unwrap_or(key);
-    if let Some(locked_name) = entry.get("name").and_then(|value| value.as_str())
+    let locked_name = entry.get("name").and_then(|value| value.as_str());
+    let allowed_alias_target = allowed_alias_targets.get(expected_name).map(String::as_str);
+    if let Some(locked_name) = locked_name
         && locked_name != expected_name
+        && Some(locked_name) != allowed_alias_target
     {
         anyhow::bail!(
             "Required lockfile '{}' entry '{}' claims to be '{}'. npm lockfile entries must match the package they install exactly.",
@@ -3057,12 +3373,13 @@ fn validate_npm_lockfile_package_entry(
             locked_name
         );
     }
-    validate_npm_lockfile_entry_fields(expected_name, entry, lockfile_path)
+    validate_npm_lockfile_entry_fields(locked_name.unwrap_or(expected_name), entry, lockfile_path)
 }
 
 fn validate_npm_lockfile_dependency_entries(
     dependencies: &serde_json::Map<String, serde_json::Value>,
     lockfile_path: &std::path::Path,
+    allowed_alias_targets: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
     for (name, entry) in dependencies {
         let Some(entry) = entry.as_object() else {
@@ -3072,8 +3389,11 @@ fn validate_npm_lockfile_dependency_entries(
                 name
             );
         };
-        if let Some(locked_name) = entry.get("name").and_then(|value| value.as_str())
+        let locked_name = entry.get("name").and_then(|value| value.as_str());
+        let allowed_alias_target = allowed_alias_targets.get(name).map(String::as_str);
+        if let Some(locked_name) = locked_name
             && locked_name != name
+            && Some(locked_name) != allowed_alias_target
         {
             anyhow::bail!(
                 "Required lockfile '{}' entry '{}' claims to be '{}'. npm lockfile entries must match the package they install exactly.",
@@ -3082,12 +3402,12 @@ fn validate_npm_lockfile_dependency_entries(
                 locked_name
             );
         }
-        validate_npm_lockfile_entry_fields(name, entry, lockfile_path)?;
+        validate_npm_lockfile_entry_fields(locked_name.unwrap_or(name), entry, lockfile_path)?;
         if let Some(nested) = entry
             .get("dependencies")
             .and_then(|value| value.as_object())
         {
-            validate_npm_lockfile_dependency_entries(nested, lockfile_path)?;
+            validate_npm_lockfile_dependency_entries(nested, lockfile_path, allowed_alias_targets)?;
         }
     }
     Ok(())
@@ -3210,6 +3530,7 @@ fn detected_project_inputs_with_config(
     expand_cargo_project_inputs(project_dir, &mut specs, config)?;
     prune_included_requirement_specs(project_dir, &mut specs)?;
     prefer_poetry_project_inputs(&mut specs);
+    bind_js_project_inputs(project_dir, &mut specs)?;
 
     if specs.is_empty() {
         match project_type {
@@ -3290,6 +3611,7 @@ fn expand_cargo_project_inputs(
                     kind: ProjectInputKind::Cargo,
                     manifest_path: target_manifest,
                     lockfile_path_override: None,
+                    js_binding: None,
                 });
             }
         }
@@ -3309,6 +3631,7 @@ fn expand_cargo_project_inputs(
                     kind: ProjectInputKind::Cargo,
                     manifest_path: target_manifest,
                     lockfile_path_override: None,
+                    js_binding: None,
                 });
             }
         }
@@ -3468,6 +3791,7 @@ fn project_input_from_path(
         kind,
         manifest_path: path.to_path_buf(),
         lockfile_path_override: None,
+        js_binding: None,
     }))
 }
 
