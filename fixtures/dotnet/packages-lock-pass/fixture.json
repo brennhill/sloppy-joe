@@ -1,0 +1,1 @@
+{"id":"dotnet-packages-lock-pass","ecosystem":"dotnet","expected":"pass","reason":"SDK-style PackageReference project with packages.lock.json."}

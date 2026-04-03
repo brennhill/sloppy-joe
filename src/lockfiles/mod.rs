@@ -1,10 +1,13 @@
+pub(crate) mod bun;
 mod cargo;
 mod composer;
 mod dotnet;
 mod gradle;
 mod npm;
+pub(crate) mod pnpm;
 mod python;
 mod ruby;
+pub(crate) mod yarn;
 
 use crate::Dependency;
 use crate::Ecosystem;
@@ -94,6 +97,15 @@ enum ParsedLockfile {
         value: serde_json::Value,
         file_name: String,
     },
+    Pnpm {
+        value: serde_yaml::Value,
+        importer_key: String,
+    },
+    Bun {
+        value: serde_json::Value,
+        importer_key: String,
+    },
+    Yarn(yarn::ParsedYarnLock),
     Cargo(toml::Value),
     Composer(serde_json::Value),
     Dotnet(serde_json::Value),
@@ -145,7 +157,7 @@ impl LockfileData {
         // Resolve direct dep versions from the parsed data
         let resolution = resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct)?;
 
-        let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps)?;
+        let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir)?;
 
         // Filter to transitive only
         let direct_versions: HashSet<(String, String)> = direct_deps
@@ -195,6 +207,50 @@ fn read_lockfile(
 
     match ecosystem {
         Some(Ecosystem::Npm) => {
+            if lockfile_override.is_some_and(is_pnpm_lockfile_path) {
+                let path = lockfile_override.expect("checked above");
+                let content =
+                    crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+                let value: serde_yaml::Value = serde_yaml::from_str(&content)
+                    .map_err(|err| anyhow::anyhow!("Failed to parse pnpm-lock.yaml: {}", err))?;
+                let importer_key = pnpm_importer_key(project_dir, path)?;
+                return Ok(ParsedLockfile::Pnpm {
+                    value,
+                    importer_key,
+                });
+            }
+            if lockfile_override.is_some_and(is_bun_lockfile_path) {
+                let path = lockfile_override.expect("checked above");
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("bun.lock");
+                if file_name == "bun.lockb" {
+                    anyhow::bail!(
+                        "Legacy Bun binary lockfile '{}' is not supported yet. Regenerate and commit the text bun.lock.",
+                        path.display()
+                    );
+                }
+                let content =
+                    crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+                let value: serde_json::Value = json5::from_str(&content)
+                    .map_err(|err| anyhow::anyhow!("Failed to parse bun.lock: {}", err))?;
+                let importer_key = bun_importer_key(project_dir, path)?;
+                return Ok(ParsedLockfile::Bun {
+                    value,
+                    importer_key,
+                });
+            }
+            if lockfile_override.is_some_and(is_yarn_lockfile_path) {
+                let path = lockfile_override.expect("checked above");
+                let content =
+                    crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+                return Ok(ParsedLockfile::Yarn(yarn::parse_lockfile(
+                    &content,
+                    path.to_path_buf(),
+                    project_dir,
+                )?));
+            }
             let Some(path) =
                 first_existing(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
             else {
@@ -305,6 +361,15 @@ fn resolve_from_parsed(
         ParsedLockfile::NpmLegacy { value, file_name } => {
             npm::resolve_from_value(value, deps, file_name)
         }
+        ParsedLockfile::Pnpm {
+            value,
+            importer_key,
+        } => pnpm::resolve_from_value(value, deps, importer_key),
+        ParsedLockfile::Bun {
+            value,
+            importer_key,
+        } => bun::resolve_from_value(value, deps, importer_key),
+        ParsedLockfile::Yarn(parsed) => yarn::resolve_from_parsed(parsed, deps),
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value_with_mode(value, deps, mode),
         ParsedLockfile::Composer(value) => {
             composer::resolve_from_value_with_mode(value, deps, mode)
@@ -328,6 +393,9 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_all_from_value(value),
         ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
+        ParsedLockfile::Pnpm { value, .. } => pnpm::parse_all_from_value(value),
+        ParsedLockfile::Bun { value, .. } => bun::parse_all_from_value(value),
+        ParsedLockfile::Yarn(parsed) => yarn::parse_all_from_parsed(parsed),
         ParsedLockfile::Cargo(value) => cargo::parse_all_from_value(value),
         ParsedLockfile::Composer(value) => composer::parse_all_from_value(value),
         ParsedLockfile::Dotnet(value) => dotnet::parse_all_from_value(value),
@@ -341,10 +409,22 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
 fn parse_all_from_parsed_for_project(
     parsed: &ParsedLockfile,
     direct_deps: &[Dependency],
+    _project_dir: &Path,
 ) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
         ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
+        ParsedLockfile::Pnpm {
+            value,
+            importer_key,
+        } => pnpm::parse_all_from_value_for_importer(value, importer_key),
+        ParsedLockfile::Bun {
+            value,
+            importer_key,
+        } => bun::parse_all_from_value_for_importer(value, importer_key),
+        ParsedLockfile::Yarn(parsed) => {
+            yarn::parse_all_from_parsed_for_project(parsed, direct_deps)
+        }
         _ => parse_all_from_parsed(parsed),
     }
 }
@@ -384,6 +464,97 @@ fn first_existing(project_dir: &Path, names: &[&str]) -> Option<PathBuf> {
             _ => None,
         }
     })
+}
+
+fn is_pnpm_lockfile_path(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("pnpm-lock.yaml")
+}
+
+fn is_bun_lockfile_path(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("bun.lock" | "bun.lockb")
+    )
+}
+
+fn is_yarn_lockfile_path(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("yarn.lock")
+}
+
+fn pnpm_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String> {
+    let canonical_project_dir = std::fs::canonicalize(project_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?;
+    let lockfile_dir = lockfile_path
+        .parent()
+        .expect("lockfile paths should always have a parent directory");
+    let canonical_lockfile_dir = std::fs::canonicalize(lockfile_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", lockfile_dir.display(), err))?;
+    if canonical_project_dir == canonical_lockfile_dir {
+        return Ok(".".to_string());
+    }
+    let relative = canonical_project_dir
+        .strip_prefix(&canonical_lockfile_dir)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Project '{}' is outside pnpm lockfile root '{}'.",
+                canonical_project_dir.display(),
+                canonical_lockfile_dir.display()
+            )
+        })?;
+    let key = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if key.is_empty() {
+        anyhow::bail!(
+            "Could not derive pnpm importer key for '{}' relative to '{}'.",
+            canonical_project_dir.display(),
+            canonical_lockfile_dir.display()
+        );
+    }
+    Ok(key)
+}
+
+fn bun_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String> {
+    let canonical_project_dir = std::fs::canonicalize(project_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?;
+    let lockfile_dir = lockfile_path
+        .parent()
+        .expect("lockfile paths should always have a parent directory");
+    let canonical_lockfile_dir = std::fs::canonicalize(lockfile_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", lockfile_dir.display(), err))?;
+    if canonical_project_dir == canonical_lockfile_dir {
+        return Ok(String::new());
+    }
+    let relative = canonical_project_dir
+        .strip_prefix(&canonical_lockfile_dir)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Project '{}' is outside Bun lockfile root '{}'.",
+                canonical_project_dir.display(),
+                canonical_lockfile_dir.display()
+            )
+        })?;
+    let key = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if key.is_empty() {
+        anyhow::bail!(
+            "Could not derive Bun workspace key for '{}' relative to '{}'.",
+            canonical_project_dir.display(),
+            canonical_lockfile_dir.display()
+        );
+    }
+    Ok(key)
 }
 
 fn add_manifest_exact_fallbacks(result: &mut ResolutionResult, deps: &[Dependency]) {

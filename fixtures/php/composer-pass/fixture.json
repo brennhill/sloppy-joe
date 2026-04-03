@@ -1,0 +1,1 @@
+{"id":"php-composer-pass","ecosystem":"php","expected":"pass","reason":"Packagist dependency with a committed composer.lock."}

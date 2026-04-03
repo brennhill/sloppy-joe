@@ -1,0 +1,1 @@
+{"id":"jvm-custom-repo-fail","ecosystem":"jvm","expected":"fail","reason":"Custom JVM repositories must fail closed until their provenance is allowlisted and modeled."}

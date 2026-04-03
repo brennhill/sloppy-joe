@@ -1,0 +1,1 @@
+{"id":"python-poetry-pass","ecosystem":"python","expected":"pass","reason":"Trusted Poetry project with lockfile-backed resolution."}

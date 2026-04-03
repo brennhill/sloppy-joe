@@ -1,0 +1,1 @@
+{"id":"go-go-sum-pass","ecosystem":"go","expected":"pass","reason":"External Go dependencies with go.sum should pass strict preflight."}

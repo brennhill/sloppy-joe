@@ -1,0 +1,12 @@
+{
+  "name": "fixture/composer-fail",
+  "repositories": [
+    {
+      "type": "vcs",
+      "url": "https://github.com/example/private-package"
+    }
+  ],
+  "require": {
+    "example/private-package": "1.0.0"
+  }
+}

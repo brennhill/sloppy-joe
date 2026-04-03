@@ -25,8 +25,14 @@ cargo install sloppy-joe
 # Or download an auditable binary archive from GitHub Releases
 # https://github.com/brennhill/sloppy-joe/releases
 
-# Check current project — auto-detects ecosystem from manifest files
+# Fast local guardrail — auto-detects ecosystem from manifest files
 sloppy-joe check
+
+# Strict online scan (recommended before push / release)
+sloppy-joe check --full
+
+# Strict CI-oriented scan
+sloppy-joe check --ci
 
 # Check a specific directory
 sloppy-joe check --dir ./my-project
@@ -56,7 +62,12 @@ sloppy-joe init > config.json
 nix profile install github:brennhill/sloppy-joe
 ```
 
-**Exit codes:** `0` = all clear, `1` = issues found, `2` = runtime error.
+**Scan modes:**
+- `sloppy-joe check` runs the fast local guardrail. It always enforces manifest parsing, lockfile/sync, provenance, and unsupported-source policy. If dependency or policy state changed, or the last successful full scan is older than 24 hours, it recommends `sloppy-joe check --full`.
+- `sloppy-joe check --full` runs the strict online scan and refreshes the recorded successful full-scan state.
+- `sloppy-joe check --ci` runs the same strict coverage as `--full`, with CI-oriented intent.
+
+**Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking issues found, `2` = runtime error.
 
 **Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
 

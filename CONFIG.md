@@ -2,6 +2,18 @@
 
 sloppy-joe works with zero configuration. Config adds canonical enforcement (reject known-bad alternatives), internal package bypass (skip checks for your org's packages), allowed lists (skip existence/similarity for vetted packages), and Python workflow enforcement.
 
+## Scan Modes
+
+- `sloppy-joe check` is the fast local mode. It always enforces local trust boundaries such as manifest parsing, lockfile requirements, sync/provenance checks, and unsupported-source blocking.
+- `sloppy-joe check --full` runs the strict online scan.
+- `sloppy-joe check --ci` runs the same strict coverage as `--full`, intended for CI workflows.
+
+Fast mode does not auto-escalate into a full scan. Instead, it warns when you should run `sloppy-joe check --full`:
+
+- there is no recorded successful full scan yet
+- the last successful full scan is older than 24 hours
+- dependency, lockfile, manager-binding, or effective policy state changed since the last successful full scan
+
 ## Security Model
 
 **Config is never read from the project directory.** An AI agent with shell access could rewrite an in-repo config to allowlist its own hallucinated dependencies. Config is only loaded from:

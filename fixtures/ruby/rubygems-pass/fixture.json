@@ -1,0 +1,1 @@
+{"id":"ruby-rubygems-pass","ecosystem":"ruby","expected":"pass","reason":"Standard RubyGems dependency with a committed Gemfile.lock."}

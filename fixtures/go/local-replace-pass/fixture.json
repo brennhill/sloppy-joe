@@ -1,0 +1,1 @@
+{"id":"go-local-replace-fail","ecosystem":"go","expected":"fail","reason":"Local replace targets are still blocked until Go local provenance is modeled explicitly."}

@@ -1,0 +1,1 @@
+{"id":"cargo-registry-not-allowlisted-fail","ecosystem":"cargo","expected":"fail","reason":"Private registry aliases and exact lockfile sources must be allowlisted together."}

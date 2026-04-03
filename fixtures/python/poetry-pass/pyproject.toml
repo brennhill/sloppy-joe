@@ -1,0 +1,9 @@
+[tool.poetry]
+name = "fixture-poetry-pass"
+version = "0.1.0"
+description = ""
+authors = ["Fixture <fixture@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "^2.32.0"

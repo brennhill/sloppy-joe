@@ -1,0 +1,1 @@
+{"id":"jvm-maven-warning","ecosystem":"jvm","expected":"warn","reason":"Maven has no standard official lockfile, so sloppy-joe should warn and continue."}

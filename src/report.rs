@@ -1,5 +1,7 @@
 use colored::Colorize;
 use serde::Serialize;
+use serde::ser::{SerializeStruct, Serializer};
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ReviewExceptionCandidate {
@@ -20,6 +22,16 @@ pub struct ReviewExceptionCandidate {
 pub enum Severity {
     Error,
     Warning,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FullScanRecommendationReason {
+    NoSuccessfulFullScan,
+    LastFullScanStale,
+    DependencyStateChanged,
+    PolicyChanged,
+    ManagerBindingChanged,
 }
 
 /// A single issue found during scanning. Each issue identifies a specific
@@ -91,12 +103,38 @@ pub(crate) fn sanitize_for_terminal(text: &str) -> String {
     text.chars().flat_map(|ch| ch.escape_default()).collect()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ScanReport {
     pub packages_checked: usize,
     pub issues: Vec<Issue>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_candidates: Vec<ReviewExceptionCandidate>,
+    pub full_scan_reasons: Vec<FullScanRecommendationReason>,
+}
+
+impl Serialize for ScanReport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct(
+            "ScanReport",
+            if self.review_candidates.is_empty() {
+                4
+            } else {
+                5
+            },
+        )?;
+        state.serialize_field("packages_checked", &self.packages_checked)?;
+        state.serialize_field("issues", &self.issues)?;
+        if !self.review_candidates.is_empty() {
+            state.serialize_field("review_candidates", &self.review_candidates)?;
+        }
+        state.serialize_field("full_scan_recommended", &self.full_scan_recommended())?;
+        if !self.full_scan_reasons.is_empty() {
+            state.serialize_field("full_scan_reasons", &self.full_scan_reasons)?;
+        }
+        state.end()
+    }
 }
 
 impl ScanReport {
@@ -105,6 +143,7 @@ impl ScanReport {
             packages_checked: 0,
             issues: vec![],
             review_candidates: vec![],
+            full_scan_reasons: vec![],
         }
     }
 
@@ -113,6 +152,7 @@ impl ScanReport {
             packages_checked,
             issues,
             review_candidates: vec![],
+            full_scan_reasons: vec![],
         }
     }
 
@@ -125,7 +165,12 @@ impl ScanReport {
             packages_checked,
             issues,
             review_candidates,
+            full_scan_reasons: vec![],
         }
+    }
+
+    pub fn full_scan_recommended(&self) -> bool {
+        !self.full_scan_reasons.is_empty()
     }
 
     pub fn has_issues(&self) -> bool {
@@ -143,81 +188,101 @@ impl ScanReport {
     }
 
     pub fn print_human(&self) {
+        print!("{}", self.render_human());
+    }
+
+    pub fn render_human(&self) -> String {
+        let mut out = String::new();
         if self.issues.is_empty() {
-            println!(
+            let _ = writeln!(
+                out,
                 "\n{}  {} packages checked, no issues found.",
                 "OK".green().bold(),
                 self.packages_checked
             );
-            return;
-        }
-
-        let errors: Vec<&Issue> = self
-            .issues
-            .iter()
-            .filter(|issue| matches!(issue.severity, Severity::Error))
-            .collect();
-        let warnings: Vec<&Issue> = self
-            .issues
-            .iter()
-            .filter(|issue| matches!(issue.severity, Severity::Warning))
-            .collect();
-
-        println!();
-        if !errors.is_empty() {
-            println!("{}", "ERRORS (build blocked):".red().bold());
-            println!();
-            for issue in &errors {
-                print_issue(issue);
-            }
-        }
-
-        if !warnings.is_empty() {
-            println!("{}", "WARNINGS (build allowed):".yellow().bold());
-            println!();
-            for issue in &warnings {
-                print_issue(issue);
-            }
-        }
-
-        println!("{}", "─".repeat(60));
-        println!(
-            "{}: {} packages checked, {} {}, {} {}",
-            "Summary".bold(),
-            self.packages_checked,
-            errors.len(),
-            if errors.len() == 1 { "error" } else { "errors" },
-            warnings.len(),
-            if warnings.len() == 1 {
-                "warning"
-            } else {
-                "warnings"
-            },
-        );
-        if self.has_errors() {
-            println!(
-                "\n{}  Remove or replace the packages above before merging.",
-                "BLOCKED".red().bold()
-            );
         } else {
-            println!(
-                "\n{}  Warnings did not block this scan, but accuracy is reduced.",
-                "WARN".yellow().bold()
+            let errors: Vec<&Issue> = self
+                .issues
+                .iter()
+                .filter(|issue| matches!(issue.severity, Severity::Error))
+                .collect();
+            let warnings: Vec<&Issue> = self
+                .issues
+                .iter()
+                .filter(|issue| matches!(issue.severity, Severity::Warning))
+                .collect();
+
+            let _ = writeln!(out);
+            if !errors.is_empty() {
+                let _ = writeln!(out, "{}", "ERRORS (build blocked):".red().bold());
+                let _ = writeln!(out);
+                for issue in &errors {
+                    render_issue(&mut out, issue);
+                }
+            }
+
+            if !warnings.is_empty() {
+                let _ = writeln!(out, "{}", "WARNINGS (build allowed):".yellow().bold());
+                let _ = writeln!(out);
+                for issue in &warnings {
+                    render_issue(&mut out, issue);
+                }
+            }
+
+            let _ = writeln!(out, "{}", "─".repeat(60));
+            let _ = writeln!(
+                out,
+                "{}: {} packages checked, {} {}, {} {}",
+                "Summary".bold(),
+                self.packages_checked,
+                errors.len(),
+                if errors.len() == 1 { "error" } else { "errors" },
+                warnings.len(),
+                if warnings.len() == 1 {
+                    "warning"
+                } else {
+                    "warnings"
+                },
             );
+            if self.has_errors() {
+                let _ = writeln!(
+                    out,
+                    "\n{}  Remove or replace the packages above before merging.",
+                    "BLOCKED".red().bold()
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "\n{}  Warnings did not block this scan, but accuracy is reduced.",
+                    "WARN".yellow().bold()
+                );
+            }
+        }
+
+        if self.full_scan_recommended() {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{}", "FULL SCAN RECOMMENDED:".cyan().bold());
+            let _ = writeln!(out);
+            for reason in &self.full_scan_reasons {
+                let _ = writeln!(out, "  - {}", full_scan_reason_message(*reason));
+            }
+            let _ = writeln!(out, "  Run: sloppy-joe check --full");
         }
 
         if !self.review_candidates.is_empty() {
-            println!();
-            println!("{}", "REVIEW EXCEPTIONS:".cyan().bold());
-            println!();
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{}", "REVIEW EXCEPTIONS:".cyan().bold());
+            let _ = writeln!(out);
             for candidate in &self.review_candidates {
-                print_review_candidate(candidate);
+                render_review_candidate(&mut out, candidate);
             }
         }
+
+        out
     }
 }
 
-fn print_issue(issue: &Issue) {
+fn render_issue(out: &mut String, issue: &Issue) {
     let safe_package = sanitize_for_terminal(&issue.package);
     let (label, colorized_package) = match issue.severity {
         Severity::Error => ("ERROR".red().bold(), safe_package.red().bold()),
@@ -228,29 +293,36 @@ fn print_issue(issue: &Issue) {
         Some("transitive") => " [transitive]".dimmed().to_string(),
         _ => String::new(),
     };
-    println!(
+    let _ = writeln!(
+        out,
         "  {} {} {}{}",
         label,
         colorized_package,
         format!("[{}]", sanitize_for_terminal(&issue.check)).dimmed(),
         source_label
     );
-    println!("        {}", sanitize_for_terminal(&issue.message));
-    println!(
+    let _ = writeln!(out, "        {}", sanitize_for_terminal(&issue.message));
+    let _ = writeln!(
+        out,
         "   {}  {}",
         "Fix:".yellow().bold(),
         sanitize_for_terminal(&issue.fix)
     );
     if let Some(ref s) = issue.suggestion {
-        println!(
+        let _ = writeln!(
+            out,
             "        Replace with: {}",
             sanitize_for_terminal(s).green().bold()
         );
     }
     if let Some(ref url) = issue.registry_url {
-        println!("        Verify: {}", sanitize_for_terminal(url).dimmed());
+        let _ = writeln!(
+            out,
+            "        Verify: {}",
+            sanitize_for_terminal(url).dimmed()
+        );
     }
-    println!();
+    let _ = writeln!(out);
 }
 
 fn metadata_exception_snippet(candidate: &ReviewExceptionCandidate) -> String {
@@ -262,39 +334,62 @@ fn metadata_exception_snippet(candidate: &ReviewExceptionCandidate) -> String {
     serde_json::to_string_pretty(&snippet).expect("review exception snippets should serialize")
 }
 
-fn print_review_candidate(candidate: &ReviewExceptionCandidate) {
-    println!(
+fn render_review_candidate(out: &mut String, candidate: &ReviewExceptionCandidate) {
+    let _ = writeln!(
+        out,
         "  {} {} {}",
         "CANDIDATE".cyan().bold(),
         sanitize_for_terminal(&candidate.package).cyan().bold(),
         format!("[{}]", sanitize_for_terminal(&candidate.check)).dimmed(),
     );
-    println!(
+    let _ = writeln!(
+        out,
         "        Version: {}",
         sanitize_for_terminal(&candidate.version)
     );
-    println!(
+    let _ = writeln!(
+        out,
         "        Publisher change: {} -> {}",
         sanitize_for_terminal(&candidate.previous_publisher),
         sanitize_for_terminal(&candidate.current_publisher)
     );
     if !candidate.owners.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "        Owners: {}",
             sanitize_for_terminal(&candidate.owners.join(", "))
         );
     }
     if let Some(url) = &candidate.repository_url {
-        println!(
+        let _ = writeln!(
+            out,
             "        Repository: {}",
             sanitize_for_terminal(url).dimmed()
         );
     }
-    println!("        Config snippet:");
+    let _ = writeln!(out, "        Config snippet:");
     for line in metadata_exception_snippet(candidate).lines() {
-        println!("          {}", line);
+        let _ = writeln!(out, "          {}", line);
     }
-    println!();
+    let _ = writeln!(out);
+}
+
+fn full_scan_reason_message(reason: FullScanRecommendationReason) -> &'static str {
+    match reason {
+        FullScanRecommendationReason::NoSuccessfulFullScan => {
+            "No successful full scan has been recorded yet."
+        }
+        FullScanRecommendationReason::LastFullScanStale => "Last full scan is older than 24 hours.",
+        FullScanRecommendationReason::DependencyStateChanged => {
+            "Dependency state changed since the last successful full scan."
+        }
+        FullScanRecommendationReason::PolicyChanged => {
+            "Effective policy changed since the last successful full scan."
+        }
+        FullScanRecommendationReason::ManagerBindingChanged => {
+            "Manager or ecosystem binding changed since the last successful full scan."
+        }
+    }
 }
 
 #[cfg(test)]
@@ -374,6 +469,18 @@ mod tests {
                 current_publisher: Some("hwittenborn".to_string()),
                 reason: Some("reviewed transfer".to_string()),
             },
+        }
+    }
+
+    fn recommendation_report() -> ScanReport {
+        ScanReport {
+            packages_checked: 3,
+            issues: vec![],
+            review_candidates: vec![],
+            full_scan_reasons: vec![
+                FullScanRecommendationReason::NoSuccessfulFullScan,
+                FullScanRecommendationReason::LastFullScanStale,
+            ],
         }
     }
 
@@ -459,6 +566,29 @@ mod tests {
         assert!(json.contains("\"review_candidates\""));
         assert!(json.contains("\"metadata_exception\""));
         assert!(json.contains("\"current_publisher\":\"hwittenborn\""));
+    }
+
+    #[test]
+    fn report_json_includes_full_scan_recommendation_fields() {
+        let json = serde_json::to_string(&recommendation_report()).unwrap();
+        assert!(json.contains("\"full_scan_recommended\":true"));
+        assert!(json.contains("\"full_scan_reasons\""));
+        assert!(json.contains("\"no-successful-full-scan\""));
+        assert!(json.contains("\"last-full-scan-stale\""));
+    }
+
+    #[test]
+    fn report_with_full_scan_reasons_is_marked_recommended() {
+        assert!(recommendation_report().full_scan_recommended());
+    }
+
+    #[test]
+    fn human_output_includes_full_scan_recommended_section() {
+        let output = recommendation_report().render_human();
+        assert!(output.contains("FULL SCAN RECOMMENDED"));
+        assert!(output.contains("sloppy-joe check --full"));
+        assert!(output.contains("No successful full scan"));
+        assert!(output.contains("Last full scan is older than 24 hours"));
     }
 
     #[test]

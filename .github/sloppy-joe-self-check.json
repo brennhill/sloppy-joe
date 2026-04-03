@@ -14,14 +14,32 @@
         "reason": "clap is the intended command-line parser dependency."
       },
       {
+        "package": "clap",
+        "candidate": "flap",
+        "generator": "keyboard-proximity",
+        "reason": "clap is the intended command-line parser dependency."
+      },
+      {
         "package": "async-trait",
         "candidate": "trait-async",
         "generator": "word-reorder",
         "reason": "async-trait is the intended proc-macro crate."
       },
       {
+        "package": "async-trait",
+        "candidate": "async_trait",
+        "generator": "separator-swap",
+        "reason": "async-trait is the intended proc-macro crate."
+      },
+      {
         "package": "colored",
         "candidate": "colorer",
+        "generator": "keyboard-proximity",
+        "reason": "colored is the intended terminal-coloring crate."
+      },
+      {
+        "package": "colored",
+        "candidate": "colorex",
         "generator": "keyboard-proximity",
         "reason": "colored is the intended terminal-coloring crate."
       },
@@ -38,10 +56,34 @@
         "reason": "libc is the intended systems FFI crate."
       },
       {
+        "package": "libc",
+        "candidate": "lib",
+        "generator": "extra-char",
+        "reason": "libc is the intended systems FFI crate."
+      },
+      {
         "package": "serde",
         "candidate": "xerde",
         "generator": "keyboard-proximity",
         "reason": "serde is the intended serialization framework."
+      },
+      {
+        "package": "serde",
+        "candidate": "srede",
+        "generator": "char-swap",
+        "reason": "serde is the intended serialization framework."
+      },
+      {
+        "package": "serde_json",
+        "candidate": "serde_kson",
+        "generator": "keyboard-proximity",
+        "reason": "serde_json is the intended JSON serde companion crate."
+      },
+      {
+        "package": "serde_yaml",
+        "candidate": "serde",
+        "generator": "segment-overlap",
+        "reason": "serde_yaml is the intended YAML serde companion crate."
       },
       {
         "package": "strsim",
@@ -56,10 +98,176 @@
         "reason": "tokio is the intended async runtime."
       },
       {
+        "package": "tokio",
+        "candidate": "toio",
+        "generator": "extra-char",
+        "reason": "tokio is the intended async runtime."
+      },
+      {
         "package": "toml",
         "candidate": "tomo",
         "generator": "keyboard-proximity",
         "reason": "toml is the intended TOML parser crate."
+      },
+      {
+        "package": "toml",
+        "candidate": "tml",
+        "generator": "extra-char",
+        "reason": "toml is the intended TOML parser crate."
+      },
+      {
+        "package": "json5",
+        "candidate": "json",
+        "generator": "extra-char",
+        "reason": "json5 is the intended JSON5 parser dependency."
+      }
+    ]
+  },
+  "metadata_exceptions": {
+    "cargo": [
+      {
+        "package": "colored",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "kurtlawrence",
+        "current_publisher": "hwittenborn",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "displaydoc",
+        "check": "metadata/maintainer-change",
+        "version": "0.2.5",
+        "previous_publisher": "yaahc",
+        "current_publisher": "Manishearth",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "crypto-common",
+        "check": "metadata/maintainer-change",
+        "version": "0.1.7",
+        "previous_publisher": "tarcieri",
+        "current_publisher": "newpavlov",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "cpufeatures",
+        "check": "metadata/maintainer-change",
+        "version": "0.2.17",
+        "previous_publisher": "newpavlov",
+        "current_publisher": "tarcieri",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "digest",
+        "check": "metadata/maintainer-change",
+        "version": "0.10.7",
+        "previous_publisher": "newpavlov",
+        "current_publisher": "tarcieri",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "icu_properties",
+        "check": "metadata/maintainer-change",
+        "version": "2.1.2",
+        "previous_publisher": "sffc",
+        "current_publisher": "robertbastian",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "icu_properties_data",
+        "check": "metadata/maintainer-change",
+        "version": "2.1.2",
+        "previous_publisher": "Manishearth",
+        "current_publisher": "robertbastian",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "litemap",
+        "check": "metadata/maintainer-change",
+        "version": "0.8.1",
+        "previous_publisher": "robertbastian",
+        "current_publisher": "Manishearth",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "lazy_static",
+        "check": "metadata/maintainer-change",
+        "version": "1.5.0",
+        "previous_publisher": "LukasKalbertodt",
+        "current_publisher": "cuviper",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "redox_syscall",
+        "check": "metadata/maintainer-change",
+        "version": "0.5.18",
+        "previous_publisher": "jackpot51",
+        "current_publisher": "4lDO2",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "rustls-pki-types",
+        "check": "metadata/maintainer-change",
+        "version": "1.14.0",
+        "previous_publisher": "ctz",
+        "current_publisher": "djc",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "rustls-webpki",
+        "check": "metadata/maintainer-change",
+        "version": "0.103.10",
+        "previous_publisher": "djc",
+        "current_publisher": "ctz",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "rustls",
+        "check": "metadata/maintainer-change",
+        "version": "0.23.37",
+        "previous_publisher": "djc",
+        "current_publisher": "cpu",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "tower-layer",
+        "check": "metadata/maintainer-change",
+        "version": "0.3.3",
+        "previous_publisher": "davidpdrsn",
+        "current_publisher": "LucioFranco",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "tower-service",
+        "check": "metadata/maintainer-change",
+        "version": "0.3.3",
+        "previous_publisher": "hawkw",
+        "current_publisher": "LucioFranco",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "url",
+        "check": "metadata/maintainer-change",
+        "version": "2.5.8",
+        "previous_publisher": "valenting",
+        "current_publisher": "Manishearth",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "webpki-roots",
+        "check": "metadata/maintainer-change",
+        "version": "1.0.6",
+        "previous_publisher": "cpu",
+        "current_publisher": "ctz",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "zerotrie",
+        "check": "metadata/maintainer-change",
+        "version": "0.2.3",
+        "previous_publisher": "robertbastian",
+        "current_publisher": "Manishearth",
+        "reason": "Reviewed upstream maintainer transfer for repo self-check."
       }
     ]
   },

@@ -1,0 +1,7 @@
+[package]
+name = "fixture-git-fail"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { git = "https://github.com/serde-rs/serde", rev = "4fce932c" }

@@ -1,5 +1,7 @@
 /target
 Cargo.lock
+!/Cargo.lock
+!fixtures/**/Cargo.lock
 *.swp
 *.swo
 .DS_Store

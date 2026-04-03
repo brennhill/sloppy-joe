@@ -1,0 +1,1 @@
+{"id":"go-missing-go-sum-fail","ecosystem":"go","expected":"fail","reason":"External Go dependencies must have go.sum unless the module is stdlib-only or fully local."}

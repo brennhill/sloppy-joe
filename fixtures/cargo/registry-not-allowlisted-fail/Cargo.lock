@@ -1,0 +1,13 @@
+version = 4
+
+[[package]]
+name = "fixture-registry-fail"
+version = "0.1.0"
+dependencies = [
+ "internal-crate",
+]
+
+[[package]]
+name = "internal-crate"
+version = "1.2.3"
+source = "registry+https://cargo.company.example/index"
