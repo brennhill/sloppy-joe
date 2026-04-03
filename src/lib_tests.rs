@@ -390,6 +390,16 @@ fn repo_ci_self_check_build_uses_locked_cargo_graph() {
     );
 }
 
+#[test]
+fn repo_ci_self_check_scans_repo_cargo_project_explicitly() {
+    let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("CI workflow must exist");
+    assert!(
+        workflow.contains("sloppy-joe check --no-cache --type cargo --config"),
+        "self-check CI should target the repo's Cargo project explicitly instead of auto-discovering fixture directories"
+    );
+}
+
 fn tracked_repo_files() -> std::collections::HashSet<std::path::PathBuf> {
     let output = std::process::Command::new("git")
         .args(["ls-files", "-z"])

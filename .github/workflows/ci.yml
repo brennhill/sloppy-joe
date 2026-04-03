@@ -92,4 +92,4 @@ jobs:
         run: install -m 0644 .github/sloppy-joe-self-check.json /tmp/sloppy-joe-self-check.json
 
       - name: Check own dependencies
-        run: ./target/release/sloppy-joe check --no-cache --config /tmp/sloppy-joe-self-check.json
+        run: ./target/release/sloppy-joe check --no-cache --type cargo --config /tmp/sloppy-joe-self-check.json
