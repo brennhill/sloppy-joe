@@ -5932,6 +5932,43 @@ version = "1.0.0"
 }
 
 #[test]
+fn preflight_accepts_cargo_lock_versions_with_build_metadata_suffixes() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde_yaml = "=0.9.34"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        r#"version = 4
+
+[[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("cargo"), &config).unwrap();
+    let result = preflight_project_inputs(&dir, &specs, &config);
+    assert!(
+        result.is_ok(),
+        "Cargo exact pins should trust lockfile entries that differ only by build metadata: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn preflight_allows_cargo_allowlisted_private_registry_dependency() {
     let dir = unique_dir();
     std::fs::write(

@@ -2851,7 +2851,10 @@ fn validate_cargo_registry_source(
             package.get("name").and_then(|value| value.as_str()) == Some(dep.package_name.as_str());
         let same_source = package.get("source").and_then(|value| value.as_str()) == Some(source);
         let version_ok = exact_version.as_ref().is_none_or(|expected| {
-            package.get("version").and_then(|value| value.as_str()) == Some(expected.as_str())
+            package
+                .get("version")
+                .and_then(|value| value.as_str())
+                .is_some_and(|actual| cargo_registry_versions_match(expected, actual))
         });
         same_name && same_source && version_ok
     });
@@ -2867,6 +2870,14 @@ fn validate_cargo_registry_source(
     }
 
     Ok(())
+}
+
+fn cargo_registry_versions_match(expected: &str, actual: &str) -> bool {
+    expected == actual || strip_cargo_build_metadata(expected) == strip_cargo_build_metadata(actual)
+}
+
+fn strip_cargo_build_metadata(version: &str) -> &str {
+    version.split_once('+').map_or(version, |(base, _)| base)
 }
 
 fn validate_cargo_git_source(
