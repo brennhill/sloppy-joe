@@ -330,15 +330,25 @@ fn repo_self_check_config_is_valid_and_has_exact_similarity_suppressions() {
 
     let expected = [
         ("serde_json", "serde", "segment-overlap"),
+        ("serde_json", "serde_kson", "keyboard-proximity"),
+        ("serde_yaml", "serde", "segment-overlap"),
         ("clap", "coap", "keyboard-proximity"),
+        ("clap", "flap", "keyboard-proximity"),
         ("async-trait", "trait-async", "word-reorder"),
+        ("async-trait", "async_trait", "separator-swap"),
         ("colored", "colorer", "keyboard-proximity"),
+        ("colored", "colorex", "keyboard-proximity"),
         ("futures", "future", "extra-char"),
         ("libc", "libx", "keyboard-proximity"),
+        ("libc", "lib", "extra-char"),
         ("serde", "xerde", "keyboard-proximity"),
+        ("serde", "srede", "char-swap"),
         ("strsim", "strim", "extra-char"),
         ("tokio", "toki", "extra-char"),
+        ("tokio", "toio", "extra-char"),
         ("toml", "tomo", "keyboard-proximity"),
+        ("toml", "tml", "extra-char"),
+        ("json5", "json", "extra-char"),
     ];
 
     for (package, candidate, generator) in expected {
@@ -349,6 +359,56 @@ fn repo_self_check_config_is_valid_and_has_exact_similarity_suppressions() {
                     && rule.generator == generator
             }),
             "missing self-check similarity suppression for {package} -> {candidate} ({generator})"
+        );
+    }
+}
+
+#[test]
+fn repo_self_check_config_has_reviewed_cargo_metadata_exceptions() {
+    let config_path = repo_root().join(".github/sloppy-joe-self-check.json");
+    let config = config::load_config(Some(&config_path))
+        .expect("checked-in self-check config should remain valid");
+    let cargo_rules = config
+        .metadata_exceptions
+        .get("cargo")
+        .expect("self-check config should define cargo metadata exceptions");
+
+    let expected = [
+        ("colored", "2.2.0", "kurtlawrence", "hwittenborn"),
+        ("displaydoc", "0.2.5", "yaahc", "Manishearth"),
+        ("crypto-common", "0.1.7", "tarcieri", "newpavlov"),
+        ("cpufeatures", "0.2.17", "newpavlov", "tarcieri"),
+        ("digest", "0.10.7", "newpavlov", "tarcieri"),
+        ("icu_properties", "2.1.2", "sffc", "robertbastian"),
+        (
+            "icu_properties_data",
+            "2.1.2",
+            "Manishearth",
+            "robertbastian",
+        ),
+        ("litemap", "0.8.1", "robertbastian", "Manishearth"),
+        ("lazy_static", "1.5.0", "LukasKalbertodt", "cuviper"),
+        ("redox_syscall", "0.5.18", "jackpot51", "4lDO2"),
+        ("rustls-pki-types", "1.14.0", "ctz", "djc"),
+        ("rustls-webpki", "0.103.10", "djc", "ctz"),
+        ("rustls", "0.23.37", "djc", "cpu"),
+        ("tower-layer", "0.3.3", "davidpdrsn", "LucioFranco"),
+        ("tower-service", "0.3.3", "hawkw", "LucioFranco"),
+        ("url", "2.5.8", "valenting", "Manishearth"),
+        ("webpki-roots", "1.0.6", "cpu", "ctz"),
+        ("zerotrie", "0.2.3", "robertbastian", "Manishearth"),
+    ];
+
+    for (package, version, previous_publisher, current_publisher) in expected {
+        assert!(
+            cargo_rules.iter().any(|rule| {
+                rule.package == package
+                    && rule.check == crate::checks::names::METADATA_MAINTAINER_CHANGE
+                    && rule.version == version
+                    && rule.previous_publisher.as_deref() == Some(previous_publisher)
+                    && rule.current_publisher.as_deref() == Some(current_publisher)
+            }),
+            "missing self-check metadata exception for {package} {version} {previous_publisher}->{current_publisher}"
         );
     }
 }

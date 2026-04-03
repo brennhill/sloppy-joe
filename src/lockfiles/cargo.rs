@@ -14,6 +14,14 @@ fn is_supported_registry_source(source: &str) -> bool {
     source.starts_with("registry+")
 }
 
+fn cargo_lock_versions_match(expected: &str, actual: &str) -> bool {
+    expected == actual || strip_cargo_build_metadata(expected) == strip_cargo_build_metadata(actual)
+}
+
+fn strip_cargo_build_metadata(version: &str) -> &str {
+    version.split_once('+').map_or(version, |(base, _)| base)
+}
+
 /// Read + parse + resolve in one step (used by resolve_versions test API).
 #[cfg(test)]
 pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<ResolutionResult> {
@@ -89,7 +97,7 @@ pub(super) fn resolve_from_value_with_mode(
         if versions.len() == 1 {
             let version = &versions[0];
             if let Some(exact_manifest) = dep.exact_version()
-                && exact_manifest != *version
+                && !cargo_lock_versions_match(&exact_manifest, version)
             {
                 result.push_issue_for(dep, out_of_sync_issue(dep, version));
                 add_manifest_exact_fallback(&mut result, dep);
@@ -119,7 +127,7 @@ pub(super) fn resolve_from_value_with_mode(
                     .then(|| dep.version.clone())
                     .flatten()
             })
-            .filter(|v| versions.iter().any(|lv| lv == v));
+            .filter(|v| versions.iter().any(|lv| cargo_lock_versions_match(v, lv)));
 
         if let Some(matched) = exact {
             result.exact_versions.insert(
@@ -189,7 +197,9 @@ pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependenc
 
 #[cfg(test)]
 mod tests {
-    use super::parse_all;
+    use super::ResolutionMode;
+    use super::{parse_all, resolve_from_value_with_mode};
+    use crate::{Dependency, Ecosystem};
 
     #[test]
     fn parse_all_skips_workspace_root_package_without_source() {
@@ -208,5 +218,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let deps = parse_all(lockfile).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "serde");
+    }
+
+    #[test]
+    fn exact_manifest_versions_accept_lockfile_build_metadata_suffixes() {
+        let parsed: toml::Value = toml::from_str(
+            r#"
+[[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .unwrap();
+        let deps = vec![Dependency {
+            name: "serde_yaml".to_string(),
+            version: Some("=0.9.34".to_string()),
+            ecosystem: Ecosystem::Cargo,
+            actual_name: None,
+        }];
+
+        let result = resolve_from_value_with_mode(&parsed, &deps, ResolutionMode::Direct).unwrap();
+        assert!(
+            result.issues.is_empty(),
+            "unexpected issues: {:?}",
+            result.issues
+        );
+        let resolved = result
+            .exact_versions
+            .get(&super::ResolutionKey::from(&deps[0]))
+            .expect("lockfile should resolve the exact version");
+        assert_eq!(resolved.version, "0.9.34+deprecated");
     }
 }
