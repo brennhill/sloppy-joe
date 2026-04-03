@@ -390,6 +390,84 @@ fn repo_ci_self_check_build_uses_locked_cargo_graph() {
     );
 }
 
+fn tracked_repo_files() -> std::collections::HashSet<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(repo_root())
+        .output()
+        .expect("git ls-files should run for repo health checks");
+    assert!(
+        output.status.success(),
+        "git ls-files failed for repo health checks: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            std::path::PathBuf::from(
+                std::str::from_utf8(entry).expect("git ls-files should return valid utf-8 paths"),
+            )
+        })
+        .collect()
+}
+
+fn collect_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("fixture directories must be readable") {
+            let entry = entry.expect("fixture directory entries must be readable");
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .expect("fixture directory entries must have a file type");
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() {
+                files.push(path);
+            }
+        }
+    }
+
+    files
+}
+
+#[test]
+fn repo_cargo_lock_is_tracked_for_locked_ci_builds() {
+    let tracked = tracked_repo_files();
+    assert!(
+        tracked.contains(&std::path::PathBuf::from("Cargo.lock")),
+        "CI uses cargo build --locked, so the repository must track Cargo.lock"
+    );
+}
+
+#[test]
+fn fixture_files_are_tracked_in_git() {
+    let repo = repo_root();
+    let tracked = tracked_repo_files();
+
+    let mut untracked = Vec::new();
+    for path in collect_files(&repo.join("fixtures")) {
+        let relative = path
+            .strip_prefix(&repo)
+            .expect("fixture path should live under repo root")
+            .to_path_buf();
+        if !tracked.contains(&relative) {
+            untracked.push(relative);
+        }
+    }
+
+    assert!(
+        untracked.is_empty(),
+        "all fixture files must be tracked in git so CI sees the same corpus: {:?}",
+        untracked
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn preflight_blocks_broken_detected_manifests_for_all_ecosystems() {
