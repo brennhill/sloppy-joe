@@ -18,7 +18,7 @@
 | Ecosystem | Primary workflow | Trust level today |
 |---|---|---|
 | JavaScript | Scan the workspace or package root with the authoritative manager lockfile | strict |
-| Python | Prefer Poetry + `poetry.lock`; legacy manifests still scan with warnings by default | mixed |
+| Python | Trust Poetry + `poetry.lock`, uv + `uv.lock`, or fully hash-locked pip-tools; legacy manifests still warn by default | mixed |
 | Rust | Strict `Cargo.lock` plus provenance validation for local paths, registries, git, and rewrites | strict |
 | Go | `go.mod` required; `go.sum` required for external deps | partial |
 | Ruby | `Gemfile` + `Gemfile.lock`, registry-only source model | strict |

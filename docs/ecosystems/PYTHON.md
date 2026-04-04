@@ -4,10 +4,11 @@ This guide covers the current Python support surface in `sloppy-joe`.
 
 ## Quick Start
 
-The trusted Python path is Poetry:
+Trusted Python modes today are:
 
-- manifest: `pyproject.toml`
-- lockfile: `poetry.lock`
+- Poetry projects: `pyproject.toml` + `poetry.lock`
+- uv projects: `pyproject.toml` + `uv.lock`
+- pip-tools environment locks: fully hash-locked `requirements*.txt`
 
 Recommended commands:
 
@@ -23,12 +24,15 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 
 - Supported manifest inputs:
   - Poetry `pyproject.toml`
+  - uv `pyproject.toml`
   - non-Poetry `pyproject.toml`
   - `requirements*.txt`
   - `Pipfile`
   - `setup.cfg`
   - statically readable `setup.py`
 - Poetry projects require `poetry.lock` and use it for exact version resolution plus trusted transitive coverage.
+- uv projects require `uv.lock` and use it for exact version resolution plus trusted transitive coverage.
+- pip-tools requirements are trusted only when every installable requirement is exact-pinned and fully hash-covered, including recursively included requirement files.
 - Legacy Python manifests are still scanned for direct dependencies and standard signals like existence, similarity, canonicals, and vulnerabilities.
 - Included requirements files are expanded recursively.
 - `setup.py` is accepted only when dependency declarations are statically readable from literal values.
@@ -36,7 +40,11 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 ## What blocks
 
 - Poetry projects without a readable `poetry.lock`.
+- uv projects without a readable `uv.lock`.
 - Malformed Poetry lockfiles.
+- Malformed, stale, or unsupported `uv.lock` files.
+- Mixed Poetry and uv project metadata in the same `pyproject.toml`.
+- Hash-locked pip-tools requirements that are missing hashes, use non-exact pins, or inherit an included file that is not fully hash-locked.
 - Unsafe legacy dependency forms, including:
   - direct URLs
   - editable installs
@@ -47,14 +55,16 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 
 ## Current limitations
 
-- Poetry is the only trusted Python lockfile path today.
-- Legacy manifests remain allowed in the default `prefer_poetry` mode, but they warn on every run and do not inherit trusted Poetry transitive coverage.
-- `uv.lock` is not yet supported as a trusted Python lockfile.
+- Poetry and uv are first-class trusted project modes.
+- pip-tools with full hashes is a trusted environment-lock mode, but it is narrower than Poetry or uv because it represents a compiled install set rather than a richer project graph.
+- Legacy manifests remain allowed in the default `prefer_poetry` mode, but they warn on every run and do not inherit trusted transitive coverage.
+- Private index/source allowlists, editable/local first-party provenance, and stronger artifact/source modeling are still future work.
 - Dynamic dependency generation fails closed rather than being partially interpreted.
 
 ## Recommended workflow
 
-- Prefer Poetry with a committed `poetry.lock`.
+- Prefer Poetry or uv with a committed lockfile.
+- If you use pip-tools, compile exact pins with hashes and commit the compiled requirements file.
 - Treat legacy manifest warnings as migration work, not noise.
 - Keep exact pins where practical in legacy manifests.
 - Use `python_enforcement = "poetry_only"` once the repo is fully migrated to Poetry.

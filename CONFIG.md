@@ -245,7 +245,7 @@ Controls how strictly sloppy-joe treats Python manifest workflows.
 
 Valid values:
 
-- `prefer_poetry` (default): trust Poetry projects (`pyproject.toml` with Poetry metadata plus `poetry.lock`). Legacy Python manifests such as `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml` are still scanned, but every run emits a warning encouraging migration to Poetry.
+- `prefer_poetry` (default): trust Poetry projects (`pyproject.toml` with Poetry metadata plus `poetry.lock`), uv projects (`pyproject.toml` with `tool.uv` plus `uv.lock`), and fully hash-locked pip-tools requirements. Legacy Python manifests such as unhashed `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry/non-uv `pyproject.toml` are still scanned, but every run emits a warning encouraging migration to a trusted Python mode.
 - `poetry_only`: block those legacy Python manifests and require Poetry for Python scans.
 
 Legacy Python support still fails closed on unsafe forms. For example, direct URLs, editable requirements, local paths, VCS sources, and unsupported dynamic dependency declarations are rejected rather than silently skipped.

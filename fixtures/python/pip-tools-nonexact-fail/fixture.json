@@ -1,0 +1,1 @@
+{"id":"python-pip-tools-nonexact-fail","ecosystem":"python","expected":"warn","reason":"Hash-locked requirements without exact pins must stay in the legacy warning path."}

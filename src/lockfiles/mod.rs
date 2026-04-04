@@ -7,6 +7,7 @@ mod npm;
 pub(crate) mod pnpm;
 mod python;
 mod ruby;
+pub(crate) mod uv;
 pub(crate) mod yarn;
 
 use crate::Dependency;
@@ -111,6 +112,7 @@ enum ParsedLockfile {
     Dotnet(serde_json::Value),
     Gradle(String),
     Python(toml::Value),
+    Uv(toml::Value),
     Ruby(String),
     None,
 }
@@ -320,7 +322,12 @@ fn read_lockfile_for_project_kind(
         crate::ProjectInputKind::PyProjectPoetry => {
             read_lockfile(project_dir, Some(Ecosystem::PyPI), None, lockfile_override)
         }
+        crate::ProjectInputKind::PyProjectUv => match uv::read_lockfile(project_dir)? {
+            Some(value) => Ok(ParsedLockfile::Uv(value)),
+            None => Ok(ParsedLockfile::None),
+        },
         crate::ProjectInputKind::PyRequirements
+        | crate::ProjectInputKind::PyRequirementsTrusted
         | crate::ProjectInputKind::PyProjectLegacy
         | crate::ProjectInputKind::PyPipfile
         | crate::ProjectInputKind::PySetupPy
@@ -379,6 +386,7 @@ fn resolve_from_parsed(
             gradle::resolve_from_content_with_mode(content, deps, mode)
         }
         ParsedLockfile::Python(value) => python::resolve_from_value_with_mode(value, deps, mode),
+        ParsedLockfile::Uv(value) => uv::resolve_from_value_with_mode(value, deps, mode),
         ParsedLockfile::Ruby(content) => ruby::resolve_from_content_with_mode(content, deps, mode),
         ParsedLockfile::None => {
             let mut result = ResolutionResult::default();
@@ -401,6 +409,7 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
         ParsedLockfile::Dotnet(value) => dotnet::parse_all_from_value(value),
         ParsedLockfile::Gradle(content) => gradle::parse_all_from_content(content),
         ParsedLockfile::Python(value) => python::parse_all_from_value(value),
+        ParsedLockfile::Uv(value) => uv::parse_all_from_value(value),
         ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
         ParsedLockfile::None => Ok(vec![]),
     }
@@ -1182,6 +1191,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         )
         .unwrap()
         .resolution;
+        assert_eq!(
+            result.resolved_version(&deps[0]).unwrap().source,
+            ResolutionSource::Lockfile
+        );
+    }
+
+    #[test]
+    fn python_uv_projects_use_uv_lock() {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("uv.lock"),
+            r#"version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "requests"
+version = "2.32.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/requests-2.32.3.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/requests-2.32.3-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = "==2.32.3" }]
+"#,
+        )
+        .unwrap();
+        let deps = vec![pypi_dep("requests", "==2.32.3")];
+        let result =
+            LockfileData::parse_for_kind(&dir, Some(crate::ProjectInputKind::PyProjectUv), &deps)
+                .unwrap()
+                .resolution;
         assert_eq!(
             result.resolved_version(&deps[0]).unwrap().source,
             ResolutionSource::Lockfile

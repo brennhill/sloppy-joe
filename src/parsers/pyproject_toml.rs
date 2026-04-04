@@ -5,6 +5,7 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PyprojectKind {
     Poetry,
+    Uv,
     Legacy,
 }
 
@@ -18,12 +19,21 @@ pub fn parse_legacy(project_dir: &Path) -> Result<Vec<Dependency>> {
 
 pub(crate) fn classify_manifest(path: &Path) -> Result<PyprojectKind> {
     let parsed = parse_toml(path)?;
-    if parsed
+    let has_poetry = parsed
         .get("tool")
         .and_then(|tool| tool.get("poetry"))
-        .is_some()
-    {
+        .is_some();
+    let has_uv = parsed.get("tool").and_then(|tool| tool.get("uv")).is_some();
+    if has_poetry && has_uv {
+        bail!(
+            "Ambiguous Python project metadata in {}: both [tool.poetry] and [tool.uv] are present",
+            path.display()
+        );
+    }
+    if has_poetry {
         Ok(PyprojectKind::Poetry)
+    } else if has_uv {
+        Ok(PyprojectKind::Uv)
     } else {
         Ok(PyprojectKind::Legacy)
     }
@@ -321,6 +331,40 @@ private-lib = { version = "^1.0.0", source = "internal" }
 
         let err = parse_legacy(&dir).unwrap_err();
         assert!(err.to_string().contains("dynamic"));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn classify_uv_manifest() {
+        let dir = setup_test_dir(
+            "pyproject-uv",
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.uv]\n",
+        );
+
+        assert_eq!(
+            classify_manifest(&dir.join("pyproject.toml")).unwrap(),
+            PyprojectKind::Uv
+        );
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn classify_mixed_poetry_and_uv_manifest_fails() {
+        let dir = setup_test_dir(
+            "pyproject-mixed",
+            "pyproject.toml",
+            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.uv]\n",
+        );
+
+        let err = classify_manifest(&dir.join("pyproject.toml"))
+            .expect_err("mixed Poetry and uv metadata must fail closed");
+        assert!(
+            err.to_string()
+                .contains("Ambiguous Python project metadata")
+        );
 
         cleanup(&dir);
     }

@@ -1,0 +1,1 @@
+{"id":"python-uv-stale-fail","ecosystem":"python","expected":"fail","reason":"Stale uv.lock content must not be trusted when it disagrees with pyproject.toml."}
