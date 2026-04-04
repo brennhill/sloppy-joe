@@ -190,12 +190,18 @@ pub struct CanonicalGroupSuggestion {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapReview {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub suggested_internal: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub suggested_trusted_local_paths: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub candidate_canonical_groups: HashMap<String, Vec<CanonicalGroupSuggestion>>,
 }
 
 impl BootstrapReview {
     fn is_empty(&self) -> bool {
-        self.candidate_canonical_groups.is_empty()
+        self.suggested_internal.is_empty()
+            && self.suggested_trusted_local_paths.is_empty()
+            && self.candidate_canonical_groups.is_empty()
     }
 }
 
@@ -1035,9 +1041,10 @@ pub fn greenfield_config(ecosystem: &str) -> Result<SloppyJoeConfig, String> {
             );
         }
         "go" | "ruby" | "php" | "jvm" | "dotnet" => {
-            config
-                .canonical
-                .insert(ecosystem.to_string(), HashMap::new());
+            return Err(format!(
+                "Greenfield bootstrap for '{}' is not supported yet. Current greenfield presets exist for: npm, pypi, cargo.",
+                ecosystem
+            ));
         }
         other => {
             return Err(format!(
@@ -1058,48 +1065,40 @@ pub fn greenfield_json(ecosystem: &str) -> Result<String, String> {
 #[derive(Default)]
 struct DiscoveryState {
     npm_local_packages: BTreeSet<String>,
-    npm_scope_counts: HashMap<String, usize>,
     npm_dependency_usage: BTreeSet<String>,
     cargo_local_packages: BTreeSet<String>,
     cargo_external_paths: BTreeSet<String>,
+    unsupported_ecosystems: BTreeSet<String>,
+    saw_supported_ecosystem: bool,
 }
 
 impl DiscoveryState {
     fn into_config(self) -> SloppyJoeConfig {
         let mut config = template_config();
 
-        let mut npm_internal = Vec::new();
-        let mut scope_globs = BTreeSet::new();
-        for (scope, count) in &self.npm_scope_counts {
-            if *count > 1 {
-                scope_globs.insert(scope.clone());
-                npm_internal.push(format!("{scope}/*"));
-            }
-        }
-        for package in self.npm_local_packages {
-            if let Some(scope) = extract_npm_scope(&package)
-                && scope_globs.contains(scope)
-            {
-                continue;
-            }
-            npm_internal.push(package);
-        }
+        let npm_internal: Vec<String> = self.npm_local_packages.into_iter().collect();
         if !npm_internal.is_empty() {
-            config.internal.insert("npm".to_string(), npm_internal);
+            config
+                .bootstrap_review
+                .suggested_internal
+                .insert("npm".to_string(), npm_internal);
         }
 
         if !self.cargo_local_packages.is_empty() {
-            config.internal.insert(
+            config.bootstrap_review.suggested_internal.insert(
                 "cargo".to_string(),
                 self.cargo_local_packages.into_iter().collect(),
             );
         }
 
         if !self.cargo_external_paths.is_empty() {
-            config.trusted_local_paths.insert(
-                "cargo".to_string(),
-                self.cargo_external_paths.into_iter().collect(),
-            );
+            config
+                .bootstrap_review
+                .suggested_trusted_local_paths
+                .insert(
+                    "cargo".to_string(),
+                    self.cargo_external_paths.into_iter().collect(),
+                );
         }
 
         let npm_groups = candidate_canonical_groups(
@@ -1202,7 +1201,18 @@ fn discover_repo_state(
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if matches!(name, ".git" | "node_modules" | "target") {
+            if matches!(
+                name,
+                ".git"
+                    | "node_modules"
+                    | "target"
+                    | "vendor"
+                    | "dist"
+                    | "build"
+                    | "third_party"
+                    | "fixtures"
+                    | "testdata"
+            ) {
                 continue;
             }
             discover_repo_state(&path, root, visited, state)?;
@@ -1210,8 +1220,39 @@ fn discover_repo_state(
         }
 
         match path.file_name().and_then(|name| name.to_str()) {
-            Some("package.json") => inspect_package_json(&path, state)?,
-            Some("Cargo.toml") => inspect_cargo_manifest(&path, root, state)?,
+            Some("package.json") => {
+                state.saw_supported_ecosystem = true;
+                inspect_package_json(&path, state)?;
+            }
+            Some("Cargo.toml") => {
+                state.saw_supported_ecosystem = true;
+                inspect_cargo_manifest(&path, root, state)?;
+            }
+            Some("pyproject.toml")
+            | Some("Pipfile")
+            | Some("setup.py")
+            | Some("setup.cfg")
+            | Some("requirements.txt") => {
+                state.unsupported_ecosystems.insert("pypi".to_string());
+            }
+            Some(name) if name.starts_with("requirements") && name.ends_with(".txt") => {
+                state.unsupported_ecosystems.insert("pypi".to_string());
+            }
+            Some("go.mod") => {
+                state.unsupported_ecosystems.insert("go".to_string());
+            }
+            Some("Gemfile") => {
+                state.unsupported_ecosystems.insert("ruby".to_string());
+            }
+            Some("composer.json") => {
+                state.unsupported_ecosystems.insert("php".to_string());
+            }
+            Some("build.gradle") | Some("build.gradle.kts") | Some("pom.xml") => {
+                state.unsupported_ecosystems.insert("jvm".to_string());
+            }
+            _ if path.extension().is_some_and(|ext| ext == "csproj") => {
+                state.unsupported_ecosystems.insert("dotnet".to_string());
+            }
             _ => {}
         }
     }
@@ -1240,9 +1281,6 @@ fn inspect_package_json(path: &Path, state: &mut DiscoveryState) -> Result<(), S
         let name = name.trim();
         if !name.is_empty() {
             state.npm_local_packages.insert(name.to_string());
-            if let Some(scope) = extract_npm_scope(name) {
-                *state.npm_scope_counts.entry(scope.to_string()).or_insert(0) += 1;
-            }
         }
     }
 
@@ -1345,6 +1383,22 @@ pub fn discover_current_config(project_dir: &Path) -> Result<SloppyJoeConfig, St
     let mut visited = BTreeSet::new();
     let mut state = DiscoveryState::default();
     discover_repo_state(project_dir, &root, &mut visited, &mut state)?;
+    if !state.unsupported_ecosystems.is_empty() {
+        return Err(format!(
+            "`sloppy-joe init --from-current` currently supports only npm and cargo repos. Detected unsupported ecosystems: {}. Support for those ecosystems is not implemented yet.",
+            state
+                .unsupported_ecosystems
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !state.saw_supported_ecosystem {
+        return Err(
+            "`sloppy-joe init --from-current` currently supports only npm and cargo repos. No supported manifests were detected.".to_string(),
+        );
+    }
     Ok(state.into_config())
 }
 
@@ -1593,6 +1647,14 @@ mod tests {
     }
 
     #[test]
+    fn greenfield_config_rejects_not_yet_supported_ecosystem() {
+        let err = greenfield_config("go").expect_err("unsupported greenfield ecosystems must fail");
+        assert!(err.contains("not supported yet"));
+        assert!(err.contains("npm"));
+        assert!(err.contains("cargo"));
+    }
+
+    #[test]
     fn greenfield_config_rejects_unknown_ecosystem() {
         let err = greenfield_config("elixir").expect_err("unsupported ecosystems must fail");
         assert!(err.contains("Unsupported ecosystem"));
@@ -1627,8 +1689,12 @@ mod tests {
         let config =
             discover_current_config(&dir).expect("discovery should inspect npm workspaces");
         assert_eq!(
-            config.internal.get("npm"),
-            Some(&vec!["@acme/*".to_string()])
+            config.bootstrap_review.suggested_internal.get("npm"),
+            Some(&vec!["@acme/ui".to_string(), "@acme/web".to_string()])
+        );
+        assert!(
+            config.internal.is_empty(),
+            "from-current should not silently trust discovered packages"
         );
         assert!(
             !config.canonical.contains_key("npm"),
@@ -1691,15 +1757,71 @@ version = "0.1.0"
             discover_current_config(&repo).expect("discovery should inspect cargo manifests");
         let canonical_external = std::fs::canonicalize(&external).unwrap();
         assert_eq!(
-            config.internal.get("cargo"),
+            config.bootstrap_review.suggested_internal.get("cargo"),
             Some(&vec!["app".to_string(), "lib".to_string()])
         );
         assert_eq!(
-            config.trusted_local_paths.get("cargo"),
+            config
+                .bootstrap_review
+                .suggested_trusted_local_paths
+                .get("cargo"),
             Some(&vec![canonical_external.to_string_lossy().to_string()])
+        );
+        assert!(
+            config.trusted_local_paths.is_empty(),
+            "from-current should not silently trust local cargo paths"
         );
 
         std::fs::remove_dir_all(&sandbox).unwrap();
+    }
+
+    #[test]
+    fn discover_current_config_rejects_unsupported_ecosystems() {
+        let dir = unique_temp_dir("from-current-unsupported");
+        write_file(&dir.join("requirements.txt"), "requests==2.32.3\n");
+
+        let err = discover_current_config(&dir)
+            .expect_err("unsupported ecosystems should fail until implemented");
+        assert!(err.contains("supports only npm and cargo"));
+        assert!(err.contains("pypi"));
+        assert!(err.contains("not implemented yet"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn discover_current_config_skips_vendor_and_fixture_trees() {
+        let dir = unique_temp_dir("from-current-skips");
+        write_file(
+            &dir.join("app/package.json"),
+            r#"{"name":"@acme/app","dependencies":{"dayjs":"1.11.13"}}"#,
+        );
+        write_file(
+            &dir.join("vendor/third-party/package.json"),
+            r#"{"name":"left-pad","dependencies":{"moment":"2.30.1"}}"#,
+        );
+        write_file(
+            &dir.join("fixtures/sample/package.json"),
+            r#"{"name":"@fixture/sample","dependencies":{"got":"14.4.8"}}"#,
+        );
+
+        let config = discover_current_config(&dir).expect("discovery should ignore vendored trees");
+        assert_eq!(
+            config.bootstrap_review.suggested_internal.get("npm"),
+            Some(&vec!["@acme/app".to_string()])
+        );
+        let groups = config
+            .bootstrap_review
+            .candidate_canonical_groups
+            .get("npm")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            groups.is_empty(),
+            "vendored fixtures must not leak into review suggestions"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

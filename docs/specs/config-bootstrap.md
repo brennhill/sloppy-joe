@@ -44,10 +44,14 @@ Purpose:
 - seed config from what the repo already uses
 - shorten adoption time for real projects
 
+Current implementation boundary:
+- supports only repos whose first-party code is `npm` and/or `cargo`
+- other ecosystems must fail closed with a clear “not implemented yet” error
+- plain `--from-current` prints review-only output; add `--register` to write/register it
+
 Should discover:
-- likely `internal` patterns
-- trusted scopes and package roots
-- workspace/local-package provenance
+- review-only `suggested_internal` entries for first-party local packages
+- review-only `suggested_trusted_local_paths` for external Cargo path deps
 - reviewable candidate canonical groups
 
 Should not do silently:
@@ -56,8 +60,8 @@ Should not do silently:
 - weaken security controls to “make it pass”
 
 Output model:
-- write config outside the repo
-- register it automatically for the current git root
+- print review-only config by default
+- optionally write config outside the repo and register it when `--register` is used
 - surface discoveries as either:
   - accepted config entries
   - or review-required suggestions when confidence is lower
@@ -74,6 +78,7 @@ The supported safe paths are:
 sloppy-joe init --register
 sloppy-joe init --greenfield --ecosystem npm
 sloppy-joe init --from-current
+sloppy-joe init --from-current --register
 ```
 
 or, for manual placement:

@@ -116,6 +116,12 @@ Carries review-only bootstrap suggestions produced by `sloppy-joe init --from-cu
 ```json
 {
   "bootstrap_review": {
+    "suggested_internal": {
+      "npm": ["@acme/web", "@acme/ui"]
+    },
+    "suggested_trusted_local_paths": {
+      "cargo": ["/opt/company/shared-crate"]
+    },
     "candidate_canonical_groups": {
       "npm": [
         {
@@ -258,16 +264,23 @@ sloppy-joe init --greenfield --ecosystem npm
 sloppy-joe init --greenfield --ecosystem cargo --register
 ```
 
+Greenfield presets are currently implemented for `npm`, `pypi`, and `cargo`. Other ecosystems fail with a clear “not supported yet” error instead of emitting an empty starter.
+
 For existing repos, seed config from the current codebase:
 
 ```bash
 sloppy-joe init --from-current
+sloppy-joe init --from-current --register
 ```
 
-`--from-current` writes the config outside the repo, registers it automatically, and populates:
+`--from-current` currently supports only repos whose first-party code is `npm` and/or `cargo`. Other ecosystems fail with a clear “not implemented yet” error.
 
-- likely `internal` package patterns for local/workspace packages
-- trusted local Cargo paths discovered from the current repo
+By default, `--from-current` prints review-only bootstrap output. Add `--register` to write the generated config outside the repo and register it for the current git root.
+
+It populates:
+
+- `bootstrap_review.suggested_internal` for discovered first-party local packages
+- `bootstrap_review.suggested_trusted_local_paths` for discovered out-of-repo Cargo path dependencies
 - `bootstrap_review.candidate_canonical_groups` suggestions for families that need human review before becoming enforced canonicals
 
 Those `bootstrap_review` suggestions are informational. They do not change enforcement until you move them into `canonical`.

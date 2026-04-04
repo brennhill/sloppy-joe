@@ -30,7 +30,8 @@ Examples:
   sloppy-joe check --json                       JSON output for CI
   sloppy-joe init --register                    Create config + register cwd safely
   sloppy-joe init --greenfield --ecosystem npm   Create an ecosystem-specific starter policy
-  sloppy-joe init --from-current                 Seed config from the current repo
+  sloppy-joe init --from-current                 Print review-only bootstrap suggestions
+  sloppy-joe init --from-current --register      Write and register bootstrap suggestions
   sloppy-joe init > /secure/sloppy-joe.json    Generate config template at a safe path
   sloppy-joe register                           Register cwd with existing config
   sloppy-joe list                               Show registered repos
@@ -161,6 +162,7 @@ enum Commands {
     ///   sloppy-joe init --register
     ///   sloppy-joe init --greenfield --ecosystem npm
     ///   sloppy-joe init --from-current
+    ///   sloppy-joe init --from-current --register
     ///   sloppy-joe init --global
     Init {
         /// Create an opinionated starter policy for a specific ecosystem
@@ -253,18 +255,17 @@ fn repo_dirname(git_root: &std::path::Path) -> String {
         .unwrap_or_else(|| "project".to_string())
 }
 
-/// Write a config JSON string to a path, exiting on error.
-fn write_config_json(config_path: &std::path::Path, config_json: &str) {
+/// Write a config JSON string to a path.
+fn write_config_json(config_path: &std::path::Path, config_json: &str) -> Result<(), String> {
     let config_value: serde_json::Value =
         serde_json::from_str(config_json).expect("bootstrap helpers must produce valid JSON");
-    if let Err(e) = sloppy_joe::cache::atomic_write_json_checked(config_path, &config_value) {
-        eprintln!(
-            "Error: Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
+    sloppy_joe::cache::atomic_write_json_checked(config_path, &config_value).map_err(|e| {
+        format!(
+            "Could not write config file.\n  Path: {}\n  Error: {}\n  Fix: Check file permissions.",
             config_path.display(),
             e
-        );
-        process::exit(2);
-    }
+        )
+    })
 }
 
 fn init_config_json(
@@ -291,6 +292,45 @@ fn init_config_json(
     }
 
     sloppy_joe::config::template_json()
+}
+
+fn create_registered_init_config(
+    project_dir: &std::path::Path,
+    config_home: &std::path::Path,
+    config_json: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let git_root = match sloppy_joe::config::registry::find_git_root(project_dir)? {
+        Some(root) => root,
+        None => {
+            return Err(format!(
+                "Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo, or write a template to a safe external path with `sloppy-joe init > /secure/sloppy-joe.json`.",
+                project_dir.display()
+            ));
+        }
+    };
+
+    let dirname = repo_dirname(&git_root);
+    let config_dir = config_home.join(&dirname);
+    let config_path = config_dir.join("config.json");
+
+    if config_path.exists() {
+        return Err(format!(
+            "Config already exists at {}.\n  Fix: Use `sloppy-joe register` to re-register without overwriting.",
+            config_path.display()
+        ));
+    }
+
+    std::fs::create_dir_all(&config_dir).map_err(|e| {
+        format!(
+            "Could not create config directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
+            config_dir.display(),
+            e
+        )
+    })?;
+
+    write_config_json(&config_path, config_json)?;
+    sloppy_joe::config::registry::register_at_config_home(&git_root, &config_path, config_home)?;
+    Ok((git_root, config_path))
 }
 
 #[tokio::main]
@@ -406,7 +446,7 @@ async fn main() {
                 process::exit(2);
             }
 
-            if register || from_current {
+            if register {
                 // Create config at {config_home}/{dirname}/config.json and register cwd
                 let dir = match std::env::current_dir() {
                     Ok(d) => d,
@@ -439,36 +479,16 @@ async fn main() {
                         process::exit(2);
                     }
                 };
-                let dirname = repo_dirname(&git_root);
-                let config_dir = config_home.join(&dirname);
-                let config_path = config_dir.join("config.json");
                 let config_json =
                     init_config_json(greenfield, ecosystem.as_deref(), from_current, &git_root);
-
-                // Don't overwrite existing config
-                if config_path.exists() {
-                    eprintln!(
-                        "Error: Config already exists at {}.\n  Fix: Use `sloppy-joe register` to re-register without overwriting.",
-                        config_path.display()
-                    );
-                    process::exit(2);
-                }
-
-                if let Err(e) = std::fs::create_dir_all(&config_dir) {
-                    eprintln!(
-                        "Error: Could not create config directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
-                        config_dir.display(),
-                        e
-                    );
-                    process::exit(2);
-                }
-
-                write_config_json(&config_path, &config_json);
-
-                if let Err(e) = sloppy_joe::config::registry::register(&git_root, &config_path) {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
+                let (git_root, config_path) =
+                    match create_registered_init_config(&dir, &config_home, &config_json) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(2);
+                        }
+                    };
 
                 eprintln!("Config created: {}", config_path.display());
                 eprintln!(
@@ -508,15 +528,25 @@ async fn main() {
                     process::exit(2);
                 }
 
-                write_config_json(&config_path, &sloppy_joe::config::template_json());
+                if let Err(e) =
+                    write_config_json(&config_path, &sloppy_joe::config::template_json())
+                {
+                    eprintln!("Error: {}", e);
+                    process::exit(2);
+                }
 
                 eprintln!("Global default config created: {}", config_path.display());
                 eprintln!("Edit the config to add your policy.");
                 eprintln!("Any unregistered repo will use this config as fallback.");
-            } else if greenfield {
+            } else if greenfield || from_current {
                 println!(
                     "{}",
-                    init_config_json(true, ecosystem.as_deref(), false, std::path::Path::new("."))
+                    init_config_json(
+                        greenfield,
+                        ecosystem.as_deref(),
+                        from_current,
+                        std::path::Path::new(".")
+                    )
                 );
             } else {
                 // No flags: print template to stdout (backward compat)
@@ -649,8 +679,31 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use clap::error::ErrorKind;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use super::*;
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let unique = format!(
+            "sloppy-joe-main-test-{}-{}",
+            label,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(path: &std::path::Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
 
     #[test]
     fn resolve_scan_mode_defaults_to_fast() {
@@ -871,5 +924,53 @@ mod tests {
             }
             _ => panic!("expected init command"),
         }
+    }
+
+    #[test]
+    fn create_registered_init_config_writes_config_and_registry() {
+        let dir = unique_temp_dir("register");
+        let repo = dir.join("repo");
+        let config_home = dir.join("config-home");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let (git_root, config_path) = create_registered_init_config(
+            &repo,
+            &config_home,
+            &sloppy_joe::config::template_json(),
+        )
+        .expect("register helper should write config and registry");
+        let canonical_config_path = std::fs::canonicalize(&config_path).unwrap();
+
+        assert_eq!(git_root, std::fs::canonicalize(&repo).unwrap());
+        assert!(config_path.exists());
+        let registry_path = config_home.join("registry.json");
+        let registry: BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&registry_path).unwrap()).unwrap();
+        assert_eq!(
+            registry.get(&git_root.to_string_lossy().to_string()),
+            Some(&canonical_config_path.to_string_lossy().to_string())
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_registered_init_config_rejects_existing_config() {
+        let dir = unique_temp_dir("register-existing");
+        let repo = dir.join("repo");
+        let config_home = dir.join("config-home");
+        let config_path = config_home.join("repo").join("config.json");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        write_file(&config_path, "{}");
+
+        let err = create_registered_init_config(
+            &repo,
+            &config_home,
+            &sloppy_joe::config::template_json(),
+        )
+        .expect_err("existing config path must not be overwritten");
+        assert!(err.contains("Config already exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
