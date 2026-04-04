@@ -101,7 +101,7 @@ nix profile install github:brennhill/sloppy-joe
 | JavaScript / pnpm | `package.json` | `pnpm-lock.yaml` |
 | JavaScript / Yarn | `package.json` | `yarn.lock` |
 | JavaScript / Bun | `package.json` | `bun.lock` |
-| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`; legacy manifests allowed with warnings by default |
+| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`, trusted uv path uses `uv.lock`, and fully hash-locked pip-tools is trusted; legacy manifests allowed with warnings by default |
 | Rust | `Cargo.toml` | `Cargo.lock` |
 | Go | `go.mod` | `go.sum` required for external deps |
 | Ruby | `Gemfile` | `Gemfile.lock` |
@@ -375,7 +375,7 @@ ERROR requsets [metadata/low-downloads]
 | Ecosystem | Manifest | Lockfile Policy | Existence | Metadata | Age Gate |
 |-----------|----------|-----------------|:---------:|:--------:|:--------:|
 | npm | package.json | `package-lock.json` or `npm-shrinkwrap.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`, uv is trusted with `uv.lock`, and fully hash-locked pip-tools is trusted; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Cargo | Cargo.toml | `Cargo.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Go | go.mod | `go.sum` required for external deps; not required for stdlib-only or all-local `replace` | :white_check_mark: | :x: | :x: |
 | Ruby | Gemfile | `Gemfile.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
@@ -474,7 +474,7 @@ Use `sloppy-joe check --review-exceptions` when you need to review maintainer-ch
 
 **`allow_legacy_npm_v1_lockfile`** — allow `lockfileVersion: 1` npm lockfiles from npm v5/v6 in reduced-confidence mode. Default: `false`. Keep this off unless you are intentionally stuck on legacy npm and accept loud warnings plus reduced trusted npm transitive coverage.
 
-**`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects and warns on every run for legacy manifests like `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml`. `poetry_only` blocks those legacy manifests and requires Poetry.
+**`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects, uv projects, and fully hash-locked pip-tools requirements, then warns on every run for legacy manifests like unhashed `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry/non-uv `pyproject.toml`. `poetry_only` blocks those non-Poetry Python workflows and requires Poetry.
 
 ### Config Security
 
@@ -495,7 +495,7 @@ Bootstrap config:
 sloppy-joe init --greenfield --ecosystem npm
 sloppy-joe init --from-current
 sloppy-joe init --from-current --register
-sloppy-joe init > /secure/location/config.json
+sloppy-joe init --register
 ```
 
 ## CI Integration
@@ -514,7 +514,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: brennhill/sloppy-joe@v0.9.1
+      - uses: brennhill/sloppy-joe@v1
         with:
           config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 ```
@@ -626,7 +626,7 @@ sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
 **Similarity cache.** Mutation existence results are cached for 7 days. After the first scan, most queries are served from cache with zero network calls. Only new dependencies trigger registry queries.
 
-**Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges.
+**Lockfile-aware resolution.** When a supported lockfile or trusted requirements file is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `uv.lock` for uv projects, fully hash-locked `requirements*.txt`, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges.
 
 ## Tests
 

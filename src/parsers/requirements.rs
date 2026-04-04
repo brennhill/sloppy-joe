@@ -7,6 +7,17 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     parse_file(&project_dir.join("requirements.txt"), project_dir)
 }
 
+pub(crate) fn is_hash_locked_requirements_file(path: &Path, scan_root: &Path) -> Result<bool> {
+    let scan_root = std::fs::canonicalize(scan_root)
+        .with_context(|| format!("Failed to inspect scan root {}", scan_root.display()))?;
+    let mut visited = HashSet::new();
+    let mut saw_installable = false;
+    Ok(
+        classify_trust_inner(path, &scan_root, &mut visited, &mut saw_installable)?
+            && saw_installable,
+    )
+}
+
 pub(crate) fn parse_file(path: &Path, scan_root: &Path) -> Result<Vec<Dependency>> {
     let scan_root = std::fs::canonicalize(scan_root)
         .with_context(|| format!("Failed to inspect scan root {}", scan_root.display()))?;
@@ -72,6 +83,56 @@ fn parse_file_inner(
 
     visited.remove(&visited_key);
     Ok(deps)
+}
+
+fn classify_trust_inner(
+    path: &Path,
+    scan_root: &Path,
+    visited: &mut HashSet<PathBuf>,
+    saw_installable: &mut bool,
+) -> Result<bool> {
+    let normalized_path = normalize_path(path);
+    let visited_key =
+        std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
+    if !visited.insert(visited_key.clone()) {
+        bail!(
+            "requirements include cycle detected at {}",
+            normalized_path.display()
+        );
+    }
+
+    let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
+        .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
+    let mut trusted = true;
+
+    for entry in logical_requirement_lines(&content) {
+        let line = entry.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(include_target) = requirement_include_target(line) {
+            let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
+            trusted &= classify_trust_inner(&include_path, scan_root, visited, saw_installable)?;
+            continue;
+        }
+
+        if line.starts_with('-') {
+            trusted = false;
+            continue;
+        }
+
+        let Some(dep) = parse_requirement_spec(line, &normalized_path).unwrap_or_default() else {
+            continue;
+        };
+        *saw_installable = true;
+        if dep.exact_version().is_none() || !line.contains("--hash=") {
+            trusted = false;
+        }
+    }
+
+    visited.remove(&visited_key);
+    Ok(trusted)
 }
 
 fn collect_included_paths(
@@ -187,6 +248,38 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
 
     normalized
+}
+
+fn logical_requirement_lines(content: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut current = String::new();
+
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(trimmed);
+
+        if current.ends_with('\\') {
+            current.pop();
+            current = current.trim_end().to_string();
+            continue;
+        }
+
+        entries.push(current.trim().to_string());
+        current.clear();
+    }
+
+    if !current.trim().is_empty() {
+        entries.push(current.trim().to_string());
+    }
+
+    entries
 }
 
 pub(crate) fn requirement_looks_like_local_path(line: &str) -> bool {

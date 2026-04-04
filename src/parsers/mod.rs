@@ -370,6 +370,7 @@ fn parse_python_project(project_dir: &Path) -> Result<Vec<Dependency>> {
     if path_detected(&project_dir.join("pyproject.toml"))? {
         return match pyproject_toml::classify_manifest(&project_dir.join("pyproject.toml"))? {
             pyproject_toml::PyprojectKind::Poetry => pyproject_toml::parse_poetry(project_dir),
+            pyproject_toml::PyprojectKind::Uv => pyproject_toml::parse_legacy(project_dir),
             pyproject_toml::PyprojectKind::Legacy => pyproject_toml::parse_legacy(project_dir),
         };
     }

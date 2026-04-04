@@ -1,0 +1,1 @@
+{"id":"python-pip-tools-missing-hash-fail","ecosystem":"python","expected":"warn","reason":"Requirements files without full hash coverage must stay in the legacy warning path."}

@@ -1,0 +1,1 @@
+{"id":"python-uv-pass","ecosystem":"python","expected":"pass","reason":"Trusted uv project with a lockfile-backed exact resolution path."}

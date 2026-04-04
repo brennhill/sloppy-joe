@@ -469,7 +469,7 @@ fn repo_ci_self_check_scans_repo_cargo_project_explicitly() {
     let workflow = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
         .expect("CI workflow must exist");
     assert!(
-        workflow.contains("sloppy-joe check --no-cache --type cargo --config"),
+        workflow.contains("sloppy-joe check --ci --no-cache --type cargo --config"),
         "self-check CI should target the repo's Cargo project explicitly instead of auto-discovering fixture directories"
     );
 }
@@ -852,7 +852,7 @@ async fn scan_with_config_warns_for_legacy_requirements_projects_by_default() {
     assert!(report.issues.iter().any(|issue| {
         issue.severity == Severity::Warning
             && issue.message.contains("requirements.txt")
-            && issue.message.contains("Poetry")
+            && issue.message.contains("trusted Python modes")
     }));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -926,7 +926,7 @@ async fn scan_with_config_warns_for_other_legacy_python_manifests_by_default() {
         assert!(report.issues.iter().any(|issue| {
             issue.severity == Severity::Warning
                 && issue.message.contains(manifest_name)
-                && issue.message.contains("Poetry")
+                && issue.message.contains("trusted Python modes")
         }));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1245,7 +1245,7 @@ async fn repo_root_scans_warn_for_legacy_python_manifests_instead_of_skipping_th
         assert!(report.issues.iter().any(|issue| {
             issue.severity == Severity::Warning
                 && issue.message.contains(manifest_name)
-                && issue.message.contains("Poetry")
+                && issue.message.contains("trusted Python modes")
         }));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1272,6 +1272,29 @@ fn detected_project_inputs_prefer_poetry_projects_over_same_directory_legacy_man
 
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].kind, ProjectInputKind::PyProjectPoetry);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detected_project_inputs_prefer_trusted_pip_tools_over_same_directory_legacy_manifests() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("requirements.txt"),
+        "requests==2.31.0 \\\n    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("setup.cfg"),
+        "[metadata]\nname = demo\nversion = 0.1.0\n[options]\ninstall_requires =\n    requests==2.31.0\n",
+    )
+    .unwrap();
+
+    let specs = detected_project_inputs(&dir, Some("pypi"))
+        .expect("same-directory trusted requirements and legacy manifests must be discoverable");
+
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].kind, ProjectInputKind::PyRequirementsTrusted);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -4956,9 +4979,133 @@ async fn npm_fixture_long_tail_combo_squat_uses_configured_package_roots() {
 
 #[test]
 fn python_fixture_contracts_hold() {
-    for case in ["direct-url-fail", "poetry-pass", "requirements-warn-pass"] {
+    for case in [
+        "direct-url-fail",
+        "poetry-pass",
+        "requirements-warn-pass",
+        "uv-pass",
+        "uv-stale-fail",
+        "uv-schema-fail",
+        "pip-tools-pass",
+        "pip-tools-missing-hash-fail",
+        "pip-tools-nonexact-fail",
+    ] {
         assert_fixture_preflight_outcome("python", case);
     }
+}
+
+#[test]
+fn python_uv_selects_uv_lockfile_for_tool_uv_projects() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["requests==2.32.3"]
+
+[tool.uv]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        r#"version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "requests"
+version = "2.32.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/requests-2.32.3.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/requests-2.32.3-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = "==2.32.3" }]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "0.1.0"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("uv-managed projects should still be detected");
+    assert_eq!(specs.len(), 1);
+    assert_eq!(selected_lockfile_path(&specs[0]), Some(dir.join("uv.lock")));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn python_uv_preflight_blocks_stale_or_unsupported_uv_lockfiles() {
+    for case in ["uv-stale-fail", "uv-schema-fail"] {
+        let dir = ecosystem_fixture_dir("python", case);
+        preflight_scan_inputs(&dir, Some("pypi"))
+            .expect_err("invalid trusted uv projects must fail closed");
+    }
+}
+
+#[test]
+fn pip_tools_hash_locked_requirements_are_trusted() {
+    let dir = ecosystem_fixture_dir("python", "pip-tools-pass");
+    let warnings = preflight_scan_inputs(&dir, Some("pypi"))
+        .expect("hash-locked pip-tools requirements should remain preflight-clean");
+    assert!(
+        warnings.is_empty(),
+        "trusted pip-tools requirements should not warn: {warnings:?}"
+    );
+}
+
+#[test]
+fn pip_tools_missing_hashes_or_nonexact_requirements_stay_legacy() {
+    for case in ["pip-tools-missing-hash-fail", "pip-tools-nonexact-fail"] {
+        let dir = ecosystem_fixture_dir("python", case);
+        let warnings = preflight_scan_inputs(&dir, Some("pypi"))
+            .expect("legacy pip-tools cases should warn, not fail");
+        assert!(
+            !warnings.is_empty(),
+            "legacy pip-tools case {case} should produce warnings"
+        );
+    }
+}
+
+#[test]
+fn pip_tools_included_requirements_must_also_be_hash_locked() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("requirements.txt"), "-r base.txt\n").unwrap();
+    std::fs::write(
+        dir.join("base.txt"),
+        "requests==2.32.3 \\\n    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\nurllib3==2.6.3\n",
+    )
+    .unwrap();
+
+    let warnings = preflight_scan_inputs(&dir, Some("pypi"))
+        .expect("included requirements without full hashes should stay legacy, not fail");
+    assert!(
+        !warnings.is_empty(),
+        "hashless included requirements should prevent trusted pip-tools promotion"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
