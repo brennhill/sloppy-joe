@@ -52,8 +52,20 @@ sloppy-joe check --json
 # Review exact maintainer-change exceptions with evidence
 sloppy-joe check --review-exceptions
 
-# Generate a starter config
-sloppy-joe init > config.json
+# Create and register a safe per-repo config outside the repo
+sloppy-joe init --register
+
+# Create an ecosystem-specific greenfield starter policy
+sloppy-joe init --greenfield --ecosystem npm
+
+# Print review-only bootstrap suggestions for an npm or Cargo repo
+sloppy-joe init --from-current
+
+# Or write/register those suggestions safely outside the repo
+sloppy-joe init --from-current --register
+
+# Or write a config manually to a secure path outside the repo
+sloppy-joe init > /secure/location/sloppy-joe.json
 ```
 
 ### Nix
@@ -86,6 +98,11 @@ nix profile install github:brennhill/sloppy-joe
 | .NET / NuGet | `.csproj` | strict: `packages.lock.json` |
 
 **Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
+
+**Onboarding:** use the bootstrap mode that matches the repo:
+- `sloppy-joe init --greenfield --ecosystem <eco>` prints an ecosystem-specific starter policy for new projects. Today, greenfield presets are implemented for `npm`, `pypi`, and `cargo`; other ecosystems fail with a “not supported yet” error. Add `--register` to write it outside the repo and register it safely.
+- `sloppy-joe init --from-current` inspects the current repo and prints review-only bootstrap suggestions. Today, `--from-current` is implemented only for repos whose first-party code is `npm` and/or `cargo`; other ecosystems fail closed with a “not implemented yet” error. Add `--register` to write and register the generated config.
+- `sloppy-joe init` with no mode prints a neutral manual template.
 
 **Release automation:** pushing a tag like `v0.8.0` triggers a GitHub Releases build for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`. Release binaries are built with `cargo auditable` metadata embedded and gated by `cargo audit bin` before publication.
 
@@ -466,8 +483,11 @@ Malformed configs **fail hard** with actionable error messages — a broken conf
 
 See [CONFIG.md](CONFIG.md) for full format reference, CI integration patterns, and examples.
 
-Generate a template:
+Bootstrap config:
 ```bash
+sloppy-joe init --greenfield --ecosystem npm
+sloppy-joe init --from-current
+sloppy-joe init --from-current --register
 sloppy-joe init > /secure/location/config.json
 ```
 

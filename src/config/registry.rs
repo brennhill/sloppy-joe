@@ -112,6 +112,13 @@ pub fn save_registry(entries: &BTreeMap<String, String>) -> Result<(), String> {
     save_registry_to(&path, entries)
 }
 
+pub(crate) fn save_registry_at_config_home(
+    config_home: &Path,
+    entries: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    save_registry_to(&config_home.join("registry.json"), entries)
+}
+
 fn save_registry_to(path: &Path, entries: &BTreeMap<String, String>) -> Result<(), String> {
     // atomic_write_json_checked handles symlink checks, dir creation, and 0o600 permissions
     crate::cache::atomic_write_json_checked(path, entries)
@@ -120,6 +127,15 @@ fn save_registry_to(path: &Path, entries: &BTreeMap<String, String>) -> Result<(
 /// Register a repo root → config path mapping.
 /// Canonicalizes both paths and validates the config path exists.
 pub fn register(repo_root: &Path, config_path: &Path) -> Result<(), String> {
+    register_at_config_home(repo_root, config_path, &config_home()?)
+}
+
+#[doc(hidden)]
+pub fn register_at_config_home(
+    repo_root: &Path,
+    config_path: &Path,
+    config_home: &Path,
+) -> Result<(), String> {
     let canon_root = std::fs::canonicalize(repo_root).map_err(|e| {
         format!(
             "Could not resolve repo root path.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
@@ -144,12 +160,12 @@ pub fn register(repo_root: &Path, config_path: &Path) -> Result<(), String> {
         ));
     }
 
-    let mut entries = load_registry()?;
+    let mut entries = load_registry_from(&config_home.join("registry.json"))?;
     entries.insert(
         canon_root.to_string_lossy().to_string(),
         canon_config.to_string_lossy().to_string(),
     );
-    save_registry(&entries)
+    save_registry_at_config_home(config_home, &entries)
 }
 
 /// Remove a repo root from the registry.
