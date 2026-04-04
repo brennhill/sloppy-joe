@@ -1,20 +1,39 @@
-# Ecosystem Rules
+# Ecosystem Guides
 
-`sloppy-joe` now enforces some ecosystem-specific input rules before it scans.
+`sloppy-joe` applies the same high-level scan pipeline everywhere, but the trust boundary is different for each package ecosystem. These guides describe the current user workflow, what the scanner verifies, what blocks immediately, and where each ecosystem still fails closed.
 
-- Some ecosystems are strict: missing or unreadable manifests/lockfiles block the scan.
-- Some ecosystems are warning-only: the scan continues, but `sloppy-joe` tells you exact lockfile-backed verification is unavailable.
-- The exact rules differ by ecosystem because package managers differ.
+## Current guides
 
-Current guides:
-
-- [npm](NPM.md)
-- [PyPI](PYPI.md)
-- [Cargo](CARGO.md)
-- [Go](GOLANG.md)
+- [JavaScript](JAVASCRIPT.md)
+- [Python](PYTHON.md)
+- [Rust](RUST.md)
+- [Go](GO.md)
 - [Ruby](RUBY.md)
 - [PHP / Composer](PHP.md)
 - [JVM](JVM.md)
 - [.NET / NuGet](DOTNET.md)
 
-Additional ecosystem guides can be added here as the policy surface grows.
+## Support summary
+
+| Ecosystem | Primary workflow | Trust level today |
+|---|---|---|
+| JavaScript | Scan the workspace or package root with the authoritative manager lockfile | strict |
+| Python | Prefer Poetry + `poetry.lock`; legacy manifests still scan with warnings by default | mixed |
+| Rust | Strict `Cargo.lock` plus provenance validation for local paths, registries, git, and rewrites | strict |
+| Go | `go.mod` required; `go.sum` required for external deps | partial |
+| Ruby | `Gemfile` + `Gemfile.lock`, registry-only source model | strict |
+| PHP | `composer.json` + `composer.lock`, default registry-only source model | strict |
+| JVM | Gradle is strict with `gradle.lockfile`; Maven is reduced-confidence | mixed |
+| .NET | `.csproj` + `packages.lock.json` | strict |
+
+## How to read these pages
+
+Each ecosystem guide follows the same structure:
+
+- `Quick Start`: what to commit and what to run
+- `What sloppy-joe checks`: the current supported trust model
+- `What blocks`: the fast fail-closed conditions
+- `Current limitations`: important unsupported or reduced-confidence cases
+- `Recommended workflow`: how to use the tool without fighting it
+
+If you are onboarding a new repo, start here from the main [README](../../README.md), then read the guide for the ecosystem you are scanning.

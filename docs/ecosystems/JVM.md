@@ -1,40 +1,60 @@
-# JVM Rules
+# JVM
 
-## Gradle vs Maven
+This guide covers the current JVM support surface in `sloppy-joe`: Gradle and Maven.
 
-`sloppy-joe` treats Gradle and Maven differently because the ecosystems give you different guarantees.
+## Quick Start
 
-## Gradle
+### Gradle
 
-Gradle is the preferred JVM path for strict scanning.
-
-Required inputs:
+Required project state:
 
 - `build.gradle` or `build.gradle.kts`
 - `gradle.lockfile`
 
-If `gradle.lockfile` is missing or unreadable, `sloppy-joe` blocks the scan.
-
-### Fix
-
-Enable dependency locking in the build, then run:
+If `gradle.lockfile` is missing, enable dependency locking and regenerate it:
 
 ```bash
 ./gradlew dependencies --write-locks
 ```
 
-Commit `gradle.lockfile`.
+### Maven
 
-## Maven
+Required project state:
 
-Maven currently runs in warning-only mode for lockfile policy.
+- `pom.xml`
 
-- `pom.xml` is still required and must be readable.
-- The scan continues without a strict lockfile requirement.
-- `sloppy-joe` emits a warning that exact lockfile-backed verification is unavailable.
+Maven scans continue in reduced-confidence mode because there is no trusted project-local lockfile path enforced today.
 
-## Recommendation
+## What sloppy-joe checks
 
-If you need strict, lockfile-backed dependency verification in CI, prefer Gradle with dependency locking.
+- Gradle and Maven manifests are both parsed for direct dependencies.
+- Gradle uses `gradle.lockfile` for trusted exact version and transitive coverage.
+- Maven scans the manifest and continues with warnings about reduced lockfile confidence.
+- Custom Gradle repositories and local project/file dependency sources are blocked.
+- Custom Maven repositories and `systemPath` dependencies are blocked.
 
-That is not a claim that Gradle is universally better than Maven. It is a narrow operational recommendation: today, Gradle has a clear project-local lockfile model that `sloppy-joe` can enforce, while Maven does not.
+## What blocks
+
+### Gradle
+
+- Missing or unreadable `gradle.lockfile`
+- Custom repositories beyond `mavenCentral()`
+- Local project or file dependency sources such as `project(...)`, `files(...)`, `fileTree(...)`, or `includeBuild(...)`
+- Classifier-bearing dependency notation
+
+### Maven
+
+- Custom `<repositories>`, `<pluginRepositories>`, or equivalent namespaced repository declarations
+- `systemPath` dependencies
+
+## Current limitations
+
+- Gradle is the only strict JVM path today.
+- Maven has no trusted project-local lockfile model in `sloppy-joe` yet, so exact lockfile-backed verification is reduced-confidence there.
+- Gradle custom repository and local project provenance are not modeled yet and therefore fail closed.
+
+## Recommended workflow
+
+- Prefer Gradle with dependency locking when you want strict JVM CI enforcement.
+- If you are on Maven, expect useful manifest scanning but reduced confidence compared with Gradle.
+- Keep custom repositories and local binary references out of strictly scanned JVM projects for now.

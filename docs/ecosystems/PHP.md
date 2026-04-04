@@ -1,15 +1,15 @@
-# PHP / Composer Rules
+# PHP / Composer
 
-## Required inputs
+This guide covers the current PHP / Composer support surface in `sloppy-joe`.
 
-- `composer.json` is required.
-- `composer.lock` is required.
+## Quick Start
 
-If `composer.lock` is missing or unreadable, `sloppy-joe` blocks the scan.
+Required project state:
 
-## Fix
+- `composer.json`
+- `composer.lock`
 
-Run:
+If `composer.lock` is missing, regenerate it with:
 
 ```bash
 composer update
@@ -21,4 +21,32 @@ or:
 composer install
 ```
 
-Then commit `composer.lock`.
+Then run:
+
+```bash
+sloppy-joe check
+```
+
+## What sloppy-joe checks
+
+- `composer.json` and `composer.lock` are required.
+- `require` and `require-dev` are scanned.
+- Platform requirements such as `php` and `ext-*` are ignored as package dependencies.
+- Trusted transitive coverage comes from `composer.lock`.
+
+## What blocks
+
+- Missing or unreadable `composer.lock`.
+- Custom `repositories` declarations in `composer.json`.
+- Unsupported non-string dependency version declarations.
+
+## Current limitations
+
+- The current Composer trust model assumes the default Packagist-style registry path.
+- Custom package sources fail closed instead of being modeled as trusted private repositories.
+
+## Recommended workflow
+
+- Commit `composer.lock`.
+- Keep scanned packages on the default Composer registry path.
+- If the repo depends on custom Composer repositories, expect `sloppy-joe` to block until that provenance model is implemented explicitly.

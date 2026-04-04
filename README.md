@@ -81,21 +81,33 @@ nix profile install github:brennhill/sloppy-joe
 
 **Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking issues found, `2` = runtime error.
 
-**Supports:** npm, PyPI, Cargo, Go, Ruby, PHP, JVM (Gradle/Maven), .NET — auto-detected from manifest files.
+**Supports:** JavaScript (`npm`, `pnpm`, `Yarn`, `Bun`), Python, Rust, Go, Ruby, PHP, JVM (Gradle/Maven), and .NET — auto-detected from manifest files.
 
-**Ecosystem-specific rules:** see [docs/ecosystems/README.md](docs/ecosystems/README.md) for lockfile and manifest policy details, including [Go](docs/ecosystems/GOLANG.md) and [JVM](docs/ecosystems/JVM.md).
+**Ecosystem guides:** see [docs/ecosystems/README.md](docs/ecosystems/README.md) for the current trust model, supported features, and fail-closed limits for each ecosystem.
 
-| Ecosystem | Required manifest | Lockfile policy |
+- [JavaScript](docs/ecosystems/JAVASCRIPT.md)
+- [Python](docs/ecosystems/PYTHON.md)
+- [Rust](docs/ecosystems/RUST.md)
+- [Go](docs/ecosystems/GO.md)
+- [Ruby](docs/ecosystems/RUBY.md)
+- [PHP / Composer](docs/ecosystems/PHP.md)
+- [JVM](docs/ecosystems/JVM.md)
+- [.NET / NuGet](docs/ecosystems/DOTNET.md)
+
+| Ecosystem | Required manifest | Trusted lockfile / project state |
 |---|---|---|
-| npm | `package.json` | strict: `package-lock.json` or `npm-shrinkwrap.json`; legacy v1 lockfiles blocked by default |
-| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted: Poetry requires `poetry.lock`; legacy manifests allowed with warnings |
-| Cargo | `Cargo.toml` | strict: `Cargo.lock` |
-| Go | `go.mod` | conditional: `go.sum` required for external deps |
-| Ruby | `Gemfile` | strict: `Gemfile.lock` |
-| PHP / Composer | `composer.json` | strict: `composer.lock` |
-| JVM / Gradle | `build.gradle` or `build.gradle.kts` | strict: `gradle.lockfile` |
-| JVM / Maven | `pom.xml` | warning-only: no trusted lockfile path enforced |
-| .NET / NuGet | `.csproj` | strict: `packages.lock.json` |
+| JavaScript / npm | `package.json` | `package-lock.json` or `npm-shrinkwrap.json`; legacy npm v1 blocked by default |
+| JavaScript / pnpm | `package.json` | `pnpm-lock.yaml` |
+| JavaScript / Yarn | `package.json` | `yarn.lock` |
+| JavaScript / Bun | `package.json` | `bun.lock` |
+| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`; legacy manifests allowed with warnings by default |
+| Rust | `Cargo.toml` | `Cargo.lock` |
+| Go | `go.mod` | `go.sum` required for external deps |
+| Ruby | `Gemfile` | `Gemfile.lock` |
+| PHP / Composer | `composer.json` | `composer.lock` |
+| JVM / Gradle | `build.gradle` or `build.gradle.kts` | `gradle.lockfile` |
+| JVM / Maven | `pom.xml` | warning-only: no trusted project-local lockfile path yet |
+| .NET / NuGet | `.csproj` | `packages.lock.json` |
 
 **Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
 
