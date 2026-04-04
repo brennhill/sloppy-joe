@@ -59,6 +59,10 @@ enum ScanMode {
     Ci,
 }
 
+fn fast_mode_ci_guidance() -> &'static str {
+    "For CI or release gating, use `sloppy-joe check --ci` or `sloppy-joe check --full`."
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Check dependencies for issues
@@ -387,6 +391,9 @@ async fn main() {
                         report.print_json();
                     } else {
                         report.print_human();
+                        if matches!(scan_mode, ScanMode::Fast) {
+                            println!("\n{}", fast_mode_ci_guidance());
+                        }
                     }
                     if report.has_errors() {
                         process::exit(1);
@@ -726,6 +733,13 @@ mod tests {
             resolve_scan_mode(true, true),
             Err("--full and --ci cannot be used together".to_string())
         );
+    }
+
+    #[test]
+    fn fast_mode_guidance_mentions_ci_and_full() {
+        let message = fast_mode_ci_guidance();
+        assert!(message.contains("check --ci"));
+        assert!(message.contains("check --full"));
     }
 
     #[test]

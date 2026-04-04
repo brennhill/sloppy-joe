@@ -132,7 +132,7 @@ runs:
         chmod +x /usr/local/bin/sloppy-joe 2>/dev/null || true
         echo "sloppy-joe v${VERSION} installed successfully"
 
-    - name: Run sloppy-joe check
+    - name: Run sloppy-joe CI scan
       shell: bash
       env:
         INPUT_DIR: ${{ inputs.dir }}
@@ -142,7 +142,7 @@ runs:
         INPUT_PARANOID: ${{ inputs.paranoid }}
         INPUT_ARGS: ${{ inputs.args }}
       run: |
-        ARGS=(check)
+        ARGS=(check --ci)
 
         if [ -n "${INPUT_DIR}" ] && [ "${INPUT_DIR}" != "." ]; then
           ARGS+=(--dir "${INPUT_DIR}")

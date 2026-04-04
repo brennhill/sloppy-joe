@@ -99,4 +99,4 @@ jobs:
 
       - name: Check own dependencies
         working-directory: /tmp/sloppy-joe-self-check
-        run: ${{ github.workspace }}/target/release/sloppy-joe check --no-cache --type cargo --config /tmp/sloppy-joe-self-check.json
+        run: ${{ github.workspace }}/target/release/sloppy-joe check --ci --no-cache --type cargo --config /tmp/sloppy-joe-self-check.json

@@ -78,6 +78,7 @@ nix profile install github:brennhill/sloppy-joe
 - `sloppy-joe check` runs the fast local guardrail. It always enforces manifest parsing, lockfile/sync, provenance, and unsupported-source policy. If dependency or policy state changed, or the last successful full scan is older than 24 hours, it recommends `sloppy-joe check --full`.
 - `sloppy-joe check --full` runs the strict online scan and refreshes the recorded successful full-scan state.
 - `sloppy-joe check --ci` runs the same strict coverage as `--full`, with CI-oriented intent.
+- Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
 **Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking issues found, `2` = runtime error.
 
@@ -533,26 +534,26 @@ jobs:
 #### Examples
 
 ```yaml
-# Minimal — auto-detect ecosystem, no config
-- uses: brennhill/sloppy-joe@v0.9.1
+# Minimal — CI-oriented scan, auto-detect ecosystem, no config
+- uses: brennhill/sloppy-joe@v1
 
 # With org config from a URL
-- uses: brennhill/sloppy-joe@v0.9.1
+- uses: brennhill/sloppy-joe@v1
   with:
     config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 
 # Deep scan with paranoid mode
-- uses: brennhill/sloppy-joe@v0.9.1
+- uses: brennhill/sloppy-joe@v1
   with:
     config: ${{ secrets.SLOPPY_JOE_CONFIG }}
     deep: true
     paranoid: true
 
 # Scan a subdirectory, pin to a specific version
-- uses: brennhill/sloppy-joe@v0.9.1
+- uses: brennhill/sloppy-joe@v1
   with:
     dir: ./packages/api
-    version: '0.9.1'
+    version: '0.11.0'
 ```
 
 ### GitLab CI
@@ -561,7 +562,7 @@ jobs:
 dependency-guard:
   script:
     - cargo install sloppy-joe
-    - sloppy-joe check --config $SLOPPY_JOE_CONFIG
+    - sloppy-joe check --ci --config $SLOPPY_JOE_CONFIG
 ```
 
 ### pre-commit

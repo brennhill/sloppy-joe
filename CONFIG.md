@@ -7,6 +7,7 @@ sloppy-joe works with zero configuration. Config adds canonical enforcement (rej
 - `sloppy-joe check` is the fast local mode. It always enforces local trust boundaries such as manifest parsing, lockfile requirements, sync/provenance checks, and unsupported-source blocking.
 - `sloppy-joe check --full` runs the strict online scan.
 - `sloppy-joe check --ci` runs the same strict coverage as `--full`, intended for CI workflows.
+- Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
 Fast mode does not auto-escalate into a full scan. Instead, it warns when you should run `sloppy-joe check --full`:
 
@@ -308,24 +309,24 @@ Store config in a separate repo or as a secret, never in the project repo:
     token: ${{ secrets.CONFIG_REPO_TOKEN }}
 
 - name: Check dependencies
-  run: sloppy-joe check --config security-configs/sloppy-joe.json
+  run: sloppy-joe check --ci --config security-configs/sloppy-joe.json
 
 # Option 2: Config from a URL
 - name: Check dependencies
-  run: sloppy-joe check --config https://raw.githubusercontent.com/yourorg/security-configs/main/sloppy-joe.json
+  run: sloppy-joe check --ci --config https://raw.githubusercontent.com/yourorg/security-configs/main/sloppy-joe.json
 
 # Option 3: Config from CI secret (write to temp file)
 - name: Write config
   run: echo '${{ secrets.SLOPPY_JOE_CONFIG }}' > /tmp/sj-config.json
 
 - name: Check dependencies
-  run: sloppy-joe check --config /tmp/sj-config.json
+  run: sloppy-joe check --ci --config /tmp/sj-config.json
 
 # Option 4: Environment variable
 - name: Check dependencies
   env:
     SLOPPY_JOE_CONFIG: /path/to/config.json
-  run: sloppy-joe check
+  run: sloppy-joe check --ci
 ```
 
 ### GitLab CI
@@ -336,7 +337,7 @@ dependency-check:
   before_script:
     - cargo install sloppy-joe
   script:
-    - sloppy-joe check --config $SLOPPY_JOE_CONFIG
+    - sloppy-joe check --ci --config $SLOPPY_JOE_CONFIG
   variables:
     SLOPPY_JOE_CONFIG: https://gitlab.com/yourorg/security-configs/-/raw/main/sloppy-joe.json
 ```
