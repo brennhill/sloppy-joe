@@ -4942,18 +4942,26 @@ fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
         })
         .map(|spec| spec.project_dir().to_path_buf())
         .collect();
+    let trusted_requirements_dirs: std::collections::HashSet<std::path::PathBuf> = specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted)
+        .map(|spec| spec.project_dir().to_path_buf())
+        .collect();
 
     specs.retain(|spec| {
         if !spec.kind.is_python() {
             return true;
         }
-        if !trusted_pyproject_dirs.contains(spec.project_dir()) {
-            return true;
+        if trusted_pyproject_dirs.contains(spec.project_dir()) {
+            return matches!(
+                spec.kind,
+                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
+            );
         }
-        matches!(
-            spec.kind,
-            ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-        )
+        if trusted_requirements_dirs.contains(spec.project_dir()) {
+            return spec.kind == ProjectInputKind::PyRequirementsTrusted;
+        }
+        true
     });
 }
 

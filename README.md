@@ -495,7 +495,7 @@ Bootstrap config:
 sloppy-joe init --greenfield --ecosystem npm
 sloppy-joe init --from-current
 sloppy-joe init --from-current --register
-sloppy-joe init > /secure/location/config.json
+sloppy-joe init --register
 ```
 
 ## CI Integration
@@ -514,7 +514,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: brennhill/sloppy-joe@v0.9.1
+      - uses: brennhill/sloppy-joe@v1
         with:
           config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 ```

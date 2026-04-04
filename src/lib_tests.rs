@@ -1277,6 +1277,29 @@ fn detected_project_inputs_prefer_poetry_projects_over_same_directory_legacy_man
 }
 
 #[test]
+fn detected_project_inputs_prefer_trusted_pip_tools_over_same_directory_legacy_manifests() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("requirements.txt"),
+        "requests==2.31.0 \\\n    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("setup.cfg"),
+        "[metadata]\nname = demo\nversion = 0.1.0\n[options]\ninstall_requires =\n    requests==2.31.0\n",
+    )
+    .unwrap();
+
+    let specs = detected_project_inputs(&dir, Some("pypi"))
+        .expect("same-directory trusted requirements and legacy manifests must be discoverable");
+
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].kind, ProjectInputKind::PyRequirementsTrusted);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn parse_project_inputs_extracts_dependencies_from_legacy_python_manifests() {
     let cases = [
         (
