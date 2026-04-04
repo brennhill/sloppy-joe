@@ -651,13 +651,13 @@ cargo test
 | **Canonical name enforcement** | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **Known vulnerability scanning** | :white_check_mark: via OSV | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Install script analysis** | Basic (flag + no repo) | :white_check_mark: Deep analysis | :x: | :x: | :x: |
-| **License compliance** | :x: | :white_check_mark: | :white_check_mark: Excellent | :x: | :x: |
+| **License compliance** | OOS: compliance, not security | :white_check_mark: | :white_check_mark: Excellent | OOS: compliance, not security | OOS: compliance, not security |
 | **Multi-ecosystem** | 8 ecosystems | npm, PyPI, Go, Ruby, Java, .NET | Rust only | Python only | npm only |
 | **AI agent safety** (out-of-repo config) | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **Offline/CI friendly** | :white_check_mark: Runs anywhere | Requires Socket platform | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Free / open source** | Apache 2.0 | Free tier + paid | Apache 2.0 | Apache 2.0 | Built-in |
 
-**Where others are stronger:** Socket.dev does deep install script analysis with behavioral detection that goes well beyond sloppy-joe's flag-based approach. cargo-deny has best-in-class license compliance checking. npm audit and pip-audit are zero-install options for single-ecosystem vulnerability scanning.
+**Where others are stronger:** Socket.dev does deep install script analysis with behavioral detection that goes well beyond sloppy-joe's flag-based approach. cargo-deny has best-in-class license compliance checking, but that is intentionally out of scope for sloppy-joe because license policy is a compliance problem rather than a dependency security control. npm audit and pip-audit are zero-install options for single-ecosystem vulnerability scanning.
 
 **Where sloppy-joe is different:** It's the only tool that verifies packages actually exist on registries (catching AI hallucinations), runs 11 typosquatting generators with near-zero false positives, enforces canonical package choices, and keeps its config outside the repo so AI agents can't weaken their own checks.
 
