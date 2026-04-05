@@ -1,0 +1,11 @@
+[[package]]
+name = "requests"
+version = "2.31.0"
+description = "Fixture requests package"
+optional = false
+python-versions = ">=3.11"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "fixture"

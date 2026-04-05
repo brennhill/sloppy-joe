@@ -3,6 +3,12 @@ use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IncludeDirective<'a> {
+    Requirement(&'a str),
+    Constraint(&'a str),
+}
+
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     parse_file(&project_dir.join("requirements.txt"), project_dir)
 }
@@ -62,9 +68,14 @@ fn parse_file_inner(
             continue;
         }
 
-        if let Some(include_target) = requirement_include_target(line) {
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
             let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
-            deps.extend(parse_file_inner(&include_path, scan_root, visited)?);
+            if matches!(include, IncludeDirective::Requirement(_)) {
+                deps.extend(parse_file_inner(&include_path, scan_root, visited)?);
+            }
             continue;
         }
 
@@ -111,7 +122,10 @@ fn classify_trust_inner(
             continue;
         }
 
-        if let Some(include_target) = requirement_include_target(line) {
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
             let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
             trusted &= classify_trust_inner(&include_path, scan_root, visited, saw_installable)?;
             continue;
@@ -122,10 +136,16 @@ fn classify_trust_inner(
             continue;
         }
 
-        let Some(dep) = parse_requirement_spec(line, &normalized_path).unwrap_or_default() else {
+        *saw_installable = true;
+        let Some(dep) = (match parse_requirement_spec(line, &normalized_path) {
+            Ok(dep) => dep,
+            Err(_) => {
+                trusted = false;
+                continue;
+            }
+        }) else {
             continue;
         };
-        *saw_installable = true;
         if dep.exact_version().is_none() || !line.contains("--hash=") {
             trusted = false;
         }
@@ -156,7 +176,10 @@ fn collect_included_paths(
 
     for raw_line in content.lines() {
         let line = raw_line.trim();
-        if let Some(include_target) = requirement_include_target(line) {
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
             let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
             let include_key =
                 std::fs::canonicalize(&include_path).unwrap_or_else(|_| include_path.clone());
@@ -169,18 +192,18 @@ fn collect_included_paths(
     Ok(())
 }
 
-fn requirement_include_target(line: &str) -> Option<&str> {
+fn requirement_include_target(line: &str) -> Option<IncludeDirective<'_>> {
     let trimmed = line.trim();
     if let Some(rest) = trimmed.strip_prefix("-r") {
         let rest = rest.trim();
         if !rest.is_empty() {
-            return Some(rest);
+            return Some(IncludeDirective::Requirement(rest));
         }
     }
     if let Some(rest) = trimmed.strip_prefix("--requirement=") {
         let rest = rest.trim();
         if !rest.is_empty() {
-            return Some(rest);
+            return Some(IncludeDirective::Requirement(rest));
         }
         return None;
     }
@@ -190,7 +213,29 @@ fn requirement_include_target(line: &str) -> Option<&str> {
         }
         let rest = rest.trim();
         if !rest.is_empty() {
-            return Some(rest);
+            return Some(IncludeDirective::Requirement(rest));
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("-c") {
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(IncludeDirective::Constraint(rest));
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("--constraint=") {
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(IncludeDirective::Constraint(rest));
+        }
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("--constraint") {
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            return None;
+        }
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(IncludeDirective::Constraint(rest));
         }
     }
     None
@@ -629,6 +674,26 @@ mod tests {
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().any(|dep| dep.name == "flask"));
         assert!(deps.iter().any(|dep| dep.name == "requests"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn constraint_files_affect_trust_without_becoming_direct_dependencies() {
+        let dir = setup_dir("-c base.txt\nflask==2.0 \\\n    --hash=sha256:deadbeef\n");
+        std::fs::write(
+            dir.join("base.txt"),
+            "requests==2.31.0 \\\n    --hash=sha256:feedface\n",
+        )
+        .unwrap();
+
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        assert!(
+            is_hash_locked_requirements_file(&dir.join("requirements.txt"), &dir).expect(
+                "constraint includes should participate in trusted pip-tools classification"
+            )
+        );
         cleanup(&dir);
     }
 

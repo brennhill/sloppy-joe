@@ -1,0 +1,1 @@
+{"id":"python-poetry-source-pass","ecosystem":"python","expected":"pass","reason":"Trusted Poetry project uses an allowlisted non-PyPI source with matching manifest intent and lockfile provenance."}

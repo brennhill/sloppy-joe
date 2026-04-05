@@ -57,6 +57,9 @@ use std::path::{Path, PathBuf};
 ///   "trusted_git_sources": {
 ///     "cargo": ["https://github.com/yourorg/shared-crate"]
 ///   },
+///   "trusted_indexes": {
+///     "pypi": ["https://download.pytorch.org/whl/cu124"]
+///   },
 ///   "cargo_git_policy": "block",
 ///   "python_enforcement": "prefer_poetry"
 /// }
@@ -84,6 +87,7 @@ use std::path::{Path, PathBuf};
 ///   trusted private registries.
 /// - `trusted_git_sources`: exact allowlist of git repository URLs permitted in
 ///   reduced-confidence modes.
+/// - `trusted_indexes`: exact allowlist of alternate Python package index URLs.
 /// - `cargo_git_policy`: Cargo git dependency policy. `block` (default) or
 ///   `warn_pinned`.
 /// - `python_enforcement`: controls how strictly sloppy-joe enforces trusted
@@ -131,6 +135,32 @@ struct LocalOverlayConfig {
     cargo_git_policy: Option<CargoGitPolicy>,
     #[serde(default)]
     allow_host_local_cargo_config: bool,
+}
+
+pub(crate) fn normalized_default_pypi_index() -> &'static str {
+    "https://pypi.org/simple/"
+}
+
+pub(crate) fn normalize_python_index_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some((scheme, rest)) = trimmed.split_once("://") {
+        let scheme = scheme.to_ascii_lowercase();
+        let (authority, suffix) = match rest.find('/') {
+            Some(index) => (&rest[..index], &rest[index..]),
+            None => (rest, ""),
+        };
+        return format!("{scheme}://{}{}/", authority.to_ascii_lowercase(), suffix);
+    }
+    format!("{trimmed}/")
+}
+
+pub(crate) fn python_index_url_has_supported_scheme(url: &str) -> bool {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +259,8 @@ pub struct SloppyJoeConfig {
     pub trusted_registries: HashMap<String, Vec<TrustedRegistry>>,
     #[serde(default)]
     pub trusted_git_sources: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub trusted_indexes: HashMap<String, Vec<String>>,
     #[serde(default = "default_cargo_git_policy")]
     pub cargo_git_policy: CargoGitPolicy,
     #[serde(default = "default_python_enforcement")]
@@ -272,6 +304,7 @@ impl Default for SloppyJoeConfig {
             trusted_local_paths: HashMap::new(),
             trusted_registries: HashMap::new(),
             trusted_git_sources: HashMap::new(),
+            trusted_indexes: HashMap::new(),
             cargo_git_policy: default_cargo_git_policy(),
             python_enforcement: default_python_enforcement(),
             bootstrap_review: BootstrapReview::default(),
@@ -436,6 +469,24 @@ impl SloppyJoeConfig {
             .unwrap_or(&[])
     }
 
+    pub fn trusted_indexes(&self, ecosystem: &str) -> &[String] {
+        self.trusted_indexes
+            .get(ecosystem)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn is_trusted_index(&self, ecosystem: &str, url: &str) -> bool {
+        if ecosystem == "pypi" && normalize_python_index_url(url) == normalized_default_pypi_index()
+        {
+            return true;
+        }
+        let normalized = normalize_python_index_url(url);
+        self.trusted_indexes(ecosystem)
+            .iter()
+            .any(|candidate| candidate == &normalized)
+    }
+
     /// Validate config at load time. Returns a list of errors.
     pub fn validate(&self) -> Vec<String> {
         let valid_ecosystems = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
@@ -476,6 +527,15 @@ impl SloppyJoeConfig {
                         valid_ecosystems.join(", ")
                     ));
                 }
+            }
+        }
+
+        for eco in self.trusted_indexes.keys() {
+            if eco != "pypi" {
+                errors.push(format!(
+                    "Unknown ecosystem '{}' in trusted_indexes section. Valid: pypi",
+                    eco
+                ));
             }
         }
 
@@ -590,6 +650,22 @@ impl SloppyJoeConfig {
                 if source.trim().is_empty() {
                     errors.push(format!(
                         "Invalid trusted git source in {}: source must be non-empty",
+                        eco
+                    ));
+                }
+            }
+        }
+
+        for (eco, indexes) in &self.trusted_indexes {
+            for index in indexes {
+                if index.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid trusted index in {}: index URL must be non-empty",
+                        eco
+                    ));
+                } else if !python_index_url_has_supported_scheme(index) {
+                    errors.push(format!(
+                        "Invalid trusted index in {}: only http:// and https:// package index URLs are supported",
                         eco
                     ));
                 }
@@ -825,7 +901,7 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
         ));
     }
 
-    let config: SloppyJoeConfig = serde_json::from_str(content).map_err(|e| {
+    let mut config: SloppyJoeConfig = serde_json::from_str(content).map_err(|e| {
         let mut msg = format!(
             "Config is not valid JSON.\n  Source: {}\n  Error: {}",
             source, e
@@ -845,6 +921,12 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
         msg.push_str("\n  Fix: Validate your JSON at https://jsonlint.com or use 'sloppy-joe init' for a template.");
         msg
     })?;
+
+    for indexes in config.trusted_indexes.values_mut() {
+        for index in indexes.iter_mut() {
+            *index = normalize_python_index_url(index);
+        }
+    }
 
     let validation_errors = config.validate();
     if !validation_errors.is_empty() {
@@ -2306,6 +2388,72 @@ version = "0.1.0"
         let config = parse_config_content(content, "test.json").unwrap();
         assert!(config.canonical.contains_key("npm"));
         assert_eq!(config.min_version_age_hours, 48);
+    }
+
+    #[test]
+    fn parses_trusted_python_indexes() {
+        let config = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["https://download.pytorch.org/whl/cu124"]}}"#,
+            "test.json",
+        )
+        .unwrap();
+        assert_eq!(
+            config.trusted_indexes("pypi"),
+            ["https://download.pytorch.org/whl/cu124/"]
+        );
+    }
+
+    #[test]
+    fn normalizes_trailing_slash_for_python_indexes() {
+        let config = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["https://packages.example.com/simple"]}}"#,
+            "test.json",
+        )
+        .unwrap();
+        assert!(config.is_trusted_index("pypi", "https://packages.example.com/simple/"));
+        assert!(config.is_trusted_index("pypi", "https://packages.example.com/simple"));
+        assert!(config.is_trusted_index("pypi", "https://pypi.org/simple"));
+        assert!(!config.is_trusted_index("pypi", "https://packages.example.com/simplex"));
+        assert!(!config.is_trusted_index("pypi", "https://packages.example.com/other"));
+    }
+
+    #[test]
+    fn normalizes_python_index_scheme_and_host_casing() {
+        let config = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["HTTPS://Download.PyTorch.Org/whl/cu124"]}}"#,
+            "test.json",
+        )
+        .unwrap();
+        assert!(config.is_trusted_index("pypi", "https://download.pytorch.org/whl/cu124"));
+    }
+
+    #[test]
+    fn rejects_empty_trusted_python_index() {
+        let err = parse_config_content(r#"{"trusted_indexes":{"pypi":["  "]}}"#, "test.json")
+            .unwrap_err();
+        assert!(err.contains("trusted index"));
+        assert!(err.contains("validation failed"));
+    }
+
+    #[test]
+    fn rejects_non_http_python_index_urls() {
+        let err = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["file:///tmp/mirror"]}}"#,
+            "test.json",
+        )
+        .unwrap_err();
+        assert!(err.contains("http:// and https://"));
+    }
+
+    #[test]
+    fn rejects_trusted_indexes_for_non_python_ecosystems() {
+        let err = parse_config_content(
+            r#"{"trusted_indexes":{"npm":["https://registry.npmjs.org"]}}"#,
+            "test.json",
+        )
+        .unwrap_err();
+        assert!(err.contains("trusted_indexes"));
+        assert!(err.contains("Valid: pypi"));
     }
 
     // ── resolve_config_source end-to-end tests ──

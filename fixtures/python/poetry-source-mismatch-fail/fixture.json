@@ -1,0 +1,1 @@
+{"id":"python-poetry-source-mismatch-fail","ecosystem":"python","expected":"fail","reason":"Poetry dependency source intent must match the resolved source in poetry.lock."}

@@ -287,7 +287,7 @@ fn preflight_project_inputs(
 
     for spec in specs {
         let npm_manifest = npm_manifests.get(&spec.manifest_path);
-        match spec.kind {
+        let deps = match spec.kind {
             ProjectInputKind::Npm => {
                 let manifest =
                     npm_manifest.expect("npm manifests should be parsed during preflight");
@@ -305,10 +305,14 @@ fn preflight_project_inputs(
 
         match spec.kind {
             ProjectInputKind::Npm => ensure_authoritative_js_lockfile_readable(spec)?,
-            ProjectInputKind::PyProjectPoetry => ensure_lockfile_readable(
-                &spec.project_dir().join("poetry.lock"),
-                spec.kind.missing_lockfile_help().unwrap(),
-            )?,
+            ProjectInputKind::PyProjectPoetry => {
+                ensure_lockfile_readable(
+                    &spec.project_dir().join("poetry.lock"),
+                    spec.kind.missing_lockfile_help().unwrap(),
+                )?;
+                let (_, source_warnings) = read_validated_poetry_lockfile(spec, config)?;
+                warnings.extend(source_warnings);
+            }
             ProjectInputKind::PyProjectUv => {
                 if config.python_enforcement == config::PythonEnforcement::PoetryOnly {
                     anyhow::bail!(
@@ -319,7 +323,9 @@ fn preflight_project_inputs(
                 ensure_lockfile_readable(
                     &spec.project_dir().join("uv.lock"),
                     spec.kind.missing_lockfile_help().unwrap(),
-                )?
+                )?;
+                let (_, source_warnings) = read_validated_uv_lockfile(spec, &deps, config)?;
+                warnings.extend(source_warnings);
             }
             ProjectInputKind::PyRequirementsTrusted => {
                 if config.python_enforcement == config::PythonEnforcement::PoetryOnly {
@@ -522,6 +528,56 @@ fn trusted_python_preference_warnings(spec: &ProjectInputSpec) -> Result<Vec<Iss
     Ok(warnings)
 }
 
+fn unused_python_source_warnings(
+    manifest_path: &std::path::Path,
+    declared_sources: &[parsers::pyproject_toml::PythonSourceDecl],
+    used_source_urls: &std::collections::HashSet<String>,
+    used_source_names: &std::collections::HashSet<String>,
+) -> Vec<Issue> {
+    let mut declared_per_url = std::collections::HashMap::new();
+    for source in declared_sources {
+        *declared_per_url
+            .entry(source.normalized_url.clone())
+            .or_insert(0usize) += 1;
+    }
+
+    declared_sources
+        .iter()
+        .filter(|source| {
+            if source.normalized_url == config::normalized_default_pypi_index() {
+                return false;
+            }
+            if used_source_names.contains(&source.name.to_lowercase()) {
+                return false;
+            }
+            let duplicate_url_aliases = declared_per_url
+                .get(&source.normalized_url)
+                .copied()
+                .unwrap_or_default()
+                > 1;
+            !used_source_urls.contains(&source.normalized_url) || duplicate_url_aliases
+        })
+        .map(|source| {
+            Issue::new(
+                manifest_path.display().to_string(),
+                checks::names::RESOLUTION_UNUSED_DECLARED_SOURCE,
+                Severity::Warning,
+            )
+            .message(format!(
+                "Python source '{}' ({}) is declared in '{}' but no locked package currently uses it. Unused custom sources make provenance policy harder to review and maintain.",
+                report::sanitize_for_terminal(&source.name),
+                source.normalized_url,
+                manifest_path.display()
+            ))
+            .fix(format!(
+                "Remove the unused source '{}' from '{}' if it is no longer needed. Keeping only actively used sources improves clarity and maintenance.",
+                report::sanitize_for_terminal(&source.name),
+                manifest_path.display()
+            ))
+        })
+        .collect()
+}
+
 fn read_npm_manifest_value(path: &std::path::Path) -> Result<serde_json::Value> {
     let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
     serde_json::from_str::<serde_json::Value>(&content).map_err(|err| {
@@ -650,7 +706,45 @@ fn read_validated_yarn_lockfile(
     Ok(lockfile)
 }
 
-fn read_validated_uv_lockfile(spec: &ProjectInputSpec, deps: &[Dependency]) -> Result<toml::Value> {
+fn read_validated_poetry_lockfile(
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<(toml::Value, Vec<Issue>)> {
+    let path =
+        selected_lockfile_path(spec).unwrap_or_else(|| spec.project_dir().join("poetry.lock"));
+    let content =
+        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is unreadable: {}",
+                path.display(),
+                err
+            )
+        })?;
+    let lockfile: toml::Value = toml::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    let declared_sources = parsers::pyproject_toml::parse_poetry_sources(&spec.manifest_path)?;
+    let source_intents = parsers::pyproject_toml::parse_poetry_source_intents(&spec.manifest_path)?;
+    let (used_source_urls, used_source_names) = crate::lockfiles::python::validate_source_policy(
+        &lockfile,
+        &declared_sources,
+        &source_intents,
+        config,
+        &path,
+    )?;
+    let warnings = unused_python_source_warnings(
+        &spec.manifest_path,
+        &declared_sources,
+        &used_source_urls,
+        &used_source_names,
+    );
+    Ok((lockfile, warnings))
+}
+
+fn read_validated_uv_lockfile(
+    spec: &ProjectInputSpec,
+    deps: &[Dependency],
+    config: &config::SloppyJoeConfig,
+) -> Result<(toml::Value, Vec<Issue>)> {
     let path = selected_lockfile_path(spec).unwrap_or_else(|| spec.project_dir().join("uv.lock"));
     let content =
         parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
@@ -665,7 +759,22 @@ fn read_validated_uv_lockfile(spec: &ProjectInputSpec, deps: &[Dependency]) -> R
     crate::lockfiles::uv::validate_schema(&lockfile, &path)?;
     crate::lockfiles::uv::validate_manifest_consistency(&lockfile, deps, &path)?;
     crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
-    Ok(lockfile)
+    let declared_sources = parsers::pyproject_toml::parse_uv_sources(&spec.manifest_path)?;
+    let source_intents = parsers::pyproject_toml::parse_uv_source_intents(&spec.manifest_path)?;
+    let (used_source_urls, used_source_names) = crate::lockfiles::uv::validate_source_policy(
+        &lockfile,
+        &declared_sources,
+        &source_intents,
+        config,
+        &path,
+    )?;
+    let warnings = unused_python_source_warnings(
+        &spec.manifest_path,
+        &declared_sources,
+        &used_source_urls,
+        &used_source_names,
+    );
+    Ok((lockfile, warnings))
 }
 
 fn validate_supported_js_manager(spec: &ProjectInputSpec) -> Result<()> {
@@ -3297,19 +3406,11 @@ fn validate_lockfile_syntax(
             })?;
         }
         ProjectInputKind::PyProjectPoetry => {
-            let path = project_dir.join("poetry.lock");
-            let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-            toml::from_str::<toml::Value>(&content).map_err(|err| {
-                anyhow::anyhow!(
-                    "Broken lockfile '{}': failed to parse TOML: {}",
-                    path.display(),
-                    err
-                )
-            })?;
+            let _ = read_validated_poetry_lockfile(spec, config)?;
         }
         ProjectInputKind::PyProjectUv => {
             let deps = parsers::pyproject_toml::parse_legacy_file(&spec.manifest_path)?;
-            let _ = read_validated_uv_lockfile(spec, &deps)?;
+            let _ = read_validated_uv_lockfile(spec, &deps, config)?;
         }
         ProjectInputKind::PyRequirementsTrusted => {}
         ProjectInputKind::PyRequirements

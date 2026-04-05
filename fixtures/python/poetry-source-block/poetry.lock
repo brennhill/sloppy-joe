@@ -1,0 +1,16 @@
+[[package]]
+name = "torch"
+version = "2.6.0"
+description = "Fixture torch package"
+optional = false
+python-versions = ">=3.11"
+
+[package.source]
+type = "explicit"
+url = "https://download.pytorch.org/whl/cu124"
+reference = "pytorch"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "fixture"

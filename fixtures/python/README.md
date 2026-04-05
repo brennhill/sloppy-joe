@@ -1,7 +1,15 @@
 # Python Fixtures
 
 - `poetry-pass`: trusted Poetry project with a readable `poetry.lock`
+- `poetry-source-pass`: trusted Poetry project whose non-PyPI source is allowlisted exactly
+- `poetry-source-block`: Poetry project whose locked non-PyPI source is not allowlisted
+- `poetry-source-mismatch-fail`: Poetry project whose declared source intent disagrees with `poetry.lock`
+- `poetry-unused-source-warn`: Poetry project that declares an unused non-PyPI source and warns only
 - `uv-pass`: trusted uv project with a readable `uv.lock`
+- `uv-source-pass`: trusted uv project whose non-PyPI source is allowlisted exactly
+- `uv-source-block`: uv project whose locked non-PyPI source is not allowlisted
+- `uv-source-mismatch-fail`: uv project whose declared source intent disagrees with `uv.lock`
+- `uv-unused-source-warn`: uv project that declares an unused non-PyPI index and warns only
 - `uv-stale-fail`: uv project whose `uv.lock` is stale relative to `pyproject.toml`
 - `uv-schema-fail`: uv project whose `uv.lock` uses an unsupported schema
 - `pip-tools-pass`: trusted pip-tools requirements file with exact pins and full hash coverage

@@ -5,7 +5,7 @@ mod dotnet;
 mod gradle;
 mod npm;
 pub(crate) mod pnpm;
-mod python;
+pub(crate) mod python;
 mod ruby;
 pub(crate) mod uv;
 pub(crate) mod yarn;

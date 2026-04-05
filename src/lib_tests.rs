@@ -301,27 +301,32 @@ fn assert_fixture_preflight_outcome(ecosystem: &str, case: &str) {
     let dir = ecosystem_fixture_dir(ecosystem, case);
     let meta = load_fixture_metadata(&dir);
     let project_type = fixture_project_type(&meta.ecosystem);
+    let config_path = dir.join("sloppy-joe.json");
+    let config = if config_path.is_file() {
+        config::load_config(Some(&config_path)).expect("fixture config should remain valid")
+    } else {
+        config::SloppyJoeConfig::default()
+    };
+    let preflight = detected_project_inputs_with_config(&dir, project_type, &config)
+        .and_then(|specs| preflight_project_inputs(&dir, &specs, &config));
 
     match meta.expected.as_str() {
         "pass" => {
-            let warnings =
-                preflight_scan_inputs(&dir, project_type).expect("fixture should pass preflight");
+            let warnings = preflight.expect("fixture should pass preflight");
             assert!(
                 warnings.is_empty(),
                 "pass fixture {ecosystem}/{case} unexpectedly produced warnings: {warnings:?}"
             );
         }
         "warn" => {
-            let warnings =
-                preflight_scan_inputs(&dir, project_type).expect("fixture should warn, not fail");
+            let warnings = preflight.expect("fixture should warn, not fail");
             assert!(
                 !warnings.is_empty(),
                 "warn fixture {ecosystem}/{case} produced no warnings"
             );
         }
         "fail" => {
-            preflight_scan_inputs(&dir, project_type)
-                .expect_err("fixture should fail strict preflight");
+            preflight.expect_err("fixture should fail strict preflight");
         }
         other => panic!("unknown fixture outcome '{other}'"),
     }
@@ -4981,8 +4986,16 @@ async fn npm_fixture_long_tail_combo_squat_uses_configured_package_roots() {
 fn python_fixture_contracts_hold() {
     for case in [
         "direct-url-fail",
+        "poetry-source-pass",
+        "poetry-source-block",
+        "poetry-source-mismatch-fail",
+        "poetry-unused-source-warn",
         "poetry-pass",
         "requirements-warn-pass",
+        "uv-source-pass",
+        "uv-source-block",
+        "uv-source-mismatch-fail",
+        "uv-unused-source-warn",
         "uv-pass",
         "uv-stale-fail",
         "uv-schema-fail",
@@ -4992,6 +5005,126 @@ fn python_fixture_contracts_hold() {
     ] {
         assert_fixture_preflight_outcome("python", case);
     }
+}
+
+#[test]
+fn unused_python_sources_warn_with_specific_check_name() {
+    for case in ["poetry-unused-source-warn", "uv-unused-source-warn"] {
+        let dir = ecosystem_fixture_dir("python", case);
+        let specs = detected_project_inputs_with_config(
+            &dir,
+            Some("pypi"),
+            &config::SloppyJoeConfig::default(),
+        )
+        .expect("warn fixtures should detect cleanly");
+        let warnings = preflight_project_inputs(&dir, &specs, &config::SloppyJoeConfig::default())
+            .expect("warn fixtures should not fail");
+        assert!(
+            warnings
+                .iter()
+                .any(|issue| issue.check == checks::names::RESOLUTION_UNUSED_DECLARED_SOURCE),
+            "fixture {case} should emit resolution/unused-declared-source, got {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn trusted_requirements_displace_legacy_pyproject_in_same_directory() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests==2.31.0"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("requirements.txt"),
+        "requests==2.31.0 \\\n    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+    )
+    .unwrap();
+
+    let specs = detected_project_inputs_with_config(
+        &dir,
+        Some("pypi"),
+        &config::SloppyJoeConfig::default(),
+    )
+    .expect("Python inputs should still detect cleanly");
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].kind, ProjectInputKind::PyRequirementsTrusted);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unused_python_source_warning_tracks_source_identity_not_only_url() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+description = "Fixture"
+authors = ["Fixture <fixture@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = { version = "==2.6.0", source = "pytorch" }
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "pytorch-mirror"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "torch"
+version = "2.6.0"
+description = "Fixture torch package"
+optional = false
+python-versions = ">=3.11"
+
+[package.source]
+type = "explicit"
+url = "https://download.pytorch.org/whl/cu124"
+reference = "pytorch"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "fixture"
+"#,
+    )
+    .unwrap();
+
+    let mut config = config::SloppyJoeConfig::default();
+    config.trusted_indexes.insert(
+        "pypi".to_string(),
+        vec!["https://download.pytorch.org/whl/cu124/".to_string()],
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("Poetry fixture should detect cleanly");
+    let warnings =
+        preflight_project_inputs(&dir, &specs, &config).expect("unused alias should warn only");
+    assert!(
+        warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_UNUSED_DECLARED_SOURCE
+                && issue.message.contains("pytorch-mirror")
+        }),
+        "duplicate URL alias should still warn when unused: {warnings:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -74,6 +74,8 @@ pub const RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE: &str =
     "resolution/no-trusted-transitive-coverage";
 pub const RESOLUTION_LOCAL_DEPENDENCY_SOURCE: &str = "resolution/local-dependency-source";
 pub const RESOLUTION_UNTRUSTED_REGISTRY_SOURCE: &str = "resolution/untrusted-registry-source";
+pub const RESOLUTION_SOURCE_MISMATCH: &str = "resolution/source-mismatch";
+pub const RESOLUTION_UNUSED_DECLARED_SOURCE: &str = "resolution/unused-declared-source";
 pub const RESOLUTION_UNTRUSTED_GIT_SOURCE: &str = "resolution/untrusted-git-source";
 pub const RESOLUTION_BLOCKED_PROVENANCE_REWRITE: &str = "resolution/blocked-provenance-rewrite";
 pub const RESOLUTION_REDUCED_CONFIDENCE_GIT: &str = "resolution/reduced-confidence-git";
@@ -128,6 +130,8 @@ mod tests {
             RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,
             RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
             RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+            RESOLUTION_SOURCE_MISMATCH,
+            RESOLUTION_UNUSED_DECLARED_SOURCE,
             RESOLUTION_UNTRUSTED_GIT_SOURCE,
             RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
             RESOLUTION_REDUCED_CONFIDENCE_GIT,

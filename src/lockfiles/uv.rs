@@ -3,9 +3,9 @@ use super::{
     add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue,
     no_trusted_lockfile_sync_issue, out_of_sync_issue,
 };
-use crate::Dependency;
+use crate::{Dependency, parsers::pyproject_toml::PythonDependencySourceIntent};
 use anyhow::{Result, bail};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<toml::Value>> {
@@ -172,6 +172,114 @@ pub(crate) fn validate_provenance(parsed: &toml::Value, source_path: &Path) -> R
     }
 
     Ok(())
+}
+
+pub(crate) fn validate_source_policy(
+    parsed: &toml::Value,
+    declared_sources: &[crate::parsers::pyproject_toml::PythonSourceDecl],
+    source_intents: &[PythonDependencySourceIntent],
+    config: &crate::config::SloppyJoeConfig,
+    source_path: &Path,
+) -> Result<(HashSet<String>, HashSet<String>)> {
+    let mut used_source_urls = HashSet::new();
+    let mut used_source_names = HashSet::new();
+    let mut package_sources: HashMap<String, HashSet<String>> = HashMap::new();
+    let declared_source_urls: HashSet<String> = declared_sources
+        .iter()
+        .map(|source| source.normalized_url.clone())
+        .collect();
+
+    for pkg in package_entries(parsed) {
+        if is_virtual_package(pkg) {
+            continue;
+        }
+
+        let name = pkg
+            .get("name")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Broken lockfile '{}': package entry missing name",
+                    source_path.display()
+                )
+            })?;
+        let registry = pkg
+            .get("source")
+            .and_then(|value| value.as_table())
+            .and_then(|source| source.get("registry"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Broken lockfile '{}': package '{}' is missing registry source metadata",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(name)
+                )
+            })?;
+        let normalized_url = crate::config::normalize_python_index_url(registry);
+        if !config.is_trusted_index("pypi", &normalized_url) {
+            bail!(
+                "Broken lockfile '{}': package '{}' resolves from untrusted Python index '{}'",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(name),
+                normalized_url
+            );
+        }
+        if normalized_url != crate::config::normalized_default_pypi_index()
+            && !declared_source_urls.contains(&normalized_url)
+        {
+            bail!(
+                "Broken lockfile '{}': package '{}' resolves from non-PyPI source '{}' that is not declared in '{}'",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(name),
+                normalized_url,
+                source_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("pyproject.toml")
+                    .display()
+            );
+        }
+        used_source_urls.insert(normalized_url.clone());
+        package_sources
+            .entry(normalize_name(name))
+            .or_default()
+            .insert(normalized_url);
+    }
+
+    for intent in source_intents {
+        let Some(resolved_sources) = package_sources.get(&intent.package) else {
+            bail!(
+                "Broken lockfile '{}': dependency '{}' is missing a resolved package entry for declared source '{}'",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(&intent.package),
+                crate::report::sanitize_for_terminal(&intent.source_name)
+            );
+        };
+        if resolved_sources.len() != 1 {
+            bail!(
+                "Broken lockfile '{}': dependency '{}' resolves from multiple sources and cannot be trusted exactly",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(&intent.package)
+            );
+        }
+        let resolved_source = resolved_sources
+            .iter()
+            .next()
+            .expect("non-empty set should have one element");
+        if resolved_source != &intent.normalized_url {
+            bail!(
+                "Broken lockfile '{}': dependency '{}' declares source '{}' ({}) but uv.lock resolves it from {}",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(&intent.package),
+                crate::report::sanitize_for_terminal(&intent.source_name),
+                intent.normalized_url,
+                resolved_source
+            );
+        }
+        used_source_names.insert(intent.source_name.to_lowercase());
+    }
+
+    Ok((used_source_urls, used_source_names))
 }
 
 pub(super) fn resolve_from_value_with_mode(
@@ -365,6 +473,7 @@ fn normalize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parsers::pyproject_toml::PythonDependencySourceIntent;
 
     const UV_LOCK: &str = r#"version = 1
 requires-python = ">=3.11"
@@ -392,6 +501,17 @@ requires-dist = [{ name = "requests", specifier = "==2.32.3" }]
         crate::test_helpers::dep_with(name, version, crate::Ecosystem::PyPI)
     }
 
+    fn trusted_python_index_config(urls: &[&str]) -> crate::config::SloppyJoeConfig {
+        let mut config = crate::config::SloppyJoeConfig::default();
+        config.trusted_indexes.insert(
+            "pypi".to_string(),
+            urls.iter()
+                .map(|url| crate::config::normalize_python_index_url(url))
+                .collect(),
+        );
+        config
+    }
+
     #[test]
     fn resolve_finds_uv_locked_version() {
         let parsed: toml::Value = toml::from_str(UV_LOCK).unwrap();
@@ -407,5 +527,107 @@ requires-dist = [{ name = "requests", specifier = "==2.32.3" }]
         let all = parse_all_from_value(&parsed).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "requests");
+    }
+
+    #[test]
+    fn source_policy_blocks_when_declared_source_has_no_resolved_package() {
+        let parsed: toml::Value = toml::from_str(UV_LOCK).unwrap();
+        let declared_sources = vec![crate::parsers::pyproject_toml::PythonSourceDecl {
+            name: "pytorch".to_string(),
+            normalized_url: "https://download.pytorch.org/whl/cu124/".to_string(),
+        }];
+        let intents = vec![PythonDependencySourceIntent {
+            package: "torch".to_string(),
+            source_name: "pytorch".to_string(),
+            normalized_url: "https://download.pytorch.org/whl/cu124/".to_string(),
+        }];
+        let config = trusted_python_index_config(&["https://download.pytorch.org/whl/cu124"]);
+        let err = validate_source_policy(
+            &parsed,
+            &declared_sources,
+            &intents,
+            &config,
+            Path::new("uv.lock"),
+        )
+        .expect_err("missing resolved package must fail closed");
+        assert!(err.to_string().contains("missing a resolved package entry"));
+    }
+
+    #[test]
+    fn source_policy_blocks_when_same_package_resolves_from_multiple_sources() {
+        let parsed: toml::Value = toml::from_str(
+            r#"version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "torch"
+version = "2.6.0"
+source = { registry = "https://download.pytorch.org/whl/cu124" }
+sdist = { url = "https://download.pytorch.org/packages/torch-2.6.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+
+[[package]]
+name = "torch"
+version = "2.6.0"
+source = { registry = "https://packages.example.com/simple" }
+sdist = { url = "https://packages.example.com/files/torch-2.6.0.tar.gz", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 }
+"#,
+        )
+        .unwrap();
+        let declared_sources = vec![
+            crate::parsers::pyproject_toml::PythonSourceDecl {
+                name: "pytorch".to_string(),
+                normalized_url: "https://download.pytorch.org/whl/cu124/".to_string(),
+            },
+            crate::parsers::pyproject_toml::PythonSourceDecl {
+                name: "mirror".to_string(),
+                normalized_url: "https://packages.example.com/simple/".to_string(),
+            },
+        ];
+        let intents = vec![PythonDependencySourceIntent {
+            package: "torch".to_string(),
+            source_name: "pytorch".to_string(),
+            normalized_url: "https://download.pytorch.org/whl/cu124/".to_string(),
+        }];
+        let config = trusted_python_index_config(&[
+            "https://download.pytorch.org/whl/cu124",
+            "https://packages.example.com/simple",
+        ]);
+        let err = validate_source_policy(
+            &parsed,
+            &declared_sources,
+            &intents,
+            &config,
+            Path::new("uv.lock"),
+        )
+        .expect_err("ambiguous source resolution must fail closed");
+        assert!(err.to_string().contains("resolves from multiple sources"));
+    }
+
+    #[test]
+    fn source_policy_blocks_when_non_pypi_lock_source_is_not_declared() {
+        let parsed: toml::Value = toml::from_str(
+            r#"version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "torch"
+version = "2.6.0"
+source = { registry = "https://download.pytorch.org/whl/cu124" }
+sdist = { url = "https://download.pytorch.org/packages/torch-2.6.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+"#,
+        )
+        .unwrap();
+        let declared_sources = Vec::new();
+        let intents = Vec::new();
+        let config = trusted_python_index_config(&["https://download.pytorch.org/whl/cu124"]);
+        let err = validate_source_policy(
+            &parsed,
+            &declared_sources,
+            &intents,
+            &config,
+            Path::new("uv.lock"),
+        )
+        .expect_err("undeclared non-PyPI lock source must fail closed");
+        assert!(err.to_string().contains("not declared"));
     }
 }

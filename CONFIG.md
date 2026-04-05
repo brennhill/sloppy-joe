@@ -34,6 +34,7 @@ JSON file with optional top-level keys. The most common policy keys are:
   "canonical": { ... },
   "internal": { ... },
   "allowed": { ... },
+  "trusted_indexes": { ... },
   "bootstrap_review": { ... },
   "similarity_exceptions": { ... },
   "metadata_exceptions": { ... },
@@ -109,6 +110,34 @@ Lists vetted external packages that should skip existence and similarity checks 
 - Metadata signals (install scripts + other risk factors, dependency explosion, maintainer changes)
 
 **When to use:** For legitimate external packages that trigger false positives on similarity checks (e.g., a package with a name close to a popular one that you've manually verified).
+
+### `trusted_indexes`
+
+Exact normalized allowlists for non-default Python package indexes used by trusted Poetry and uv projects.
+
+```json
+{
+  "trusted_indexes": {
+    "pypi": [
+      "https://download.pytorch.org/whl/cu124",
+      "https://packages.example.com/simple"
+    ]
+  }
+}
+```
+
+**What it does:** Allows non-PyPI package index provenance only when:
+- the project uses a trusted Poetry or uv workflow
+- the manifest declares the source/index in repo-visible config
+- the authoritative lockfile proves that the resolved package came from that exact normalized URL
+
+PyPI itself is implicitly trusted as `https://pypi.org/simple/`.
+
+**Exact matching:** sloppy-joe normalizes trailing slashes before comparison, but otherwise matches exact URLs only.
+
+**Unused sources:** Declared non-PyPI Poetry/uv sources that are not used by the locked graph warn, but do not block. The warning suggests removing them for clarity and maintenance.
+
+**Current scope:** This is currently only for repo-visible Poetry and uv source/index declarations. pip/pip-tools index flags, host-local Python config, and env-driven source state are not trusted by this feature.
 
 ### `bootstrap_review`
 

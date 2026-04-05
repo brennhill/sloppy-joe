@@ -101,7 +101,7 @@ nix profile install github:brennhill/sloppy-joe
 | JavaScript / pnpm | `package.json` | `pnpm-lock.yaml` |
 | JavaScript / Yarn | `package.json` | `yarn.lock` |
 | JavaScript / Bun | `package.json` | `bun.lock` |
-| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`, trusted uv path uses `uv.lock`, and fully hash-locked pip-tools is trusted; legacy manifests allowed with warnings by default |
+| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`, trusted uv path uses `uv.lock`, fully hash-locked pip-tools is trusted, and repo-visible Poetry/uv custom indexes can be allowlisted exactly via `trusted_indexes.pypi`; legacy manifests allowed with warnings by default |
 | Rust | `Cargo.toml` | `Cargo.lock` |
 | Go | `go.mod` | `go.sum` required for external deps |
 | Ruby | `Gemfile` | `Gemfile.lock` |
@@ -375,7 +375,7 @@ ERROR requsets [metadata/low-downloads]
 | Ecosystem | Manifest | Lockfile Policy | Existence | Metadata | Age Gate |
 |-----------|----------|-----------------|:---------:|:--------:|:--------:|
 | npm | package.json | `package-lock.json` or `npm-shrinkwrap.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`, uv is trusted with `uv.lock`, and fully hash-locked pip-tools is trusted; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`, uv is trusted with `uv.lock`, fully hash-locked pip-tools is trusted, and repo-visible Poetry/uv custom indexes can be trusted only by exact `trusted_indexes.pypi` allowlist; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Cargo | Cargo.toml | `Cargo.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Go | go.mod | `go.sum` required for external deps; not required for stdlib-only or all-local `replace` | :white_check_mark: | :x: | :x: |
 | Ruby | Gemfile | `Gemfile.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
