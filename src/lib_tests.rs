@@ -1131,7 +1131,18 @@ fn parse_project_inputs_dedupes_requirement_files_included_by_other_entrypoints(
 
 #[test]
 fn detected_project_inputs_do_not_skip_generic_directory_names() {
-    for directory_name in ["build", "dist", "target", ".venv", "venv", "__pycache__"] {
+    for directory_name in [
+        "vendor",
+        "dist",
+        "build",
+        "third_party",
+        "fixtures",
+        "testdata",
+        "target",
+        ".venv",
+        "venv",
+        "__pycache__",
+    ] {
         let dir = unique_dir();
         std::fs::create_dir_all(dir.join(directory_name).join("service")).unwrap();
         std::fs::write(
@@ -1187,7 +1198,18 @@ fn detected_project_inputs_block_symlinked_dirs_outside_root() {
 #[cfg(unix)]
 #[test]
 fn detected_project_inputs_block_ignored_name_symlinks_outside_root() {
-    for directory_name in ["build", "dist", "target", ".venv", "venv", "__pycache__"] {
+    for directory_name in [
+        "vendor",
+        "dist",
+        "build",
+        "third_party",
+        "fixtures",
+        "testdata",
+        "target",
+        ".venv",
+        "venv",
+        "__pycache__",
+    ] {
         let dir = unique_dir();
         let outside = unique_dir();
         std::fs::write(outside.join("requirements.txt"), "requests==2.31.0\n").unwrap();
@@ -1282,7 +1304,7 @@ fn detected_project_inputs_prefer_poetry_projects_over_same_directory_legacy_man
 }
 
 #[test]
-fn detected_project_inputs_prefer_trusted_pip_tools_over_same_directory_legacy_manifests() {
+fn detected_project_inputs_reject_same_directory_legacy_pyproject_and_trusted_requirements() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("requirements.txt"),
@@ -1290,16 +1312,14 @@ fn detected_project_inputs_prefer_trusted_pip_tools_over_same_directory_legacy_m
     )
     .unwrap();
     std::fs::write(
-        dir.join("setup.cfg"),
-        "[metadata]\nname = demo\nversion = 0.1.0\n[options]\ninstall_requires =\n    requests==2.31.0\n",
+        dir.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\"requests==2.31.0\"]\n",
     )
     .unwrap();
 
-    let specs = detected_project_inputs(&dir, Some("pypi"))
-        .expect("same-directory trusted requirements and legacy manifests must be discoverable");
-
-    assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].kind, ProjectInputKind::PyRequirementsTrusted);
+    let err = detected_project_inputs(&dir, Some("pypi"))
+        .expect_err("same-directory legacy pyproject and trusted requirements must fail closed");
+    assert!(err.to_string().contains("Ambiguous trusted Python roots"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1359,17 +1379,53 @@ fn parse_project_inputs_extracts_dependencies_from_legacy_python_manifests() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn detected_project_inputs_follow_symlinked_internal_directories() {
+    use std::os::unix::fs::symlink;
+
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("vendor/service")).unwrap();
+    std::fs::write(
+        dir.join("vendor/service/package.json"),
+        r#"{"dependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    symlink(dir.join("vendor"), dir.join("alias")).unwrap();
+
+    let specs = detected_project_inputs(&dir, None).unwrap();
+    let paths: Vec<String> = specs
+        .iter()
+        .map(|spec| {
+            spec.manifest_path
+                .strip_prefix(&dir)
+                .unwrap()
+                .display()
+                .to_string()
+        })
+        .collect();
+
+    assert!(
+        paths
+            .iter()
+            .any(|path| path == "alias/service/package.json"),
+        "symlinks to in-root directories must remain discoverable"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn detected_project_inputs_finds_hidden_projects_inside_checked_in_node_modules() {
     let dir = unique_dir();
-    std::fs::create_dir_all(dir.join("vendor/node_modules/hidden-app")).unwrap();
+    std::fs::create_dir_all(dir.join("examples/node_modules/hidden-app")).unwrap();
     std::fs::write(
-        dir.join("vendor/node_modules/hidden-app/package.json"),
+        dir.join("examples/node_modules/hidden-app/package.json"),
         r#"{"dependencies":{"react":"18.3.1"}}"#,
     )
     .unwrap();
     std::fs::write(
-        dir.join("vendor/node_modules/hidden-app/package-lock.json"),
+        dir.join("examples/node_modules/hidden-app/package-lock.json"),
         r#"{"name":"hidden-app","lockfileVersion":3,"packages":{"":{"name":"hidden-app","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1"}}}"#,
     )
     .unwrap();
@@ -1390,7 +1446,7 @@ fn detected_project_inputs_finds_hidden_projects_inside_checked_in_node_modules(
     assert!(
         paths
             .iter()
-            .any(|path| path == "vendor/node_modules/hidden-app/package.json"),
+            .any(|path| path == "examples/node_modules/hidden-app/package.json"),
         "checked-in projects with their own lockfiles must still be discoverable under node_modules"
     );
 
@@ -1400,14 +1456,14 @@ fn detected_project_inputs_finds_hidden_projects_inside_checked_in_node_modules(
 #[test]
 fn detected_project_inputs_finds_hidden_python_projects_inside_checked_in_node_modules() {
     let dir = unique_dir();
-    std::fs::create_dir_all(dir.join("vendor/node_modules/hidden-py")).unwrap();
+    std::fs::create_dir_all(dir.join("examples/node_modules/hidden-py")).unwrap();
     std::fs::write(
-        dir.join("vendor/node_modules/hidden-py/requirements.txt"),
+        dir.join("examples/node_modules/hidden-py/requirements.txt"),
         "requests==2.31.0\n",
     )
     .unwrap();
     std::fs::write(
-        dir.join("vendor/node_modules/hidden-py/poetry.lock"),
+        dir.join("examples/node_modules/hidden-py/poetry.lock"),
         "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
     )
     .unwrap();
@@ -1428,7 +1484,7 @@ fn detected_project_inputs_finds_hidden_python_projects_inside_checked_in_node_m
     assert!(
         paths
             .iter()
-            .any(|path| path == "vendor/node_modules/hidden-py/requirements.txt"),
+            .any(|path| path == "examples/node_modules/hidden-py/requirements.txt"),
         "supported non-npm manifests under node_modules must still be discoverable"
     );
 
@@ -1473,6 +1529,50 @@ fn detected_project_inputs_ignore_installed_packages_inside_node_modules_without
             .iter()
             .any(|path| path == "node_modules/react/package.json"),
         "discovery must not explode into installed npm packages"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn detected_project_inputs_ignore_installed_packages_inside_symlinked_node_modules() {
+    use std::os::unix::fs::symlink;
+
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("node_modules/react")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("node_modules/react/package.json"),
+        r#"{"name":"react","version":"18.3.1"}"#,
+    )
+    .unwrap();
+    symlink(dir.join("node_modules"), dir.join("alias")).unwrap();
+
+    let specs = detected_project_inputs(&dir, None).unwrap();
+    let paths: Vec<String> = specs
+        .iter()
+        .map(|spec| {
+            spec.manifest_path
+                .strip_prefix(&dir)
+                .unwrap()
+                .display()
+                .to_string()
+        })
+        .collect();
+
+    assert!(
+        !paths.iter().any(|path| path == "alias/react/package.json"),
+        "symlinked paths into installed node_modules must not bypass installed-package suppression"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -5029,7 +5129,7 @@ fn unused_python_sources_warn_with_specific_check_name() {
 }
 
 #[test]
-fn trusted_requirements_displace_legacy_pyproject_in_same_directory() {
+fn same_directory_pyproject_and_trusted_requirements_fail_closed() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("pyproject.toml"),
@@ -5051,9 +5151,8 @@ dependencies = ["requests==2.31.0"]
         Some("pypi"),
         &config::SloppyJoeConfig::default(),
     )
-    .expect("Python inputs should still detect cleanly");
-    assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].kind, ProjectInputKind::PyRequirementsTrusted);
+    .expect_err("mixed legacy pyproject and trusted requirements must fail closed");
+    assert!(specs.to_string().contains("Ambiguous trusted Python roots"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -408,7 +408,7 @@ fn first_python_manifest(dir: &Path) -> Result<Option<std::path::PathBuf>> {
     Ok(None)
 }
 
-fn first_requirements_file(dir: &Path) -> Result<Option<std::path::PathBuf>> {
+pub(crate) fn first_requirements_file(dir: &Path) -> Result<Option<std::path::PathBuf>> {
     let mut candidates = std::fs::read_dir(dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -422,7 +422,28 @@ fn first_requirements_file(dir: &Path) -> Result<Option<std::path::PathBuf>> {
         })
         .collect::<Vec<_>>();
     candidates.sort();
-    Ok(candidates.into_iter().next())
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    if let Some(primary) = candidates
+        .iter()
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("requirements.txt"))
+    {
+        return Ok(Some(primary.clone()));
+    }
+    if candidates.len() == 1 {
+        return Ok(candidates.into_iter().next());
+    }
+
+    anyhow::bail!(
+        "Ambiguous Python requirements manifests in {}: found {} but no requirements.txt. Fix: rename the primary file to requirements.txt or scan an explicit manifest.",
+        dir.display(),
+        candidates
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Result<()> {
@@ -529,6 +550,32 @@ mod tests {
         std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
         let deps = parse_dependencies(&dir, None).unwrap();
         assert_eq!(deps[0].ecosystem, crate::Ecosystem::PyPI);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn auto_detect_prefers_requirements_txt_over_alternates() {
+        let dir = empty_test_dir("parsers");
+        std::fs::write(dir.join("requirements.txt"), "flask==2.0\n").unwrap();
+        std::fs::write(dir.join("requirements-dev.txt"), "pytest==8.1.1\n").unwrap();
+
+        let deps = parse_dependencies(&dir, None).unwrap();
+        assert_eq!(deps[0].name, "flask");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn auto_detect_errors_on_ambiguous_requirements_without_primary() {
+        let dir = empty_test_dir("parsers");
+        std::fs::write(dir.join("requirements-dev.txt"), "pytest==8.1.1\n").unwrap();
+        std::fs::write(dir.join("requirements-prod.txt"), "flask==2.0\n").unwrap();
+
+        let err = parse_dependencies(&dir, None)
+            .expect_err("multiple alternate requirements files without requirements.txt must fail");
+        assert!(
+            err.to_string()
+                .contains("Ambiguous Python requirements manifests")
+        );
         cleanup(&dir);
     }
 
@@ -733,6 +780,42 @@ mod tests {
         let ecosystems: Vec<crate::Ecosystem> = results.iter().map(|r| r[0].ecosystem).collect();
         assert!(ecosystems.contains(&crate::Ecosystem::Npm));
         assert!(ecosystems.contains(&crate::Ecosystem::PyPI));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_all_ecosystems_detects_projects_inside_common_directory_names() {
+        let dir = empty_test_dir("parsers-all-common-dir");
+        std::fs::create_dir_all(dir.join("fixtures/demo")).unwrap();
+        std::fs::write(
+            dir.join("fixtures/demo/package.json"),
+            r#"{"dependencies": {"react": "^18"}}"#,
+        )
+        .unwrap();
+
+        let results = parse_all_ecosystems(&dir).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Npm);
+        cleanup(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_all_ecosystems_follows_symlink_into_internal_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = empty_test_dir("parsers-all-symlink");
+        std::fs::create_dir_all(dir.join("vendor/demo")).unwrap();
+        std::fs::write(
+            dir.join("vendor/demo/package.json"),
+            r#"{"dependencies": {"react": "^18"}}"#,
+        )
+        .unwrap();
+        symlink(dir.join("vendor"), dir.join("alias")).unwrap();
+
+        let results = parse_all_ecosystems(&dir).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0][0].ecosystem, crate::Ecosystem::Npm);
         cleanup(&dir);
     }
 

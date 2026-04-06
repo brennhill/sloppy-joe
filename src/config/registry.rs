@@ -130,12 +130,103 @@ pub fn register(repo_root: &Path, config_path: &Path) -> Result<(), String> {
     register_at_config_home(repo_root, config_path, &config_home()?)
 }
 
+fn canonicalize_with_existing_ancestors(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("Could not resolve current directory: {}", e))?
+            .join(path)
+    };
+
+    let mut suffix = Vec::new();
+    let mut existing = absolute.as_path();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return Ok(absolute);
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return Ok(absolute);
+        };
+        existing = parent;
+    }
+
+    let mut resolved = std::fs::canonicalize(existing)
+        .map_err(|e| format!("Could not resolve path '{}': {}", existing.display(), e))?;
+    for component in suffix.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+#[doc(hidden)]
+pub fn ensure_config_path_outside_repo(
+    repo_root: &Path,
+    config_path: &Path,
+    label: &str,
+) -> Result<(), String> {
+    let canon_root = std::fs::canonicalize(repo_root).map_err(|e| {
+        format!(
+            "Could not resolve repo root path.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
+            repo_root.display(),
+            e
+        )
+    })?;
+    let resolved_config = canonicalize_with_existing_ancestors(config_path)?;
+    if resolved_config.starts_with(&canon_root) {
+        return Err(format!(
+            "{} must live outside the project directory.\n  Config: {}\n  Project: {}\n  Fix: Move the config file outside the repo.",
+            label,
+            resolved_config.display(),
+            canon_root.display()
+        ));
+    }
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn ensure_config_home_outside_project(
+    project_dir: &Path,
+    config_home: &Path,
+) -> Result<(), String> {
+    let boundary_root = match find_git_root(project_dir)? {
+        Some(git_root) => git_root,
+        None => std::fs::canonicalize(project_dir).map_err(|e| {
+            format!(
+                "Could not resolve project directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists and is accessible.",
+                project_dir.display(),
+                e
+            )
+        })?,
+    };
+
+    ensure_config_path_outside_repo(
+        &boundary_root,
+        &config_home.join("registry.json"),
+        "Registry file",
+    )?;
+    ensure_config_path_outside_repo(
+        &boundary_root,
+        &config_home.join("default").join("config.json"),
+        "Default config",
+    )?;
+    ensure_config_path_outside_repo(
+        &boundary_root,
+        &config_home.join("local-overlay.json"),
+        "Local overlay",
+    )?;
+    Ok(())
+}
+
 #[doc(hidden)]
 pub fn register_at_config_home(
     repo_root: &Path,
     config_path: &Path,
     config_home: &Path,
 ) -> Result<(), String> {
+    ensure_config_path_outside_repo(repo_root, config_path, "Config file")?;
+
     let canon_root = std::fs::canonicalize(repo_root).map_err(|e| {
         format!(
             "Could not resolve repo root path.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
@@ -196,6 +287,7 @@ pub fn unregister(repo_root: &Path) -> Result<bool, String> {
 /// 4. Return None
 pub fn lookup(project_dir: &Path) -> Result<Option<String>, String> {
     let config_home = config_home()?;
+    ensure_config_home_outside_project(project_dir, &config_home)?;
     let git_root = find_git_root(project_dir)?;
 
     if let Some(ref root) = git_root {
@@ -434,8 +526,10 @@ mod tests {
     #[test]
     fn register_validates_config_exists() {
         let dir = unique_dir();
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
         let fake_config = dir.join("nonexistent-config.json");
-        let result = register(&dir, &fake_config);
+        let result = register(&repo, &fake_config);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("config file exists"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -744,5 +838,48 @@ mod tests {
             "Default config inside project should be detected"
         );
         let _ = std::fs::remove_dir_all(&project_root);
+    }
+
+    #[test]
+    fn ensure_config_path_outside_repo_rejects_nonexistent_paths_inside_repo() {
+        let dir = unique_dir();
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let err = ensure_config_path_outside_repo(
+            &repo,
+            &repo.join(".config/sloppy-joe/default/config.json"),
+            "Config file",
+        )
+        .expect_err("nonexistent in-repo config path must be rejected before writes");
+        assert!(err.contains("outside the project directory"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_home_outside_project_rejects_repo_local_config_home() {
+        let dir = unique_dir();
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let err = ensure_config_home_outside_project(&repo, &repo.join(".config/sloppy-joe"))
+            .expect_err("repo-local config home must not be trusted");
+        assert!(err.contains("outside the project directory"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_home_outside_project_rejects_non_git_project_local_config_home() {
+        let dir = unique_dir();
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let err = ensure_config_home_outside_project(&project, &project.join(".config/sloppy-joe"))
+            .expect_err("non-git project-local config home must not be trusted");
+        assert!(err.contains("outside the project directory"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

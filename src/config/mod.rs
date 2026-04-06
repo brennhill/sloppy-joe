@@ -792,7 +792,7 @@ pub fn load_config_with_project(
         SloppyJoeConfig::default()
     };
 
-    config = maybe_apply_local_overlay(config)?;
+    config = maybe_apply_local_overlay(config, project_dir)?;
     Ok(config)
 }
 
@@ -804,12 +804,12 @@ pub async fn load_config_from_source(
     project_dir: Option<&Path>,
 ) -> Result<SloppyJoeConfig, String> {
     let mut config = if let Some(source) = source {
-        if source.starts_with("http://") {
+        if config_source_has_scheme(source, "http") {
             return Err(format!(
                 "Config URL must use HTTPS.\n  URL: {}\n  Fix: Use an https:// URL or a local path outside the project directory.",
                 redact_url_for_display(source)
             ));
-        } else if source.starts_with("https://") {
+        } else if config_source_has_scheme(source, "https") {
             fetch_config_from_url(source).await?
         } else {
             return load_config_with_project(Some(Path::new(source)), project_dir);
@@ -818,7 +818,7 @@ pub async fn load_config_from_source(
         SloppyJoeConfig::default()
     };
 
-    config = maybe_apply_local_overlay(config)?;
+    config = maybe_apply_local_overlay(config, project_dir)?;
     Ok(config)
 }
 
@@ -1015,7 +1015,16 @@ fn running_in_ci() -> bool {
         .unwrap_or(false)
 }
 
-fn maybe_apply_local_overlay(config: SloppyJoeConfig) -> Result<SloppyJoeConfig, String> {
+fn config_source_has_scheme(source: &str, scheme: &str) -> bool {
+    source
+        .get(..scheme.len() + 3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&format!("{scheme}://")))
+}
+
+fn maybe_apply_local_overlay(
+    config: SloppyJoeConfig,
+    project_dir: Option<&Path>,
+) -> Result<SloppyJoeConfig, String> {
     if running_in_ci() {
         return Ok(config);
     }
@@ -1023,6 +1032,11 @@ fn maybe_apply_local_overlay(config: SloppyJoeConfig) -> Result<SloppyJoeConfig,
     let overlay_path = local_overlay_path()?;
     if !overlay_path.exists() {
         return Ok(config);
+    }
+    if let Some(dir) = project_dir
+        && let Some(config_home) = overlay_path.parent()
+    {
+        registry::ensure_config_home_outside_project(dir, config_home)?;
     }
 
     load_local_overlay_from_path(config, &overlay_path)
@@ -2317,6 +2331,19 @@ version = "0.1.0"
             .await
             .unwrap_err();
         assert!(err.contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn config_source_scheme_detection_is_case_insensitive() {
+        assert!(config_source_has_scheme(
+            "HTTP://example.invalid/config.json",
+            "http"
+        ));
+        assert!(config_source_has_scheme(
+            "HTTPS://example.invalid/config.json",
+            "https"
+        ));
+        assert!(!config_source_has_scheme("/tmp/config.json", "https"));
     }
 
     #[test]

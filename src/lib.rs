@@ -4008,7 +4008,7 @@ fn first_existing_lockfile(
 fn legacy_python_manifest_paths(project_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     let mut manifests = Vec::new();
 
-    if let Some(path) = first_legacy_requirements_file(project_dir)? {
+    for path in legacy_requirements_files(project_dir)? {
         manifests.push(path);
     }
     for manifest in ["Pipfile", "setup.cfg", "setup.py"] {
@@ -4031,9 +4031,7 @@ fn legacy_python_manifest_paths(project_dir: &std::path::Path) -> Result<Vec<std
     Ok(manifests)
 }
 
-fn first_legacy_requirements_file(
-    project_dir: &std::path::Path,
-) -> Result<Option<std::path::PathBuf>> {
+fn legacy_requirements_files(project_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     let mut candidates = std::fs::read_dir(project_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?
         .filter_map(|entry| entry.ok())
@@ -4048,7 +4046,7 @@ fn first_legacy_requirements_file(
         })
         .collect::<Vec<_>>();
     candidates.sort();
-    Ok(candidates.into_iter().next())
+    Ok(candidates)
 }
 
 fn ensure_lockfile_readable(path: &std::path::Path, help: &str) -> Result<()> {
@@ -4740,6 +4738,7 @@ fn detected_project_inputs_with_config(
     expand_cargo_project_inputs(project_dir, &mut specs, config)?;
     promote_trusted_pip_tools_specs(project_dir, &mut specs)?;
     prune_included_requirement_specs(project_dir, &mut specs)?;
+    reject_ambiguous_python_project_inputs(&specs)?;
     prefer_trusted_python_project_inputs(&mut specs);
     bind_js_project_inputs(project_dir, &mut specs)?;
 
@@ -4961,9 +4960,7 @@ fn walk_project_tree(
                     visited,
                     specs,
                     inside_installed_node_modules
-                        || (path.file_name().and_then(|name| name.to_str())
-                            == Some("node_modules")
-                            && directory_has_detected_manifest(current_dir, "package.json")),
+                        || resolved_path_inside_installed_node_modules(root, &target),
                 )?;
                 continue;
             }
@@ -4979,6 +4976,28 @@ fn walk_project_tree(
 
 fn directory_has_detected_manifest(dir: &std::path::Path, manifest_name: &str) -> bool {
     parsers::path_detected(&dir.join(manifest_name)).unwrap_or(false)
+}
+
+fn resolved_path_inside_installed_node_modules(
+    root: &std::path::Path,
+    target: &std::path::Path,
+) -> bool {
+    let Ok(relative) = target.strip_prefix(root) else {
+        return false;
+    };
+
+    let mut current = root.to_path_buf();
+    let mut inside = false;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        if name == "node_modules" {
+            inside = inside || directory_has_detected_manifest(&current, "package.json");
+        }
+        current.push(name);
+    }
+    inside
 }
 
 fn project_input_from_path(
@@ -5043,6 +5062,11 @@ fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
         })
         .map(|spec| spec.project_dir().to_path_buf())
         .collect();
+    let legacy_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::PyProjectLegacy)
+        .map(|spec| spec.project_dir().to_path_buf())
+        .collect();
     let trusted_requirements_dirs: std::collections::HashSet<std::path::PathBuf> = specs
         .iter()
         .filter(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted)
@@ -5060,10 +5084,43 @@ fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
             );
         }
         if trusted_requirements_dirs.contains(spec.project_dir()) {
+            if legacy_pyproject_dirs.contains(spec.project_dir()) {
+                return true;
+            }
             return spec.kind == ProjectInputKind::PyRequirementsTrusted;
         }
         true
     });
+}
+
+fn reject_ambiguous_python_project_inputs(specs: &[ProjectInputSpec]) -> Result<()> {
+    let mut trusted_requirements_dirs = std::collections::HashSet::new();
+    let mut legacy_pyproject_dirs = std::collections::HashSet::new();
+
+    for spec in specs {
+        match spec.kind {
+            ProjectInputKind::PyRequirementsTrusted => {
+                trusted_requirements_dirs.insert(spec.project_dir().to_path_buf());
+            }
+            ProjectInputKind::PyProjectLegacy => {
+                legacy_pyproject_dirs.insert(spec.project_dir().to_path_buf());
+            }
+            _ => {}
+        }
+    }
+
+    let ambiguous_dirs: Vec<_> = trusted_requirements_dirs
+        .intersection(&legacy_pyproject_dirs)
+        .cloned()
+        .collect();
+    if let Some(dir) = ambiguous_dirs.into_iter().min() {
+        anyhow::bail!(
+            "Ambiguous trusted Python roots in '{}': found both a legacy pyproject.toml and a fully hash-locked requirements file. sloppy-joe refuses to guess which manifest is authoritative. Fix: remove the weaker manifest from this directory, or split the trusted requirements into a separate standalone root.",
+            dir.display()
+        );
+    }
+
+    Ok(())
 }
 
 fn has_npm_lockfile(project_dir: &std::path::Path) -> bool {

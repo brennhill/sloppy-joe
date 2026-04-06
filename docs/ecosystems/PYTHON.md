@@ -35,6 +35,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - pip-tools requirements are trusted only when every installable requirement is exact-pinned and fully hash-covered, including recursively included requirement files.
 - Repo-visible Poetry and uv sources can use exact normalized Python index allowlists through `trusted_indexes.pypi`.
 - For Poetry and uv, manifest source intent and lockfile provenance must agree before a non-PyPI source is trusted.
+- A repo-defined Poetry or uv source named `pypi` is not trusted unless it resolves to the canonical PyPI simple index. A custom index pretending to be `pypi` fails closed.
 - Declared but unused non-PyPI Poetry/uv sources warn and suggest removal for clarity and maintenance.
 - Legacy Python manifests are still scanned for direct dependencies and standard signals like existence, similarity, canonicals, and vulnerabilities.
 - Included requirements files are expanded recursively.
@@ -49,6 +50,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Mixed Poetry and uv project metadata in the same `pyproject.toml`.
 - Poetry or uv projects whose locked graph resolves from a non-PyPI source that is not allowlisted exactly in `trusted_indexes.pypi`.
 - Poetry or uv dependencies whose declared source intent disagrees with the resolved source in the lockfile.
+- Poetry or uv source declarations that reuse the reserved name `pypi` for a non-canonical index URL.
 - Hash-locked pip-tools requirements that are missing hashes, use non-exact pins, or inherit an included file that is not fully hash-locked.
 - Unsafe legacy dependency forms, including:
   - direct URLs
@@ -63,6 +65,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Poetry and uv are first-class trusted project modes.
 - pip-tools with full hashes is a trusted environment-lock mode, but it is narrower than Poetry or uv because it represents a compiled install set rather than a richer project graph.
 - Poetry and uv support repo-visible custom indexes by exact normalized URL allowlist only. PyPI stays implicitly trusted as `https://pypi.org/simple/`.
+- `pypi` is treated as a reserved identity, not a user-chosen alias. We are not aware of a legitimate reason to rename a custom index to `pypi`, and doing so is more likely to indicate confusion, misconfiguration, or an attack than a valid use case.
 - Legacy manifests remain allowed in the default `prefer_poetry` mode, but they warn on every run and do not inherit trusted transitive coverage.
 - pip/pip-tools `--index-url` and `--extra-index-url`, editable/local first-party provenance, and stronger cross-mode artifact/source modeling are still future work.
 - Dynamic dependency generation fails closed rather than being partially interpreted.

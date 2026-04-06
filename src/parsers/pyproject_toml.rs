@@ -245,13 +245,26 @@ pub(crate) fn parse_uv_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
                     )
                 })?;
             let normalized_url = crate::config::normalize_python_index_url(url);
-            if !crate::config::python_index_url_has_supported_scheme(&normalized_url) {
-                bail!(
-                    "Unsupported uv index declaration '{}' in {}: only http:// and https:// package index URLs are supported",
-                    name,
-                    path.display()
-                );
-            }
+            let normalized_url = if name.eq_ignore_ascii_case("pypi") {
+                if normalized_url != crate::config::normalized_default_pypi_index() {
+                    bail!(
+                        "Unsupported uv index declaration '{}' in {}: the reserved index name 'pypi' must point to {}",
+                        name,
+                        path.display(),
+                        crate::config::normalized_default_pypi_index()
+                    );
+                }
+                crate::config::normalized_default_pypi_index().to_string()
+            } else {
+                if !crate::config::python_index_url_has_supported_scheme(&normalized_url) {
+                    bail!(
+                        "Unsupported uv index declaration '{}' in {}: only http:// and https:// package index URLs are supported",
+                        name,
+                        path.display()
+                    );
+                }
+                normalized_url
+            };
             if !seen_names.insert(name.to_lowercase()) {
                 bail!(
                     "Unsupported uv index declaration '{}' in {}: duplicate index names are not supported",
@@ -919,6 +932,27 @@ url = "file:///tmp/internal"
 
         let err = parse_uv_sources(&dir.join("pyproject.toml")).unwrap_err();
         assert!(err.to_string().contains("http:// and https://"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn uv_rejects_reserved_pypi_index_name_with_custom_url() {
+        let dir = setup_test_dir(
+            "pyproject-uv-source-pypi-custom-url",
+            "pyproject.toml",
+            r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["torch"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://packages.example.com/simple"
+"#,
+        );
+
+        let err = parse_uv_sources(&dir.join("pyproject.toml")).unwrap_err();
+        assert!(err.to_string().contains("reserved index name 'pypi'"));
         cleanup(&dir);
     }
 

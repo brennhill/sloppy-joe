@@ -316,6 +316,11 @@ fn create_registered_init_config(
     let dirname = repo_dirname(&git_root);
     let config_dir = config_home.join(&dirname);
     let config_path = config_dir.join("config.json");
+    sloppy_joe::config::registry::ensure_config_path_outside_repo(
+        &git_root,
+        &config_path,
+        "Config file",
+    )?;
 
     if config_path.exists() {
         return Err(format!(
@@ -335,6 +340,13 @@ fn create_registered_init_config(
     write_config_json(&config_path, config_json)?;
     sloppy_joe::config::registry::register_at_config_home(&git_root, &config_path, config_home)?;
     Ok((git_root, config_path))
+}
+
+fn ensure_global_init_target_safe(
+    project_dir: &std::path::Path,
+    config_home: &std::path::Path,
+) -> Result<(), String> {
+    sloppy_joe::config::registry::ensure_config_home_outside_project(project_dir, config_home)
 }
 
 #[tokio::main]
@@ -525,6 +537,20 @@ async fn main() {
                 };
                 let default_dir = config_home.join("default");
                 let config_path = default_dir.join("config.json");
+                let current_dir = match std::env::current_dir() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!(
+                            "Error: Could not determine current directory.\n  Error: {}\n  Fix: Check directory permissions.",
+                            e
+                        );
+                        process::exit(2);
+                    }
+                };
+                if let Err(e) = ensure_global_init_target_safe(&current_dir, &config_home) {
+                    eprintln!("Error: {}", e);
+                    process::exit(2);
+                }
 
                 if let Err(e) = std::fs::create_dir_all(&default_dir) {
                     eprintln!(
@@ -984,6 +1010,49 @@ mod tests {
         )
         .expect_err("existing config path must not be overwritten");
         assert!(err.contains("Config already exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn create_registered_init_config_rejects_in_repo_config_home() {
+        let dir = unique_temp_dir("register-in-repo-config");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let err = create_registered_init_config(
+            &repo,
+            &repo.join(".config-home"),
+            &sloppy_joe::config::template_json(),
+        )
+        .expect_err("config path under repo must be rejected before writes");
+        assert!(err.contains("outside the project directory"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_global_init_target_safe_rejects_in_repo_default_config() {
+        let dir = unique_temp_dir("global-in-repo-config");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let err = ensure_global_init_target_safe(&repo, &repo.join(".config-home"))
+            .expect_err("global config path under repo must be rejected");
+        assert!(err.contains("outside the project directory"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ensure_global_init_target_safe_rejects_non_git_project_local_config_home() {
+        let dir = unique_temp_dir("global-in-project-config");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let err = ensure_global_init_target_safe(&project, &project.join(".config-home"))
+            .expect_err("global config path under a non-git project must be rejected");
+        assert!(err.contains("outside the project directory"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
