@@ -12,7 +12,8 @@
 - `uv-unused-source-warn`: uv project that declares an unused non-PyPI index and warns only
 - `uv-stale-fail`: uv project whose `uv.lock` is stale relative to `pyproject.toml`
 - `uv-schema-fail`: uv project whose `uv.lock` uses an unsupported schema
-- `pip-tools-pass`: trusted pip-tools requirements file with exact pins and full hash coverage
+- `pip-tools-pass`: hash-locked pip-tools requirements file with exact pins and full hash coverage, but no explicit primary index, so it stays reduced-confidence
+- `pip-tools-explicit-source-pass`: hash-locked pip-tools requirements file with exact pins, full hash coverage, and explicit file-bound index provenance
 - `pip-tools-missing-hash-fail`: requirements file that stays legacy because one pinned package is missing hashes
 - `pip-tools-nonexact-fail`: requirements file that stays legacy because a package is not pinned exactly
 - `requirements-warn-pass`: legacy `requirements.txt` project that should scan with warnings

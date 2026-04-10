@@ -4,9 +4,11 @@ version = "2.32.3"
 description = ""
 optional = false
 python-versions = ">=3.8"
-files = []
+files = [
+    { file = "requests-2.32.3-py3-none-any.whl", hash = "sha256:5555555555555555555555555555555555555555555555555555555555555555" },
+]
 
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "fixture-poetry-pass"
+content-hash = "d6bf1c1bbc384cebb6ab9b21420988ef77b4cd8365e55893f893cb32504ce5bd"

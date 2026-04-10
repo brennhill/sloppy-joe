@@ -24,6 +24,8 @@ Examples:
   sloppy-joe check                              Fast local guardrail
   sloppy-joe check --full                       Strict online scan
   sloppy-joe check --ci                         Strict CI-oriented scan
+  sloppy-joe check --python-groups dev,test    Include Python dependency groups
+  sloppy-joe check --python-extras docs        Include Python extras
   sloppy-joe check --type npm                   Check npm only
   sloppy-joe check --dir ./project              Check a specific directory
   sloppy-joe check --config /etc/sj/config.json Enforce canonical rules
@@ -121,6 +123,26 @@ enum Commands {
         /// Directory to store similarity cache files.
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
+
+        /// Include these Python dependency groups (comma-separated).
+        #[arg(long, value_name = "GROUPS")]
+        python_groups: Option<String>,
+
+        /// Include these Python extras (comma-separated).
+        #[arg(long, value_name = "EXTRAS")]
+        python_extras: Option<String>,
+
+        /// Override the Python target platform for marker evaluation.
+        #[arg(long, value_name = "PLATFORM")]
+        python_platform: Option<String>,
+
+        /// Override the Python target architecture for marker evaluation.
+        #[arg(long, value_name = "ARCH")]
+        python_arch: Option<String>,
+
+        /// Override the Python target version for marker evaluation.
+        #[arg(long, value_name = "VERSION")]
+        python_version: Option<String>,
     },
     /// Warm the cache by running all network queries without reporting issues.
     ///
@@ -259,6 +281,15 @@ fn repo_dirname(git_root: &std::path::Path) -> String {
         .unwrap_or_else(|| "project".to_string())
 }
 
+fn split_csv_arg(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Write a config JSON string to a path.
 fn write_config_json(config_path: &std::path::Path, config_json: &str) -> Result<(), String> {
     let config_value: serde_json::Value =
@@ -366,6 +397,11 @@ async fn main() {
             paranoid,
             no_cache,
             cache_dir,
+            python_groups,
+            python_extras,
+            python_platform,
+            python_arch,
+            python_version,
         } => {
             let scan_mode = match resolve_scan_mode(full, ci) {
                 Ok(mode) => mode,
@@ -389,6 +425,11 @@ async fn main() {
                 disable_osv_disk_cache: false,
                 skip_hash_check: false,
                 review_exceptions,
+                python_groups: split_csv_arg(python_groups.as_deref()),
+                python_extras: split_csv_arg(python_extras.as_deref()),
+                python_platform,
+                python_arch,
+                python_version,
             };
             match sloppy_joe::scan_with_source_full_options(
                 &dir,
@@ -826,6 +867,43 @@ mod tests {
             } => {
                 assert!(json);
                 assert!(review_exceptions);
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn check_cli_parses_python_profile_flags() {
+        let cli = Cli::try_parse_from([
+            "sloppy-joe",
+            "check",
+            "--python-groups",
+            "dev,test",
+            "--python-extras",
+            "docs",
+            "--python-platform",
+            "linux",
+            "--python-version",
+            "3.12",
+            "--python-arch",
+            "aarch64",
+        ])
+        .expect("check command should parse python profile flags");
+
+        match cli.command {
+            Commands::Check {
+                python_groups,
+                python_extras,
+                python_platform,
+                python_version,
+                python_arch,
+                ..
+            } => {
+                assert_eq!(python_groups.as_deref(), Some("dev,test"));
+                assert_eq!(python_extras.as_deref(), Some("docs"));
+                assert_eq!(python_platform.as_deref(), Some("linux"));
+                assert_eq!(python_version.as_deref(), Some("3.12"));
+                assert_eq!(python_arch.as_deref(), Some("aarch64"));
             }
             _ => panic!("expected check command"),
         }

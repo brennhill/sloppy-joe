@@ -94,6 +94,10 @@ use std::path::{Path, PathBuf};
 ///   Python manifest workflows. `prefer_poetry` (default) trusts Poetry when
 ///   present and warns on legacy manifests. `poetry_only` blocks non-Poetry
 ///   Python manifests.
+/// - `poetry_lock_policy`: controls how missing Poetry trust proof is handled.
+///   `warn_missing_proofs` (default) downgrades incomplete lock trust proofs to
+///   warnings. `strict` fails closed when poetry.lock cannot prove freshness or
+///   artifact identity strongly enough.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PythonEnforcement {
@@ -103,6 +107,17 @@ pub enum PythonEnforcement {
 
 fn default_python_enforcement() -> PythonEnforcement {
     PythonEnforcement::PreferPoetry
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PoetryLockPolicy {
+    WarnMissingProofs,
+    Strict,
+}
+
+fn default_poetry_lock_policy() -> PoetryLockPolicy {
+    PoetryLockPolicy::WarnMissingProofs
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +280,8 @@ pub struct SloppyJoeConfig {
     pub cargo_git_policy: CargoGitPolicy,
     #[serde(default = "default_python_enforcement")]
     pub python_enforcement: PythonEnforcement,
+    #[serde(default = "default_poetry_lock_policy")]
+    pub poetry_lock_policy: PoetryLockPolicy,
     #[serde(default, skip_serializing_if = "BootstrapReview::is_empty")]
     pub bootstrap_review: BootstrapReview,
     #[serde(skip)]
@@ -307,6 +324,7 @@ impl Default for SloppyJoeConfig {
             trusted_indexes: HashMap::new(),
             cargo_git_policy: default_cargo_git_policy(),
             python_enforcement: default_python_enforcement(),
+            poetry_lock_policy: default_poetry_lock_policy(),
             bootstrap_review: BootstrapReview::default(),
             allow_host_local_cargo_config: false,
             active_local_overlay_relaxations: Vec::new(),
@@ -1683,6 +1701,10 @@ mod tests {
         assert!(!config.allow_unresolved_versions);
         assert!(!config.allow_legacy_npm_v1_lockfile);
         assert_eq!(config.python_enforcement, PythonEnforcement::PreferPoetry);
+        assert_eq!(
+            config.poetry_lock_policy,
+            PoetryLockPolicy::WarnMissingProofs
+        );
     }
 
     #[test]
@@ -1926,7 +1948,7 @@ version = "0.1.0"
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"allow_legacy_npm_v1_lockfile":true,"python_enforcement":"poetry_only"}"#,
+            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"allow_legacy_npm_v1_lockfile":true,"python_enforcement":"poetry_only","poetry_lock_policy":"strict"}"#,
         ).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
@@ -1938,6 +1960,7 @@ version = "0.1.0"
         assert!(config.allow_unresolved_versions);
         assert!(config.allow_legacy_npm_v1_lockfile);
         assert_eq!(config.python_enforcement, PythonEnforcement::PoetryOnly);
+        assert_eq!(config.poetry_lock_policy, PoetryLockPolicy::Strict);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2052,6 +2075,23 @@ version = "0.1.0"
         .expect_err("unknown Python enforcement modes must fail");
         assert!(err.contains("prefer_poetry"));
         assert!(err.contains("poetry_only"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_rejects_unknown_poetry_lock_policy() {
+        let dir = unique_temp_dir("config-poetry-lock-policy");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"poetry_lock_policy":"trust_me_bro"}"#).unwrap();
+
+        let err = parse_config_content(
+            &std::fs::read_to_string(&path).unwrap(),
+            &path.display().to_string(),
+        )
+        .expect_err("unknown Poetry lock policies must fail");
+        assert!(err.contains("warn_missing_proofs"));
+        assert!(err.contains("strict"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

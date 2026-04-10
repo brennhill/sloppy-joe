@@ -12,10 +12,23 @@ pub(crate) mod yarn;
 
 use crate::Dependency;
 use crate::Ecosystem;
+use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
 use crate::report::{Issue, Severity};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug)]
+pub(crate) struct PythonLockfileProfile {
+    pub(crate) environment: PythonProfile,
+    pub(crate) root_extras: PythonRootExtras,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct PythonPackageIdentity {
+    pub(crate) normalized_name: String,
+    pub(crate) version: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolutionSource {
@@ -145,11 +158,28 @@ impl LockfileData {
         Self::parse_for_kind_with_lockfile(project_dir, project_kind, direct_deps, None)
     }
 
+    #[cfg(test)]
     pub fn parse_for_kind_with_lockfile(
         project_dir: &Path,
         project_kind: Option<crate::ProjectInputKind>,
         direct_deps: &[Dependency],
         lockfile_override: Option<&Path>,
+    ) -> Result<Self> {
+        Self::parse_for_kind_with_lockfile_and_profile(
+            project_dir,
+            project_kind,
+            direct_deps,
+            lockfile_override,
+            None,
+        )
+    }
+
+    pub fn parse_for_kind_with_lockfile_and_profile(
+        project_dir: &Path,
+        project_kind: Option<crate::ProjectInputKind>,
+        direct_deps: &[Dependency],
+        lockfile_override: Option<&Path>,
+        python_profile: Option<&PythonLockfileProfile>,
     ) -> Result<Self> {
         let ecosystem = direct_deps.first().map(|d| d.ecosystem);
 
@@ -157,9 +187,11 @@ impl LockfileData {
         let parsed = read_lockfile(project_dir, ecosystem, project_kind, lockfile_override)?;
 
         // Resolve direct dep versions from the parsed data
-        let resolution = resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct)?;
+        let resolution =
+            resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct, python_profile)?;
 
-        let all_deps = parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir)?;
+        let all_deps =
+            parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir, python_profile)?;
 
         // Filter to transitive only
         let direct_versions: HashSet<(String, String)> = direct_deps
@@ -192,7 +224,17 @@ impl LockfileData {
     /// Resolve versions for transitive deps from the already-parsed lockfile.
     /// Eliminates the redundant disk read that `resolve_versions()` would do.
     pub fn resolve_transitive(&self, deps: &[Dependency]) -> Result<ResolutionResult> {
-        resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive)
+        resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive, None)
+    }
+
+    pub fn reduced_confidence_from_manifest(direct_deps: &[Dependency]) -> Self {
+        let mut resolution = ResolutionResult::default();
+        add_manifest_exact_fallbacks(&mut resolution, direct_deps);
+        Self {
+            resolution,
+            transitive_deps: Vec::new(),
+            parsed: ParsedLockfile::None,
+        }
     }
 }
 
@@ -362,6 +404,7 @@ fn resolve_from_parsed(
     parsed: &ParsedLockfile,
     deps: &[Dependency],
     mode: ResolutionMode,
+    python_profile: Option<&PythonLockfileProfile>,
 ) -> Result<ResolutionResult> {
     match parsed {
         ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
@@ -385,8 +428,12 @@ fn resolve_from_parsed(
         ParsedLockfile::Gradle(content) => {
             gradle::resolve_from_content_with_mode(content, deps, mode)
         }
-        ParsedLockfile::Python(value) => python::resolve_from_value_with_mode(value, deps, mode),
-        ParsedLockfile::Uv(value) => uv::resolve_from_value_with_mode(value, deps, mode),
+        ParsedLockfile::Python(value) => {
+            python::resolve_from_value_with_mode_and_profile(value, deps, mode, python_profile)
+        }
+        ParsedLockfile::Uv(value) => {
+            uv::resolve_from_value_with_mode_and_profile(value, deps, mode, python_profile)
+        }
         ParsedLockfile::Ruby(content) => ruby::resolve_from_content_with_mode(content, deps, mode),
         ParsedLockfile::None => {
             let mut result = ResolutionResult::default();
@@ -419,6 +466,7 @@ fn parse_all_from_parsed_for_project(
     parsed: &ParsedLockfile,
     direct_deps: &[Dependency],
     _project_dir: &Path,
+    python_profile: Option<&PythonLockfileProfile>,
 ) -> Result<Vec<Dependency>> {
     match parsed {
         ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
@@ -433,6 +481,12 @@ fn parse_all_from_parsed_for_project(
         } => bun::parse_all_from_value_for_importer(value, importer_key),
         ParsedLockfile::Yarn(parsed) => {
             yarn::parse_all_from_parsed_for_project(parsed, direct_deps)
+        }
+        ParsedLockfile::Python(value) => {
+            python::parse_all_from_value_for_roots(value, direct_deps, python_profile)
+        }
+        ParsedLockfile::Uv(value) => {
+            uv::parse_all_from_value_for_roots(value, direct_deps, python_profile)
         }
         _ => parse_all_from_parsed(parsed),
     }
@@ -1340,7 +1394,7 @@ requires-dist = [{ name = "requests", specifier = "==2.32.3" }]
         let dir = unique_dir();
         std::fs::write(
             dir.join("poetry.lock"),
-            "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[[package]]\nname = \"urllib3\"\nversion = \"2.1.0\"\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
+            "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[package.dependencies]\nurllib3 = \">=2.0\"\n\n[[package]]\nname = \"urllib3\"\nversion = \"2.1.0\"\n\n[metadata]\nlock-version = \"2.0\"\npython-versions = \"^3.8\"\n",
         )
         .unwrap();
         let direct = vec![pypi_dep("requests", "==2.31.0")];

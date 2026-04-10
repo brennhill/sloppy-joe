@@ -7,6 +7,7 @@ sloppy-joe works with zero configuration. Config adds canonical enforcement (rej
 - `sloppy-joe check` is the fast local mode. It always enforces local trust boundaries such as manifest parsing, lockfile requirements, sync/provenance checks, and unsupported-source blocking.
 - `sloppy-joe check --full` runs the strict online scan.
 - `sloppy-joe check --ci` runs the same strict coverage as `--full`, intended for CI workflows.
+- For Python, `sloppy-joe check` evaluates the `runtime` profile by default. If scoped dependencies exist, it warns and tells you to pass explicit `--python-groups`, `--python-extras`, `--python-platform`, and/or `--python-version` flags so CI/build checks the same dependency shape you install.
 - Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
 Fast mode does not auto-escalate into a full scan. Instead, it warns when you should run `sloppy-joe check --full`:
@@ -137,7 +138,18 @@ PyPI itself is implicitly trusted as `https://pypi.org/simple/`.
 
 **Unused sources:** Declared non-PyPI Poetry/uv sources that are not used by the locked graph warn, but do not block. The warning suggests removing them for clarity and maintenance.
 
-**Current scope:** This is currently only for repo-visible Poetry and uv source/index declarations. pip/pip-tools index flags, host-local Python config, and env-driven source state are not trusted by this feature.
+**Current scope:** This covers repo-visible Poetry and uv source/index declarations, plus pip-tools requirements files that bind their own `--index-url` / `--extra-index-url` values in the committed requirements graph. Hash-locked pip-tools still downgrades to reduced-confidence when the primary index is not explicitly file-bound, because pip source state can otherwise still come from host-local pip config or environment variables.
+
+### Python profile selection
+
+Trusted Python modes evaluate one concrete install profile at a time.
+
+- Default: `runtime`
+- Explicit groups: `--python-groups dev,test`
+- Explicit extras: `--python-extras docs`
+- Explicit marker target: `--python-platform linux --python-arch aarch64 --python-version 3.12`
+
+If scoped Python dependencies exist and you do not pass an explicit profile, sloppy-joe warns that only the runtime dependency shape was checked. Profile aliases/defaults are not configurable in `config.json` yet.
 
 ### `bootstrap_review`
 
@@ -274,7 +286,7 @@ Controls how strictly sloppy-joe treats Python manifest workflows.
 
 Valid values:
 
-- `prefer_poetry` (default): trust Poetry projects (`pyproject.toml` with Poetry metadata plus `poetry.lock`), uv projects (`pyproject.toml` with `tool.uv` plus `uv.lock`), and fully hash-locked pip-tools requirements. Legacy Python manifests such as unhashed `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry/non-uv `pyproject.toml` are still scanned, but every run emits a warning encouraging migration to a trusted Python mode.
+- `prefer_poetry` (default): trust Poetry projects (`pyproject.toml` with Poetry metadata plus `poetry.lock`) and uv projects (`pyproject.toml` with `tool.uv` plus `uv.lock`). Fully hash-locked pip-tools requirements are trusted only when the committed requirements graph binds its own `--index-url` and any `--extra-index-url` values exactly; otherwise they still scan in reduced-confidence mode. Legacy Python manifests such as unhashed `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry/non-uv `pyproject.toml` are still scanned, but every run emits a warning encouraging migration to a trusted Python mode.
 - `poetry_only`: block those legacy Python manifests and require Poetry for Python scans.
 
 Legacy Python support still fails closed on unsafe forms. For example, direct URLs, editable requirements, local paths, VCS sources, and unsupported dynamic dependency declarations are rejected rather than silently skipped.

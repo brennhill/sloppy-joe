@@ -201,6 +201,56 @@ fn python_config(enforcement: config::PythonEnforcement) -> config::SloppyJoeCon
     }
 }
 
+fn python_config_with_poetry_policy(
+    enforcement: config::PythonEnforcement,
+    poetry_lock_policy: config::PoetryLockPolicy,
+) -> config::SloppyJoeConfig {
+    config::SloppyJoeConfig {
+        python_enforcement: enforcement,
+        poetry_lock_policy,
+        ..Default::default()
+    }
+}
+
+fn python_profile_opts<'a>(
+    groups: &[&str],
+    extras: &[&str],
+    version: Option<&str>,
+) -> ScanOptions<'a> {
+    ScanOptions {
+        python_groups: groups.iter().map(|value| value.to_string()).collect(),
+        python_extras: extras.iter().map(|value| value.to_string()).collect(),
+        python_version: version.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+fn python_profile_opts_with_arch<'a>(
+    groups: &[&str],
+    extras: &[&str],
+    version: Option<&str>,
+    arch: Option<&str>,
+) -> ScanOptions<'a> {
+    ScanOptions {
+        python_groups: groups.iter().map(|value| value.to_string()).collect(),
+        python_extras: extras.iter().map(|value| value.to_string()).collect(),
+        python_version: version.map(str::to_string),
+        python_arch: arch.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+fn trusted_poetry_content_hash(pyproject: &str) -> String {
+    crate::lockfiles::python::poetry_content_hash_for_test(pyproject)
+        .expect("test pyproject should produce a valid Poetry content-hash")
+}
+
+fn write_poetry_project(dir: &std::path::Path, pyproject: &str, lock_template: &str) {
+    std::fs::write(dir.join("pyproject.toml"), pyproject).unwrap();
+    let lock = lock_template.replace("__CONTENT_HASH__", &trusted_poetry_content_hash(pyproject));
+    std::fs::write(dir.join("poetry.lock"), lock).unwrap();
+}
+
 fn unique_dir() -> std::path::PathBuf {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("sj-lib-{}-{}", std::process::id(), id));
@@ -857,7 +907,7 @@ async fn scan_with_config_warns_for_legacy_requirements_projects_by_default() {
     assert!(report.issues.iter().any(|issue| {
         issue.severity == Severity::Warning
             && issue.message.contains("requirements.txt")
-            && issue.message.contains("trusted Python modes")
+            && issue.message.contains("Poetry with poetry.lock")
     }));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -931,11 +981,82 @@ async fn scan_with_config_warns_for_other_legacy_python_manifests_by_default() {
         assert!(report.issues.iter().any(|issue| {
             issue.severity == Severity::Warning
                 && issue.message.contains(manifest_name)
-                && issue.message.contains("trusted Python modes")
+                && issue.message.contains("Poetry with poetry.lock")
         }));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[tokio::test]
+async fn scan_with_config_respects_explicit_python_platform_during_python_preflight() {
+    let dir = unique_dir();
+    let host_platform =
+        crate::parsers::python_scope::PythonProfile::runtime_for_current_host().target_platform;
+    let selected_platform = if host_platform == "win32" {
+        "linux"
+    } else {
+        "win32"
+    };
+    let pyproject = format!(
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+platform-helper = {{ version = "1.0.0", source = "private", markers = "sys_platform == '{host_platform}'" }}
+
+[[tool.poetry.source]]
+name = "private"
+url = "https://private.example/simple"
+priority = "explicit"
+"#
+    );
+    write_poetry_project(
+        &dir,
+        &pyproject,
+        r#"[[package]]
+name = "platform-helper"
+version = "1.0.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[package.source]
+type = "explicit"
+url = "https://private.example/simple"
+reference = "private"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let report = scan_with_config(
+        &dir,
+        Some("pypi"),
+        config::SloppyJoeConfig::default(),
+        &ScanOptions {
+            python_platform: Some(selected_platform.to_string()),
+            python_version: Some("3.12".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("explicit Python platform selection should flow through all preflight validation");
+
+    assert_eq!(report.packages_checked, 0);
+    assert!(!report.has_errors());
+    assert!(
+        !report.issues.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+        })
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -1272,7 +1393,7 @@ async fn repo_root_scans_warn_for_legacy_python_manifests_instead_of_skipping_th
         assert!(report.issues.iter().any(|issue| {
             issue.severity == Severity::Warning
                 && issue.message.contains(manifest_name)
-                && issue.message.contains("trusted Python modes")
+                && issue.message.contains("Poetry with poetry.lock")
         }));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1340,7 +1461,7 @@ fn parse_project_inputs_extracts_dependencies_from_legacy_python_manifests() {
         (
             "pyproject.toml",
             "[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\"requests==2.31.0\"]\n[project.optional-dependencies]\ndev = [\"pytest==8.1.1\"]\n",
-            vec!["requests", "pytest"],
+            vec!["requests"],
         ),
         (
             "setup.cfg",
@@ -4478,33 +4599,35 @@ async fn scan_uses_real_package_identity_for_npm_aliases() {
 #[tokio::test]
 async fn scan_uses_pinned_poetry_version_even_when_poetry_lock_disagrees() {
     let dir = unique_dir();
-    std::fs::write(
-        dir.join("pyproject.toml"),
-        "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\npython = \"^3.11\"\nrequests = \"2.31.0\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("poetry.lock"),
+    let pyproject = "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\npython = \"^3.11\"\nrequests = \"2.31.0\"\n";
+    write_poetry_project(
+        &dir,
+        pyproject,
         r#"
 [[package]]
 name = "requests"
 version = "9.9.9"
-"#,
-    )
-    .unwrap();
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "requests-9.9.9-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
 
-    let metadata_versions = Arc::new(Mutex::new(Vec::new()));
-    let osv_versions = Arc::new(Mutex::new(Vec::new()));
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
     let registry = RecordingRegistry {
         existing: vec!["requests".to_string()],
-        versions: metadata_versions.clone(),
+        versions: Arc::new(Mutex::new(Vec::new())),
     };
     let osv = RecordingOsvClient {
-        versions: osv_versions.clone(),
+        versions: Arc::new(Mutex::new(Vec::new())),
     };
 
     let deps = parsers::pyproject_toml::parse_poetry(&dir).unwrap();
-    let report = scan_with_services_inner_for_kind(
+    let err = scan_with_services_inner_for_kind(
         Some(ProjectInputKind::PyProjectPoetry),
         &dir,
         Default::default(),
@@ -4518,29 +4641,8 @@ version = "9.9.9"
         },
     )
     .await
-    .unwrap();
-
-    assert!(
-        !report
-            .issues
-            .iter()
-            .any(|issue| issue.check == "metadata/unresolved-version")
-    );
-    assert!(
-        report
-            .issues
-            .iter()
-            .any(|issue| issue.check == "resolution/lockfile-out-of-sync"),
-        "mismatched trusted Python lockfiles must still surface the direct-version disagreement"
-    );
-    assert_eq!(
-        metadata_versions.lock().unwrap().first(),
-        Some(&Some("2.31.0".to_string()))
-    );
-    assert_eq!(
-        osv_versions.lock().unwrap().first(),
-        Some(&Some("2.31.0".to_string()))
-    );
+    .expect_err("contradictory Poetry lockfiles must fail closed during preflight");
+    assert!(err.to_string().contains("out of sync"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -4548,27 +4650,33 @@ version = "9.9.9"
 #[tokio::test]
 async fn scan_pypi_uses_poetry_lock_for_transitive_dependencies() {
     let dir = unique_dir();
-    std::fs::write(
-        dir.join("pyproject.toml"),
-        "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\npython = \"^3.11\"\nrequests = \"2.31.0\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("poetry.lock"),
+    let pyproject = "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.poetry.dependencies]\npython = \"^3.11\"\nrequests = \"2.31.0\"\n";
+    write_poetry_project(
+        &dir,
+        pyproject,
         r#"[[package]]
 name = "requests"
 version = "2.31.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
+
+[package.dependencies]
+urllib3 = ">=2.0"
 
 [[package]]
 name = "urllib3"
 version = "2.1.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "urllib3-2.1.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" }]
 
 [metadata]
 lock-version = "2.0"
-python-versions = "^3.8"
+python-versions = "^3.11"
+content-hash = "__CONTENT_HASH__"
 "#,
-    )
-    .unwrap();
+    );
 
     let registry = FakeRegistry {
         existing: vec!["requests".to_string(), "urllib3".to_string()],
@@ -5100,6 +5208,7 @@ fn python_fixture_contracts_hold() {
         "uv-stale-fail",
         "uv-schema-fail",
         "pip-tools-pass",
+        "pip-tools-explicit-source-pass",
         "pip-tools-missing-hash-fail",
         "pip-tools-nonexact-fail",
     ] {
@@ -5160,9 +5269,7 @@ dependencies = ["requests==2.31.0"]
 #[test]
 fn unused_python_source_warning_tracks_source_identity_not_only_url() {
     let dir = unique_dir();
-    std::fs::write(
-        dir.join("pyproject.toml"),
-        r#"[tool.poetry]
+    let pyproject = r#"[tool.poetry]
 name = "demo"
 version = "0.1.0"
 description = "Fixture"
@@ -5181,11 +5288,10 @@ priority = "explicit"
 name = "pytorch-mirror"
 url = "https://download.pytorch.org/whl/cu124"
 priority = "explicit"
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("poetry.lock"),
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
         r#"[[package]]
 name = "torch"
 version = "2.6.0"
@@ -5201,10 +5307,9 @@ reference = "pytorch"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "fixture"
+content-hash = "__CONTENT_HASH__"
 "#,
-    )
-    .unwrap();
+    );
 
     let mut config = config::SloppyJoeConfig::default();
     config.trusted_indexes.insert(
@@ -5221,6 +5326,430 @@ content-hash = "fixture"
                 && issue.message.contains("pytorch-mirror")
         }),
         "duplicate URL alias should still warn when unused: {warnings:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_runtime_profile_does_not_validate_dev_only_source_packages() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "2.31.0"
+
+[tool.poetry.group.dev.dependencies]
+private-test-helper = { version = "1.0.0", source = "private" }
+
+[[tool.poetry.source]]
+name = "private"
+url = "https://private.example/simple"
+priority = "explicit"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
+
+[[package]]
+name = "private-test-helper"
+version = "1.0.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[package.source]
+type = "explicit"
+url = "https://private.example/simple"
+reference = "private"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let warnings = preflight_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts(&[], &[], Some("3.12")),
+    )
+    .expect("runtime profile should ignore dev-only private index package");
+    assert!(
+        warnings
+            .iter()
+            .any(|issue| issue.check == checks::names::RESOLUTION_UNUSED_DECLARED_SOURCE),
+        "out-of-scope private source should warn as unused: {warnings:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_blocks_transitive_custom_source_not_authorized_by_in_scope_roots() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+private-lib = { version = "1.0.0", source = "internal" }
+
+[[tool.poetry.source]]
+name = "internal"
+url = "https://internal.example/simple"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "mirror"
+url = "https://mirror.example/simple"
+priority = "explicit"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "private-lib"
+version = "1.0.0"
+optional = false
+python-versions = ">=3.8"
+files = [
+  { file = "private_lib-1.0.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+]
+
+[package.source]
+type = "explicit"
+url = "https://internal.example/simple"
+reference = "internal"
+
+[package.dependencies]
+helper = "1.0.0"
+
+[[package]]
+name = "helper"
+version = "1.0.0"
+optional = false
+python-versions = ">=3.8"
+files = [
+  { file = "helper-1.0.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" }
+]
+
+[package.source]
+type = "explicit"
+url = "https://mirror.example/simple"
+reference = "mirror"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let mut config = config::SloppyJoeConfig::default();
+    config.trusted_indexes.insert(
+        "pypi".to_string(),
+        vec![
+            "https://internal.example/simple/".to_string(),
+            "https://mirror.example/simple/".to_string(),
+        ],
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts(&[], &[], Some("3.12")),
+    )
+    .expect_err(
+        "transitive custom sources should not be authorized solely because they are declared",
+    );
+    assert!(
+        err.to_string().contains("not authorized") || err.to_string().contains("unexpected source"),
+        "unexpected error: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn uv_source_policy_ignores_unreachable_same_name_version() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["widget==1.0.0"]
+
+[tool.uv]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        r#"version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "widget"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/widget-1.0.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/widget-1.0.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+
+[[package]]
+name = "widget"
+version = "2.0.0"
+source = { registry = "https://evil.example/simple" }
+sdist = { url = "https://evil.example/packages/widget-2.0.0.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 1 }
+wheels = [
+    { url = "https://evil.example/packages/widget-2.0.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "widget", version = "1.0.0" }]
+
+[package.metadata]
+requires-dist = [
+    { name = "widget", specifier = "==1.0.0" },
+]
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    preflight_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts(&[], &[], Some("3.12")),
+    )
+    .expect("unreachable same-name package version should not participate in source policy");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn uv_blocks_transitive_custom_source_not_authorized_by_in_scope_roots() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["private-lib==1.0.0"]
+
+[tool.uv]
+
+[tool.uv.sources]
+private-lib = { index = "internal" }
+
+[[tool.uv.index]]
+name = "internal"
+url = "https://internal.example/simple"
+
+[[tool.uv.index]]
+name = "mirror"
+url = "https://mirror.example/simple"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        r#"version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "private-lib"
+version = "1.0.0"
+source = { registry = "https://internal.example/simple" }
+sdist = { url = "https://internal.example/files/private-lib-1.0.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+  { url = "https://internal.example/files/private-lib-1.0.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+dependencies = [{ name = "helper", version = "1.0.0" }]
+
+[[package]]
+name = "helper"
+version = "1.0.0"
+source = { registry = "https://mirror.example/simple" }
+sdist = { url = "https://mirror.example/files/helper-1.0.0.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 1 }
+wheels = [
+  { url = "https://mirror.example/files/helper-1.0.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "private-lib", version = "1.0.0" }]
+
+[package.metadata]
+requires-dist = [{ name = "private-lib", specifier = "==1.0.0" }]
+"#,
+    )
+    .unwrap();
+
+    let mut config = config::SloppyJoeConfig::default();
+    config.trusted_indexes.insert(
+        "pypi".to_string(),
+        vec![
+            "https://internal.example/simple/".to_string(),
+            "https://mirror.example/simple/".to_string(),
+        ],
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts(&[], &[], Some("3.12")),
+    )
+    .expect_err(
+        "transitive uv custom sources should not be authorized solely because they are declared",
+    );
+    assert!(
+        err.to_string().contains("not authorized") || err.to_string().contains("unexpected source"),
+        "unexpected error: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_source_intents_ignore_unselected_group_for_same_package_name() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+private-lib = "^1.0.0"
+
+[tool.poetry.group.dev.dependencies]
+private-lib = { version = "^1.0.0", source = "internal" }
+
+[[tool.poetry.source]]
+name = "internal"
+url = "https://packages.example.com/simple"
+priority = "explicit"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "private-lib"
+version = "1.2.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    preflight_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts(&[], &[], Some("3.12")),
+    )
+    .expect("runtime profile should ignore dev-only source intent for same package");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_non_exact_same_name_root_versions_fail_closed() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+widget = "^1.0.0"
+
+[[tool.poetry.source]]
+name = "evil"
+url = "https://evil.example/simple"
+priority = "explicit"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "widget"
+version = "1.1.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[[package]]
+name = "widget"
+version = "2.0.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[package.source]
+type = "explicit"
+url = "https://evil.example/simple"
+reference = "evil"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts(&[], &[], Some("3.12")),
+    )
+    .expect_err("ambiguous non-exact Poetry roots must fail closed");
+    assert!(
+        err.to_string().contains("ambiguous")
+            || err.to_string().contains("cannot be trusted exactly"),
+        "unexpected error: {err}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -5297,14 +5826,43 @@ fn python_uv_preflight_blocks_stale_or_unsupported_uv_lockfiles() {
 }
 
 #[test]
-fn pip_tools_hash_locked_requirements_are_trusted() {
+fn pip_tools_hash_locked_requirements_warn_without_source_provenance() {
     let dir = ecosystem_fixture_dir("python", "pip-tools-pass");
     let warnings = preflight_scan_inputs(&dir, Some("pypi"))
-        .expect("hash-locked pip-tools requirements should remain preflight-clean");
+        .expect("hash-locked pip-tools requirements should warn, not fail");
+    assert!(
+        warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS
+        }),
+        "hash-locked pip-tools requirements should warn about missing source provenance: {warnings:?}"
+    );
+}
+
+#[test]
+fn pip_tools_hash_locked_requirements_with_explicit_sources_pass_cleanly() {
+    let dir = ecosystem_fixture_dir("python", "pip-tools-explicit-source-pass");
+    let warnings = preflight_scan_inputs(&dir, Some("pypi"))
+        .expect("explicit file-bound pip indexes should allow exact pip-tools provenance");
     assert!(
         warnings.is_empty(),
-        "trusted pip-tools requirements should not warn: {warnings:?}"
+        "explicit file-bound pip sources should avoid reduced-confidence warnings: {warnings:?}"
     );
+}
+
+#[test]
+fn pip_tools_hash_locked_requirements_with_untrusted_extra_index_fail_closed() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("requirements.txt"),
+        "--index-url https://pypi.org/simple\n--extra-index-url https://packages.example.com/simple\nrequests==2.32.3 \\\n    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+    )
+    .unwrap();
+
+    let err = preflight_scan_inputs(&dir, Some("pypi"))
+        .expect_err("unallowlisted explicit pip indexes must fail closed");
+    assert!(err.to_string().contains("untrusted Python index"));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -5335,6 +5893,650 @@ fn pip_tools_included_requirements_must_also_be_hash_locked() {
     assert!(
         !warnings.is_empty(),
         "hashless included requirements should prevent trusted pip-tools promotion"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_runtime_profile_excludes_dev_group_dependencies_and_warns() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "2.31.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "8.1.1"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[[package]]
+name = "pytest"
+version = "8.1.1"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let warnings =
+        preflight_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default())
+            .unwrap();
+    assert!(
+        warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+        })
+    );
+
+    let projects =
+        parse_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default()).unwrap();
+    assert_eq!(projects.len(), 1);
+    let names: Vec<_> = projects[0]
+        .deps
+        .iter()
+        .map(|dep| dep.name.as_str())
+        .collect();
+    assert!(names.contains(&"requests"));
+    assert!(!names.contains(&"pytest"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn poetry_explicit_group_includes_dev_group_dependencies() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "2.31.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "8.1.1"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[[package]]
+name = "pytest"
+version = "8.1.1"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let opts = python_profile_opts(&["dev"], &[], Some("3.12"));
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let warnings = preflight_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+    assert!(
+        !warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+        })
+    );
+
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+    let names: Vec<_> = projects[0]
+        .deps
+        .iter()
+        .map(|dep| dep.name.as_str())
+        .collect();
+    assert!(names.contains(&"requests"));
+    assert!(names.contains(&"pytest"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn uv_runtime_profile_excludes_optional_extra_dependencies_and_warns() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests==2.31.0"]
+
+[project.optional-dependencies]
+docs = ["mkdocs==1.6.0"]
+
+[tool.uv]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        r#"version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/requests-2.31.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/requests-2.31.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+
+[[package]]
+name = "mkdocs"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/mkdocs-1.6.0.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/mkdocs-1.6.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "requests" }, { name = "mkdocs" }]
+
+[package.metadata]
+requires-dist = [
+    { name = "requests", specifier = "==2.31.0" },
+    { name = "mkdocs", specifier = "==1.6.0" },
+]
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let warnings =
+        preflight_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default())
+            .unwrap();
+    assert!(
+        warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+        })
+    );
+
+    let projects =
+        parse_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default()).unwrap();
+    let names: Vec<_> = projects[0]
+        .deps
+        .iter()
+        .map(|dep| dep.name.as_str())
+        .collect();
+    assert!(names.contains(&"requests"));
+    assert!(!names.contains(&"mkdocs"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn uv_explicit_extra_includes_optional_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests==2.31.0"]
+
+[project.optional-dependencies]
+docs = ["mkdocs==1.6.0"]
+
+[tool.uv]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        r#"version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/requests-2.31.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/requests-2.31.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+
+[[package]]
+name = "mkdocs"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/mkdocs-1.6.0.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/mkdocs-1.6.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "requests" }, { name = "mkdocs" }]
+
+[package.metadata]
+requires-dist = [
+    { name = "requests", specifier = "==2.31.0" },
+    { name = "mkdocs", specifier = "==1.6.0" },
+]
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let opts = python_profile_opts(&[], &["docs"], Some("3.12"));
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let warnings = preflight_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+    assert!(
+        !warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+        })
+    );
+
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+    let names: Vec<_> = projects[0]
+        .deps
+        .iter()
+        .map(|dep| dep.name.as_str())
+        .collect();
+    assert!(names.contains(&"requests"));
+    assert!(names.contains(&"mkdocs"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn poetry_runtime_profile_excludes_dev_transitive_dependencies() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "2.31.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "8.1.1"
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
+
+[package.dependencies]
+urllib3 = ">=2.0"
+
+[[package]]
+name = "urllib3"
+version = "2.1.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "urllib3-2.1.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" }]
+
+[[package]]
+name = "pytest"
+version = "8.1.1"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "pytest-8.1.1-py3-none-any.whl", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333" }]
+
+[package.dependencies]
+pluggy = ">=1.0"
+
+[[package]]
+name = "pluggy"
+version = "1.5.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "pluggy-1.5.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444" }]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let projects =
+        parse_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default()).unwrap();
+    let deps = projects[0].deps.clone();
+
+    let registry = FakeRegistry {
+        existing: vec![
+            "requests".to_string(),
+            "urllib3".to_string(),
+            "pytest".to_string(),
+            "pluggy".to_string(),
+        ],
+    };
+    let osv = VulnOsvClient {
+        vulnerable: vec!["urllib3".to_string(), "pluggy".to_string()],
+    };
+
+    let report = scan_with_services_inner_for_kind(
+        Some(ProjectInputKind::PyProjectPoetry),
+        &dir,
+        config,
+        deps,
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        report.issues.iter().any(
+            |issue| issue.package == "urllib3" && issue.source.as_deref() == Some("transitive")
+        )
+    );
+    assert!(!report.issues.iter().any(
+        |issue| issue.package == "pluggy" && issue.source.as_deref() == Some("transitive")
+    ));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn uv_explicit_extra_includes_extra_transitive_dependencies() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests==2.31.0"]
+
+[project.optional-dependencies]
+docs = ["mkdocs==1.6.0"]
+
+[tool.uv]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        r#"version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/requests-2.31.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/requests-2.31.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 },
+]
+dependencies = [{ name = "urllib3" }]
+
+[[package]]
+name = "urllib3"
+version = "2.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/urllib3-2.1.0.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/urllib3-2.1.0-py3-none-any.whl", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 1 },
+]
+
+[[package]]
+name = "mkdocs"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/mkdocs-1.6.0.tar.gz", hash = "sha256:5555555555555555555555555555555555555555555555555555555555555555", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/mkdocs-1.6.0-py3-none-any.whl", hash = "sha256:6666666666666666666666666666666666666666666666666666666666666666", size = 1 },
+]
+dependencies = [{ name = "markdown" }]
+
+[[package]]
+name = "markdown"
+version = "3.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/example/markdown-3.7.0.tar.gz", hash = "sha256:7777777777777777777777777777777777777777777777777777777777777777", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/example/markdown-3.7.0-py3-none-any.whl", hash = "sha256:8888888888888888888888888888888888888888888888888888888888888888", size = 1 },
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "requests" }, { name = "mkdocs" }]
+
+[package.metadata]
+requires-dist = [
+    { name = "requests", specifier = "==2.31.0" },
+    { name = "mkdocs", specifier = "==1.6.0" },
+]
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let opts = python_profile_opts(&[], &["docs"], Some("3.12"));
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+    let deps = projects[0].deps.clone();
+
+    let registry = FakeRegistry {
+        existing: vec![
+            "requests".to_string(),
+            "urllib3".to_string(),
+            "mkdocs".to_string(),
+            "markdown".to_string(),
+        ],
+    };
+    let osv = VulnOsvClient {
+        vulnerable: vec!["markdown".to_string()],
+    };
+
+    let report = scan_with_services_inner_for_kind(
+        Some(ProjectInputKind::PyProjectUv),
+        &dir,
+        config,
+        deps,
+        &registry,
+        &osv,
+        &opts,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.package == "markdown"
+                && issue.source.as_deref() == Some("transitive"))
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn poetry_requested_package_extra_includes_extra_marker_transitives() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = { version = "0.116.0", extras = ["standard"] }
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "fastapi"
+version = "0.116.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "fastapi-0.116.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
+
+[package.dependencies]
+uvicorn = { version = ">=0.30.0", optional = true, markers = "extra == 'standard'" }
+
+[[package]]
+name = "uvicorn"
+version = "0.30.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "uvicorn-0.30.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" }]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let opts = ScanOptions {
+        no_cache: true,
+        disable_osv_disk_cache: true,
+        ..Default::default()
+    };
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+    assert!(projects[0].python_root_extras["fastapi"].contains("standard"));
+
+    let registry = FakeRegistry {
+        existing: vec!["fastapi".to_string(), "uvicorn".to_string()],
+    };
+    let osv = VulnOsvClient {
+        vulnerable: vec!["uvicorn".to_string()],
+    };
+    let report = scan_parsed_project(&projects[0], config, &registry, &osv, &opts)
+        .await
+        .unwrap();
+
+    assert!(
+        report.issues.iter().any(
+            |issue| issue.package == "uvicorn" && issue.source.as_deref() == Some("transitive")
+        ),
+        "requested package extras should activate lockfile extra-marker edges: {:?}",
+        report.issues
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn scan_with_services_helper_preserves_python_root_package_extras() {
+    let dir = unique_dir();
+    let pyproject = r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = { version = "0.116.0", extras = ["standard"] }
+"#;
+    write_poetry_project(
+        &dir,
+        pyproject,
+        r#"[[package]]
+name = "fastapi"
+version = "0.116.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "fastapi-0.116.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
+
+[package.dependencies]
+uvicorn = { version = ">=0.30.0", optional = true, markers = "extra == 'standard'" }
+
+[[package]]
+name = "uvicorn"
+version = "0.30.0"
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "uvicorn-0.30.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" }]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let registry = FakeRegistry {
+        existing: vec!["fastapi".to_string(), "uvicorn".to_string()],
+    };
+    let osv = VulnOsvClient {
+        vulnerable: vec!["uvicorn".to_string()],
+    };
+    let deps = parsers::pyproject_toml::parse_poetry(&dir).unwrap();
+    let report = scan_with_services_inner_for_kind(
+        Some(ProjectInputKind::PyProjectPoetry),
+        &dir,
+        config::SloppyJoeConfig::default(),
+        deps,
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("test helper should preserve root package extras for Python lock traversal");
+
+    assert!(
+        report.issues.iter().any(
+            |issue| issue.package == "uvicorn" && issue.source.as_deref() == Some("transitive")
+        ),
+        "test helper should follow the same root-extra transitive path as production scans: {:?}",
+        report.issues
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -6076,6 +7278,424 @@ lock-version = "2.0"
         issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
             && issue.package == "requests"
     }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_poetry_lock_missing_artifact_identity_when_policy_is_strict() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "a2bc317d8861d66a7774092d6797ba6ee5daaddd501c46bf86524f04aa57d234"
+"#,
+    )
+    .unwrap();
+
+    let config = python_config_with_poetry_policy(
+        config::PythonEnforcement::PreferPoetry,
+        config::PoetryLockPolicy::Strict,
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("strict Poetry lock policy must fail on missing artifact identity");
+    assert!(err.to_string().contains("artifact identity"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_warns_when_poetry_lock_missing_artifact_identity_in_warn_mode() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "a2bc317d8861d66a7774092d6797ba6ee5daaddd501c46bf86524f04aa57d234"
+"#,
+    )
+    .unwrap();
+
+    let config = python_config_with_poetry_policy(
+        config::PythonEnforcement::PreferPoetry,
+        config::PoetryLockPolicy::WarnMissingProofs,
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let warnings = preflight_project_inputs(&dir, &specs, &config)
+        .expect("warn policy should downgrade missing artifact identity");
+    assert!(warnings.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE
+            && issue.message.contains("artifact identity")
+    }));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn warn_mode_poetry_missing_proof_drops_trusted_transitive_coverage() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[package.dependencies]
+urllib3 = ">=2.0"
+
+[[package]]
+name = "urllib3"
+version = "2.1.0"
+optional = false
+python-versions = ">=3.8"
+files = []
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "a2bc317d8861d66a7774092d6797ba6ee5daaddd501c46bf86524f04aa57d234"
+"#,
+    )
+    .unwrap();
+
+    let registry = FakeRegistry {
+        existing: vec!["requests".to_string(), "urllib3".to_string()],
+    };
+    let osv = VulnOsvClient {
+        vulnerable: vec!["urllib3".to_string()],
+    };
+    let deps = parsers::pyproject_toml::parse_poetry(&dir).unwrap();
+    let report = scan_with_services_inner_for_kind(
+        Some(ProjectInputKind::PyProjectPoetry),
+        &dir,
+        python_config_with_poetry_policy(
+            config::PythonEnforcement::PreferPoetry,
+            config::PoetryLockPolicy::WarnMissingProofs,
+        ),
+        deps,
+        &registry,
+        &osv,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        report.issues.iter().any(|issue| issue.check
+            == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE
+            && issue.message.contains("artifact identity")),
+        "warn mode should surface reduced-confidence Poetry proof warnings: {:?}",
+        report.issues
+    );
+    assert!(
+        !report.issues.iter().any(
+            |issue| issue.package == "urllib3" && issue.source.as_deref() == Some("transitive")
+        ),
+        "warn mode Poetry must not use transitive lock coverage without full proof: {:?}",
+        report.issues
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_stale_poetry_content_hash_even_in_warn_mode() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = [{ file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "deadbeef"
+"#,
+    )
+    .unwrap();
+
+    let config = python_config_with_poetry_policy(
+        config::PythonEnforcement::PreferPoetry,
+        config::PoetryLockPolicy::WarnMissingProofs,
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("stale content hashes are contradictions and must always block");
+    assert!(err.to_string().contains("content-hash"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn strict_poetry_rejects_name_only_metadata_hashes_as_artifact_identity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "a2bc317d8861d66a7774092d6797ba6ee5daaddd501c46bf86524f04aa57d234"
+
+[metadata.hashes]
+requests = ["sha256:1111111111111111111111111111111111111111111111111111111111111111"]
+"#,
+    )
+    .unwrap();
+
+    let config = python_config_with_poetry_policy(
+        config::PythonEnforcement::PreferPoetry,
+        config::PoetryLockPolicy::Strict,
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("name-only metadata.hashes should not count as exact artifact identity");
+    assert!(err.to_string().contains("artifact identity"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn strict_poetry_accepts_version_scoped_metadata_files_identity() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "a2bc317d8861d66a7774092d6797ba6ee5daaddd501c46bf86524f04aa57d234"
+
+[metadata.files]
+requests = [
+  { file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+]
+"#,
+    )
+    .unwrap();
+
+    let config = python_config_with_poetry_policy(
+        config::PythonEnforcement::PreferPoetry,
+        config::PoetryLockPolicy::Strict,
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let warnings = preflight_project_inputs(&dir, &specs, &config)
+        .expect("version-scoped metadata.files should pass");
+    assert!(
+        warnings.is_empty(),
+        "strict Poetry artifact proof should stay clean: {warnings:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn strict_poetry_rejects_pkg_files_that_do_not_match_package_version() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "2.31.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("poetry.lock"),
+        r#"[[package]]
+name = "requests"
+version = "2.31.0"
+description = ""
+optional = false
+python-versions = ">=3.8"
+files = [
+  { file = "urllib3-2.1.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "a2bc317d8861d66a7774092d6797ba6ee5daaddd501c46bf86524f04aa57d234"
+"#,
+    )
+    .unwrap();
+
+    let config = python_config_with_poetry_policy(
+        config::PythonEnforcement::PreferPoetry,
+        config::PoetryLockPolicy::Strict,
+    );
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let err = preflight_project_inputs(&dir, &specs, &config)
+        .expect_err("pkg.files entries must match the package/version they claim to prove");
+    assert!(err.to_string().contains("artifact identity"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn parse_project_inputs_respects_explicit_python_arch_for_marker_evaluation() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = [
+  "arm-only==1.0.0; platform_machine == 'aarch64'",
+  "x86-only==2.0.0; platform_machine == 'x86_64'",
+]
+"#,
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config)
+        .expect("fixture should detect cleanly");
+    let arm = parse_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts_with_arch(&[], &[], Some("3.12"), Some("aarch64")),
+    )
+    .expect("explicit aarch64 profile should parse");
+    assert!(arm[0].deps.iter().any(|dep| dep.name == "arm-only"));
+    assert!(!arm[0].deps.iter().any(|dep| dep.name == "x86-only"));
+
+    let x86 = parse_project_inputs_with_options(
+        &dir,
+        &specs,
+        &config,
+        &python_profile_opts_with_arch(&[], &[], Some("3.12"), Some("x86_64")),
+    )
+    .expect("explicit x86_64 profile should parse");
+    assert!(x86[0].deps.iter().any(|dep| dep.name == "x86-only"));
+    assert!(!x86[0].deps.iter().any(|dep| dep.name == "arm-only"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

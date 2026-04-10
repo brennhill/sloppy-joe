@@ -7,6 +7,7 @@ pub mod jvm;
 pub mod package_json;
 pub mod pipfile;
 pub mod pyproject_toml;
+pub mod python_scope;
 pub mod requirements;
 pub mod setup_cfg;
 pub mod setup_py;
