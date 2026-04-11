@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "fixture-poetry-source-mismatch"
+version = "0.1.0"
+description = "Fixture"
+authors = ["Fixture <fixture@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = { version = "==2.6.0", source = "pytorch" }
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "mirror"
+url = "https://packages.example.com/simple"
+priority = "explicit"

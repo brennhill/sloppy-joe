@@ -1,0 +1,14 @@
+[[package]]
+name = "requests"
+version = "2.31.0"
+description = "Fixture requests package"
+optional = false
+python-versions = ">=3.11"
+files = [
+    { file = "requests-2.31.0-py3-none-any.whl", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "47cfddf8f85e51c29c8a1a78fda682c6caf9b059dc692601f48e8ae047096efd"

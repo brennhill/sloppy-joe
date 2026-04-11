@@ -1,0 +1,1 @@
+{"id":"python-uv-source-pass","ecosystem":"python","expected":"pass","reason":"Trusted uv project uses an allowlisted non-PyPI source with matching manifest intent and lockfile provenance."}

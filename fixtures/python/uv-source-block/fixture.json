@@ -1,0 +1,1 @@
+{"id":"python-uv-source-block","ecosystem":"python","expected":"fail","reason":"uv project resolves from a non-PyPI source that is not allowlisted."}

@@ -1,0 +1,1 @@
+{"id":"python-pip-tools-explicit-source-pass","ecosystem":"python","expected":"pass","reason":"Hash-locked pip-tools requirements become exact when the file itself binds the primary index and only trusted indexes are used."}

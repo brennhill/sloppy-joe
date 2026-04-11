@@ -40,6 +40,10 @@ sloppy-joe check --dir ./my-project
 # Check only npm dependencies
 sloppy-joe check --type npm
 
+# Check the Python runtime plus selected groups/extras
+sloppy-joe check --python-groups dev,test --python-version 3.12
+sloppy-joe check --python-extras docs --python-platform linux --python-version 3.12
+
 # Enforce canonical rules and org standards via config
 sloppy-joe check --config /etc/sloppy-joe/config.json
 
@@ -78,6 +82,7 @@ nix profile install github:brennhill/sloppy-joe
 - `sloppy-joe check` runs the fast local guardrail. It always enforces manifest parsing, lockfile/sync, provenance, and unsupported-source policy. If dependency or policy state changed, or the last successful full scan is older than 24 hours, it recommends `sloppy-joe check --full`.
 - `sloppy-joe check --full` runs the strict online scan and refreshes the recorded successful full-scan state.
 - `sloppy-joe check --ci` runs the same strict coverage as `--full`, with CI-oriented intent.
+- For Python, `sloppy-joe check` evaluates the `runtime` profile by default. If scoped dependencies exist, it warns and tells you to pass explicit `--python-groups`, `--python-extras`, `--python-platform`, and/or `--python-version` flags for CI/build parity.
 - Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
 **Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking issues found, `2` = runtime error.
@@ -101,7 +106,7 @@ nix profile install github:brennhill/sloppy-joe
 | JavaScript / pnpm | `package.json` | `pnpm-lock.yaml` |
 | JavaScript / Yarn | `package.json` | `yarn.lock` |
 | JavaScript / Bun | `package.json` | `bun.lock` |
-| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`; legacy manifests allowed with warnings by default |
+| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`, trusted uv path uses `uv.lock`, and fully hash-locked pip-tools is trusted only when the committed requirements graph binds `--index-url` and any `--extra-index-url` values exactly; repo-visible Python indexes can be allowlisted via `trusted_indexes.pypi`; trusted Python modes evaluate one selected install profile at a time (`runtime` by default, explicit groups/extras/platform/arch/version via CLI); legacy manifests allowed with warnings by default |
 | Rust | `Cargo.toml` | `Cargo.lock` |
 | Go | `go.mod` | `go.sum` required for external deps |
 | Ruby | `Gemfile` | `Gemfile.lock` |
@@ -375,7 +380,7 @@ ERROR requsets [metadata/low-downloads]
 | Ecosystem | Manifest | Lockfile Policy | Existence | Metadata | Age Gate |
 |-----------|----------|-----------------|:---------:|:--------:|:--------:|
 | npm | package.json | `package-lock.json` or `npm-shrinkwrap.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`, uv is trusted with `uv.lock`, fully hash-locked pip-tools is trusted only when the committed requirements graph binds `--index-url` and exact allowlisted `--extra-index-url` values, and repo-visible Poetry/uv custom indexes can be trusted only by exact `trusted_indexes.pypi` allowlist; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Cargo | Cargo.toml | `Cargo.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Go | go.mod | `go.sum` required for external deps; not required for stdlib-only or all-local `replace` | :white_check_mark: | :x: | :x: |
 | Ruby | Gemfile | `Gemfile.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
@@ -474,7 +479,7 @@ Use `sloppy-joe check --review-exceptions` when you need to review maintainer-ch
 
 **`allow_legacy_npm_v1_lockfile`** — allow `lockfileVersion: 1` npm lockfiles from npm v5/v6 in reduced-confidence mode. Default: `false`. Keep this off unless you are intentionally stuck on legacy npm and accept loud warnings plus reduced trusted npm transitive coverage.
 
-**`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects and warns on every run for legacy manifests like `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry `pyproject.toml`. `poetry_only` blocks those legacy manifests and requires Poetry.
+**`python_enforcement`** — controls Python trust policy. `prefer_poetry` (default) trusts Poetry projects and uv projects, trusts fully hash-locked pip-tools requirements only when the committed requirements graph binds `--index-url` and any non-PyPI `--extra-index-url` values exactly, and otherwise downgrades pip-tools to reduced-confidence. Legacy manifests like unhashed `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py`, and non-Poetry/non-uv `pyproject.toml` warn every run. `poetry_only` blocks those non-Poetry Python workflows and requires Poetry.
 
 ### Config Security
 
@@ -495,7 +500,7 @@ Bootstrap config:
 sloppy-joe init --greenfield --ecosystem npm
 sloppy-joe init --from-current
 sloppy-joe init --from-current --register
-sloppy-joe init > /secure/location/config.json
+sloppy-joe init --register
 ```
 
 ## CI Integration
@@ -514,7 +519,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: brennhill/sloppy-joe@v0.9.1
+      - uses: brennhill/sloppy-joe@v1
         with:
           config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 ```
@@ -626,7 +631,7 @@ sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
 **Similarity cache.** Mutation existence results are cached for 7 days. After the first scan, most queries are served from cache with zero network calls. Only new dependencies trigger registry queries.
 
-**Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges.
+**Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `uv.lock` for uv projects, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges. Fully hash-locked `requirements*.txt` can also provide exact pinned versions, and they become fully trusted when the committed requirements graph binds its own `--index-url` and exact allowlisted `--extra-index-url` values.
 
 ## Tests
 

@@ -14,6 +14,7 @@ mod version;
 use anyhow::Result;
 use checks::Check;
 use checks::malicious::OsvClient;
+use parsers::python_scope::PythonRootExtras;
 use registry::Registry;
 use report::{Issue, ScanReport, Severity};
 
@@ -69,6 +70,11 @@ pub async fn warm_cache(
         disable_osv_disk_cache: false,
         skip_hash_check: true,
         review_exceptions: false,
+        python_groups: Vec::new(),
+        python_extras: Vec::new(),
+        python_platform: None,
+        python_arch: None,
+        python_version: None,
     };
     scan_with_config(project_dir, project_type, config, &opts).await
 }
@@ -91,6 +97,11 @@ pub async fn scan_with_source_full(
         disable_osv_disk_cache: false,
         skip_hash_check: false,
         review_exceptions: false,
+        python_groups: Vec::new(),
+        python_extras: Vec::new(),
+        python_platform: None,
+        python_arch: None,
+        python_version: None,
     };
     scan_with_source_full_options(project_dir, project_type, config_source, &opts).await
 }
@@ -121,7 +132,9 @@ pub async fn scan(
 pub(crate) enum ProjectInputKind {
     Npm,
     PyProjectPoetry,
+    PyProjectUv,
     PyRequirements,
+    PyRequirementsTrusted,
     PyProjectLegacy,
     PyPipfile,
     PySetupPy,
@@ -147,6 +160,14 @@ struct ProjectInputSpec {
 struct ParsedProject {
     spec: ProjectInputSpec,
     deps: Vec<Dependency>,
+    python_root_extras: PythonRootExtras,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParsedInput {
+    deps: Vec<Dependency>,
+    warnings: Vec<Issue>,
+    python_root_extras: PythonRootExtras,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -196,18 +217,9 @@ impl ProjectInputKind {
         matches!(
             self,
             Self::PyProjectPoetry
+                | Self::PyProjectUv
                 | Self::PyRequirements
-                | Self::PyProjectLegacy
-                | Self::PyPipfile
-                | Self::PySetupPy
-                | Self::PySetupCfg
-        )
-    }
-
-    fn is_legacy_python(self) -> bool {
-        matches!(
-            self,
-            Self::PyRequirements
+                | Self::PyRequirementsTrusted
                 | Self::PyProjectLegacy
                 | Self::PyPipfile
                 | Self::PySetupPy
@@ -218,8 +230,8 @@ impl ProjectInputKind {
     fn manifest_label(self) -> &'static str {
         match self {
             Self::Npm => "package.json",
-            Self::PyProjectPoetry | Self::PyProjectLegacy => "pyproject.toml",
-            Self::PyRequirements => "requirements*.txt",
+            Self::PyProjectPoetry | Self::PyProjectUv | Self::PyProjectLegacy => "pyproject.toml",
+            Self::PyRequirements | Self::PyRequirementsTrusted => "requirements*.txt",
             Self::PyPipfile => "Pipfile",
             Self::PySetupPy => "setup.py",
             Self::PySetupCfg => "setup.cfg",
@@ -253,7 +265,9 @@ impl ProjectInputKind {
             Self::PyProjectPoetry => {
                 Some("Run `poetry lock` and commit poetry.lock alongside pyproject.toml.")
             }
+            Self::PyProjectUv => Some("Run `uv lock` and commit uv.lock alongside pyproject.toml."),
             Self::PyRequirements
+            | Self::PyRequirementsTrusted
             | Self::PyProjectLegacy
             | Self::PyPipfile
             | Self::PySetupPy
@@ -273,10 +287,20 @@ fn preflight_scan_inputs(
     preflight_project_inputs(project_dir, &specs, &config)
 }
 
+#[cfg(test)]
 fn preflight_project_inputs(
     scan_root: &std::path::Path,
     specs: &[ProjectInputSpec],
     config: &config::SloppyJoeConfig,
+) -> Result<Vec<Issue>> {
+    preflight_project_inputs_with_options(scan_root, specs, config, &ScanOptions::default())
+}
+
+fn preflight_project_inputs_with_options(
+    scan_root: &std::path::Path,
+    specs: &[ProjectInputSpec],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
 ) -> Result<Vec<Issue>> {
     let canonical_root = std::fs::canonicalize(scan_root).map_err(|err| {
         anyhow::anyhow!(
@@ -292,13 +316,22 @@ fn preflight_project_inputs(
 
     for spec in specs {
         let npm_manifest = npm_manifests.get(&spec.manifest_path);
-        match spec.kind {
+        let parsed_input = match spec.kind {
             ProjectInputKind::Npm => {
                 let manifest =
                     npm_manifest.expect("npm manifests should be parsed during preflight");
-                parsers::package_json::parse_manifest_value(&spec.manifest_path, manifest)
+                parsers::package_json::parse_manifest_value(&spec.manifest_path, manifest).map(
+                    |deps| ParsedInput {
+                        deps,
+                        ..ParsedInput::default()
+                    },
+                )
             }
-            _ => parse_project_input_with_config(scan_root, spec, config),
+            _ => {
+                let parsed = parse_project_input_with_config(scan_root, spec, config, opts)?;
+                warnings.extend(parsed.warnings.clone());
+                Ok(parsed)
+            }
         }
         .map_err(|err| {
             anyhow::anyhow!(
@@ -308,12 +341,55 @@ fn preflight_project_inputs(
             )
         })?;
 
+        let deps = parsed_input.deps;
+
         match spec.kind {
             ProjectInputKind::Npm => ensure_authoritative_js_lockfile_readable(spec)?,
-            ProjectInputKind::PyProjectPoetry => ensure_lockfile_readable(
-                &spec.project_dir().join("poetry.lock"),
-                spec.kind.missing_lockfile_help().unwrap(),
-            )?,
+            ProjectInputKind::PyProjectPoetry => {
+                ensure_lockfile_readable(
+                    &spec.project_dir().join("poetry.lock"),
+                    spec.kind.missing_lockfile_help().unwrap(),
+                )?;
+                let validated = read_validated_poetry_lockfile(
+                    spec,
+                    &deps,
+                    &parsed_input.python_root_extras,
+                    config,
+                    opts,
+                )?;
+                warnings.extend(validated.warnings);
+            }
+            ProjectInputKind::PyProjectUv => {
+                if config.python_enforcement == config::PythonEnforcement::PoetryOnly {
+                    anyhow::bail!(
+                        "Python manifest '{}' uses the uv workflow, which is not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                        spec.manifest_path.display()
+                    );
+                }
+                ensure_lockfile_readable(
+                    &spec.project_dir().join("uv.lock"),
+                    spec.kind.missing_lockfile_help().unwrap(),
+                )?;
+                let (_, source_warnings) = read_validated_uv_lockfile(
+                    spec,
+                    &deps,
+                    &parsed_input.python_root_extras,
+                    config,
+                    opts,
+                )?;
+                warnings.extend(source_warnings);
+            }
+            ProjectInputKind::PyRequirementsTrusted => {
+                if config.python_enforcement == config::PythonEnforcement::PoetryOnly {
+                    anyhow::bail!(
+                        "Python manifest '{}' uses hash-locked pip-tools requirements, which are not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                        spec.manifest_path.display()
+                    );
+                }
+                if !validate_hash_locked_requirements_provenance(scan_root, spec, config)? {
+                    warnings.push(hash_locked_requirements_reduced_confidence_warning(spec));
+                }
+            }
             ProjectInputKind::PyRequirements
             | ProjectInputKind::PyProjectLegacy
             | ProjectInputKind::PyPipfile
@@ -386,8 +462,11 @@ fn preflight_project_inputs(
             warnings.extend(validate_cargo_source_policy(scan_root, spec, config)?);
         }
 
-        if spec.kind == ProjectInputKind::PyProjectPoetry {
-            warnings.extend(poetry_preference_warnings(spec)?);
+        if matches!(
+            spec.kind,
+            ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
+        ) {
+            warnings.extend(trusted_python_preference_warnings(spec)?);
         }
 
         if spec.kind == ProjectInputKind::Npm {
@@ -450,7 +529,7 @@ fn preflight_project_inputs(
                 }
             }
         } else {
-            validate_lockfile_syntax(scan_root, spec, npm_manifest, config)?;
+            validate_lockfile_syntax(scan_root, spec, npm_manifest, config, opts)?;
         }
     }
 
@@ -464,15 +543,59 @@ fn python_legacy_warning(spec: &ProjectInputSpec) -> Issue {
         Severity::Warning,
     )
     .message(format!(
-        "Python manifest '{}' uses the legacy {} workflow. sloppy-joe will scan it, but Poetry with pyproject.toml + poetry.lock is the trusted Python path and provides stronger lockfile-backed assurance.",
+        "Python manifest '{}' uses the legacy {} workflow. sloppy-joe will scan it, but Poetry with poetry.lock and uv with uv.lock provide the strongest trusted Python lock guarantees.",
         spec.manifest_path.display(),
         spec.kind.manifest_label()
     ))
-    .fix("Migrate this project to Poetry and commit poetry.lock. Legacy Python manifests remain allowed, but every run will warn until the project moves to the trusted Poetry workflow.")
+    .fix("Migrate this project to Poetry or uv and commit the authoritative lockfile. Legacy Python manifests remain allowed, but every run will warn until the project moves to a fully trusted Python workflow.")
 }
 
-fn poetry_preference_warnings(spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+fn hash_locked_requirements_reduced_confidence_warning(spec: &ProjectInputSpec) -> Issue {
+    Issue::new(
+        spec.manifest_path.display().to_string(),
+        checks::names::RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS,
+        Severity::Warning,
+    )
+    .message(format!(
+        "Hash-locked pip-tools requirements in '{}' provide exact pins and hashes, but sloppy-joe cannot prove the package index provenance exactly because pip source selection can also come from pip config, environment variables, and unsupported flags outside the file.",
+        spec.manifest_path.display()
+    ))
+    .fix(
+        "Prefer Poetry or uv for fully trusted Python lock enforcement. If you stay on pip-tools, keep the file fully hash-locked and review index configuration separately.",
+    )
+}
+
+fn validate_hash_locked_requirements_provenance(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<bool> {
+    let provenance = parsers::requirements::source_provenance(&spec.manifest_path, scan_root)?;
+    for index in provenance.all_indexes() {
+        if !config.is_trusted_index("pypi", index) {
+            anyhow::bail!(
+                "Broken manifest '{}': requirements file declares untrusted Python index '{}'",
+                spec.manifest_path.display(),
+                index
+            );
+        }
+    }
+    Ok(provenance.primary_index.is_some())
+}
+
+fn trusted_python_preference_warnings(spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
     let mut warnings = Vec::new();
+    let (tool_name, fix) = match spec.kind {
+        ProjectInputKind::PyProjectPoetry => (
+            "Poetry",
+            "Remove or stop relying on the legacy Python manifest, and keep pyproject.toml + poetry.lock as the single trusted dependency source for this project.",
+        ),
+        ProjectInputKind::PyProjectUv => (
+            "uv",
+            "Remove or stop relying on the legacy Python manifest, and keep pyproject.toml + uv.lock as the single trusted dependency source for this project.",
+        ),
+        _ => return Ok(warnings),
+    };
     for candidate in legacy_python_manifest_paths(spec.project_dir())? {
         warnings.push(
             Issue::new(
@@ -481,16 +604,119 @@ fn poetry_preference_warnings(spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
                 Severity::Warning,
             )
             .message(format!(
-                "Ignoring legacy Python manifest '{}' because '{}' is a Poetry project. sloppy-joe prefers Poetry as the trusted source of truth for this directory.",
+                "Ignoring legacy Python manifest '{}' because '{}' is a {} project. sloppy-joe prefers the trusted {} workflow as the source of truth for this directory.",
                 candidate.display(),
-                spec.manifest_path.display()
+                spec.manifest_path.display(),
+                tool_name,
+                tool_name
             ))
-            .fix(
-                "Remove or stop relying on the legacy Python manifest, and keep pyproject.toml + poetry.lock as the single trusted dependency source for this project.",
-            ),
+            .fix(fix),
         );
     }
     Ok(warnings)
+}
+
+fn active_python_profile(opts: &ScanOptions<'_>) -> parsers::python_scope::PythonProfile {
+    let mut profile = parsers::python_scope::PythonProfile::runtime_for_current_host();
+    if let Some(platform) = &opts.python_platform {
+        profile.target_platform = platform.clone();
+        profile.explicit_selection = true;
+    }
+    if let Some(arch) = &opts.python_arch {
+        profile.target_arch = arch.clone();
+        profile.explicit_selection = true;
+    }
+    if let Some(version) = &opts.python_version {
+        profile.python_version = Some(version.clone());
+        profile.python_full_version = Some(parsers::python_scope::normalize_python_full_version(
+            version,
+        ));
+        profile.explicit_selection = true;
+    }
+    for group in &opts.python_groups {
+        profile.selected_groups.insert(group.clone());
+        profile.explicit_selection = true;
+    }
+    for extra in &opts.python_extras {
+        profile.selected_extras.insert(extra.clone());
+        profile.explicit_selection = true;
+    }
+    profile
+}
+
+fn active_python_lockfile_profile(
+    opts: &ScanOptions<'_>,
+    root_extras: &PythonRootExtras,
+) -> lockfiles::PythonLockfileProfile {
+    lockfiles::PythonLockfileProfile {
+        environment: active_python_profile(opts),
+        root_extras: root_extras.clone(),
+    }
+}
+
+fn implicit_runtime_profile_warning(spec: &ProjectInputSpec) -> Issue {
+    Issue::new(
+        spec.manifest_path.display().to_string(),
+        checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE,
+        Severity::Warning,
+    )
+    .message(format!(
+        "Python scoped dependencies were detected in '{}', but no explicit Python profile was provided. sloppy-joe evaluated only the runtime profile for this run.",
+        spec.manifest_path.display()
+    ))
+    .fix(
+        "For CI or build gating, pass the actual Python profile with `--python-groups`, `--python-extras`, `--python-platform`, `--python-arch`, or `--python-version` so sloppy-joe checks the same dependency shape your install uses.",
+    )
+}
+
+fn unused_python_source_warnings(
+    manifest_path: &std::path::Path,
+    declared_sources: &[parsers::pyproject_toml::PythonSourceDecl],
+    used_source_urls: &std::collections::HashSet<String>,
+    used_source_names: &std::collections::HashSet<String>,
+) -> Vec<Issue> {
+    let mut declared_per_url = std::collections::HashMap::new();
+    for source in declared_sources {
+        *declared_per_url
+            .entry(source.normalized_url.clone())
+            .or_insert(0usize) += 1;
+    }
+
+    declared_sources
+        .iter()
+        .filter(|source| {
+            if source.normalized_url == config::normalized_default_pypi_index() {
+                return false;
+            }
+            if used_source_names.contains(&source.name.to_lowercase()) {
+                return false;
+            }
+            let duplicate_url_aliases = declared_per_url
+                .get(&source.normalized_url)
+                .copied()
+                .unwrap_or_default()
+                > 1;
+            !used_source_urls.contains(&source.normalized_url) || duplicate_url_aliases
+        })
+        .map(|source| {
+            Issue::new(
+                manifest_path.display().to_string(),
+                checks::names::RESOLUTION_UNUSED_DECLARED_SOURCE,
+                Severity::Warning,
+            )
+            .message(format!(
+                "Python source '{}' ({}) is declared in '{}' but no locked package currently uses it. Unused custom sources make provenance policy harder to review and maintain.",
+                report::sanitize_for_terminal(&source.name),
+                source.normalized_url,
+                manifest_path.display()
+            ))
+            .fix(format!(
+                "Remove the unused source '{}' from '{}' if it is no longer needed. Keeping only actively used sources improves clarity and maintenance.",
+                report::sanitize_for_terminal(&source.name),
+                manifest_path.display()
+            ))
+        })
+        .collect()
 }
 
 fn read_npm_manifest_value(path: &std::path::Path) -> Result<serde_json::Value> {
@@ -619,6 +845,198 @@ fn read_validated_yarn_lockfile(
     )?;
     crate::lockfiles::yarn::validate_provenance(&lockfile)?;
     Ok(lockfile)
+}
+
+struct ValidatedPoetryLockfile {
+    warnings: Vec<Issue>,
+    fully_trusted: bool,
+}
+
+fn read_validated_poetry_lockfile(
+    spec: &ProjectInputSpec,
+    deps: &[Dependency],
+    root_extras: &PythonRootExtras,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Result<ValidatedPoetryLockfile> {
+    let path =
+        selected_lockfile_path(spec).unwrap_or_else(|| spec.project_dir().join("poetry.lock"));
+    let content =
+        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is unreadable: {}",
+                path.display(),
+                err
+            )
+        })?;
+    let lockfile: toml::Value = toml::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    let manifest_content =
+        parsers::read_file_limited(&spec.manifest_path, parsers::MAX_MANIFEST_BYTES).map_err(
+            |err| {
+                anyhow::anyhow!(
+                    "Required manifest '{}' is unreadable: {}",
+                    spec.manifest_path.display(),
+                    err
+                )
+            },
+        )?;
+    let pyproject: toml::Value = toml::from_str(&manifest_content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken manifest '{}': {}",
+            spec.manifest_path.display(),
+            err
+        )
+    })?;
+    let declared_sources = parsers::pyproject_toml::parse_poetry_sources(&spec.manifest_path)?;
+    let profile = active_python_profile(opts);
+    let source_intents =
+        parsers::pyproject_toml::parse_poetry_source_intents_scoped(&spec.manifest_path)?
+            .into_iter()
+            .map(|intent| Ok(intent.is_in_scope(&profile)?.then_some(intent.intent)))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+    let lock_profile = active_python_lockfile_profile(opts, root_extras);
+    let reachable_packages = crate::lockfiles::python::reachable_package_identities(
+        &lockfile,
+        deps,
+        Some(&lock_profile),
+    )?;
+    let validation = crate::lockfiles::python::validate_trusted_poetry_lockfile(
+        &lockfile,
+        &content,
+        &pyproject,
+        deps,
+        &path,
+        &reachable_packages,
+        config.poetry_lock_policy,
+    )?;
+    let mut warnings = validation.warnings;
+    let authorized_sources =
+        crate::lockfiles::python::authorized_source_urls_for_reachable_packages(
+            &lockfile,
+            deps,
+            &source_intents,
+            Some(&lock_profile),
+            &path,
+        )?;
+    let (used_source_urls, used_source_names) = crate::lockfiles::python::validate_source_policy(
+        &lockfile,
+        &declared_sources,
+        &source_intents,
+        config,
+        &path,
+        Some(&reachable_packages),
+        Some(&authorized_sources),
+    )?;
+    warnings.extend(unused_python_source_warnings(
+        &spec.manifest_path,
+        &declared_sources,
+        &used_source_urls,
+        &used_source_names,
+    ));
+    Ok(ValidatedPoetryLockfile {
+        warnings,
+        fully_trusted: validation.fully_trusted,
+    })
+}
+
+fn read_validated_uv_lockfile(
+    spec: &ProjectInputSpec,
+    deps: &[Dependency],
+    root_extras: &PythonRootExtras,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Result<(toml::Value, Vec<Issue>)> {
+    let path = selected_lockfile_path(spec).unwrap_or_else(|| spec.project_dir().join("uv.lock"));
+    let content =
+        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is unreadable: {}",
+                path.display(),
+                err
+            )
+        })?;
+    let lockfile: toml::Value = toml::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    crate::lockfiles::uv::validate_schema(&lockfile, &path)?;
+    let lock_profile = active_python_lockfile_profile(opts, root_extras);
+    crate::lockfiles::uv::validate_manifest_consistency(
+        &lockfile,
+        deps,
+        &path,
+        Some(&lock_profile),
+    )?;
+    crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
+    let declared_sources = parsers::pyproject_toml::parse_uv_sources(&spec.manifest_path)?;
+    let profile = active_python_profile(opts);
+    let source_intents =
+        parsers::pyproject_toml::parse_uv_source_intents_scoped(&spec.manifest_path)?
+            .into_iter()
+            .map(|intent| Ok(intent.is_in_scope(&profile)?.then_some(intent.intent)))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+    let reachable_packages =
+        crate::lockfiles::uv::reachable_package_identities(&lockfile, deps, Some(&lock_profile))?;
+    let authorized_sources = crate::lockfiles::uv::authorized_source_urls_for_reachable_packages(
+        &lockfile,
+        deps,
+        &source_intents,
+        Some(&lock_profile),
+        &path,
+    )?;
+    let (used_source_urls, used_source_names) = crate::lockfiles::uv::validate_source_policy(
+        &lockfile,
+        &declared_sources,
+        &source_intents,
+        config,
+        &path,
+        Some(&reachable_packages),
+        Some(&authorized_sources),
+    )?;
+    let warnings = unused_python_source_warnings(
+        &spec.manifest_path,
+        &declared_sources,
+        &used_source_urls,
+        &used_source_names,
+    );
+    Ok((lockfile, warnings))
+}
+
+fn lockfile_data_for_scan(
+    project: &ParsedProject,
+    deps: &[Dependency],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Result<lockfiles::LockfileData> {
+    if project.spec.kind == ProjectInputKind::PyProjectPoetry {
+        let validated = read_validated_poetry_lockfile(
+            &project.spec,
+            deps,
+            &project.python_root_extras,
+            config,
+            opts,
+        )?;
+        if !validated.fully_trusted {
+            return Ok(lockfiles::LockfileData::reduced_confidence_from_manifest(
+                deps,
+            ));
+        }
+    }
+
+    let python_profile = (project.deps[0].ecosystem == Ecosystem::PyPI)
+        .then(|| active_python_lockfile_profile(opts, &project.python_root_extras));
+    lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+        project.spec.project_dir(),
+        Some(project.spec.kind),
+        deps,
+        project.spec.lockfile_path_override.as_deref(),
+        python_profile.as_ref(),
+    )
 }
 
 fn validate_supported_js_manager(spec: &ProjectInputSpec) -> Result<()> {
@@ -3175,6 +3593,7 @@ fn validate_lockfile_syntax(
     spec: &ProjectInputSpec,
     npm_manifest: Option<&serde_json::Value>,
     config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
 ) -> Result<()> {
     let project_dir = spec.project_dir();
 
@@ -3250,16 +3669,26 @@ fn validate_lockfile_syntax(
             })?;
         }
         ProjectInputKind::PyProjectPoetry => {
-            let path = project_dir.join("poetry.lock");
-            let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-            toml::from_str::<toml::Value>(&content).map_err(|err| {
-                anyhow::anyhow!(
-                    "Broken lockfile '{}': failed to parse TOML: {}",
-                    path.display(),
-                    err
-                )
-            })?;
+            let parsed = parse_project_input_with_config(scan_root, spec, config, opts)?;
+            let _ = read_validated_poetry_lockfile(
+                spec,
+                &parsed.deps,
+                &parsed.python_root_extras,
+                config,
+                opts,
+            )?;
         }
+        ProjectInputKind::PyProjectUv => {
+            let parsed = parse_project_input_with_config(scan_root, spec, config, opts)?;
+            let _ = read_validated_uv_lockfile(
+                spec,
+                &parsed.deps,
+                &parsed.python_root_extras,
+                config,
+                opts,
+            )?;
+        }
+        ProjectInputKind::PyRequirementsTrusted => {}
         ProjectInputKind::PyRequirements
         | ProjectInputKind::PyProjectLegacy
         | ProjectInputKind::PyPipfile
@@ -3855,7 +4284,7 @@ fn first_existing_lockfile(
 fn legacy_python_manifest_paths(project_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     let mut manifests = Vec::new();
 
-    if let Some(path) = first_legacy_requirements_file(project_dir)? {
+    for path in legacy_requirements_files(project_dir)? {
         manifests.push(path);
     }
     for manifest in ["Pipfile", "setup.cfg", "setup.py"] {
@@ -3878,9 +4307,7 @@ fn legacy_python_manifest_paths(project_dir: &std::path::Path) -> Result<Vec<std
     Ok(manifests)
 }
 
-fn first_legacy_requirements_file(
-    project_dir: &std::path::Path,
-) -> Result<Option<std::path::PathBuf>> {
+fn legacy_requirements_files(project_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     let mut candidates = std::fs::read_dir(project_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?
         .filter_map(|entry| entry.ok())
@@ -3895,7 +4322,7 @@ fn first_legacy_requirements_file(
         })
         .collect::<Vec<_>>();
     candidates.sort();
-    Ok(candidates.into_iter().next())
+    Ok(candidates)
 }
 
 fn ensure_lockfile_readable(path: &std::path::Path, help: &str) -> Result<()> {
@@ -4585,8 +5012,10 @@ fn detected_project_inputs_with_config(
         None => true,
     });
     expand_cargo_project_inputs(project_dir, &mut specs, config)?;
+    promote_trusted_pip_tools_specs(project_dir, &mut specs)?;
     prune_included_requirement_specs(project_dir, &mut specs)?;
-    prefer_poetry_project_inputs(&mut specs);
+    reject_ambiguous_python_project_inputs(&specs)?;
+    prefer_trusted_python_project_inputs(&mut specs);
     bind_js_project_inputs(project_dir, &mut specs)?;
 
     if specs.is_empty() {
@@ -4807,9 +5236,7 @@ fn walk_project_tree(
                     visited,
                     specs,
                     inside_installed_node_modules
-                        || (path.file_name().and_then(|name| name.to_str())
-                            == Some("node_modules")
-                            && directory_has_detected_manifest(current_dir, "package.json")),
+                        || resolved_path_inside_installed_node_modules(root, &target),
                 )?;
                 continue;
             }
@@ -4825,6 +5252,28 @@ fn walk_project_tree(
 
 fn directory_has_detected_manifest(dir: &std::path::Path, manifest_name: &str) -> bool {
     parsers::path_detected(&dir.join(manifest_name)).unwrap_or(false)
+}
+
+fn resolved_path_inside_installed_node_modules(
+    root: &std::path::Path,
+    target: &std::path::Path,
+) -> bool {
+    let Ok(relative) = target.strip_prefix(root) else {
+        return false;
+    };
+
+    let mut current = root.to_path_buf();
+    let mut inside = false;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            continue;
+        };
+        if name == "node_modules" {
+            inside = inside || directory_has_detected_manifest(&current, "package.json");
+        }
+        current.push(name);
+    }
+    inside
 }
 
 fn project_input_from_path(
@@ -4857,6 +5306,7 @@ fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<Project
         Some("package.json") => Some(ProjectInputKind::Npm),
         Some("pyproject.toml") => Some(match parsers::pyproject_toml::classify_manifest(path)? {
             parsers::pyproject_toml::PyprojectKind::Poetry => ProjectInputKind::PyProjectPoetry,
+            parsers::pyproject_toml::PyprojectKind::Uv => ProjectInputKind::PyProjectUv,
             parsers::pyproject_toml::PyprojectKind::Legacy => ProjectInputKind::PyProjectLegacy,
         }),
         Some("Pipfile") => Some(ProjectInputKind::PyPipfile),
@@ -4877,24 +5327,98 @@ fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<Project
     })
 }
 
-fn prefer_poetry_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
-    let poetry_dirs: std::collections::HashSet<std::path::PathBuf> = specs
+fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
+    let trusted_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
         .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyProjectPoetry)
+        .filter(|spec| {
+            matches!(
+                spec.kind,
+                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
+            )
+        })
+        .map(|spec| spec.project_dir().to_path_buf())
+        .collect();
+    let legacy_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::PyProjectLegacy)
+        .map(|spec| spec.project_dir().to_path_buf())
+        .collect();
+    let trusted_requirements_dirs: std::collections::HashSet<std::path::PathBuf> = specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted)
         .map(|spec| spec.project_dir().to_path_buf())
         .collect();
 
     specs.retain(|spec| {
-        spec.kind == ProjectInputKind::PyProjectPoetry
-            || !spec.kind.is_legacy_python()
-            || !poetry_dirs.contains(spec.project_dir())
+        if !spec.kind.is_python() {
+            return true;
+        }
+        if trusted_pyproject_dirs.contains(spec.project_dir()) {
+            return matches!(
+                spec.kind,
+                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
+            );
+        }
+        if trusted_requirements_dirs.contains(spec.project_dir()) {
+            if legacy_pyproject_dirs.contains(spec.project_dir()) {
+                return true;
+            }
+            return spec.kind == ProjectInputKind::PyRequirementsTrusted;
+        }
+        true
     });
+}
+
+fn reject_ambiguous_python_project_inputs(specs: &[ProjectInputSpec]) -> Result<()> {
+    let mut trusted_requirements_dirs = std::collections::HashSet::new();
+    let mut legacy_pyproject_dirs = std::collections::HashSet::new();
+
+    for spec in specs {
+        match spec.kind {
+            ProjectInputKind::PyRequirementsTrusted => {
+                trusted_requirements_dirs.insert(spec.project_dir().to_path_buf());
+            }
+            ProjectInputKind::PyProjectLegacy => {
+                legacy_pyproject_dirs.insert(spec.project_dir().to_path_buf());
+            }
+            _ => {}
+        }
+    }
+
+    let ambiguous_dirs: Vec<_> = trusted_requirements_dirs
+        .intersection(&legacy_pyproject_dirs)
+        .cloned()
+        .collect();
+    if let Some(dir) = ambiguous_dirs.into_iter().min() {
+        anyhow::bail!(
+            "Ambiguous trusted Python roots in '{}': found both a legacy pyproject.toml and a fully hash-locked requirements file. sloppy-joe refuses to guess which manifest is authoritative. Fix: remove the weaker manifest from this directory, or split the trusted requirements into a separate standalone root.",
+            dir.display()
+        );
+    }
+
+    Ok(())
 }
 
 fn has_npm_lockfile(project_dir: &std::path::Path) -> bool {
     ["npm-shrinkwrap.json", "package-lock.json"]
         .iter()
         .any(|name| parsers::path_detected(&project_dir.join(name)).unwrap_or(false))
+}
+
+fn promote_trusted_pip_tools_specs(
+    scan_root: &std::path::Path,
+    specs: &mut [ProjectInputSpec],
+) -> Result<()> {
+    for spec in specs.iter_mut() {
+        if spec.kind != ProjectInputKind::PyRequirements {
+            continue;
+        }
+        if parsers::requirements::is_hash_locked_requirements_file(&spec.manifest_path, scan_root)?
+        {
+            spec.kind = ProjectInputKind::PyRequirementsTrusted;
+        }
+    }
+    Ok(())
 }
 
 fn npm_dependency_entries(manifest: &serde_json::Value) -> Vec<(String, String)> {
@@ -4922,17 +5446,22 @@ fn prune_included_requirement_specs(
 ) -> Result<()> {
     let mut included = std::collections::HashSet::new();
 
-    for spec in specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyRequirements)
-    {
+    for spec in specs.iter().filter(|spec| {
+        matches!(
+            spec.kind,
+            ProjectInputKind::PyRequirements | ProjectInputKind::PyRequirementsTrusted
+        )
+    }) {
         for include in parsers::requirements::included_paths(&spec.manifest_path, scan_root)? {
             included.insert(include);
         }
     }
 
     specs.retain(|spec| {
-        if spec.kind != ProjectInputKind::PyRequirements {
+        if !matches!(
+            spec.kind,
+            ProjectInputKind::PyRequirements | ProjectInputKind::PyRequirementsTrusted
+        ) {
             return true;
         }
         match std::fs::canonicalize(&spec.manifest_path) {
@@ -4944,16 +5473,28 @@ fn prune_included_requirement_specs(
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_project_inputs(
     scan_root: &std::path::Path,
     specs: &[ProjectInputSpec],
     config: &config::SloppyJoeConfig,
 ) -> Result<Vec<ParsedProject>> {
+    parse_project_inputs_with_options(scan_root, specs, config, &ScanOptions::default())
+}
+
+fn parse_project_inputs_with_options(
+    scan_root: &std::path::Path,
+    specs: &[ProjectInputSpec],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Result<Vec<ParsedProject>> {
     let mut projects = Vec::new();
     for spec in specs {
+        let parsed = parse_project_input_with_config(scan_root, spec, config, opts)?;
         projects.push(ParsedProject {
             spec: spec.clone(),
-            deps: parse_project_input_with_config(scan_root, spec, config)?,
+            deps: parsed.deps,
+            python_root_extras: parsed.python_root_extras,
         });
     }
     Ok(projects)
@@ -4963,10 +5504,24 @@ fn parse_project_input_with_config(
     scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
     config: &config::SloppyJoeConfig,
-) -> Result<Vec<Dependency>> {
+    opts: &ScanOptions<'_>,
+) -> Result<ParsedInput> {
     match spec.kind {
-        ProjectInputKind::Cargo => parse_cargo_project_dependencies(scan_root, spec, config),
-        _ => parse_project_input(scan_root, spec),
+        ProjectInputKind::Cargo => Ok(ParsedInput {
+            deps: parse_cargo_project_dependencies(scan_root, spec, config)?,
+            ..ParsedInput::default()
+        }),
+        ProjectInputKind::PyProjectPoetry
+        | ProjectInputKind::PyProjectUv
+        | ProjectInputKind::PyRequirements
+        | ProjectInputKind::PyRequirementsTrusted
+        | ProjectInputKind::PyProjectLegacy => {
+            parse_python_project_dependencies(scan_root, spec, opts)
+        }
+        _ => Ok(ParsedInput {
+            deps: parse_project_input(scan_root, spec)?,
+            ..ParsedInput::default()
+        }),
     }
 }
 
@@ -5008,7 +5563,13 @@ fn parse_project_input(
         ProjectInputKind::PyProjectPoetry => {
             parsers::pyproject_toml::parse_poetry_file(&spec.manifest_path)
         }
+        ProjectInputKind::PyProjectUv => {
+            parsers::pyproject_toml::parse_legacy_file(&spec.manifest_path)
+        }
         ProjectInputKind::PyRequirements => {
+            parsers::requirements::parse_file(&spec.manifest_path, scan_root)
+        }
+        ProjectInputKind::PyRequirementsTrusted => {
             parsers::requirements::parse_file(&spec.manifest_path, scan_root)
         }
         ProjectInputKind::PyProjectLegacy => {
@@ -5026,6 +5587,69 @@ fn parse_project_input(
         }
         ProjectInputKind::Dotnet => parsers::csproj::parse_file(&spec.manifest_path),
     }
+}
+
+fn parse_python_project_dependencies(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    opts: &ScanOptions<'_>,
+) -> Result<ParsedInput> {
+    let scoped = match spec.kind {
+        ProjectInputKind::PyProjectPoetry => {
+            parsers::pyproject_toml::parse_poetry_scoped_file(&spec.manifest_path)?
+        }
+        ProjectInputKind::PyProjectUv | ProjectInputKind::PyProjectLegacy => {
+            parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?
+        }
+        ProjectInputKind::PyRequirements | ProjectInputKind::PyRequirementsTrusted => {
+            parsers::requirements::parse_scoped_file(&spec.manifest_path, scan_root)?
+        }
+        _ => {
+            return Ok(ParsedInput {
+                deps: parse_project_input(scan_root, spec)?,
+                ..ParsedInput::default()
+            });
+        }
+    };
+
+    let profile = active_python_profile(opts);
+    let mut warnings = Vec::new();
+    if scoped
+        .iter()
+        .any(parsers::python_scope::PythonScopedDependency::is_scoped)
+        && !profile.explicit_selection
+    {
+        warnings.push(implicit_runtime_profile_warning(spec));
+    }
+
+    let mut deps = Vec::new();
+    let mut root_extras: PythonRootExtras = PythonRootExtras::new();
+    for dep in &scoped {
+        if dep.is_in_scope(&profile)? {
+            if !dep.requested_extras.is_empty() {
+                root_extras
+                    .entry(parsers::requirements::normalize_distribution_name(
+                        dep.dependency.package_name(),
+                    ))
+                    .or_default()
+                    .extend(dep.requested_extras.iter().cloned());
+            }
+            deps.push(dep.dependency.clone());
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    deps.retain(|dep| {
+        seen.insert((
+            dep.package_name().to_string(),
+            dep.version.clone(),
+            dep.actual_name.clone(),
+        ))
+    });
+    Ok(ParsedInput {
+        deps,
+        warnings,
+        python_root_extras: root_extras,
+    })
 }
 
 fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf> {
@@ -5048,6 +5672,8 @@ fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf>
         ProjectInputKind::Gradle => Some(project_dir.join("gradle.lockfile")),
         ProjectInputKind::Dotnet => Some(spec.manifest_path.with_file_name("packages.lock.json")),
         ProjectInputKind::PyProjectPoetry => Some(project_dir.join("poetry.lock")),
+        ProjectInputKind::PyProjectUv => Some(project_dir.join("uv.lock")),
+        ProjectInputKind::PyRequirementsTrusted => Some(spec.manifest_path.clone()),
         ProjectInputKind::PyRequirements
         | ProjectInputKind::PyProjectLegacy
         | ProjectInputKind::PyPipfile
@@ -5130,8 +5756,13 @@ fn policy_hash_value(
             "deep": opts.deep,
             "paranoid": opts.paranoid,
             "review_exceptions": opts.review_exceptions,
+            "python_groups": opts.python_groups,
+            "python_extras": opts.python_extras,
+            "python_platform": opts.python_platform,
+            "python_arch": opts.python_arch,
+            "python_version": opts.python_version,
         },
-        "hash_contract_version": 2u8,
+        "hash_contract_version": 3u8,
     }))
     .map_err(|err| format!("cannot serialize scan policy for hashing: {err}"))
 }
@@ -5483,9 +6114,10 @@ async fn scan_with_config(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
     let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
-    let mut preflight_warnings = preflight_project_inputs(project_dir, &specs, &config)?;
+    let mut preflight_warnings =
+        preflight_project_inputs_with_options(project_dir, &specs, &config, opts)?;
     preflight_warnings.extend(local_overlay_relaxation_issues(&config));
-    let projects = parse_project_inputs(project_dir, &specs, &config)?;
+    let projects = parse_project_inputs_with_options(project_dir, &specs, &config, opts)?;
 
     if projects.is_empty() {
         parsers::parse_dependencies(project_dir, project_type)?;
@@ -5588,12 +6220,7 @@ async fn scan_parsed_project(
 
     let ecosystem = project.deps[0].ecosystem;
     let (checkable, non_internal, internal) = classify_deps(&project.deps, &config, ecosystem);
-    let mut lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile(
-        project.spec.project_dir(),
-        Some(project.spec.kind),
-        &non_internal,
-        project.spec.lockfile_path_override.as_deref(),
-    )?;
+    let mut lockfile_data = lockfile_data_for_scan(project, &non_internal, &config, opts)?;
 
     let ctx = checks::CheckContext {
         checkable_deps: &checkable,
@@ -5632,14 +6259,9 @@ async fn scan_parsed_project(
     mark_source(&mut acc.issues, "direct");
 
     if !internal.is_empty() {
-        let internal_resolution = lockfiles::LockfileData::parse_for_kind_with_lockfile(
-            project.spec.project_dir(),
-            Some(project.spec.kind),
-            &internal,
-            project.spec.lockfile_path_override.as_deref(),
-        )
-        .map(|ld| ld.resolution)
-        .unwrap_or_default();
+        let internal_resolution = lockfile_data_for_scan(project, &internal, &config, opts)
+            .map(|ld| ld.resolution)
+            .unwrap_or_default();
         let internal_ctx = checks::CheckContext {
             checkable_deps: &[],
             non_internal_deps: &internal,
@@ -5732,13 +6354,36 @@ async fn scan_with_services_inner_for_kind(
     }
 
     let ecosystem = deps[0].ecosystem;
+    if ecosystem == Ecosystem::PyPI
+        && let Some(project_kind) = project_kind
+    {
+        let specs = detected_project_inputs_with_config(project_dir, Some("pypi"), &config)?;
+        let preflight_warnings =
+            preflight_project_inputs_with_options(project_dir, &specs, &config, opts)?;
+        let projects = parse_project_inputs_with_options(project_dir, &specs, &config, opts)?;
+        if let Some(project) = projects.into_iter().find(|project| {
+            std::mem::discriminant(&project.spec.kind) == std::mem::discriminant(&project_kind)
+        }) {
+            let mut report =
+                scan_parsed_project(&project, config, registry, osv_client, opts).await?;
+            report.issues.splice(0..0, preflight_warnings);
+            return Ok(report);
+        }
+    }
+    let python_profile = (ecosystem == Ecosystem::PyPI)
+        .then(|| active_python_lockfile_profile(opts, &PythonRootExtras::new()));
 
     // Classify deps into three tiers
     let (checkable, non_internal, internal) = classify_deps(&deps, &config, ecosystem);
 
     // Parse lockfile once
-    let mut lockfile_data =
-        lockfiles::LockfileData::parse_for_kind(project_dir, project_kind, &non_internal)?;
+    let mut lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+        project_dir,
+        project_kind,
+        &non_internal,
+        None,
+        python_profile.as_ref(),
+    )?;
 
     // Build context + accumulator, run pipeline on direct deps
     let pipeline = checks::pipeline::default_pipeline();
@@ -5762,9 +6407,15 @@ async fn scan_with_services_inner_for_kind(
     // Run OSV on internal packages (they skip all other checks but still need vuln scanning)
     if !internal.is_empty() {
         let internal_resolution =
-            lockfiles::LockfileData::parse_for_kind(project_dir, project_kind, &internal)
-                .map(|ld| ld.resolution)
-                .unwrap_or_default();
+            lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+                project_dir,
+                project_kind,
+                &internal,
+                None,
+                python_profile.as_ref(),
+            )
+            .map(|ld| ld.resolution)
+            .unwrap_or_default();
         let internal_ctx = checks::CheckContext {
             checkable_deps: &[],
             non_internal_deps: &internal,
@@ -5929,6 +6580,16 @@ pub struct ScanOptions<'a> {
     pub skip_hash_check: bool,
     /// Emit structured exception review candidates for supported findings.
     pub review_exceptions: bool,
+    /// Selected Python dependency groups to include.
+    pub python_groups: Vec<String>,
+    /// Selected Python extras to include.
+    pub python_extras: Vec<String>,
+    /// Override the Python target platform for marker evaluation.
+    pub python_platform: Option<String>,
+    /// Override the Python target architecture for marker evaluation.
+    pub python_arch: Option<String>,
+    /// Override the Python target version for marker evaluation.
+    pub python_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

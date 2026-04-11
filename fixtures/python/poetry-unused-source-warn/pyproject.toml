@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "fixture-poetry-unused-source"
+version = "0.1.0"
+description = "Fixture"
+authors = ["Fixture <fixture@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "==2.31.0"
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"

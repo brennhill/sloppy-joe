@@ -1,17 +1,56 @@
 use crate::Dependency;
+use crate::parsers::python_scope::PythonScopedDependency;
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IncludeDirective<'a> {
+    Requirement(&'a str),
+    Constraint(&'a str),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RequirementsSourceProvenance {
+    pub primary_index: Option<String>,
+    pub extra_indexes: BTreeSet<String>,
+}
+
+enum SupportedSourceDirective {
+    PrimaryIndex(String),
+    ExtraIndex(String),
+}
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     parse_file(&project_dir.join("requirements.txt"), project_dir)
 }
 
-pub(crate) fn parse_file(path: &Path, scan_root: &Path) -> Result<Vec<Dependency>> {
+pub(crate) fn is_hash_locked_requirements_file(path: &Path, scan_root: &Path) -> Result<bool> {
     let scan_root = std::fs::canonicalize(scan_root)
         .with_context(|| format!("Failed to inspect scan root {}", scan_root.display()))?;
     let mut visited = HashSet::new();
-    parse_file_inner(path, &scan_root, &mut visited)
+    let mut saw_installable = false;
+    Ok(
+        classify_trust_inner(path, &scan_root, &mut visited, &mut saw_installable)?
+            && saw_installable,
+    )
+}
+
+pub(crate) fn parse_file(path: &Path, scan_root: &Path) -> Result<Vec<Dependency>> {
+    Ok(parse_scoped_file(path, scan_root)?
+        .into_iter()
+        .map(|dep| dep.dependency)
+        .collect())
+}
+
+pub(crate) fn parse_scoped_file(
+    path: &Path,
+    scan_root: &Path,
+) -> Result<Vec<PythonScopedDependency>> {
+    let scan_root = std::fs::canonicalize(scan_root)
+        .with_context(|| format!("Failed to inspect scan root {}", scan_root.display()))?;
+    let mut visited = HashSet::new();
+    parse_scoped_file_inner(path, &scan_root, &mut visited)
 }
 
 pub(crate) fn included_paths(path: &Path, scan_root: &Path) -> Result<Vec<PathBuf>> {
@@ -23,11 +62,21 @@ pub(crate) fn included_paths(path: &Path, scan_root: &Path) -> Result<Vec<PathBu
     Ok(includes.into_iter().collect())
 }
 
-fn parse_file_inner(
+pub(crate) fn source_provenance(
+    path: &Path,
+    scan_root: &Path,
+) -> Result<RequirementsSourceProvenance> {
+    let scan_root = std::fs::canonicalize(scan_root)
+        .with_context(|| format!("Failed to inspect scan root {}", scan_root.display()))?;
+    let mut visited = HashSet::new();
+    collect_source_provenance_inner(path, &scan_root, &mut visited)
+}
+
+fn parse_scoped_file_inner(
     path: &Path,
     scan_root: &Path,
     visited: &mut HashSet<PathBuf>,
-) -> Result<Vec<Dependency>> {
+) -> Result<Vec<PythonScopedDependency>> {
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
@@ -42,18 +91,24 @@ fn parse_file_inner(
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
     let mut deps = Vec::new();
 
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
+    for entry in logical_requirement_lines(&content) {
+        let line = strip_inline_comment(&entry).trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line == "\\" || line.starts_with("--hash=") {
+
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
+            let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
+            if matches!(include, IncludeDirective::Requirement(_)) {
+                deps.extend(parse_scoped_file_inner(&include_path, scan_root, visited)?);
+            }
             continue;
         }
 
-        if let Some(include_target) = requirement_include_target(line) {
-            let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
-            deps.extend(parse_file_inner(&include_path, scan_root, visited)?);
+        if parse_supported_source_directive(line, &normalized_path)?.is_some() {
             continue;
         }
 
@@ -65,13 +120,123 @@ fn parse_file_inner(
             );
         }
 
-        if let Some(dep) = parse_requirement_spec(line, &normalized_path)? {
+        if let Some(dep) = parse_scoped_requirement_spec(line, &normalized_path)? {
             deps.push(dep);
         }
     }
 
     visited.remove(&visited_key);
     Ok(deps)
+}
+
+fn classify_trust_inner(
+    path: &Path,
+    scan_root: &Path,
+    visited: &mut HashSet<PathBuf>,
+    saw_installable: &mut bool,
+) -> Result<bool> {
+    let normalized_path = normalize_path(path);
+    let visited_key =
+        std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
+    if !visited.insert(visited_key.clone()) {
+        bail!(
+            "requirements include cycle detected at {}",
+            normalized_path.display()
+        );
+    }
+
+    let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
+        .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
+    let mut trusted = true;
+
+    for entry in logical_requirement_lines(&content) {
+        let line = strip_inline_comment(&entry).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
+            let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
+            trusted &= classify_trust_inner(&include_path, scan_root, visited, saw_installable)?;
+            continue;
+        }
+
+        if parse_supported_source_directive(line, &normalized_path)?.is_some() {
+            continue;
+        }
+
+        if line.starts_with('-') {
+            trusted = false;
+            continue;
+        }
+
+        *saw_installable = true;
+        let Some(dep) = (match parse_scoped_requirement_spec(line, &normalized_path) {
+            Ok(dep) => dep,
+            Err(_) => {
+                trusted = false;
+                continue;
+            }
+        }) else {
+            continue;
+        };
+        if dep.dependency.exact_version().is_none() || !line.contains("--hash=") {
+            trusted = false;
+        }
+    }
+
+    visited.remove(&visited_key);
+    Ok(trusted)
+}
+
+fn collect_source_provenance_inner(
+    path: &Path,
+    scan_root: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<RequirementsSourceProvenance> {
+    let normalized_path = normalize_path(path);
+    let visited_key =
+        std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
+    if !visited.insert(visited_key.clone()) {
+        bail!(
+            "requirements include cycle detected at {}",
+            normalized_path.display()
+        );
+    }
+
+    let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
+        .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
+    let mut provenance = RequirementsSourceProvenance::default();
+
+    for entry in logical_requirement_lines(&content) {
+        let line = strip_inline_comment(&entry).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
+            let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
+            provenance.merge(collect_source_provenance_inner(
+                &include_path,
+                scan_root,
+                visited,
+            )?)?;
+            continue;
+        }
+
+        if let Some(directive) = parse_supported_source_directive(line, &normalized_path)? {
+            provenance.observe(directive, &normalized_path)?;
+        }
+    }
+
+    visited.remove(&visited_key);
+    Ok(provenance)
 }
 
 fn collect_included_paths(
@@ -93,9 +258,12 @@ fn collect_included_paths(
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
 
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        if let Some(include_target) = requirement_include_target(line) {
+    for entry in logical_requirement_lines(&content) {
+        let line = strip_inline_comment(&entry).trim();
+        if let Some(include) = requirement_include_target(line) {
+            let include_target = match include {
+                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            };
             let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
             let include_key =
                 std::fs::canonicalize(&include_path).unwrap_or_else(|_| include_path.clone());
@@ -108,18 +276,18 @@ fn collect_included_paths(
     Ok(())
 }
 
-fn requirement_include_target(line: &str) -> Option<&str> {
+fn requirement_include_target(line: &str) -> Option<IncludeDirective<'_>> {
     let trimmed = line.trim();
     if let Some(rest) = trimmed.strip_prefix("-r") {
         let rest = rest.trim();
         if !rest.is_empty() {
-            return Some(rest);
+            return Some(IncludeDirective::Requirement(rest));
         }
     }
     if let Some(rest) = trimmed.strip_prefix("--requirement=") {
         let rest = rest.trim();
         if !rest.is_empty() {
-            return Some(rest);
+            return Some(IncludeDirective::Requirement(rest));
         }
         return None;
     }
@@ -129,8 +297,85 @@ fn requirement_include_target(line: &str) -> Option<&str> {
         }
         let rest = rest.trim();
         if !rest.is_empty() {
-            return Some(rest);
+            return Some(IncludeDirective::Requirement(rest));
         }
+    }
+    if let Some(rest) = trimmed.strip_prefix("-c") {
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(IncludeDirective::Constraint(rest));
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("--constraint=") {
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(IncludeDirective::Constraint(rest));
+        }
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("--constraint") {
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            return None;
+        }
+        let rest = rest.trim();
+        if !rest.is_empty() {
+            return Some(IncludeDirective::Constraint(rest));
+        }
+    }
+    None
+}
+
+fn parse_supported_source_directive(
+    line: &str,
+    source_path: &Path,
+) -> Result<Option<SupportedSourceDirective>> {
+    let line = strip_inline_comment(line).trim();
+    let Some((kind, url)) = source_directive_parts(line) else {
+        return Ok(None);
+    };
+    if url.trim().is_empty() {
+        bail!(
+            "Unsupported requirements directive '{}' in {}",
+            crate::report::sanitize_for_terminal(line),
+            source_path.display()
+        );
+    }
+    if !crate::config::python_index_url_has_supported_scheme(url) {
+        bail!(
+            "Unsupported requirements directive '{}' in {}: only http:// and https:// package index URLs are supported",
+            crate::report::sanitize_for_terminal(line),
+            source_path.display()
+        );
+    }
+    let normalized = crate::config::normalize_python_index_url(url);
+    Ok(Some(match kind {
+        "primary" => SupportedSourceDirective::PrimaryIndex(normalized),
+        "extra" => SupportedSourceDirective::ExtraIndex(normalized),
+        _ => unreachable!("source directive kind is validated by source_directive_parts"),
+    }))
+}
+
+fn source_directive_parts(line: &str) -> Option<(&'static str, &str)> {
+    if let Some(url) = line.strip_prefix("--index-url=") {
+        return Some(("primary", url.trim()));
+    }
+    if let Some(rest) = line.strip_prefix("--index-url")
+        && rest.chars().next().is_some_and(char::is_whitespace)
+    {
+        return Some(("primary", rest.trim()));
+    }
+    if let Some(rest) = line.strip_prefix("-i")
+        && rest.chars().next().is_some_and(char::is_whitespace)
+    {
+        return Some(("primary", rest.trim()));
+    }
+    if let Some(url) = line.strip_prefix("--extra-index-url=") {
+        return Some(("extra", url.trim()));
+    }
+    if let Some(rest) = line.strip_prefix("--extra-index-url")
+        && rest.chars().next().is_some_and(char::is_whitespace)
+    {
+        return Some(("extra", rest.trim()));
     }
     None
 }
@@ -187,6 +432,38 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
 
     normalized
+}
+
+fn logical_requirement_lines(content: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut current = String::new();
+
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(trimmed);
+
+        if current.ends_with('\\') {
+            current.pop();
+            current = current.trim_end().to_string();
+            continue;
+        }
+
+        entries.push(current.trim().to_string());
+        current.clear();
+    }
+
+    if !current.trim().is_empty() {
+        entries.push(current.trim().to_string());
+    }
+
+    entries
 }
 
 pub(crate) fn requirement_looks_like_local_path(line: &str) -> bool {
@@ -256,6 +533,36 @@ fn find_unquoted_semicolon(s: &str) -> Option<usize> {
 /// Normalize per PEP 503: lowercase, replace runs of [-_.] with single `-`, strip extras.
 pub(crate) fn normalize_distribution_name(raw: &str) -> String {
     let stripped = raw.trim().split('[').next().unwrap_or("").trim();
+    normalize_distribution_atom(stripped)
+}
+
+pub(crate) fn parse_distribution_name_and_requested_extras(
+    raw: &str,
+) -> (String, std::collections::BTreeSet<String>) {
+    let raw = raw.trim();
+    let Some(open) = raw.find('[') else {
+        return (
+            normalize_distribution_name(raw),
+            std::collections::BTreeSet::new(),
+        );
+    };
+    let Some(close) = raw[open + 1..].find(']').map(|offset| open + 1 + offset) else {
+        return (
+            normalize_distribution_name(raw),
+            std::collections::BTreeSet::new(),
+        );
+    };
+    let name = normalize_distribution_name(&raw[..open]);
+    let extras = raw[open + 1..close]
+        .split(',')
+        .map(normalize_distribution_atom)
+        .filter(|extra| !extra.is_empty())
+        .collect();
+    (name, extras)
+}
+
+fn normalize_distribution_atom(raw: &str) -> String {
+    let stripped = raw.trim();
     let lowered = stripped.to_lowercase();
     // Replace consecutive separator runs with a single dash
     let mut result = String::with_capacity(lowered.len());
@@ -278,14 +585,61 @@ pub(crate) fn normalize_distribution_name(raw: &str) -> String {
     result
 }
 
+impl RequirementsSourceProvenance {
+    fn observe(&mut self, directive: SupportedSourceDirective, source_path: &Path) -> Result<()> {
+        match directive {
+            SupportedSourceDirective::PrimaryIndex(url) => {
+                if let Some(existing) = &self.primary_index
+                    && existing != &url
+                {
+                    bail!(
+                        "Unsupported requirements directive in {}: conflicting --index-url values '{}' and '{}'",
+                        source_path.display(),
+                        existing,
+                        url
+                    );
+                }
+                self.primary_index = Some(url);
+            }
+            SupportedSourceDirective::ExtraIndex(url) => {
+                self.extra_indexes.insert(url);
+            }
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, other: RequirementsSourceProvenance) -> Result<()> {
+        if let Some(url) = other.primary_index {
+            self.observe(
+                SupportedSourceDirective::PrimaryIndex(url),
+                Path::new("requirements include"),
+            )?;
+        }
+        self.extra_indexes.extend(other.extra_indexes);
+        Ok(())
+    }
+
+    pub(crate) fn all_indexes(&self) -> impl Iterator<Item = &String> {
+        self.primary_index.iter().chain(self.extra_indexes.iter())
+    }
+}
+
 pub(crate) fn parse_requirement_spec(raw: &str, source_path: &Path) -> Result<Option<Dependency>> {
-    let line = if let Some(semi_pos) = find_unquoted_semicolon(raw) {
-        raw[..semi_pos].trim()
-    } else {
-        raw
-    };
-    let line = strip_inline_comment(line);
+    Ok(parse_scoped_requirement_spec(raw, source_path)?.map(|dep| dep.dependency))
+}
+
+pub(crate) fn parse_scoped_requirement_spec(
+    raw: &str,
+    source_path: &Path,
+) -> Result<Option<PythonScopedDependency>> {
+    let raw = strip_inline_comment(raw);
+    let (line, marker) = split_requirement_marker(raw);
     let line = strip_trailing_hashes(line);
+    let marker = marker
+        .map(strip_trailing_hashes)
+        .map(str::trim)
+        .filter(|marker| !marker.is_empty())
+        .map(str::to_string);
     let line = line.trim_end_matches('\\').trim();
     if line.is_empty() {
         return Ok(None);
@@ -307,12 +661,15 @@ pub(crate) fn parse_requirement_spec(raw: &str, source_path: &Path) -> Result<Op
         );
     }
 
-    let (name, version) = if let Some(pos) = line.find(['=', '>', '<', '~', '!', '^']) {
-        let name = normalize_distribution_name(&line[..pos]);
+    let (name, requested_extras, version) = if let Some(pos) =
+        line.find(['=', '>', '<', '~', '!', '^'])
+    {
+        let (name, requested_extras) = parse_distribution_name_and_requested_extras(&line[..pos]);
         let version_part = line[pos..].trim();
-        (name, Some(version_part.to_string()))
+        (name, requested_extras, Some(version_part.to_string()))
     } else {
-        (normalize_distribution_name(line), None)
+        let (name, requested_extras) = parse_distribution_name_and_requested_extras(line);
+        (name, requested_extras, None)
     };
 
     if name.is_empty() {
@@ -326,7 +683,21 @@ pub(crate) fn parse_requirement_spec(raw: &str, source_path: &Path) -> Result<Op
         actual_name: None,
     };
     super::validate_dependency(&dep, source_path)?;
-    Ok(Some(dep))
+    let scoped = requested_extras.into_iter().fold(
+        PythonScopedDependency::runtime(dep, marker),
+        |dep, extra| dep.with_requested_extra(&extra),
+    );
+    Ok(Some(scoped))
+}
+
+fn split_requirement_marker(raw: &str) -> (&str, Option<&str>) {
+    if let Some(semi_pos) = find_unquoted_semicolon(raw) {
+        let line = raw[..semi_pos].trim();
+        let marker = raw[semi_pos + 1..].trim();
+        (line, Some(marker))
+    } else {
+        (raw, None)
+    }
 }
 
 #[cfg(test)]
@@ -441,6 +812,29 @@ mod tests {
     }
 
     #[test]
+    fn trusted_pip_tools_preserves_marker() {
+        let dep = parse_scoped_requirement_spec(
+            "pywin32==306 ; sys_platform == \"win32\" --hash=sha256:deadbeef",
+            Path::new("requirements.txt"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(dep.marker.as_deref(), Some(r#"sys_platform == "win32""#));
+    }
+
+    #[test]
+    fn trusted_pip_tools_does_not_treat_marker_bearing_dep_as_universal() {
+        let dep = parse_scoped_requirement_spec(
+            "pywin32==306 ; sys_platform == \"win32\" --hash=sha256:deadbeef",
+            Path::new("requirements.txt"),
+        )
+        .unwrap()
+        .unwrap();
+        let profile = crate::parsers::python_scope::PythonProfile::for_target("linux", "3.12");
+        assert!(!dep.is_in_scope(&profile).unwrap());
+    }
+
+    #[test]
     fn environment_marker_bare_package() {
         let dir = setup_dir("pywin32; sys_platform == \"win32\"");
         let deps = parse(&dir).unwrap();
@@ -458,6 +852,19 @@ mod tests {
         assert_eq!(deps[0].name, "requests");
         assert_eq!(deps[0].version, Some("==2.28.0".to_string()));
         cleanup(&dir);
+    }
+
+    #[test]
+    fn scoped_parser_preserves_requested_distribution_extras() {
+        let dep = parse_scoped_requirement_spec(
+            "requests[socks,security]==2.28.0",
+            Path::new("requirements.txt"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(dep.dependency.name, "requests");
+        assert!(dep.requested_extras.contains("socks"));
+        assert!(dep.requested_extras.contains("security"));
     }
 
     #[test]
@@ -540,6 +947,50 @@ mod tests {
     }
 
     #[test]
+    fn constraint_files_affect_trust_without_becoming_direct_dependencies() {
+        let dir = setup_dir("-c base.txt\nflask==2.0 \\\n    --hash=sha256:deadbeef\n");
+        std::fs::write(
+            dir.join("base.txt"),
+            "requests==2.31.0 \\\n    --hash=sha256:feedface\n",
+        )
+        .unwrap();
+
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        assert!(
+            is_hash_locked_requirements_file(&dir.join("requirements.txt"), &dir).expect(
+                "constraint includes should participate in trusted pip-tools classification"
+            )
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn supported_index_directives_do_not_block_parsing() {
+        let dir = setup_dir(
+            "--index-url https://pypi.org/simple\n--extra-index-url https://packages.example.com/simple\nflask==2.0",
+        );
+        let deps = parse(&dir).expect("supported pip index directives should not block parsing");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn supported_index_directives_preserve_hash_locked_trust_classification() {
+        let dir = setup_dir(
+            "--index-url https://pypi.org/simple\n--extra-index-url https://packages.example.com/simple\nrequests==2.31.0 \\\n    --hash=sha256:deadbeef\n",
+        );
+        assert!(
+            is_hash_locked_requirements_file(&dir.join("requirements.txt"), &dir)
+                .expect("supported pip index directives should still allow trusted classification"),
+            "supported file-bound index directives should not demote hash-locked pip-tools manifests"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
     fn reject_editable_requirements() {
         let dir = setup_dir("-e .\nflask==2.0");
         let err = parse(&dir).expect_err("editable requirements must block scanning");
@@ -549,9 +1000,12 @@ mod tests {
 
     #[test]
     fn reject_other_unsupported_flags() {
-        let dir = setup_dir("-i https://pypi.org/simple\nflask==2.0");
+        let dir = setup_dir("--trusted-host packages.example.com\nflask==2.0");
         let err = parse(&dir).expect_err("unsupported flags must block scanning");
-        assert!(err.to_string().contains("-i https://pypi.org/simple"));
+        assert!(
+            err.to_string()
+                .contains("--trusted-host packages.example.com")
+        );
         cleanup(&dir);
     }
 

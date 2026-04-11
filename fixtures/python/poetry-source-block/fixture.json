@@ -1,0 +1,1 @@
+{"id":"python-poetry-source-block","ecosystem":"python","expected":"fail","reason":"Poetry project resolves from a non-PyPI source that is not allowlisted."}

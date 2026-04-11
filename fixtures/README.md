@@ -16,7 +16,7 @@ Expected outcomes are:
 Current coverage:
 
 - `npm/`: adversarial JS manager and supply-chain cases
-- `python/`: Poetry strict path plus legacy and fail-closed cases
+- `python/`: Poetry and uv trusted paths, exact source/index allowlists, pip-tools hash-locking, and legacy/fail-closed cases
 - `cargo/`: trusted local/workspace provenance and blocked alternate sources
 - `go/`: `go.sum` enforcement and local-replace behavior
 - `ruby/`: strict RubyGems path and blocked alternate sources

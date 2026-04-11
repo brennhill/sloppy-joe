@@ -57,6 +57,9 @@ use std::path::{Path, PathBuf};
 ///   "trusted_git_sources": {
 ///     "cargo": ["https://github.com/yourorg/shared-crate"]
 ///   },
+///   "trusted_indexes": {
+///     "pypi": ["https://download.pytorch.org/whl/cu124"]
+///   },
 ///   "cargo_git_policy": "block",
 ///   "python_enforcement": "prefer_poetry"
 /// }
@@ -84,12 +87,17 @@ use std::path::{Path, PathBuf};
 ///   trusted private registries.
 /// - `trusted_git_sources`: exact allowlist of git repository URLs permitted in
 ///   reduced-confidence modes.
+/// - `trusted_indexes`: exact allowlist of alternate Python package index URLs.
 /// - `cargo_git_policy`: Cargo git dependency policy. `block` (default) or
 ///   `warn_pinned`.
 /// - `python_enforcement`: controls how strictly sloppy-joe enforces trusted
 ///   Python manifest workflows. `prefer_poetry` (default) trusts Poetry when
 ///   present and warns on legacy manifests. `poetry_only` blocks non-Poetry
 ///   Python manifests.
+/// - `poetry_lock_policy`: controls how missing Poetry trust proof is handled.
+///   `warn_missing_proofs` (default) downgrades incomplete lock trust proofs to
+///   warnings. `strict` fails closed when poetry.lock cannot prove freshness or
+///   artifact identity strongly enough.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PythonEnforcement {
@@ -99,6 +107,17 @@ pub enum PythonEnforcement {
 
 fn default_python_enforcement() -> PythonEnforcement {
     PythonEnforcement::PreferPoetry
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PoetryLockPolicy {
+    WarnMissingProofs,
+    Strict,
+}
+
+fn default_poetry_lock_policy() -> PoetryLockPolicy {
+    PoetryLockPolicy::WarnMissingProofs
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +150,32 @@ struct LocalOverlayConfig {
     cargo_git_policy: Option<CargoGitPolicy>,
     #[serde(default)]
     allow_host_local_cargo_config: bool,
+}
+
+pub(crate) fn normalized_default_pypi_index() -> &'static str {
+    "https://pypi.org/simple/"
+}
+
+pub(crate) fn normalize_python_index_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some((scheme, rest)) = trimmed.split_once("://") {
+        let scheme = scheme.to_ascii_lowercase();
+        let (authority, suffix) = match rest.find('/') {
+            Some(index) => (&rest[..index], &rest[index..]),
+            None => (rest, ""),
+        };
+        return format!("{scheme}://{}{}/", authority.to_ascii_lowercase(), suffix);
+    }
+    format!("{trimmed}/")
+}
+
+pub(crate) fn python_index_url_has_supported_scheme(url: &str) -> bool {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,10 +274,14 @@ pub struct SloppyJoeConfig {
     pub trusted_registries: HashMap<String, Vec<TrustedRegistry>>,
     #[serde(default)]
     pub trusted_git_sources: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub trusted_indexes: HashMap<String, Vec<String>>,
     #[serde(default = "default_cargo_git_policy")]
     pub cargo_git_policy: CargoGitPolicy,
     #[serde(default = "default_python_enforcement")]
     pub python_enforcement: PythonEnforcement,
+    #[serde(default = "default_poetry_lock_policy")]
+    pub poetry_lock_policy: PoetryLockPolicy,
     #[serde(default, skip_serializing_if = "BootstrapReview::is_empty")]
     pub bootstrap_review: BootstrapReview,
     #[serde(skip)]
@@ -272,8 +321,10 @@ impl Default for SloppyJoeConfig {
             trusted_local_paths: HashMap::new(),
             trusted_registries: HashMap::new(),
             trusted_git_sources: HashMap::new(),
+            trusted_indexes: HashMap::new(),
             cargo_git_policy: default_cargo_git_policy(),
             python_enforcement: default_python_enforcement(),
+            poetry_lock_policy: default_poetry_lock_policy(),
             bootstrap_review: BootstrapReview::default(),
             allow_host_local_cargo_config: false,
             active_local_overlay_relaxations: Vec::new(),
@@ -436,6 +487,24 @@ impl SloppyJoeConfig {
             .unwrap_or(&[])
     }
 
+    pub fn trusted_indexes(&self, ecosystem: &str) -> &[String] {
+        self.trusted_indexes
+            .get(ecosystem)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn is_trusted_index(&self, ecosystem: &str, url: &str) -> bool {
+        if ecosystem == "pypi" && normalize_python_index_url(url) == normalized_default_pypi_index()
+        {
+            return true;
+        }
+        let normalized = normalize_python_index_url(url);
+        self.trusted_indexes(ecosystem)
+            .iter()
+            .any(|candidate| candidate == &normalized)
+    }
+
     /// Validate config at load time. Returns a list of errors.
     pub fn validate(&self) -> Vec<String> {
         let valid_ecosystems = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
@@ -476,6 +545,15 @@ impl SloppyJoeConfig {
                         valid_ecosystems.join(", ")
                     ));
                 }
+            }
+        }
+
+        for eco in self.trusted_indexes.keys() {
+            if eco != "pypi" {
+                errors.push(format!(
+                    "Unknown ecosystem '{}' in trusted_indexes section. Valid: pypi",
+                    eco
+                ));
             }
         }
 
@@ -590,6 +668,22 @@ impl SloppyJoeConfig {
                 if source.trim().is_empty() {
                     errors.push(format!(
                         "Invalid trusted git source in {}: source must be non-empty",
+                        eco
+                    ));
+                }
+            }
+        }
+
+        for (eco, indexes) in &self.trusted_indexes {
+            for index in indexes {
+                if index.trim().is_empty() {
+                    errors.push(format!(
+                        "Invalid trusted index in {}: index URL must be non-empty",
+                        eco
+                    ));
+                } else if !python_index_url_has_supported_scheme(index) {
+                    errors.push(format!(
+                        "Invalid trusted index in {}: only http:// and https:// package index URLs are supported",
                         eco
                     ));
                 }
@@ -716,7 +810,7 @@ pub fn load_config_with_project(
         SloppyJoeConfig::default()
     };
 
-    config = maybe_apply_local_overlay(config)?;
+    config = maybe_apply_local_overlay(config, project_dir)?;
     Ok(config)
 }
 
@@ -728,12 +822,12 @@ pub async fn load_config_from_source(
     project_dir: Option<&Path>,
 ) -> Result<SloppyJoeConfig, String> {
     let mut config = if let Some(source) = source {
-        if source.starts_with("http://") {
+        if config_source_has_scheme(source, "http") {
             return Err(format!(
                 "Config URL must use HTTPS.\n  URL: {}\n  Fix: Use an https:// URL or a local path outside the project directory.",
                 redact_url_for_display(source)
             ));
-        } else if source.starts_with("https://") {
+        } else if config_source_has_scheme(source, "https") {
             fetch_config_from_url(source).await?
         } else {
             return load_config_with_project(Some(Path::new(source)), project_dir);
@@ -742,7 +836,7 @@ pub async fn load_config_from_source(
         SloppyJoeConfig::default()
     };
 
-    config = maybe_apply_local_overlay(config)?;
+    config = maybe_apply_local_overlay(config, project_dir)?;
     Ok(config)
 }
 
@@ -825,7 +919,7 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
         ));
     }
 
-    let config: SloppyJoeConfig = serde_json::from_str(content).map_err(|e| {
+    let mut config: SloppyJoeConfig = serde_json::from_str(content).map_err(|e| {
         let mut msg = format!(
             "Config is not valid JSON.\n  Source: {}\n  Error: {}",
             source, e
@@ -845,6 +939,12 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
         msg.push_str("\n  Fix: Validate your JSON at https://jsonlint.com or use 'sloppy-joe init' for a template.");
         msg
     })?;
+
+    for indexes in config.trusted_indexes.values_mut() {
+        for index in indexes.iter_mut() {
+            *index = normalize_python_index_url(index);
+        }
+    }
 
     let validation_errors = config.validate();
     if !validation_errors.is_empty() {
@@ -933,7 +1033,16 @@ fn running_in_ci() -> bool {
         .unwrap_or(false)
 }
 
-fn maybe_apply_local_overlay(config: SloppyJoeConfig) -> Result<SloppyJoeConfig, String> {
+fn config_source_has_scheme(source: &str, scheme: &str) -> bool {
+    source
+        .get(..scheme.len() + 3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&format!("{scheme}://")))
+}
+
+fn maybe_apply_local_overlay(
+    config: SloppyJoeConfig,
+    project_dir: Option<&Path>,
+) -> Result<SloppyJoeConfig, String> {
     if running_in_ci() {
         return Ok(config);
     }
@@ -941,6 +1050,11 @@ fn maybe_apply_local_overlay(config: SloppyJoeConfig) -> Result<SloppyJoeConfig,
     let overlay_path = local_overlay_path()?;
     if !overlay_path.exists() {
         return Ok(config);
+    }
+    if let Some(dir) = project_dir
+        && let Some(config_home) = overlay_path.parent()
+    {
+        registry::ensure_config_home_outside_project(dir, config_home)?;
     }
 
     load_local_overlay_from_path(config, &overlay_path)
@@ -1587,6 +1701,10 @@ mod tests {
         assert!(!config.allow_unresolved_versions);
         assert!(!config.allow_legacy_npm_v1_lockfile);
         assert_eq!(config.python_enforcement, PythonEnforcement::PreferPoetry);
+        assert_eq!(
+            config.poetry_lock_policy,
+            PoetryLockPolicy::WarnMissingProofs
+        );
     }
 
     #[test]
@@ -1830,7 +1948,7 @@ version = "0.1.0"
         let path = dir.join("config.json");
         std::fs::write(
             &path,
-            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"allow_legacy_npm_v1_lockfile":true,"python_enforcement":"poetry_only"}"#,
+            r#"{"canonical":{"npm":{"lodash":["underscore"]}},"internal":{"npm":["@myorg/*"]},"allowed":{"npm":["vetted"]},"similarity_exceptions":{"cargo":[{"package":"serde_json","candidate":"serde","generator":"segment-overlap","reason":"legitimate companion crate"}]},"metadata_exceptions":{"cargo":[{"package":"colored","check":"metadata/maintainer-change","version":"2.2.0","previous_publisher":"kurtlawrence","current_publisher":"hwittenborn","reason":"reviewed transfer"}]},"min_version_age_hours":48,"allow_unresolved_versions":true,"allow_legacy_npm_v1_lockfile":true,"python_enforcement":"poetry_only","poetry_lock_policy":"strict"}"#,
         ).unwrap();
         let config = load_config(Some(&path)).unwrap();
         assert!(config.canonical.contains_key("npm"));
@@ -1842,6 +1960,7 @@ version = "0.1.0"
         assert!(config.allow_unresolved_versions);
         assert!(config.allow_legacy_npm_v1_lockfile);
         assert_eq!(config.python_enforcement, PythonEnforcement::PoetryOnly);
+        assert_eq!(config.poetry_lock_policy, PoetryLockPolicy::Strict);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1956,6 +2075,23 @@ version = "0.1.0"
         .expect_err("unknown Python enforcement modes must fail");
         assert!(err.contains("prefer_poetry"));
         assert!(err.contains("poetry_only"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_rejects_unknown_poetry_lock_policy() {
+        let dir = unique_temp_dir("config-poetry-lock-policy");
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"poetry_lock_policy":"trust_me_bro"}"#).unwrap();
+
+        let err = parse_config_content(
+            &std::fs::read_to_string(&path).unwrap(),
+            &path.display().to_string(),
+        )
+        .expect_err("unknown Poetry lock policies must fail");
+        assert!(err.contains("warn_missing_proofs"));
+        assert!(err.contains("strict"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2238,6 +2374,19 @@ version = "0.1.0"
     }
 
     #[test]
+    fn config_source_scheme_detection_is_case_insensitive() {
+        assert!(config_source_has_scheme(
+            "HTTP://example.invalid/config.json",
+            "http"
+        ));
+        assert!(config_source_has_scheme(
+            "HTTPS://example.invalid/config.json",
+            "https"
+        ));
+        assert!(!config_source_has_scheme("/tmp/config.json", "https"));
+    }
+
+    #[test]
     fn redact_url_for_display_strips_credentials_and_query() {
         let redacted =
             redact_url_for_display("https://user:secret@example.com/config.json?token=abc#frag");
@@ -2306,6 +2455,72 @@ version = "0.1.0"
         let config = parse_config_content(content, "test.json").unwrap();
         assert!(config.canonical.contains_key("npm"));
         assert_eq!(config.min_version_age_hours, 48);
+    }
+
+    #[test]
+    fn parses_trusted_python_indexes() {
+        let config = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["https://download.pytorch.org/whl/cu124"]}}"#,
+            "test.json",
+        )
+        .unwrap();
+        assert_eq!(
+            config.trusted_indexes("pypi"),
+            ["https://download.pytorch.org/whl/cu124/"]
+        );
+    }
+
+    #[test]
+    fn normalizes_trailing_slash_for_python_indexes() {
+        let config = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["https://packages.example.com/simple"]}}"#,
+            "test.json",
+        )
+        .unwrap();
+        assert!(config.is_trusted_index("pypi", "https://packages.example.com/simple/"));
+        assert!(config.is_trusted_index("pypi", "https://packages.example.com/simple"));
+        assert!(config.is_trusted_index("pypi", "https://pypi.org/simple"));
+        assert!(!config.is_trusted_index("pypi", "https://packages.example.com/simplex"));
+        assert!(!config.is_trusted_index("pypi", "https://packages.example.com/other"));
+    }
+
+    #[test]
+    fn normalizes_python_index_scheme_and_host_casing() {
+        let config = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["HTTPS://Download.PyTorch.Org/whl/cu124"]}}"#,
+            "test.json",
+        )
+        .unwrap();
+        assert!(config.is_trusted_index("pypi", "https://download.pytorch.org/whl/cu124"));
+    }
+
+    #[test]
+    fn rejects_empty_trusted_python_index() {
+        let err = parse_config_content(r#"{"trusted_indexes":{"pypi":["  "]}}"#, "test.json")
+            .unwrap_err();
+        assert!(err.contains("trusted index"));
+        assert!(err.contains("validation failed"));
+    }
+
+    #[test]
+    fn rejects_non_http_python_index_urls() {
+        let err = parse_config_content(
+            r#"{"trusted_indexes":{"pypi":["file:///tmp/mirror"]}}"#,
+            "test.json",
+        )
+        .unwrap_err();
+        assert!(err.contains("http:// and https://"));
+    }
+
+    #[test]
+    fn rejects_trusted_indexes_for_non_python_ecosystems() {
+        let err = parse_config_content(
+            r#"{"trusted_indexes":{"npm":["https://registry.npmjs.org"]}}"#,
+            "test.json",
+        )
+        .unwrap_err();
+        assert!(err.contains("trusted_indexes"));
+        assert!(err.contains("Valid: pypi"));
     }
 
     // ── resolve_config_source end-to-end tests ──

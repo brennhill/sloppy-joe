@@ -1,0 +1,1 @@
+{"id":"python-uv-schema-fail","ecosystem":"python","expected":"fail","reason":"Unsupported uv.lock schema versions must fail closed."}

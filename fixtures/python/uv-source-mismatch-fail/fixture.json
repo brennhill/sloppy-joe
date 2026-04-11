@@ -1,0 +1,1 @@
+{"id":"python-uv-source-mismatch-fail","ecosystem":"python","expected":"fail","reason":"uv dependency source intent must match the resolved source in uv.lock."}

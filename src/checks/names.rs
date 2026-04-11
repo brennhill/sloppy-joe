@@ -74,10 +74,16 @@ pub const RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE: &str =
     "resolution/no-trusted-transitive-coverage";
 pub const RESOLUTION_LOCAL_DEPENDENCY_SOURCE: &str = "resolution/local-dependency-source";
 pub const RESOLUTION_UNTRUSTED_REGISTRY_SOURCE: &str = "resolution/untrusted-registry-source";
+pub const RESOLUTION_SOURCE_MISMATCH: &str = "resolution/source-mismatch";
+pub const RESOLUTION_UNUSED_DECLARED_SOURCE: &str = "resolution/unused-declared-source";
 pub const RESOLUTION_UNTRUSTED_GIT_SOURCE: &str = "resolution/untrusted-git-source";
 pub const RESOLUTION_BLOCKED_PROVENANCE_REWRITE: &str = "resolution/blocked-provenance-rewrite";
 pub const RESOLUTION_REDUCED_CONFIDENCE_GIT: &str = "resolution/reduced-confidence-git";
 pub const RESOLUTION_PYTHON_LEGACY_MANIFEST: &str = "resolution/python-legacy-manifest";
+pub const RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS: &str =
+    "resolution/python-hash-locked-requirements";
+pub const RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE: &str =
+    "resolution/python-implicit-runtime-profile";
 pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
 
 #[cfg(test)]
@@ -128,10 +134,14 @@ mod tests {
             RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,
             RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
             RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+            RESOLUTION_SOURCE_MISMATCH,
+            RESOLUTION_UNUSED_DECLARED_SOURCE,
             RESOLUTION_UNTRUSTED_GIT_SOURCE,
             RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
             RESOLUTION_REDUCED_CONFIDENCE_GIT,
             RESOLUTION_PYTHON_LEGACY_MANIFEST,
+            RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS,
+            RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE,
             CONFIG_LOCAL_OVERLAY_RELAXATION,
         ]
     }

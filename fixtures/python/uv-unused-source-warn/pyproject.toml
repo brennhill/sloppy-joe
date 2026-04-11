@@ -1,0 +1,11 @@
+[project]
+name = "fixture-uv-unused-source"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["requests==2.32.3"]
+
+[tool.uv]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu124"

@@ -1,0 +1,1 @@
+{"id":"python-pip-tools-pass","ecosystem":"python","expected":"warn","reason":"Hash-locked pip-tools requirements provide exact pins and hashes, but source provenance still stays reduced-confidence."}
