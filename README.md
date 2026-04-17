@@ -519,7 +519,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: brennhill/sloppy-joe@v1
+      - uses: brennhill/sloppy-joe@v1.1
         with:
           config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 ```
@@ -540,25 +540,25 @@ jobs:
 
 ```yaml
 # Minimal — CI-oriented scan, auto-detect ecosystem, no config
-- uses: brennhill/sloppy-joe@v1
+- uses: brennhill/sloppy-joe@v1.1
 
 # With org config from a URL
-- uses: brennhill/sloppy-joe@v1
+- uses: brennhill/sloppy-joe@v1.1
   with:
     config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 
 # Deep scan with paranoid mode
-- uses: brennhill/sloppy-joe@v1
+- uses: brennhill/sloppy-joe@v1.1
   with:
     config: ${{ secrets.SLOPPY_JOE_CONFIG }}
     deep: true
     paranoid: true
 
 # Scan a subdirectory, pin to a specific version
-- uses: brennhill/sloppy-joe@v1
+- uses: brennhill/sloppy-joe@v1.1
   with:
     dir: ./packages/api
-    version: '0.11.0'
+    version: '1.1.0'
 ```
 
 ### GitLab CI
@@ -579,7 +579,7 @@ Add it to your `.pre-commit-config.yaml`:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/brennhill/sloppy-joe
-    rev: v0.9.1
+    rev: v1.1.0
     hooks:
       - id: sloppy-joe
 ```
