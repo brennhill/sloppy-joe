@@ -100,3 +100,30 @@ jobs:
       - name: Check own dependencies
         working-directory: /tmp/sloppy-joe-self-check
         run: ${{ github.workspace }}/target/release/sloppy-joe check --ci --no-cache --type cargo --config /tmp/sloppy-joe-self-check.json
+
+  sloppy-joe-released-action:
+    name: sloppy-joe self-check (released action)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Stage self-check config
+        run: install -m 0644 .github/sloppy-joe-self-check.json /tmp/sloppy-joe-self-check.json
+
+      - name: Stage self-check workspace
+        run: |
+          mkdir -p /tmp/sloppy-joe-self-check
+          install -m 0644 Cargo.toml /tmp/sloppy-joe-self-check/Cargo.toml
+          install -m 0644 Cargo.lock /tmp/sloppy-joe-self-check/Cargo.lock
+
+      - name: Check own dependencies with released action
+        uses: brennhill/sloppy-joe@v1.1
+        with:
+          config: /tmp/sloppy-joe-self-check.json
+          dir: /tmp/sloppy-joe-self-check
+          type: cargo
+          version: 1.1.0
+          args: --no-cache

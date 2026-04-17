@@ -45,8 +45,34 @@ on:
       - '**[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
+  sloppy-joe-self-check:
+    name: sloppy-joe self-check
+    runs-on: "ubuntu-22.04"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Build sloppy-joe
+        run: cargo build --release --locked
+      - name: Stage self-check config
+        run: install -m 0644 .github/sloppy-joe-self-check.json /tmp/sloppy-joe-self-check.json
+      - name: Stage self-check workspace
+        run: |
+          mkdir -p /tmp/sloppy-joe-self-check
+          install -m 0644 Cargo.toml /tmp/sloppy-joe-self-check/Cargo.toml
+          install -m 0644 Cargo.lock /tmp/sloppy-joe-self-check/Cargo.lock
+      - name: Check own dependencies
+        working-directory: /tmp/sloppy-joe-self-check
+        run: ${{ github.workspace }}/target/release/sloppy-joe check --ci --no-cache --type cargo --config /tmp/sloppy-joe-self-check.json
+
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
+    needs:
+      - sloppy-joe-self-check
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
