@@ -3,6 +3,22 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
+    let project_dir = std::fs::canonicalize(project_dir)?;
+    let boundary = crate::config::registry::find_git_root(&project_dir)
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_else(|| project_dir.clone());
+    for ancestor in project_dir
+        .ancestors()
+        .take_while(|path| path.starts_with(&boundary))
+    {
+        let config = ancestor.join(".bundle/config");
+        if super::path_detected(&config)? {
+            anyhow::bail!(
+                "Unsupported Bundler configuration '{}': registry mirrors and local overrides cannot be verified",
+                config.display()
+            );
+        }
+    }
     let path = project_dir.join("Gemfile");
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read Gemfile")?;
@@ -393,6 +409,20 @@ end
             extract_gem_spec("gem 'rails', '7.0.4'"),
             Some(("rails".to_string(), Some("7.0.4".to_string())))
         );
+    }
+
+    #[test]
+    fn reject_repository_bundler_mirror_configuration() {
+        let dir = setup_dir("source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n");
+        std::fs::create_dir(dir.join(".bundle")).unwrap();
+        std::fs::write(
+            dir.join(".bundle/config"),
+            "---\nBUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/: https://attacker.example\n",
+        )
+        .unwrap();
+        let err = parse(&dir).expect_err("Bundler mirrors can redirect otherwise trusted gems");
+        assert!(err.to_string().contains(".bundle/config"));
+        cleanup(&dir);
     }
 
     #[test]
