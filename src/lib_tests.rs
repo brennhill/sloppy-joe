@@ -10512,3 +10512,72 @@ async fn full_scan_cannot_skip_age_gate_without_a_valid_publish_date() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn version_age_cannot_ignore_timezone_offsets_or_invalid_seconds() {
+    struct DateRegistry(String);
+    #[async_trait]
+    impl RegistryExistence for DateRegistry {
+        async fn exists(&self, _: &str) -> Result<bool> {
+            Ok(true)
+        }
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+    #[async_trait]
+    impl RegistryMetadata for DateRegistry {
+        async fn metadata(&self, _: &str, _: Option<&str>) -> Result<Option<PackageMetadata>> {
+            Ok(Some(PackageMetadata {
+                latest_version_date: Some(self.0.clone()),
+                created: Some("2020-01-01T00:00:00Z".to_owned()),
+                downloads: Some(50000),
+                ..Default::default()
+            }))
+        }
+    }
+    let dir = unique_dir();
+    for name in ["package.json", "package-lock.json"] {
+        std::fs::copy(
+            fixture_dir("transitive-typosquat").join(name),
+            dir.join(name),
+        )
+        .unwrap();
+    }
+    let older_wall_time =
+        cache::epoch_millis_to_iso8601(((cache::now_epoch() - 80 * 3600) * 1000) as i64).unwrap();
+    for date in [
+        older_wall_time.replace('Z', "-12:00"),
+        "2020-01-01T00:00:garbageZ".to_owned(),
+    ] {
+        let mut config = config::SloppyJoeConfig::default();
+        config.allowed.insert(
+            "npm".to_owned(),
+            vec!["react".to_owned(), "expresss".to_owned()],
+        );
+        let report = scan_fixture_with_fake_services(
+            &dir,
+            Some("npm"),
+            config,
+            &DateRegistry(date.clone()),
+            &FakeOsvClient,
+            &ScanOptions {
+                scan_mode: ScanMode::Ci,
+                no_cache: true,
+                disable_osv_disk_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.check == "metadata/version-age"
+                    && issue.severity == Severity::Error),
+            "invalid or fresh date {date} passed"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

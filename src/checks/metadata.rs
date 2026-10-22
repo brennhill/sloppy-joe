@@ -12,7 +12,31 @@ use std::collections::HashSet;
 /// Parse an ISO 8601 date string and return the age in hours.
 pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     // Parse common ISO 8601 formats: "2026-03-21T10:30:00.000Z"
-    let cleaned = date_str.trim().trim_end_matches('Z');
+    let date_str = date_str.trim();
+    let (cleaned, offset_seconds) = if let Some(utc) = date_str.strip_suffix('Z') {
+        (utc, 0)
+    } else {
+        let offset_start = date_str.rfind(['+', '-'])?;
+        let (local, offset) = date_str.split_at(offset_start);
+        let (hours, minutes) = offset[1..].split_once(':')?;
+        if hours.len() != 2 || minutes.len() != 2 {
+            return None;
+        }
+        let hours: i64 = hours.parse().ok()?;
+        let minutes: i64 = minutes.parse().ok()?;
+        if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+            return None;
+        }
+        let seconds = hours * 3600 + minutes * 60;
+        (
+            local,
+            if offset.starts_with('-') {
+                -seconds
+            } else {
+                seconds
+            },
+        )
+    };
     // Try parsing with chrono-like manual parsing (avoid adding chrono dep)
     // Format: YYYY-MM-DDTHH:MM:SS
     let parts: Vec<&str> = cleaned.split('T').collect();
@@ -21,7 +45,7 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     }
     let date_parts: Vec<&str> = parts[0].split('-').collect();
     let time_parts: Vec<&str> = parts[1].split(':').collect();
-    if date_parts.len() != 3 || time_parts.len() < 2 {
+    if date_parts.len() != 3 || !(2..=3).contains(&time_parts.len()) {
         return None;
     }
     let year: i64 = date_parts[0].parse().ok()?;
@@ -31,13 +55,20 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     let month: i64 = date_parts[1].parse().ok()?;
     let day: i64 = date_parts[2].parse().ok()?;
     let hour: i64 = time_parts[0].parse().ok()?;
-    let min: i64 = time_parts[1].split('.').next()?.parse().ok()?;
-    let sec: i64 = time_parts
-        .get(2)
-        .and_then(|s| s.split('.').next()?.parse().ok())
-        .unwrap_or(0);
+    let min: i64 = time_parts[1].parse().ok()?;
+    let sec = time_parts.get(2).copied().unwrap_or("0");
+    let seconds = if let Some((seconds, fraction)) = sec.split_once('.') {
+        if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        seconds
+    } else {
+        sec
+    };
+    let sec: i64 = seconds.parse().ok()?;
 
-    let pkg_epoch = crate::cache::checked_date_to_epoch(year, month, day, hour, min, sec)?;
+    let pkg_epoch =
+        crate::cache::checked_date_to_epoch(year, month, day, hour, min, sec)? - offset_seconds;
     let now = crate::cache::now_epoch() as i64;
 
     let diff_seconds = now - pkg_epoch;
