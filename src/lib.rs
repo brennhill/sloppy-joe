@@ -6220,7 +6220,7 @@ async fn scan_parsed_project(
 
     let ecosystem = project.deps[0].ecosystem;
     let (checkable, non_internal, internal) = classify_deps(&project.deps, &config, ecosystem);
-    let mut lockfile_data = lockfile_data_for_scan(project, &non_internal, &config, opts)?;
+    let lockfile_data = lockfile_data_for_scan(project, &non_internal, &config, opts)?;
 
     let ctx = checks::CheckContext {
         checkable_deps: &checkable,
@@ -6279,47 +6279,10 @@ async fn scan_parsed_project(
         acc.issues.extend(internal_acc.issues);
     }
 
-    let mut transitive_deps = std::mem::take(&mut lockfile_data.transitive_deps);
-    transitive_deps.retain(|dep| {
-        !config.is_internal(ecosystem.as_str(), dep.package_name())
-            && !config.is_allowed(ecosystem.as_str(), dep.package_name())
-    });
-
-    if !transitive_deps.is_empty() {
-        let trans_resolution = lockfile_data.resolve_transitive(&transitive_deps)?;
-        let trans_pipeline: Vec<Box<dyn checks::Check>> =
-            if opts.deep || ecosystem == Ecosystem::Npm {
-                checks::pipeline::default_pipeline()
-            } else {
-                vec![
-                    Box::new(checks::pipeline::CanonicalCheck),
-                    Box::new(checks::pipeline::MetadataCheck),
-                    Box::new(checks::pipeline::ExistenceCheck),
-                    Box::new(checks::pipeline::MaliciousCheck),
-                ]
-            };
-
-        let trans_ctx = checks::CheckContext {
-            checkable_deps: &transitive_deps,
-            non_internal_deps: &transitive_deps,
-            config: &config,
-            registry,
-            osv_client,
-            resolution: &trans_resolution,
-            ecosystem,
-            opts,
-        };
-        let mut trans_acc = checks::ScanAccumulator::new();
-        trans_acc.similarity_flagged = acc.similarity_flagged.clone();
-        for check in &trans_pipeline {
-            check.run(&trans_ctx, &mut trans_acc).await?;
-        }
-        mark_source(&mut trans_acc.issues, "transitive");
-        acc.issues.extend(trans_acc.issues);
-    }
+    let transitive_count = scan_transitive_dependencies(&lockfile_data, &ctx, &mut acc).await?;
 
     Ok(ScanReport::from_issues_with_review_candidates(
-        non_internal.len() + transitive_deps.len(),
+        non_internal.len() + transitive_count,
         acc.issues,
         acc.review_candidates,
     ))
@@ -6377,7 +6340,7 @@ async fn scan_with_services_inner_for_kind(
     let (checkable, non_internal, internal) = classify_deps(&deps, &config, ecosystem);
 
     // Parse lockfile once
-    let mut lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+    let lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
         project_dir,
         project_kind,
         &non_internal,
@@ -6433,55 +6396,54 @@ async fn scan_with_services_inner_for_kind(
         acc.issues.extend(internal_acc.issues);
     }
 
-    // Transitive dependency scanning
-    let mut transitive_deps = std::mem::take(&mut lockfile_data.transitive_deps);
-    transitive_deps.retain(|dep| {
-        !config.is_internal(ecosystem.as_str(), dep.package_name())
-            && !config.is_allowed(ecosystem.as_str(), dep.package_name())
-    });
-
-    if !transitive_deps.is_empty() {
-        let trans_resolution = lockfile_data.resolve_transitive(&transitive_deps)?;
-
-        // Build transitive pipeline (skip similarity unless --deep)
-        let trans_pipeline: Vec<Box<dyn checks::Check>> =
-            if opts.deep || ecosystem == Ecosystem::Npm {
-                checks::pipeline::default_pipeline()
-            } else {
-                // All checks except similarity for transitive deps
-                vec![
-                    Box::new(checks::pipeline::CanonicalCheck),
-                    Box::new(checks::pipeline::MetadataCheck),
-                    Box::new(checks::pipeline::ExistenceCheck),
-                    Box::new(checks::pipeline::MaliciousCheck),
-                ]
-            };
-
-        let trans_ctx = checks::CheckContext {
-            checkable_deps: &transitive_deps,
-            non_internal_deps: &transitive_deps,
-            config: &config,
-            registry,
-            osv_client,
-            resolution: &trans_resolution,
-            ecosystem,
-            opts,
-        };
-        let mut trans_acc = checks::ScanAccumulator::new();
-        // Carry forward similarity_flagged from direct deps
-        trans_acc.similarity_flagged = acc.similarity_flagged.clone();
-        for check in &trans_pipeline {
-            check.run(&trans_ctx, &mut trans_acc).await?;
-        }
-        mark_source(&mut trans_acc.issues, "transitive");
-        acc.issues.extend(trans_acc.issues);
-    }
+    let transitive_count = scan_transitive_dependencies(&lockfile_data, &ctx, &mut acc).await?;
 
     Ok(ScanReport::from_issues_with_review_candidates(
-        non_internal.len() + transitive_deps.len(),
+        non_internal.len() + transitive_count,
         acc.issues,
         acc.review_candidates,
     ))
+}
+
+async fn scan_transitive_dependencies(
+    lockfile_data: &lockfiles::LockfileData,
+    ctx: &checks::CheckContext<'_>,
+    acc: &mut checks::ScanAccumulator,
+) -> Result<usize> {
+    let (checkable, non_internal, internal) =
+        classify_deps(&lockfile_data.transitive_deps, ctx.config, ctx.ecosystem);
+    let mut trans_acc = checks::ScanAccumulator::new();
+    trans_acc.similarity_flagged = acc.similarity_flagged.clone();
+    if !non_internal.is_empty() {
+        let resolution = lockfile_data.resolve_transitive(&non_internal)?;
+        let trans_ctx = checks::CheckContext {
+            checkable_deps: &checkable,
+            non_internal_deps: &non_internal,
+            resolution: &resolution,
+            ..*ctx
+        };
+        for check in checks::pipeline::default_pipeline() {
+            if check.name() != "similarity" || ctx.opts.deep || ctx.ecosystem == Ecosystem::Npm {
+                check.run(&trans_ctx, &mut trans_acc).await?;
+            }
+        }
+    }
+    if !internal.is_empty() {
+        let resolution = lockfile_data.resolve_transitive(&internal)?;
+        let internal_ctx = checks::CheckContext {
+            checkable_deps: &[],
+            non_internal_deps: &internal,
+            resolution: &resolution,
+            ..*ctx
+        };
+        checks::pipeline::MaliciousCheck
+            .run(&internal_ctx, &mut trans_acc)
+            .await?;
+    }
+    mark_source(&mut trans_acc.issues, "transitive");
+    acc.issues.extend(trans_acc.issues);
+    acc.review_candidates.extend(trans_acc.review_candidates);
+    Ok(non_internal.len())
 }
 
 /// Classify deps into three tiers. Returns (checkable, non_internal, internal).

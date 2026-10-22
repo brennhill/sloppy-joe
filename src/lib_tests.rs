@@ -4788,6 +4788,47 @@ impl OsvClient for VulnOsvClient {
 }
 
 #[tokio::test]
+async fn transitive_exemptions_preserve_vulnerability_checks() {
+    let dir = fixture_dir("transitive-typosquat");
+    for policy in ["allowed", "internal"] {
+        let config: config::SloppyJoeConfig = serde_json::from_value(serde_json::json!({
+            policy: {"npm": ["expresss"]}
+        }))
+        .unwrap();
+        let report = scan_fixture_with_fake_services(
+            &dir,
+            Some("npm"),
+            config,
+            &FakeRegistry {
+                existing: vec!["react".into(), "expresss".into()],
+            },
+            &VulnOsvClient {
+                vulnerable: vec!["expresss".into()],
+            },
+            &ScanOptions {
+                no_cache: true,
+                disable_osv_disk_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            report.issues.iter().any(|issue| issue.package == "expresss"
+                && issue.check == checks::names::MALICIOUS_KNOWN_VULNERABILITY
+                && issue.source.as_deref() == Some("transitive")),
+            "{policy} must preserve transitive OSV checks"
+        );
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|issue| issue.package == "expresss" && issue.check.starts_with("similarity"))
+        );
+    }
+}
+
+#[tokio::test]
 async fn transitive_dep_with_osv_hit_has_transitive_source() {
     let dir = unique_dir();
     std::fs::write(
