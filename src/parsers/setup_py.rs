@@ -15,6 +15,27 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
             path.display()
         );
     }
+    for line in content
+        .lines()
+        .take(2)
+        .filter(|line| line.trim_start().starts_with('#'))
+    {
+        if let Some(start) = ["coding:", "coding="]
+            .iter()
+            .filter_map(|marker| line.find(marker))
+            .min()
+        {
+            let encoding = line[start + 7..]
+                .trim_start()
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.'))
+                .next()
+                .unwrap_or_default();
+            let encoding = encoding.to_ascii_lowercase().replace('_', "-");
+            if !matches!(encoding.as_str(), "utf-8" | "utf8" | "ascii") {
+                bail!("Scan not supported: setup.py source encoding");
+            }
+        }
+    }
     let setup_call = extract_setup_call(&content)?;
     if setup_call.is_none() {
         bail!(
@@ -122,6 +143,47 @@ fn extract_setup_call(content: &str) -> Result<Option<String>> {
                 if setup_call.is_some() {
                     bail!("Scan not supported: multiple setup.py setup() calls");
                 }
+                let prefix = content[..index]
+                    .strip_suffix("setuptools.")
+                    .unwrap_or(&content[..index]);
+                for line in prefix.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    if matches!(
+                        line.split('#').next().unwrap().trim(),
+                        "from setuptools import setup"
+                            | "import setuptools"
+                            | "from distutils.core import setup"
+                    ) {
+                        continue;
+                    }
+                    if let Some((name, value)) = line.split_once('=') {
+                        let name = name.trim();
+                        let value = value.trim();
+                        if !name.is_empty()
+                            && name
+                                .bytes()
+                                .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
+                            && matches!(value.as_bytes().first(), Some(b'\'' | b'"'))
+                        {
+                            let (_, consumed) = parse_python_string(value, 0)?;
+                            let tail = value[consumed..].trim();
+                            if tail.is_empty() || tail.starts_with('#') {
+                                continue;
+                            }
+                        }
+                    }
+                    bail!("Scan not supported: executable setup.py preamble");
+                }
+                if content[end + 1..].lines().any(|line| {
+                    let line = line.trim();
+                    !line.is_empty() && !line.starts_with('#')
+                }) {
+                    bail!("Scan not supported: executable statements after setup()");
+                }
+                validate_literal_setup_arguments(&content[start..end])?;
                 setup_call = Some(content[start..end].to_string());
                 index = end + 1;
             }
@@ -130,6 +192,57 @@ fn extract_setup_call(content: &str) -> Result<Option<String>> {
     }
 
     Ok(setup_call)
+}
+
+fn validate_literal_setup_arguments(content: &str) -> Result<()> {
+    let bytes = content.as_bytes();
+    let mut index = 0;
+    let mut depth = 0usize;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'\'' | b'"' => {
+                index = parse_python_string(content, index)?.1;
+            }
+            b'#' => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'[' | b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                let start = index;
+                while bytes
+                    .get(index)
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+                {
+                    index += 1;
+                }
+                let token = &content[start..index];
+                let mut next = index;
+                skip_ws(bytes, &mut next);
+                if !matches!(token, "True" | "False" | "None")
+                    && !(depth == 0 && bytes.get(next) == Some(&b'='))
+                {
+                    bail!("Scan not supported: nonliteral setup.py argument");
+                }
+            }
+            b'0'..=b'9' | b',' | b':' | b'=' | b'.' | b'+' | b'-' => {
+                index += 1;
+            }
+            byte if byte.is_ascii_whitespace() => {
+                index += 1;
+            }
+            _ => bail!("Scan not supported: nonliteral setup.py argument"),
+        }
+    }
+    Ok(())
 }
 
 fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
@@ -437,9 +550,8 @@ mod tests {
             "setup.py",
             "setup(install_requires=['payload==1.0.0'], description=str(dict(install_requires=[], other='text')))\n",
         );
-        let deps = parse(&dir).unwrap();
-        assert_eq!(deps.len(), 1);
-        assert_eq!(deps[0].name, "payload");
+        let err = parse(&dir).expect_err("computed metadata is outside the literal grammar");
+        assert!(err.to_string().contains("Scan not supported"));
         cleanup(&dir);
     }
 
@@ -452,6 +564,20 @@ mod tests {
             let dir = setup_test_dir(&format!("setup-triple-{index}"), "setup.py", source);
             let error = parse(&dir).expect_err("triple quoted strings are outside the supported grammar");
             assert!(error.to_string().contains("Scan not supported"), "{error}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn executable_preamble_cannot_hide_dependencies() {
+        for (index, source) in [
+            "from setuptools import setup\nexec(\"setup(install_requires=['payload==1.0.0'])\")\nsetup(install_requires=[])\n",
+            "from setuptools import setup\nsetup(install_requires=[])\nexec(\"setup(install_requires=['payload==1.0.0'])\")\n",
+            "# coding: unicode_escape\n#\\u000asetup(install_requires=['payload==1.0.0'])\nsetup(install_requires=[])\n",
+        ].iter().enumerate() {
+            let dir = setup_test_dir(&format!("setup-executable-{index}"), "setup.py", source);
+            let err = parse(&dir).expect_err("executable statements must be unsupported");
+            assert!(err.to_string().contains("Scan not supported"), "{err}");
             cleanup(&dir);
         }
     }
@@ -481,7 +607,7 @@ mod tests {
         );
 
         let err = parse(&dir).unwrap_err();
-        assert!(err.to_string().contains("Unsupported dynamic setup.py"));
+        assert!(err.to_string().contains("Scan not supported"));
 
         cleanup(&dir);
     }
@@ -513,8 +639,7 @@ setup(name='demo', install_requires=['requests==2.31.0'])
             r#"
 from setuptools import setup
 
-def mysetup():
-    pass
+DOC = "mysetup()"
 
 setup(
     name="demo",
