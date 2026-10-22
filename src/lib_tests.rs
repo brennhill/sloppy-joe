@@ -10426,3 +10426,89 @@ async fn empty_direct_graph_with_locked_packages_is_unsupported() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[tokio::test]
+async fn full_scan_cannot_skip_age_gate_without_a_valid_publish_date() {
+    struct UndatedRegistry {
+        date: Option<&'static str>,
+        omit_metadata: bool,
+    }
+    #[async_trait]
+    impl RegistryExistence for UndatedRegistry {
+        async fn exists(&self, _: &str) -> Result<bool> {
+            Ok(true)
+        }
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+    #[async_trait]
+    impl RegistryMetadata for UndatedRegistry {
+        async fn metadata(&self, _: &str, _: Option<&str>) -> Result<Option<PackageMetadata>> {
+            if self.omit_metadata {
+                return Ok(None);
+            }
+            Ok(Some(PackageMetadata {
+                latest_version_date: self.date.map(str::to_owned),
+                created: Some("2020-01-01T00:00:00Z".to_owned()),
+                downloads: Some(50000),
+                ..Default::default()
+            }))
+        }
+    }
+    let dir = unique_dir();
+    for name in ["package.json", "package-lock.json"] {
+        std::fs::copy(
+            fixture_dir("transitive-typosquat").join(name),
+            dir.join(name),
+        )
+        .unwrap();
+    }
+    for date in [
+        None,
+        Some("not-a-date"),
+        Some("2999-01-01T00:00:00Z"),
+        Some("999999999999-01-01T00:00:00Z"),
+    ] {
+        for omit_metadata in [false, true] {
+            for min_age in [72, 0] {
+                let mut config = config::SloppyJoeConfig {
+                    min_version_age_hours: min_age,
+                    ..Default::default()
+                };
+                config.allowed.insert(
+                    "npm".to_owned(),
+                    vec!["react".to_owned(), "expresss".to_owned()],
+                );
+                let report = scan_fixture_with_fake_services(
+                    &dir,
+                    Some("npm"),
+                    config,
+                    &UndatedRegistry {
+                        date,
+                        omit_metadata,
+                    },
+                    &FakeOsvClient,
+                    &ScanOptions {
+                        scan_mode: ScanMode::Ci,
+                        no_cache: true,
+                        disable_osv_disk_cache: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    report
+                        .issues
+                        .iter()
+                        .any(|issue| issue.check == "metadata/version-age"
+                            && issue.severity == Severity::Error),
+                    min_age > 0,
+                    "unverifiable publication date {date:?} passed the age gate"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

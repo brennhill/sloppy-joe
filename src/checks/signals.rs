@@ -17,14 +17,25 @@ pub(crate) struct SignalContext {
 /// Version published too recently.
 pub(crate) fn check_version_age(
     lookup: &MetadataLookup,
-    meta: &PackageMetadata,
+    meta: Option<&PackageMetadata>,
     min_age: u64,
 ) -> Option<Issue> {
-    if lookup.unresolved_version {
+    if lookup.unresolved_version || min_age == 0 {
         return None;
     }
-    let date = meta.latest_version_date.as_ref()?;
-    let age_hours = age_in_hours(date)?;
+    let age_hours = meta
+        .and_then(|meta| meta.latest_version_date.as_deref())
+        .and_then(age_in_hours);
+    let Some(age_hours) = age_hours else {
+        if !lookup.exists || lookup.resolved_version.is_none() {
+            return None;
+        }
+        return Some(
+            Issue::new(&lookup.package, super::names::METADATA_VERSION_AGE, Severity::Error)
+                .message(format!("Cannot verify the minimum version age for '{}': the registry did not provide a valid publication date for the resolved version.", lookup.package))
+                .fix("Retry the scan when registry metadata is available, or review the version and explicitly change min_version_age_hours in your trusted policy."),
+        );
+    };
     if age_hours >= min_age {
         return None;
     }

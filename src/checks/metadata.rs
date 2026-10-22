@@ -25,6 +25,9 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
         return None;
     }
     let year: i64 = date_parts[0].parse().ok()?;
+    if !(1970..=9999).contains(&year) {
+        return None;
+    }
     let month: i64 = date_parts[1].parse().ok()?;
     let day: i64 = date_parts[2].parse().ok()?;
     let hour: i64 = time_parts[0].parse().ok()?;
@@ -151,12 +154,15 @@ pub(crate) fn issues_from_lookups(
     let mut issues = Vec::new();
 
     for lookup in lookups {
+        issues.extend(signals::check_version_age(
+            lookup,
+            lookup.metadata.as_ref(),
+            min_age,
+        ));
         let Some(meta) = lookup.metadata.as_ref() else {
             issues.extend(signals::check_parse_failed(lookup));
             continue;
         };
-
-        issues.extend(signals::check_version_age(lookup, meta, min_age));
 
         let is_new_package = signals::check_new_package(lookup, meta);
         let is_low_downloads = signals::check_low_downloads(lookup, meta);
