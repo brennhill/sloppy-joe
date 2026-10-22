@@ -31,16 +31,21 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
         }
     }
 
-    if content.split('<').skip(1).any(|tag| {
-        tag.split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
+    for tag in content.split('<').skip(1) {
+        let name = tag
+            .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
             .next()
-            .and_then(|name| name.rsplit(':').next())
-            == Some("Import")
-    }) {
-        bail!(
-            "Unsupported MSBuild Import in {}: imported dependency declarations are not trusted yet",
-            csproj.display()
-        );
+            .unwrap_or_default();
+        let local_name = name.rsplit(':').next().unwrap_or_default();
+        if matches!(local_name, "Import" | "PackageDownload")
+            || (local_name == "PackageReference" && name != "PackageReference")
+        {
+            bail!(
+                "Unsupported MSBuild {} in {}: dependency declarations cannot be verified",
+                name,
+                csproj.display()
+            );
+        }
     }
 
     let mut deps = Vec::new();
@@ -48,7 +53,13 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
     while let Some(open_idx) = find_package_reference_start(&content, search_start) {
         let (tag_end, self_closing) = find_tag_end(&content, open_idx)?;
         let tag_content = &content[open_idx + "<PackageReference".len()..tag_end];
-        if let Some(name) = extract_attr(tag_content, "Include") {
+        {
+            let name = extract_attr(tag_content, "Include").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unsupported PackageReference in {}: expected an Include attribute",
+                    csproj.display()
+                )
+            })?;
             let version = if self_closing {
                 extract_attr(tag_content, "Version")
             } else {
@@ -220,6 +231,24 @@ mod tests {
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
         setup_test_dir("csproj", "test.csproj", content)
+    }
+
+    #[test]
+    fn reject_unmodeled_package_declarations() {
+        for declaration in [
+            r#"<m:PackageReference Include="Payload" Version="1.0.0" />"#,
+            r#"<PackageReference Update="Payload" Version="1.0.0" />"#,
+            r#"<PackageDownload Include="Payload" Version="[1.0.0]" />"#,
+        ] {
+            let dir = setup_dir(&format!(
+                r#"<Project xmlns:m="http://schemas.microsoft.com/developer/msbuild/2003"><ItemGroup>{declaration}</ItemGroup></Project>"#
+            ));
+            assert!(
+                parse(&dir).is_err(),
+                "unmodeled declaration must fail closed: {declaration}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]
