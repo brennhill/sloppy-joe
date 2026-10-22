@@ -7,6 +7,38 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read Gemfile")?;
 
+    for line in content.lines() {
+        let line = strip_ruby_comments(line);
+        let line = line.trim();
+        let method = line
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .next();
+        let trusted_source = line.strip_prefix("source").is_some_and(|argument| {
+            [
+                "'https://rubygems.org'",
+                "\"https://rubygems.org\"",
+                "'https://rubygems.org/'",
+                "\"https://rubygems.org/\"",
+            ]
+            .iter()
+            .any(|url| {
+                argument
+                    .trim_start()
+                    .trim_start_matches('(')
+                    .trim_start()
+                    .starts_with(url)
+            })
+        });
+        if matches!(method, Some("git" | "path" | "github" | "git_source"))
+            || (method == Some("source") && !trusted_source)
+        {
+            anyhow::bail!(
+                "Unsupported non-registry Gemfile dependency source in {}",
+                path.display()
+            );
+        }
+    }
+
     let mut deps = Vec::new();
 
     for entry in collect_gem_entries(&content)? {
@@ -282,6 +314,21 @@ mod tests {
             extract_gem_spec("gem 'rails', '7.0.4'"),
             Some(("rails".to_string(), Some("7.0.4".to_string())))
         );
+    }
+
+    #[test]
+    fn reject_block_level_dependency_sources() {
+        for source in [
+            "git 'https://example.com/payload.git'",
+            "path '../payload'",
+            "source 'https://example.com/gems'",
+        ] {
+            let dir = setup_dir(&format!("{source} do\n gem 'rake', '13.0.6'\nend\n"));
+            let err =
+                parse(&dir).expect_err("block sources must not inherit public registry trust");
+            assert!(err.to_string().contains("Gemfile dependency source"));
+            cleanup(&dir);
+        }
     }
 
     #[test]
