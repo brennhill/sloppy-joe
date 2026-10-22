@@ -458,6 +458,27 @@ fn preflight_project_inputs_with_options(
             ),
         }
 
+        if deps.is_empty()
+            && matches!(
+                spec.kind,
+                ProjectInputKind::Gradle | ProjectInputKind::Dotnet
+            )
+        {
+            let locked = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+                spec.project_dir(),
+                Some(spec.kind),
+                &deps,
+                spec.lockfile_path_override.as_deref(),
+                None,
+            )?;
+            if !locked.transitive_deps.is_empty() {
+                anyhow::bail!(
+                    "Scan not supported: '{}' has locked packages but no supported direct dependency declarations",
+                    spec.manifest_path.display()
+                );
+            }
+        }
+
         if spec.kind == ProjectInputKind::Cargo {
             warnings.extend(validate_cargo_source_policy(scan_root, spec, config)?);
         }

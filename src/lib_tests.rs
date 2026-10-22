@@ -10390,3 +10390,39 @@ fn mark_source_does_not_overwrite_existing() {
         "Should set source when None"
     );
 }
+
+#[tokio::test]
+async fn empty_direct_graph_with_locked_packages_is_unsupported() {
+    for (manifest, content, lockfile, locked) in [
+        (
+            "build.gradle",
+            "plugins { id 'java' }\ngetDependencies().add('implementation', 'com.example:payload:1.0.0')",
+            "gradle.lockfile",
+            "com.example:payload:1.0.0=runtimeClasspath\n",
+        ),
+        (
+            "app.csproj",
+            "<Project><ItemGroup><ProjectReference Include=\"../other/other.csproj\" /></ItemGroup></Project>",
+            "packages.lock.json",
+            r#"{"version":1,"dependencies":{"net8.0":{"Payload":{"type":"Transitive","resolved":"1.0.0","contentHash":"abc"}}}}"#,
+        ),
+    ] {
+        let dir = unique_dir();
+        std::fs::write(dir.join(manifest), content).unwrap();
+        std::fs::write(dir.join(lockfile), locked).unwrap();
+        let err = scan_with_source_full_options(
+            &dir,
+            None,
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("locked packages must not be silently skipped");
+        assert!(err.to_string().contains("Scan not supported"), "{err}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
