@@ -127,6 +127,7 @@ fn extract_setup_call(content: &str) -> Result<Option<String>> {
 
 fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
     let mut assignment_start = None;
+    let mut depth = 0usize;
     let bytes = content.as_bytes();
     let mut index = 0usize;
     let mut in_single = false;
@@ -166,7 +167,16 @@ fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
                 // Expanded keyword arguments may supply or override dependency declarations.
                 bail!("Scan not supported: expanded setup.py keyword arguments");
             }
-            _ if bytes[index..].starts_with(key.as_bytes())
+            b'(' | b'[' | b'{' => {
+                depth += 1;
+                index += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            _ if depth == 0
+                && bytes[index..].starts_with(key.as_bytes())
                 && is_identifier_boundary_at(bytes, index.checked_sub(1))
                 && is_identifier_boundary_at(bytes, Some(index + key.len())) =>
             {
@@ -406,6 +416,19 @@ mod tests {
             "setup-comments",
             "setup.py",
             "setup(name='app', # )\n install_requires=['payload==1.0.0'], # install_requires=['company-core==1.0.0']\n)\n",
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "payload");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn nested_keywords_cannot_override_setup_dependencies() {
+        let dir = setup_test_dir(
+            "setup-nested-keywords",
+            "setup.py",
+            "setup(install_requires=['payload==1.0.0'], description=str(dict(install_requires=[], other='text')))\n",
         );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
