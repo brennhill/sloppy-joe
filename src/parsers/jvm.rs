@@ -86,56 +86,26 @@ fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
         .context("Failed to read pom.xml")?;
     validate_pom_source_policy(&content, path)?;
     let mut deps = Vec::new();
-    let lines: Vec<&str> = content.lines().collect();
-
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].trim().contains("<dependency>") {
-            let (dep, end) = parse_pom_dep(&lines, i);
-            if let Some(d) = dep {
-                super::validate_dependency(&d, path)?;
-                deps.push(d);
-            }
-            i = end;
-        }
-        i += 1;
+    let mut remaining = content.as_str();
+    while let Some((_, body)) = remaining.split_once("<dependency>") {
+        let (body, tail) = body
+            .split_once("</dependency>")
+            .context("Unterminated Maven dependency declaration")?;
+        let group =
+            extract_xml_value(body, "groupId").context("Maven dependency is missing groupId")?;
+        let artifact = extract_xml_value(body, "artifactId")
+            .context("Maven dependency is missing artifactId")?;
+        let dep = Dependency {
+            name: format!("{}:{}", group.trim(), artifact.trim()),
+            version: extract_xml_value(body, "version").map(|v| v.trim().to_string()),
+            ecosystem: crate::Ecosystem::Jvm,
+            actual_name: None,
+        };
+        super::validate_dependency(&dep, path)?;
+        deps.push(dep);
+        remaining = tail;
     }
     Ok(deps)
-}
-
-fn parse_pom_dep(lines: &[&str], start: usize) -> (Option<Dependency>, usize) {
-    let mut group = None;
-    let mut artifact = None;
-    let mut version = None;
-
-    for (i, line) in lines.iter().enumerate().skip(start + 1) {
-        let line = line.trim();
-        if line.contains("</dependency>") {
-            if let (Some(g), Some(a)) = (group, artifact) {
-                let name = format!("{}:{}", g, a);
-                return (
-                    Some(Dependency {
-                        name,
-                        version,
-                        ecosystem: crate::Ecosystem::Jvm,
-                        actual_name: None,
-                    }),
-                    i,
-                );
-            }
-            return (None, i);
-        }
-        if let Some(v) = extract_xml_value(line, "groupId") {
-            group = Some(v);
-        }
-        if let Some(v) = extract_xml_value(line, "artifactId") {
-            artifact = Some(v);
-        }
-        if let Some(v) = extract_xml_value(line, "version") {
-            version = Some(v);
-        }
-    }
-    (None, lines.len())
 }
 
 fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
@@ -409,6 +379,18 @@ mod tests {
         );
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_compact_maven_dependencies() {
+        let dir = setup_pom(
+            "<project><dependencies><dependency><groupId>com.example</groupId><artifactId>lib</artifactId><version>1.0.0</version></dependency><dependency><groupId>com.example</groupId><artifactId>other</artifactId><version>2.0.0</version></dependency></dependencies></project>",
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0].name, "com.example:lib");
+        assert_eq!(deps[1].version.as_deref(), Some("2.0.0"));
         cleanup(&dir);
     }
 
