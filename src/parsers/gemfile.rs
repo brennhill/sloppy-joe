@@ -76,7 +76,10 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            if trimmed.starts_with("gem ") || trimmed.starts_with("gem\t") {
+            if trimmed.starts_with("gem ")
+                || trimmed.starts_with("gem\t")
+                || trimmed.starts_with("gem(")
+            {
                 in_entry = true;
                 current.clear();
             } else {
@@ -122,7 +125,7 @@ fn has_unsupported_gem_source(line: &str) -> bool {
 
 fn extract_gem_spec(line: &str) -> Option<(String, Option<String>)> {
     // Match gem 'name' or gem "name"
-    let after_gem = line.strip_prefix("gem")?.trim_start();
+    let after_gem = line.trim_start().strip_prefix("gem")?.trim_start();
     let after_gem = after_gem.trim_start_matches('(').trim_start();
     let quote = after_gem.chars().next()?;
     if quote != '\'' && quote != '"' {
@@ -250,6 +253,18 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "rails");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_parenthesized_and_indented_gems() {
+        for declaration in ["gem('rake', '13.0.6')", "  gem 'rake', '13.0.6'"] {
+            let dir = setup_dir(declaration);
+            let deps = parse(&dir).unwrap();
+            assert_eq!(deps.len(), 1);
+            assert_eq!(deps[0].name, "rake");
+            assert_eq!(deps[0].version.as_deref(), Some("13.0.6"));
+            cleanup(&dir);
+        }
     }
 
     #[test]
