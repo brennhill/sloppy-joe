@@ -26,6 +26,12 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
             .strip_prefix('[')
             .and_then(|rest| rest.rsplit_once(']'))
         {
+            if name.trim() == "DEFAULT" {
+                anyhow::bail!(
+                    "Scan not supported: setup.cfg DEFAULT inheritance in {}",
+                    path.display()
+                );
+            }
             section = name.trim().to_string();
             index += 1;
             continue;
@@ -149,6 +155,18 @@ mod tests {
             assert_eq!(deps[0].name, "payload");
             cleanup(&dir);
         }
+    }
+
+    #[test]
+    fn inherited_dependencies_are_explicitly_unsupported() {
+        let dir = setup_test_dir(
+            "cfg-default-deps",
+            "setup.cfg",
+            "[DEFAULT]\ninstall_requires = payload==1.0.0\n[options]\nname = app\n",
+        );
+        let err = parse(&dir).expect_err("inherited dependency declarations must not disappear");
+        assert!(err.to_string().contains("Scan not supported"), "{err}");
+        cleanup(&dir);
     }
 
     #[test]
