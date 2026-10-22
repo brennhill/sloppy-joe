@@ -49,12 +49,12 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn key_name(line: &str) -> Option<&str> {
-    line.split_once('=').map(|(key, _)| key.trim())
+    line.split_once(['=', ':']).map(|(key, _)| key.trim())
 }
 
 fn read_cfg_value_block(lines: &[&str], start: usize) -> (Vec<String>, usize) {
     let mut entries = Vec::new();
-    let Some((_, first_value)) = lines[start].split_once('=') else {
+    let Some((_, first_value)) = lines[start].split_once(['=', ':']) else {
         return (entries, start + 1);
     };
     let first_value = first_value.trim();
@@ -101,6 +101,21 @@ fn collect_dependency_lines(
 mod tests {
     use super::*;
     use crate::parsers::test_utils::*;
+
+    #[test]
+    fn parse_colon_delimited_dependencies() {
+        let dir = setup_test_dir(
+            "cfg-colon",
+            "setup.cfg",
+            "[options]\ninstall_requires:\n    payload==1.0.0\n[options.extras_require]\ndev: pytest==8.1.1\n",
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(
+            deps.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            vec!["payload", "pytest"]
+        );
+        cleanup(&dir);
+    }
 
     #[test]
     fn parse_install_requires_and_extras() {
