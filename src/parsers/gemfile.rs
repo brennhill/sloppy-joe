@@ -26,7 +26,10 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
                     .trim_start()
                     .trim_start_matches('(')
                     .trim_start()
-                    .starts_with(url)
+                    .strip_prefix(url)
+                    .is_some_and(|tail| {
+                        matches!(tail.trim().trim_start_matches(')').trim(), "" | "do")
+                    })
             })
         });
         if matches!(method, Some("git" | "path" | "github" | "git_source"))
@@ -58,6 +61,11 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
             };
             super::validate_dependency(&dep, &path)?;
             deps.push(dep);
+        } else {
+            anyhow::bail!(
+                "Unsupported dynamic Gemfile dependency declaration in {}",
+                path.display()
+            );
         }
     }
 
@@ -71,7 +79,8 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
     let mut state = RubyExpressionState::default();
 
     for raw_line in content.lines() {
-        let trimmed = raw_line.trim();
+        let uncommented = strip_ruby_comments(raw_line);
+        let trimmed = uncommented.trim();
         if !in_entry {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
@@ -83,8 +92,25 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
                 in_entry = true;
                 current.clear();
             } else {
-                continue;
+                let method = trimmed.split_whitespace().next().unwrap_or_default();
+                if matches!(method, "source" | "ruby" | "end")
+                    || (matches!(method, "group" | "platform" | "platforms")
+                        && trimmed.ends_with("do"))
+                {
+                    if !trimmed.contains(';') {
+                        continue;
+                    }
+                }
+                anyhow::bail!(
+                    "Unsupported Gemfile statement: dependency declarations cannot be verified"
+                );
             }
+        }
+
+        if uncommented.contains(';') {
+            anyhow::bail!(
+                "Unsupported inline Gemfile statements: dependency declarations cannot be verified"
+            );
         }
 
         if !current.is_empty() {
@@ -329,6 +355,25 @@ mod tests {
             extract_gem_spec("gem 'rails', '7.0.4'"),
             Some(("rails".to_string(), Some("7.0.4".to_string())))
         );
+    }
+
+    #[test]
+    fn reject_dynamic_or_hidden_gem_declarations() {
+        for body in [
+            "gem package_name",
+            "eval_gemfile 'other.Gemfile'",
+            "gemspec",
+            "source 'https://rubygems.org'; gem('payload', '1.0.0')",
+            "source 'https://rubygems.org' + '.attacker.example'",
+            "group :test do gem 'payload', '1.0.0' end",
+        ] {
+            let dir = setup_dir(body);
+            assert!(
+                parse(&dir).is_err(),
+                "unmodeled Gemfile code must fail closed: {body}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]
