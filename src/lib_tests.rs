@@ -6883,6 +6883,38 @@ fn full_scan_recommendation_reasons_include_policy_changed_when_config_differs()
 }
 
 #[tokio::test]
+async fn empty_or_unstructured_required_lockfiles_fail_closed() {
+    for (manifest, content, lockfile, locked) in [
+        ("build.gradle", "dependencies {}", "gradle.lockfile", ""),
+        (
+            "Gemfile",
+            "source 'https://rubygems.org'",
+            "Gemfile.lock",
+            "",
+        ),
+        ("app.csproj", "<Project />", "packages.lock.json", "{}"),
+    ] {
+        let dir = unique_dir();
+        std::fs::write(dir.join(manifest), content).unwrap();
+        std::fs::write(dir.join(lockfile), locked).unwrap();
+        let err = scan_with_source_full_options(
+            &dir,
+            None,
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("an unreadable dependency graph must not pass as an empty project");
+        assert!(err.to_string().contains(lockfile), "{err}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn failed_full_scan_keeps_the_recommendation_to_run_a_successful_scan() {
     let dir = fixture_dir("transitive-typosquat");
     let external = unique_dir();

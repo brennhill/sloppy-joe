@@ -3660,13 +3660,21 @@ fn validate_lockfile_syntax(
         ProjectInputKind::Dotnet => {
             let path = spec.manifest_path.with_file_name("packages.lock.json");
             let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-            serde_json::from_str::<serde_json::Value>(&content).map_err(|err| {
+            let lockfile = serde_json::from_str::<serde_json::Value>(&content).map_err(|err| {
                 anyhow::anyhow!(
                     "Broken lockfile '{}': failed to parse JSON: {}",
                     path.display(),
                     err
                 )
             })?;
+            if !matches!(lockfile["version"].as_u64(), Some(1 | 2))
+                || !lockfile["dependencies"].is_object()
+            {
+                anyhow::bail!(
+                    "Broken lockfile '{}': expected a supported version and dependencies object",
+                    path.display()
+                );
+            }
         }
         ProjectInputKind::PyProjectPoetry => {
             let parsed = parse_project_input_with_config(scan_root, spec, config, opts)?;
@@ -4327,7 +4335,12 @@ fn legacy_requirements_files(project_dir: &std::path::Path) -> Result<Vec<std::p
 
 fn ensure_lockfile_readable(path: &std::path::Path, help: &str) -> Result<()> {
     parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)
-        .map(|_| ())
+        .and_then(|content| {
+            if content.trim().is_empty() {
+                anyhow::bail!("lockfile is empty");
+            }
+            Ok(())
+        })
         .map_err(|err| {
             anyhow::anyhow!(
                 "Required lockfile '{}' is missing or unreadable: {}. Fix: {}",
