@@ -9,6 +9,12 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
     let setup_call = extract_setup_call(&content)?;
+    if setup_call.is_none() {
+        bail!(
+            "Scan not supported: no static setup() call in {}",
+            path.display()
+        );
+    }
     let mut deps = Vec::new();
 
     if let Some(value) = extract_argument_literal(setup_call.as_deref(), "install_requires", path)?
@@ -32,7 +38,7 @@ fn extract_argument_literal(
     let Some(content) = setup_call else {
         return Ok(None);
     };
-    let Some(start) = find_keyword_assignment(content, key) else {
+    let Some(start) = find_keyword_assignment(content, key)? else {
         return Ok(None);
     };
     let value = content[start..].trim_start();
@@ -46,13 +52,20 @@ fn extract_argument_literal(
 
     if opener != '[' && opener != '{' {
         bail!(
-            "Unsupported dynamic setup.py dependency declaration for '{}' in {}",
+            "Scan not supported: Unsupported dynamic setup.py dependency declaration for '{}' in {}",
             key,
             source_path.display()
         );
     }
 
     let end = matching_delimiter(value, 0, opener, if opener == '[' { ']' } else { '}' })?;
+    let tail = value[end + 1..].trim_start();
+    if !tail.is_empty() && !tail.starts_with(',') {
+        bail!(
+            "Scan not supported: setup.py dependency expressions in {}",
+            source_path.display()
+        );
+    }
     Ok(Some(value[..=end].to_string()))
 }
 
@@ -107,7 +120,8 @@ fn extract_setup_call(content: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn find_keyword_assignment(content: &str, key: &str) -> Option<usize> {
+fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
+    let mut assignment_start = None;
     let bytes = content.as_bytes();
     let mut index = 0usize;
     let mut in_single = false;
@@ -138,6 +152,10 @@ fn find_keyword_assignment(content: &str, key: &str) -> Option<usize> {
             _ if in_single || in_double => {
                 index += 1;
             }
+            b'*' if bytes.get(index + 1) == Some(&b'*') => {
+                // Expanded keyword arguments may supply or override dependency declarations.
+                bail!("Scan not supported: expanded setup.py keyword arguments");
+            }
             _ if bytes[index..].starts_with(key.as_bytes())
                 && is_identifier_boundary_at(bytes, index.checked_sub(1))
                 && is_identifier_boundary_at(bytes, Some(index + key.len())) =>
@@ -150,7 +168,7 @@ fn find_keyword_assignment(content: &str, key: &str) -> Option<usize> {
                     assignment += 1;
                 }
                 if bytes.get(assignment) == Some(&b'=') {
-                    return Some(assignment + 1);
+                    assignment_start = Some(assignment + 1);
                 }
                 index += key.len();
             }
@@ -158,7 +176,7 @@ fn find_keyword_assignment(content: &str, key: &str) -> Option<usize> {
         }
     }
 
-    None
+    Ok(assignment_start)
 }
 
 fn is_identifier_boundary_at(bytes: &[u8], index: Option<usize>) -> bool {
@@ -177,7 +195,7 @@ fn matching_delimiter(input: &str, start: usize, open: char, close: char) -> Res
     let mut in_double = false;
     let mut escape = false;
 
-    for (idx, ch) in input.char_indices().skip(start) {
+    for (idx, ch) in input.char_indices().skip_while(|(idx, _)| *idx < start) {
         if escape {
             escape = false;
             continue;
@@ -323,6 +341,24 @@ fn collect_dependency_lines(
 mod tests {
     use super::*;
     use crate::parsers::test_utils::*;
+
+    #[test]
+    fn reject_unmodeled_setup_dependencies() {
+        for (i, content) in [
+            "setup(install_requires=['company-core==1.0.0'] + ['payload==1.0.0'])",
+            "setup(**{'install_requires': ['payload==1.0.0']})",
+            "setup(install_requires=['company-core==1.0.0'], **options)",
+            "setup (install_requires=['payload==1.0.0'])",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let dir = setup_test_dir(&format!("setup-unmodeled-{i}"), "setup.py", content);
+            let err = parse(&dir).expect_err("unmodeled dependencies must not disappear");
+            assert!(err.to_string().contains("Scan not supported"), "{err}");
+            cleanup(&dir);
+        }
+    }
 
     #[test]
     fn parse_static_install_requires_and_extras() {
