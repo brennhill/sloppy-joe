@@ -2,6 +2,14 @@ use crate::Dependency;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
+const GRADLE_DEPENDENCY_CONFIGS: &[&str] = &[
+    "implementation",
+    "api",
+    "compileOnly",
+    "runtimeOnly",
+    "testImplementation",
+];
+
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let gradle = project_dir.join("build.gradle");
     if super::path_detected(&gradle)? {
@@ -28,18 +36,11 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
         .context("Failed to read build.gradle")?;
     validate_gradle_source_policy(&content, path)?;
     let mut deps = Vec::new();
-    let configs = [
-        "implementation",
-        "api",
-        "compileOnly",
-        "runtimeOnly",
-        "testImplementation",
-    ];
 
     let tokens = tokenize_gradle(&content);
     for (idx, token) in tokens.iter().enumerate() {
         if let GradleToken::Ident(config) = token
-            && configs.contains(&config.as_str())
+            && GRADLE_DEPENDENCY_CONFIGS.contains(&config.as_str())
         {
             let next = idx
                 + 1
@@ -235,35 +236,24 @@ fn validate_gradle_repositories_block(tokens: &[GradleToken], path: &Path) -> Re
 }
 
 fn validate_gradle_dependencies_block(tokens: &[GradleToken], path: &Path) -> Result<()> {
-    let dependency_configs = [
-        "implementation",
-        "api",
-        "compileOnly",
-        "runtimeOnly",
-        "testImplementation",
-    ];
-    let local_sources = ["project", "files", "fileTree", "includeBuild"];
-
-    for (idx, token) in tokens.iter().enumerate() {
-        let GradleToken::Ident(config) = token else {
+    for token in tokens {
+        let GradleToken::Ident(name) = token else {
             continue;
         };
-        if !dependency_configs.contains(&config.as_str()) {
-            continue;
+        if ["project", "files", "fileTree", "includeBuild"].contains(&name.as_str()) {
+            bail!(
+                "Unsupported Gradle dependency source in {}: local project or file dependencies are not supported",
+                path.display()
+            );
         }
-
-        for lookahead in tokens.iter().skip(idx + 1).take(8) {
-            if let GradleToken::Ident(source) = lookahead
-                && local_sources.contains(&source.as_str())
-            {
-                bail!(
-                    "Unsupported Gradle dependency source in {}: local project or file dependencies are not supported",
-                    path.display()
-                );
-            }
+        if !GRADLE_DEPENDENCY_CONFIGS.contains(&name.as_str()) {
+            bail!(
+                "Unsupported Gradle dependency expression '{}' in {}: only literal coordinates in supported configurations can be verified",
+                name,
+                path.display()
+            );
         }
     }
-
     Ok(())
 }
 
@@ -404,6 +394,22 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "org.slf4j:slf4j-api");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_unmodeled_gradle_dependency_expressions() {
+        for expression in [
+            "add(\"implementation\", \"com.example:payload:1.0.0\")",
+            "customConfiguration(\"com.example:payload:1.0.0\")",
+            "implementation(libs.payload)",
+        ] {
+            let dir = setup_gradle(&format!("dependencies {{ {expression} }}"));
+            assert!(
+                parse(&dir).is_err(),
+                "unmodeled expression must fail closed: {expression}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]
