@@ -132,11 +132,12 @@ pub async fn check_malicious_with_cache(
     cache_path: Option<&Path>,
 ) -> Result<Vec<Issue>> {
     // Load disk cache if fresh (using shared cache utilities: symlink protection, atomic writes)
-    let initial_entries = cache_path
-        .and_then(|p| cache::read_json_cache::<DiskCache>(p, CACHE_TTL_SECS, |c| c.timestamp))
-        .map(|c| c.entries)
-        .unwrap_or_default();
-    let mut cache = initial_entries;
+    let initial_cache = cache_path
+        .and_then(|p| cache::read_json_cache::<DiskCache>(p, CACHE_TTL_SECS, |c| c.timestamp));
+    let timestamp = initial_cache
+        .as_ref()
+        .map_or_else(cache::now_epoch, |c| c.timestamp);
+    let mut cache = initial_cache.map(|c| c.entries).unwrap_or_default();
 
     let mut issues = Vec::new();
     let mut pending = HashMap::new();
@@ -236,7 +237,7 @@ pub async fn check_malicious_with_cache(
     // Save cache to disk (atomic writes, symlink protection, 0o600 permissions)
     if let Some(path) = cache_path {
         let disk_cache = DiskCache {
-            timestamp: cache::now_epoch(),
+            timestamp,
             entries: cache.clone(),
         };
         cache::atomic_write_json(path, &disk_cache);
@@ -368,6 +369,45 @@ mod tests {
                 .any(|i| i.check.contains("registry-unreachable")),
             "Any OSV lookup failure should trigger fail-closed"
         );
+    }
+
+    #[tokio::test]
+    async fn reusing_cached_results_does_not_extend_their_expiry() {
+        let dir = crate::parsers::test_utils::empty_test_dir("osv-expiry");
+        let path = dir.join("osv-cache.json");
+        let timestamp = cache::now_epoch() - 60;
+        cache::atomic_write_json(
+            &path,
+            &DiskCache {
+                timestamp,
+                entries: HashMap::from([(
+                    "npm:some-pkg:".to_string(),
+                    CacheEntry { vuln_ids: vec![] },
+                )]),
+            },
+        );
+        let client = MockOsvClient {
+            responses: HashMap::from([(
+                "some-pkg".to_string(),
+                vec!["NEW-VULNERABILITY".to_string()],
+            )]),
+        };
+        let issues = check_malicious_with_cache(
+            &client,
+            &[dep("some-pkg")],
+            &ResolutionResult::default(),
+            Some(&path),
+        )
+        .await
+        .unwrap();
+        assert!(issues.is_empty(), "fresh cached results should be reused");
+        let saved: DiskCache =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved.timestamp, timestamp,
+            "a cache hit must not postpone refresh"
+        );
+        crate::parsers::test_utils::cleanup(&dir);
     }
 
     #[tokio::test]
