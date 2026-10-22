@@ -10581,3 +10581,31 @@ async fn version_age_cannot_ignore_timezone_offsets_or_invalid_seconds() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn future_full_scan_timestamp_does_not_suppress_refresh_guidance() {
+    let (dir, config, projects) = parsed_npm_fixture_projects("transitive-typosquat");
+    let cache_dir = unique_dir();
+    let opts = ScanOptions {
+        scan_mode: ScanMode::Fast,
+        cache_dir: Some(&cache_dir),
+        ..Default::default()
+    };
+    let future = full_scan_fingerprint_components_for_projects(
+        &projects,
+        &config,
+        &opts,
+        cache::now_epoch() + 86400,
+    )
+    .unwrap();
+    cache::atomic_write_json(&full_scan_fingerprint_cache_path(&cache_dir), &future);
+    let report = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+        .await
+        .unwrap();
+    assert!(
+        report
+            .full_scan_reasons
+            .contains(&report::FullScanRecommendationReason::LastFullScanStale)
+    );
+    std::fs::remove_dir_all(cache_dir).unwrap();
+}

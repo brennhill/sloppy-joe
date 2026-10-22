@@ -6103,7 +6103,9 @@ fn full_scan_recommendation_reasons_for_projects(
     };
 
     let mut reasons = Vec::new();
-    if now_epoch.saturating_sub(previous.timestamp) >= FULL_SCAN_TTL_SECS {
+    if previous.timestamp > now_epoch
+        || now_epoch.saturating_sub(previous.timestamp) >= FULL_SCAN_TTL_SECS
+    {
         reasons.push(report::FullScanRecommendationReason::LastFullScanStale);
     }
     if previous.project_state_hash != current.project_state_hash {
