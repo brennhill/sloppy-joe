@@ -336,6 +336,18 @@ fn xml_contains_open_tag(content: &str, target: &str) -> bool {
 }
 
 fn validate_pom_source_policy(content: &str, path: &Path) -> Result<()> {
+    if content.split('<').skip(1).any(|tag| {
+        let name = tag
+            .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
+            .next()
+            .unwrap_or_default();
+        name.rsplit(':').next() == Some("dependency") && !tag.starts_with("dependency>")
+    }) {
+        bail!(
+            "Unsupported Maven dependency tag in {}: namespaced or attributed dependency elements cannot be verified",
+            path.display()
+        );
+    }
     if [
         "repositories",
         "pluginRepositories",
@@ -417,6 +429,24 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 2);
         cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_unmodeled_maven_dependency_tags() {
+        for open in [
+            "m:dependency",
+            "dependency xmlns=\"http://maven.apache.org/POM/4.0.0\"",
+        ] {
+            let close = open.split_whitespace().next().unwrap();
+            let dir = setup_pom(&format!(
+                "<project xmlns:m=\"http://maven.apache.org/POM/4.0.0\"><dependencies><{open}><groupId>com.example</groupId><artifactId>payload</artifactId><version>1.0.0</version></{close}></dependencies></project>"
+            ));
+            assert!(
+                parse(&dir).is_err(),
+                "unmodeled dependency tags must fail closed: {open}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]
