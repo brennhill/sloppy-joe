@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
+    let project_dir = std::fs::canonicalize(project_dir)?;
     for ancestor in project_dir.ancestors() {
         let workspace = ancestor.join("go.work");
         if super::path_detected(&workspace)? {

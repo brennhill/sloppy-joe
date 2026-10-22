@@ -11,6 +11,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
+    let csproj = &std::fs::canonicalize(csproj)?;
     let content = super::read_file_limited(csproj, super::MAX_MANIFEST_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
     let content = strip_xml_comments(&content);

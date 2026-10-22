@@ -4787,6 +4787,40 @@ impl OsvClient for VulnOsvClient {
     }
 }
 
+#[test]
+fn relative_parser_paths_preserve_ancestor_source_policy() {
+    const PROBE: &str = "SLOPPY_JOE_RELATIVE_PARSER_POLICY_PROBE";
+    if std::env::var_os(PROBE).is_some() {
+        assert!(parsers::go_mod::parse(std::path::Path::new(".")).is_err());
+        assert!(parsers::csproj::parse(std::path::Path::new(".")).is_err());
+        return;
+    }
+    let dir = unique_dir();
+    std::fs::create_dir(dir.join(".git")).unwrap();
+    std::fs::create_dir(dir.join("app")).unwrap();
+    std::fs::write(dir.join("go.work"), "go 1.21\nuse ./app\n").unwrap();
+    std::fs::write(dir.join("Directory.Build.props"), "<Project />").unwrap();
+    std::fs::write(dir.join("app/go.mod"), "module example.com/app\ngo 1.21\n").unwrap();
+    std::fs::write(dir.join("app/app.csproj"), "<Project />").unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::relative_parser_paths_preserve_ancestor_source_policy",
+            "--nocapture",
+        ])
+        .env(PROBE, "1")
+        .current_dir(dir.join("app"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "relative paths must retain ancestor policy: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn js_dependency_rewrites_cannot_bypass_manifest_lockfile_sync() {
     for policy in ["pnpm", "resolutions", "workspace"] {
