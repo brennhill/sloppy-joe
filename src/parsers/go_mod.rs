@@ -4,6 +4,15 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
+    for ancestor in project_dir.ancestors() {
+        let workspace = ancestor.join("go.work");
+        if super::path_detected(&workspace)? {
+            anyhow::bail!(
+                "Unsupported Go workspace '{}': workspace dependency sources are not trusted yet",
+                workspace.display()
+            );
+        }
+    }
     let path = project_dir.join("go.mod");
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read go.mod")?;
@@ -375,6 +384,18 @@ require example.com/a v1.2.3
 replace example.com/a => example.com/b
 "#;
         assert!(requires_go_sum(content));
+    }
+
+    #[test]
+    fn reject_ancestor_go_work_that_can_replace_dependencies() {
+        let dir = setup_dir("module example.com/app\nrequire github.com/gin-gonic/gin v1.9.1\n");
+        let child = dir.join("app");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::rename(dir.join("go.mod"), child.join("go.mod")).unwrap();
+        std::fs::write(dir.join("go.work"), "go 1.21\nuse ./app\nreplace github.com/gin-gonic/gin => github.com/attacker/payload v1.0.0\n").unwrap();
+        let err = parse(&child).expect_err("workspace sources must not escape module policy");
+        assert!(err.to_string().contains("go.work"));
+        cleanup(&dir);
     }
 
     #[test]
