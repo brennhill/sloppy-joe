@@ -424,6 +424,34 @@ mod tests {
     // ── is_case_insensitive exhaustive ──
 
     #[test]
+    fn package_name_length_boundaries() {
+        for size in [214, 215] {
+            assert_eq!(
+                Ecosystem::Npm.has_valid_package_name_shape(&"a".repeat(size)),
+                size == 214
+            );
+            assert_eq!(
+                Ecosystem::Npm
+                    .has_valid_package_name_shape(&format!("@s/{}", "a".repeat(size - 3))),
+                size == 214
+            );
+        }
+        for size in [1024, 1025] {
+            assert_eq!(
+                Ecosystem::PyPI.has_valid_package_name_shape(&"a".repeat(size)),
+                size == 1024
+            );
+            assert_eq!(
+                Ecosystem::Go.has_valid_package_name_shape(&format!(
+                    "example.com/{}",
+                    "a".repeat(size - 12)
+                )),
+                size == 1024
+            );
+        }
+    }
+
+    #[test]
     fn is_case_insensitive_correct() {
         assert!(Ecosystem::Npm.is_case_insensitive());
         assert!(Ecosystem::PyPI.is_case_insensitive());

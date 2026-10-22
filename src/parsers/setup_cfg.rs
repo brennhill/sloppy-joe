@@ -29,7 +29,10 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
         }
 
         match section.as_str() {
-            "options" if key_name(trimmed) == Some("install_requires") => {
+            "options"
+                if key_name(trimmed)
+                    .is_some_and(|key| key.eq_ignore_ascii_case("install_requires")) =>
+            {
                 let (entries, next_index) = read_cfg_value_block(&lines, index);
                 collect_dependency_lines(&entries, path, &mut deps)?;
                 index = next_index;
@@ -114,6 +117,19 @@ mod tests {
             deps.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
             vec!["payload", "pytest"]
         );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn option_names_are_case_insensitive() {
+        let dir = setup_test_dir(
+            "cfg-case",
+            "setup.cfg",
+            "[options]\nINSTALL_REQUIRES: payload==1.0.0\n",
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "payload");
         cleanup(&dir);
     }
 

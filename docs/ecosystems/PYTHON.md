@@ -49,8 +49,8 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Declared but unused non-PyPI Poetry/uv sources warn and suggest removal for clarity and maintenance.
 - Legacy Python manifests are still scanned for direct dependencies and standard signals like existence, similarity, canonicals, and vulnerabilities.
 - Included requirements files are expanded recursively.
-- `setup.cfg` supports both `=` and `:` option delimiters.
-- `setup.py` requires a literal `setup(...)` call and complete literal dependency values. Concatenated lists, expanded keyword arguments, and unrecognized calls report `Scan not supported` (exit 2).
+- `setup.cfg` supports both `=` and `:` option delimiters and case-insensitive option names.
+- `setup.py` requires a literal `setup(...)` call and complete literal dependency values. Concatenated lists or strings, encoded string escapes, expanded keyword arguments, multiple setup calls, and unrecognized calls report `Scan not supported` (exit 2).
 
 ## What blocks
 

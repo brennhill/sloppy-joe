@@ -70,6 +70,7 @@ fn extract_argument_literal(
 }
 
 fn extract_setup_call(content: &str) -> Result<Option<String>> {
+    let mut setup_call = None;
     let bytes = content.as_bytes();
     let mut index = 0usize;
     let mut in_single = false;
@@ -111,13 +112,17 @@ fn extract_setup_call(content: &str) -> Result<Option<String>> {
             {
                 let start = index + "setup(".len();
                 let end = matching_parenthesis(content, start - 1)?;
-                return Ok(Some(content[start..end].to_string()));
+                if setup_call.is_some() {
+                    bail!("Scan not supported: multiple setup.py setup() calls");
+                }
+                setup_call = Some(content[start..end].to_string());
+                index = end + 1;
             }
             _ => index += 1,
         }
     }
 
-    Ok(None)
+    Ok(setup_call)
 }
 
 fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
@@ -148,6 +153,11 @@ fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
             b'"' if !in_single => {
                 in_double = !in_double;
                 index += 1;
+            }
+            b'#' if !in_single && !in_double => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
             }
             _ if in_single || in_double => {
                 index += 1;
@@ -190,12 +200,17 @@ fn matching_parenthesis(input: &str, open_index: usize) -> Result<usize> {
 }
 
 fn matching_delimiter(input: &str, start: usize, open: char, close: char) -> Result<usize> {
+    let mut in_comment = false;
     let mut depth = 0usize;
     let mut in_single = false;
     let mut in_double = false;
     let mut escape = false;
 
     for (idx, ch) in input.char_indices().skip_while(|(idx, _)| *idx < start) {
+        if in_comment {
+            in_comment = ch != '\n';
+            continue;
+        }
         if escape {
             escape = false;
             continue;
@@ -206,6 +221,7 @@ fn matching_delimiter(input: &str, start: usize, open: char, close: char) -> Res
             }
             '\'' if !in_double => in_single = !in_single,
             '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => in_comment = true,
             _ if in_single || in_double => {}
             _ if ch == open => depth += 1,
             _ if ch == close => {
@@ -239,6 +255,10 @@ fn parse_python_string_list(input: &str, start: usize) -> Result<(Vec<String>, u
                 let (value, next_index) = parse_python_string(input, index)?;
                 values.push(value);
                 index = next_index;
+                skip_ws(bytes, &mut index);
+                if !matches!(bytes.get(index), Some(b',' | b']')) {
+                    bail!("Scan not supported: nonliteral Python list expression");
+                }
             }
             Some(_) => bail!("Unsupported Python list literal entry"),
             None => bail!("Unterminated Python list literal"),
@@ -271,6 +291,10 @@ fn parse_python_string_dict_values(input: &str, start: usize) -> Result<(Vec<Str
                 let (group_values, next_index) = parse_python_string_list(input, index)?;
                 values.extend(group_values);
                 index = next_index;
+                skip_ws(bytes, &mut index);
+                if !matches!(bytes.get(index), Some(b',' | b'}')) {
+                    bail!("Scan not supported: nonliteral Python dict expression");
+                }
             }
             Some(_) => bail!("Unsupported Python dict literal entry"),
             None => bail!("Unterminated Python dict literal"),
@@ -292,6 +316,9 @@ fn parse_python_string(input: &str, start: usize) -> Result<(String, usize)> {
             let escaped = *bytes
                 .get(index + 1)
                 .ok_or_else(|| anyhow::anyhow!("Unterminated Python string literal"))?;
+            if escaped != quote && escaped != b'\\' {
+                bail!("Scan not supported: escaped Python dependency strings");
+            }
             value.push(escaped as char);
             index += 2;
             continue;
@@ -358,6 +385,32 @@ mod tests {
             assert!(err.to_string().contains("Scan not supported"), "{err}");
             cleanup(&dir);
         }
+    }
+
+    #[test]
+    fn reject_ambiguous_setup_literals_and_calls() {
+        for (i, content) in [
+            "setup(install_requires=['company' '-core==1.0.0'])",
+            "setup(install_requires=['company-core==1.0.0'])\nsetup(install_requires=['payload==1.0.0'])",
+            r"setup(install_requires=['\x70ayload==1.0.0'])",
+        ].iter().enumerate() {
+            let dir = setup_test_dir(&format!("setup-ambiguous-{i}"), "setup.py", content);
+            parse(&dir).expect_err("Python syntax outside the literal grammar must be unsupported");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn comments_cannot_close_setup_or_override_dependencies() {
+        let dir = setup_test_dir(
+            "setup-comments",
+            "setup.py",
+            "setup(name='app', # )\n install_requires=['payload==1.0.0'], # install_requires=['company-core==1.0.0']\n)\n",
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "payload");
+        cleanup(&dir);
     }
 
     #[test]
