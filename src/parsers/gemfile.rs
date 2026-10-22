@@ -88,7 +88,10 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
                 in_entry = true;
                 current.clear();
             } else {
-                let method = trimmed.split_whitespace().next().unwrap_or_default();
+                let method = trimmed
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or_default();
                 let literal_runtime = method == "ruby"
                     && literal_arguments(trimmed[4..].trim())
                         .is_some_and(|arguments| arguments.len() == 1);
@@ -121,10 +124,10 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
         if !current.is_empty() {
             current.push('\n');
         }
-        current.push_str(raw_line);
-        state.ingest(raw_line);
+        current.push_str(&uncommented);
+        state.ingest(&uncommented);
 
-        if state.is_complete(raw_line) {
+        if state.is_complete(&uncommented) {
             entries.push(current.clone());
             current.clear();
             in_entry = false;
@@ -292,6 +295,27 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "rails");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_literal_groups_and_multiline_gems_with_comments() {
+        let dir = setup_dir(
+            r#"
+source("https://rubygems.org") # registry
+ruby "3.2" # runtime
+group :development, :test do
+  gem(
+    "rake", # package name
+    "13.0.6" # pinned version
+  )
+end
+"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "rake");
+        assert_eq!(deps[0].version.as_deref(), Some("13.0.6"));
         cleanup(&dir);
     }
 
