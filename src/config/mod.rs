@@ -1079,8 +1079,8 @@ fn ensure_config_outside_project(path: &Path, project_dir: Option<&Path>) -> Res
         return Ok(());
     };
 
-    let project_dir =
-        std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let project_dir = registry::find_git_root(project_dir)?
+        .unwrap_or(std::fs::canonicalize(project_dir).map_err(|err| err.to_string())?);
     let path = std::fs::canonicalize(path).map_err(|e| {
         format!(
             "Could not resolve config path for security validation.\n  Path: {}\n  Error: {}\n  Fix: Check that the config file exists and is accessible.",
@@ -2094,6 +2094,21 @@ version = "0.1.0"
         assert!(err.contains("strict"));
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_config_rejects_repo_policy_when_scanning_subdirectory() {
+        let repo = unique_temp_dir("nested-project-boundary");
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let project = repo.join("app");
+        std::fs::create_dir(&project).unwrap();
+        let path = repo.join("config.json");
+        std::fs::write(&path, r#"{"min_version_age_hours":0}"#).unwrap();
+
+        let err = load_config_with_project(Some(&path), Some(&project))
+            .expect_err("policy anywhere inside the repo must remain untrusted");
+        assert!(err.contains("outside the project directory"));
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]
