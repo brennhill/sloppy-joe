@@ -18,7 +18,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         .context("Failed to read go.mod")?;
     validate_replace_targets(&content, &path)?;
 
-    let requirements = parse_requirements(&content, false);
+    let requirements = parse_requirements(&content);
     let mut deps = Vec::new();
     for (name, version) in requirements {
         let dep = Dependency {
@@ -53,7 +53,7 @@ fn validate_replace_targets(content: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Option<String>)> {
+fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
     let mut deps = Vec::new();
     let mut in_require = false;
 
@@ -73,13 +73,6 @@ fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Opt
         }
 
         if let Some(rest) = requirement {
-            let comment = rest
-                .split_once("//")
-                .map(|(_, comment)| comment.trim())
-                .unwrap_or("");
-            if !include_indirect && comment == "indirect" {
-                continue;
-            }
             if let Some(name) = rest.split_whitespace().next() {
                 let version = rest.split_whitespace().nth(1).map(String::from);
                 deps.push((name.to_string(), version));
@@ -92,13 +85,6 @@ fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Opt
             && !line.starts_with("//")
             && let Some(name) = line.split_whitespace().next()
         {
-            let comment = line
-                .split_once("//")
-                .map(|(_, comment)| comment.trim())
-                .unwrap_or("");
-            if !include_indirect && comment == "indirect" {
-                continue;
-            }
             let version = line.split_whitespace().nth(1).map(String::from);
             deps.push((name.to_string(), version));
         }
@@ -108,7 +94,7 @@ fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Opt
 }
 
 pub(crate) fn requires_go_sum(content: &str) -> bool {
-    let required: HashSet<String> = parse_requirements(content, true)
+    let required: HashSet<String> = parse_requirements(content)
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -287,7 +273,7 @@ require (
     }
 
     #[test]
-    fn indirect_deps_excluded() {
+    fn indirect_comments_cannot_hide_required_modules() {
         let dir = setup_dir(
             r#"
 module example.com/myapp
@@ -301,8 +287,9 @@ require (
 "#,
         );
         let deps = parse(&dir).unwrap();
-        assert_eq!(deps.len(), 1);
+        assert_eq!(deps.len(), 2);
         assert_eq!(deps[0].name, "github.com/gin-gonic/gin");
+        assert_eq!(deps[1].name, "github.com/spf13/cobra");
         cleanup(&dir);
     }
 
