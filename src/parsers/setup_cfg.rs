@@ -22,8 +22,11 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
             continue;
         }
 
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            section = trimmed[1..trimmed.len() - 1].trim().to_string();
+        if let Some((name, _)) = trimmed
+            .strip_prefix('[')
+            .and_then(|rest| rest.rsplit_once(']'))
+        {
+            section = name.trim().to_string();
             index += 1;
             continue;
         }
@@ -73,7 +76,7 @@ fn read_cfg_value_block(lines: &[&str], start: usize) -> (Vec<String>, usize) {
             index += 1;
             continue;
         }
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        if trimmed.starts_with('[') && trimmed.contains(']') {
             break;
         }
         let is_continuation = raw.starts_with(' ') || raw.starts_with('\t');
@@ -131,6 +134,21 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "payload");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn dependencies_under_commented_section_headers_are_read() {
+        for suffix in [" # comment", " ; comment", " "] {
+            let dir = setup_test_dir(
+                "cfg-section-comments",
+                "setup.cfg",
+                &format!("[options]{suffix}\ninstall_requires = payload==1.0.0\n"),
+            );
+            let deps = parse(&dir).unwrap();
+            assert_eq!(deps.len(), 1);
+            assert_eq!(deps[0].name, "payload");
+            cleanup(&dir);
+        }
     }
 
     #[test]
