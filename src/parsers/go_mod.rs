@@ -50,8 +50,11 @@ fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Opt
 
     for line in content.lines() {
         let line = line.trim();
+        let requirement = line
+            .strip_prefix("require")
+            .filter(|rest| rest.starts_with(char::is_whitespace));
 
-        if line == "require (" {
+        if requirement.is_some_and(|rest| rest.trim() == "(") {
             in_require = true;
             continue;
         }
@@ -60,7 +63,7 @@ fn parse_requirements(content: &str, include_indirect: bool) -> Vec<(String, Opt
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix("require ") {
+        if let Some(rest) = requirement {
             let comment = rest
                 .split_once("//")
                 .map(|(_, comment)| comment.trim())
@@ -176,6 +179,23 @@ mod tests {
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
         setup_test_dir("gomod", "go.mod", content)
+    }
+
+    #[test]
+    fn parse_whitespace_variants_of_require_directives() {
+        for requirement in [
+            "require\tgithub.com/gin-gonic/gin v1.9.1",
+            "require\t(\n github.com/gin-gonic/gin v1.9.1\n)",
+        ] {
+            let dir = setup_dir(&format!("module example.com/app\n{requirement}\n"));
+            let deps = parse(&dir).unwrap();
+            assert_eq!(deps.len(), 1);
+            assert_eq!(deps[0].name, "github.com/gin-gonic/gin");
+            assert!(requires_go_sum(
+                &std::fs::read_to_string(dir.join("go.mod")).unwrap()
+            ));
+            cleanup(&dir);
+        }
     }
 
     #[test]
