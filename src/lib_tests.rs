@@ -10609,3 +10609,36 @@ async fn future_full_scan_timestamp_does_not_suppress_refresh_guidance() {
     );
     std::fs::remove_dir_all(cache_dir).unwrap();
 }
+
+#[test]
+fn legacy_python_build_and_test_dependencies_are_visible() {
+    for (manifest, content) in [
+        (
+            "setup.py",
+            "setup(setup_requires=['build-payload==1.0.0'], tests_require=['test-payload==1.0.0'])",
+        ),
+        (
+            "setup.cfg",
+            "[options]\nsetup_requires = build-payload==1.0.0\ntests_require: test-payload==1.0.0\n",
+        ),
+    ] {
+        let dir = unique_dir();
+        std::fs::write(dir.join(manifest), content).unwrap();
+        let deps = if manifest == "setup.py" {
+            parsers::setup_py::parse(&dir)
+        } else {
+            parsers::setup_cfg::parse(&dir)
+        }
+        .unwrap();
+        let names = deps.iter().map(|dep| dep.name.as_str()).collect::<Vec<_>>();
+        assert!(
+            names.contains(&"build-payload"),
+            "build dependency omitted from {manifest}"
+        );
+        assert!(
+            names.contains(&"test-payload"),
+            "test dependency omitted from {manifest}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

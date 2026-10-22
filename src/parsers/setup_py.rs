@@ -45,10 +45,11 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     }
     let mut deps = Vec::new();
 
-    if let Some(value) = extract_argument_literal(setup_call.as_deref(), "install_requires", path)?
-    {
-        let (entries, _) = parse_python_string_list(&value, 0)?;
-        collect_dependency_lines(&entries, path, &mut deps)?;
+    for key in ["install_requires", "setup_requires", "tests_require"] {
+        if let Some(value) = extract_argument_literal(setup_call.as_deref(), key, path)? {
+            let (entries, _) = parse_python_string_list(&value, 0)?;
+            collect_dependency_lines(&entries, path, &mut deps)?;
+        }
     }
     if let Some(value) = extract_argument_literal(setup_call.as_deref(), "extras_require", path)? {
         let (entries, _) = parse_python_string_dict_values(&value, 0)?;

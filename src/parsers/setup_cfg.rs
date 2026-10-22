@@ -39,8 +39,11 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
 
         match section.as_str() {
             "options"
-                if key_name(trimmed)
-                    .is_some_and(|key| key.eq_ignore_ascii_case("install_requires")) =>
+                if key_name(trimmed).is_some_and(|key| {
+                    ["install_requires", "setup_requires", "tests_require"]
+                        .iter()
+                        .any(|supported| key.eq_ignore_ascii_case(supported))
+                }) =>
             {
                 let (entries, next_index) = read_cfg_value_block(&lines, index);
                 collect_dependency_lines(&entries, path, &mut deps)?;
