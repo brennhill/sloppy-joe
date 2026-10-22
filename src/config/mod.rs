@@ -66,7 +66,7 @@ use std::path::{Path, PathBuf};
 /// ```
 ///
 /// - `canonical`: keys are approved packages, values are rejected alternatives.
-/// - `internal`: your org's packages. Skip ALL checks. These change constantly.
+/// - `internal`: your org's packages. Keep OSV vulnerability checks; skip other package checks.
 /// - `allowed`: vetted external packages. Skip existence + similarity, but
 ///   still subject to version age gating.
 /// - `similarity_exceptions`: exact package/candidate/generator suppressions
@@ -346,7 +346,7 @@ impl SloppyJoeConfig {
         map
     }
 
-    /// Check if a package is internal (skip ALL checks).
+    /// Check if a package is internal (OSV-only package checks).
     pub fn is_internal(&self, ecosystem: &str, package: &str) -> bool {
         Self::matches_patterns(&self.internal, ecosystem, package)
     }

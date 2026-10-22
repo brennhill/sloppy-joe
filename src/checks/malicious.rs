@@ -160,7 +160,7 @@ pub async fn check_malicious_with_cache(
         }
     }
 
-    let results: Vec<_> = stream::iter(pending.into_iter())
+    let results: Vec<_> = stream::iter(pending)
         .map(|(cache_key, (name, ecosystem, version))| async move {
             let result = osv_client
                 .query(&name, ecosystem.as_str(), version.as_deref())

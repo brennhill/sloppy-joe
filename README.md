@@ -465,9 +465,9 @@ sloppy-joe check --json
 
 **`canonical`** — keys are approved packages; values are rejected alternatives.
 
-**`internal`** — your org's packages. Skip ALL checks. These change constantly.
+**`internal`** — your org's packages. Keep OSV vulnerability checks; skip other package checks.
 
-**`allowed`** — vetted external packages. Skip existence + similarity, but still subject to the version age gate.
+**`allowed`** — vetted external packages. Skip existence + similarity, but retain canonical, metadata, version-age, and OSV checks. These rules also apply to transitive dependencies.
 
 **`similarity_exceptions`** — exact package/candidate/generator suppressions for reviewed similarity false positives. Use this when one specific similarity edge is wrong but you still want normal checks on the package.
 

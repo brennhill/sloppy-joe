@@ -38,13 +38,16 @@ Maven scans continue in reduced-confidence mode because there is no trusted proj
 ### Gradle
 
 - Missing or unreadable `gradle.lockfile`
-- Custom repositories beyond `mavenCentral()`
+- Custom repositories beyond `mavenCentral()`, including repositories in ancestor repository-local `settings.gradle` / `settings.gradle.kts`
+- Applied scripts, composite builds, dependency mutation calls, version-catalog expressions, and unsupported configurations
+- Only literal coordinates in `implementation`, `api`, `compileOnly`, `runtimeOnly`, and `testImplementation` are accepted
 - Local project or file dependency sources such as `project(...)`, `files(...)`, `fileTree(...)`, or `includeBuild(...)`
 - Classifier-bearing dependency notation
 
 ### Maven
 
 - Custom `<repositories>`, `<pluginRepositories>`, or equivalent namespaced repository declarations
+- Namespaced or attributed `<dependency>` elements that cannot be parsed safely
 - `systemPath` dependencies
 
 ## Current limitations

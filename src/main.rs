@@ -116,11 +116,11 @@ enum Commands {
         #[arg(long)]
         paranoid: bool,
 
-        /// Disable reading from the similarity disk cache.
+        /// Disable reading from disk caches, including OSV.
         #[arg(long)]
         no_cache: bool,
 
-        /// Directory to store similarity cache files.
+        /// Directory to store scan cache files.
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
 

@@ -88,7 +88,7 @@ Lists your organization's own packages by ecosystem. Supports glob patterns.
 }
 ```
 
-**What it does:** Internal packages skip ALL checks — existence, similarity, canonical, version age, metadata, and vulnerability. They change constantly and are under your control.
+**What it does:** Internal packages retain OSV vulnerability checks and skip other package checks. This applies to direct and transitive packages; manifest, lockfile, and source validation still run.
 
 **Pattern syntax:** Use `*` at the end for prefix matching. `@yourorg/*` matches `@yourorg/utils`, `@yourorg/core`, etc. Exact strings match exactly.
 
@@ -105,7 +105,7 @@ Lists vetted external packages that should skip existence and similarity checks 
 }
 ```
 
-**What it does:** Allowed packages skip existence and similarity checks (so they won't be flagged as hallucinated or typosquatted) but are still checked for:
+**What it does:** Direct and transitive allowed packages skip existence and similarity checks (so they won't be flagged as hallucinated or typosquatted) but are still checked for:
 - Version age (was this version published in the last N hours?)
 - Known vulnerabilities (OSV.dev)
 - Metadata signals (install scripts + other risk factors, dependency explosion, maintainer changes)

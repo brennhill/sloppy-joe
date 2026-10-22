@@ -32,6 +32,9 @@ sloppy-joe check
 
 - Missing or unreadable `packages.lock.json`.
 - Broken or unreadable `.csproj` dependency declarations.
+- Explicit MSBuild imports and ancestor `Directory.Build.props`, `Directory.Build.targets`, or `Directory.Packages.props` imports.
+- Namespaced package references, `PackageDownload`, and package references without `Include`.
+- Empty or structurally unsupported `packages.lock.json` files.
 
 ## Current limitations
 

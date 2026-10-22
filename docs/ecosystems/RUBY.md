@@ -30,12 +30,15 @@ sloppy-joe check
 ## What sloppy-joe checks
 
 - `Gemfile` and `Gemfile.lock` are both required.
-- Multi-line `gem` declarations are parsed.
+- Literal `gem` declarations are parsed across lines, with indentation, parentheses, and comments.
+- Literal group/platform blocks and Ruby runtime declarations are supported; dependency expressions must remain literal.
 - Registry-backed gem dependencies are scanned with lockfile-backed exact version and transitive coverage from `Gemfile.lock`.
 
 ## What blocks
 
-- Missing or unreadable `Gemfile.lock`.
+- Missing, empty, or unreadable `Gemfile.lock`.
+- Git/path/custom-source blocks and repository-local `.bundle/config` files.
+- Executable or dynamic declarations, `gemspec`, `eval_gemfile`, argument expressions, and unsupported gem options; these cannot silently produce an empty scan.
 - Non-registry Gem sources in `Gemfile`, including:
   - `git:`
   - `github:`

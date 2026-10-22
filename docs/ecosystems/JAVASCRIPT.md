@@ -42,7 +42,9 @@ If the project is a workspace or monorepo, scan the workspace root when possible
 - Local bindings that point at the wrong directory or the wrong local package identity.
 - Non-standard or untrusted tarball provenance in the lockfile.
 - Manager-specific unsupported trust surfaces, including:
-  - npm `overrides`
+  - npm `overrides`, Yarn `resolutions`, and package-local `pnpm` settings
+  - pnpm workspace configuration beyond `packages` membership
+  - repository-local `.npmrc`, plus manager-specific `.yarnrc`, `.yarnrc.yml`, `.pnpmfile.cjs`, and `bunfig.toml` configuration
   - bundled npm payloads (`bundled` / `inBundle`)
   - legacy npm `lockfileVersion: 1` by default
   - Bun binary lockfiles (`bun.lockb`)

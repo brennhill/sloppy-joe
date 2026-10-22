@@ -107,7 +107,8 @@ tree closes the single largest coverage gap identified in the adversarial securi
 
 - Issues must be clearly labeled as direct or transitive.
 - The `internal` and `allowed` lists MUST apply to transitive deps the same way they
-  apply to direct deps.
+  apply to direct deps. Internal packages retain OSV checks. Allowed packages retain
+  canonical, metadata, version-age, and OSV checks.
 
 ---
 

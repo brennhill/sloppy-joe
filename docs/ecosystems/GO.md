@@ -26,22 +26,23 @@ sloppy-joe check
 - `go.mod` is always required.
 - `go.sum` is required when the module depends on external code.
 - If the module has no external dependencies, or every required dependency is replaced with a local path, missing `go.sum` does not block.
-- Direct Go dependencies still get the normal dependency checks such as existence, similarity, and canonicals.
+- Every module listed in `go.mod`, including requirements marked `// indirect`, gets normal dependency checks. Whitespace and comment formatting do not change coverage.
 
 ## What blocks
 
 - Missing `go.sum` when the module depends on external packages.
-- Local `replace` targets in `go.mod`; those are not trusted yet.
+- All local and remote `replace` targets in `go.mod`; replacement identities are not trusted yet.
+- Ancestor `go.work` files; workspace source resolution is not modeled.
 - Broken or unreadable `go.mod`.
 
 ## Current limitations
 
 - `go.sum` is treated as an integrity gate, not as a full project-local lockfile model.
 - Go does not currently get the same trusted lockfile-backed transitive graph coverage as ecosystems with richer project-local lockfiles.
-- Local `replace` targets fail closed today.
+- Replacement and workspace source resolution fail closed today.
 
 ## Recommended workflow
 
 - Run `go mod tidy` and commit `go.sum`.
-- Avoid local `replace` directives in repos you want to scan strictly.
+- Avoid `replace` directives and `go.work` files in repos you want to scan strictly.
 - Treat Go support today as strong on direct dependency hygiene and checksum presence, but lighter on trusted transitive graph reconstruction than Rust, JavaScript, or Poetry.

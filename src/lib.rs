@@ -24,7 +24,7 @@ use report::{Issue, ScanReport, Severity};
 /// If None, only existence and similarity checks run (no canonical check).
 ///
 /// Three tiers of packages:
-/// - **internal**: skip ALL checks (your org's packages, change constantly)
+/// - **internal**: OSV-only package checks (your org's packages)
 /// - **allowed**: skip existence + similarity, still subject to canonical + age gate
 /// - **everything else**: full checks
 ///
@@ -6601,7 +6601,7 @@ pub struct ScanOptions<'a> {
     pub deep: bool,
     /// Enable expensive mutation generators like bitflip (--paranoid).
     pub paranoid: bool,
-    /// Disable reading from disk caches (--no-cache). Writes still happen.
+    /// Disable reading from disk caches (--no-cache).
     pub no_cache: bool,
     /// Override the default cache directory (--cache-dir).
     pub cache_dir: Option<&'a std::path::Path>,
