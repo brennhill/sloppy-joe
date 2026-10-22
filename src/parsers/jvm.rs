@@ -278,6 +278,16 @@ fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
     let mut idx = 0usize;
     while idx < tokens.len() {
         match &tokens[idx] {
+            GradleToken::Ident(name)
+                if name.split('.').any(|part| part == "dependencies")
+                    && (name != "dependencies"
+                        || !matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{')))) =>
+            {
+                bail!(
+                    "Unsupported Gradle dependency expression in {}: dependency mutations outside literal blocks cannot be verified",
+                    path.display()
+                );
+            }
             GradleToken::Ident(name) if matches!(name.as_str(), "apply" | "includeBuild") => {
                 bail!(
                     "Unsupported Gradle script source '{}' in {}: applied scripts and composite builds cannot be verified",
@@ -461,6 +471,13 @@ mod tests {
             );
             cleanup(&dir);
         }
+        let dir =
+            setup_gradle("dependencies.add(\"implementation\", \"com.example:payload:1.0.0\")");
+        assert!(
+            parse(&dir).is_err(),
+            "qualified dependency mutations must fail closed"
+        );
+        cleanup(&dir);
     }
 
     #[test]
