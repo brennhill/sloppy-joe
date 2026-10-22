@@ -169,12 +169,20 @@ impl Check for MaliciousCheck {
         acc: &'a mut ScanAccumulator,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            let results = if ctx.opts.disable_osv_disk_cache {
+            let results = if ctx.opts.disable_osv_disk_cache || ctx.opts.no_cache {
                 super::malicious::check_malicious_with_cache(
                     ctx.osv_client,
                     ctx.non_internal_deps,
                     ctx.resolution,
                     None,
+                )
+                .await?
+            } else if let Some(cache_dir) = ctx.opts.cache_dir {
+                super::malicious::check_malicious_with_cache(
+                    ctx.osv_client,
+                    ctx.non_internal_deps,
+                    ctx.resolution,
+                    Some(&cache_dir.join("osv-cache.json")),
                 )
                 .await?
             } else {

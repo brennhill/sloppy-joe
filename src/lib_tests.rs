@@ -4788,6 +4788,47 @@ impl OsvClient for VulnOsvClient {
 }
 
 #[tokio::test]
+async fn vulnerability_checks_honor_the_selected_cache_and_no_cache() {
+    let dir = fixture_dir("transitive-typosquat");
+    let cache_dir = unique_dir();
+    cache::atomic_write_json(
+        &cache_dir.join("osv-cache.json"),
+        &serde_json::json!({
+            "timestamp": cache::now_epoch(),
+            "entries": {
+                "npm:react:18.3.1": {"vuln_ids": ["CACHED-VULNERABILITY"]},
+                "npm:expresss:1.0.0": {"vuln_ids": []}
+            }
+        }),
+    );
+    for no_cache in [false, true] {
+        let config: config::SloppyJoeConfig = serde_json::from_value(serde_json::json!({
+            "internal": {"npm": ["react", "expresss"]}
+        }))
+        .unwrap();
+        let report = scan_fixture_with_fake_services(
+            &dir,
+            Some("npm"),
+            config,
+            &FakeRegistry { existing: vec![] },
+            &FakeOsvClient,
+            &ScanOptions {
+                cache_dir: Some(&cache_dir),
+                no_cache,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            report.has_errors(),
+            !no_cache,
+            "cache selection and bypass must reach OSV"
+        );
+    }
+}
+
+#[tokio::test]
 async fn transitive_exemptions_preserve_vulnerability_checks() {
     let dir = fixture_dir("transitive-typosquat");
     for policy in ["allowed", "internal"] {
