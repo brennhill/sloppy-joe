@@ -6293,7 +6293,8 @@ async fn scan_parsed_project(
         acc.issues.extend(internal_acc.issues);
     }
 
-    let transitive_count = scan_transitive_dependencies(&lockfile_data, &ctx, &mut acc).await?;
+    let transitive_count =
+        scan_transitive_dependencies(&lockfile_data, &ctx, &project.deps, &mut acc).await?;
 
     Ok(ScanReport::from_issues_with_review_candidates(
         non_internal.len() + transitive_count,
@@ -6410,7 +6411,8 @@ async fn scan_with_services_inner_for_kind(
         acc.issues.extend(internal_acc.issues);
     }
 
-    let transitive_count = scan_transitive_dependencies(&lockfile_data, &ctx, &mut acc).await?;
+    let transitive_count =
+        scan_transitive_dependencies(&lockfile_data, &ctx, &deps, &mut acc).await?;
 
     Ok(ScanReport::from_issues_with_review_candidates(
         non_internal.len() + transitive_count,
@@ -6422,10 +6424,31 @@ async fn scan_with_services_inner_for_kind(
 async fn scan_transitive_dependencies(
     lockfile_data: &lockfiles::LockfileData,
     ctx: &checks::CheckContext<'_>,
+    direct_deps: &[Dependency],
     acc: &mut checks::ScanAccumulator,
 ) -> Result<usize> {
+    let direct_resolution = lockfile_data.resolve_transitive(direct_deps)?;
+    let direct_versions: std::collections::HashSet<_> = direct_deps
+        .iter()
+        .filter_map(|dep| {
+            direct_resolution
+                .exact_version(dep)
+                .map(|version| (dep.package_name(), version))
+        })
+        .collect();
+    let transitive_deps: Vec<_> = lockfile_data
+        .transitive_deps
+        .iter()
+        .filter(|dep| {
+            !direct_versions.contains(&(
+                dep.package_name(),
+                dep.version.as_deref().unwrap_or_default(),
+            ))
+        })
+        .cloned()
+        .collect();
     let (checkable, non_internal, internal) =
-        classify_deps(&lockfile_data.transitive_deps, ctx.config, ctx.ecosystem);
+        classify_deps(&transitive_deps, ctx.config, ctx.ecosystem);
     let mut trans_acc = checks::ScanAccumulator::new();
     trans_acc.similarity_flagged = acc.similarity_flagged.clone();
     if !non_internal.is_empty() {

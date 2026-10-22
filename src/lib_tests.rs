@@ -4788,6 +4788,37 @@ impl OsvClient for VulnOsvClient {
 }
 
 #[tokio::test]
+async fn internal_direct_packages_are_not_reported_again_as_transitives() {
+    let dir = fixture_dir("transitive-typosquat");
+    let config =
+        serde_json::from_value(serde_json::json!({"internal": {"npm": ["react", "expresss"]}}))
+            .unwrap();
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config,
+        &FakeRegistry { existing: vec![] },
+        &VulnOsvClient {
+            vulnerable: vec!["react".into()],
+        },
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let issues: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|issue| issue.package == "react")
+        .collect();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].source.as_deref(), Some("direct"));
+}
+
+#[tokio::test]
 async fn vulnerability_checks_honor_the_selected_cache_and_no_cache() {
     let dir = fixture_dir("transitive-typosquat");
     let cache_dir = unique_dir();
