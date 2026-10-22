@@ -228,8 +228,8 @@ fn validate_literal_setup_arguments(content: &str) -> Result<()> {
                 let token = &content[start..index];
                 let mut next = index;
                 skip_ws(bytes, &mut next);
-                if !matches!(token, "True" | "False" | "None")
-                    && !(depth == 0 && bytes.get(next) == Some(&b'='))
+                if !(matches!(token, "True" | "False" | "None")
+                    || depth == 0 && bytes.get(next) == Some(&b'='))
                 {
                     bail!("Scan not supported: nonliteral setup.py argument");
                 }
