@@ -32,6 +32,15 @@ fn validate_replace_targets(content: &str, path: &Path) -> Result<()> {
             path.display()
         );
     }
+    if content
+        .lines()
+        .any(|line| line.trim().split([' ', '\t', '(']).next() == Some("replace"))
+    {
+        anyhow::bail!(
+            "Unsupported remote go.mod replace target in {}: replacement module identities are not trusted yet",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -346,6 +355,22 @@ require example.com/a v1.2.3
 replace example.com/a => example.com/b
 "#;
         assert!(requires_go_sum(content));
+    }
+
+    #[test]
+    fn reject_remote_replace_targets() {
+        for replacement in [
+            "replace github.com/gin-gonic/gin => github.com/attacker/payload v1.0.0",
+            "replace (\n github.com/gin-gonic/gin => github.com/attacker/payload v1.0.0\n)",
+        ] {
+            let dir = setup_dir(&format!(
+                "module example.com/app\nrequire github.com/gin-gonic/gin v1.9.1\n{replacement}\n"
+            ));
+            let err =
+                parse(&dir).expect_err("remote replacements must not scan the original identity");
+            assert!(err.to_string().contains("replace target"));
+            cleanup(&dir);
+        }
     }
 
     #[test]
