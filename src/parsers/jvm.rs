@@ -36,14 +36,31 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
         "testImplementation",
     ];
 
-    for line in content.lines() {
-        let line = line.trim();
-        for cfg in &configs {
-            if line.starts_with(cfg)
-                && let Some(dep) = extract_gradle_dep(line, path)?
-            {
+    let tokens = tokenize_gradle(&content);
+    for (idx, token) in tokens.iter().enumerate() {
+        if let GradleToken::Ident(config) = token
+            && configs.contains(&config.as_str())
+        {
+            let next = idx
+                + 1
+                + usize::from(matches!(
+                    tokens.get(idx + 1),
+                    Some(GradleToken::Symbol('('))
+                ));
+            if let Some(GradleToken::Literal(literal)) = tokens.get(next) {
+                let dep = extract_gradle_dep(literal, path)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Unsupported Gradle dependency notation in {}",
+                        path.display()
+                    )
+                })?;
                 super::validate_dependency(&dep, path)?;
                 deps.push(dep);
+            } else {
+                bail!(
+                    "Unsupported Gradle dependency notation in {}: expected literal coordinates",
+                    path.display()
+                );
             }
         }
     }
@@ -115,6 +132,7 @@ fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GradleToken {
     Ident(String),
+    Literal(String),
     Symbol(char),
 }
 
@@ -139,6 +157,7 @@ fn tokenize_gradle(content: &str) -> Vec<GradleToken> {
                 i = (i + 2).min(chars.len());
             }
             '"' | '\'' => {
+                let start = i;
                 let quote = chars[i];
                 i += 1;
                 while i < chars.len() {
@@ -152,6 +171,9 @@ fn tokenize_gradle(content: &str) -> Vec<GradleToken> {
                     }
                     i += 1;
                 }
+                tokens.push(GradleToken::Literal(
+                    chars[start..i.min(chars.len())].iter().collect(),
+                ));
             }
             '{' | '}' | '(' | ')' => {
                 tokens.push(GradleToken::Symbol(chars[i]));
@@ -370,6 +392,21 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "org.slf4j:slf4j-api");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn parse_inline_and_multiline_gradle_dependencies() {
+        for body in [
+            "dependencies { implementation 'com.example:lib:1.0.0'; testImplementation(\"com.example:test:2.0.0\") }",
+            "dependencies {\n implementation(\n \"com.example:lib:1.0.0\"\n )\n testImplementation(\"com.example:test:2.0.0\")\n}",
+        ] {
+            let dir = setup_gradle(body);
+            let deps = parse(&dir).unwrap();
+            assert_eq!(deps.len(), 2);
+            assert_eq!(deps[0].name, "com.example:lib");
+            assert_eq!(deps[1].version.as_deref(), Some("2.0.0"));
+            cleanup(&dir);
+        }
     }
 
     #[test]
