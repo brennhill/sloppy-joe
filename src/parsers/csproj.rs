@@ -15,6 +15,18 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
     let content = strip_xml_comments(&content);
 
+    if content.split('<').skip(1).any(|tag| {
+        tag.split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
+            .next()
+            .and_then(|name| name.rsplit(':').next())
+            == Some("Import")
+    }) {
+        bail!(
+            "Unsupported MSBuild Import in {}: imported dependency declarations are not trusted yet",
+            csproj.display()
+        );
+    }
+
     let mut deps = Vec::new();
     let mut search_start = 0usize;
     while let Some(open_idx) = find_package_reference_start(&content, search_start) {
@@ -192,6 +204,15 @@ mod tests {
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
         setup_test_dir("csproj", "test.csproj", content)
+    }
+
+    #[test]
+    fn reject_unmodeled_project_imports() {
+        let dir = setup_dir(r#"<Project><Import Project="Dependencies.props" /></Project>"#);
+        std::fs::write(dir.join("Dependencies.props"), r#"<Project><ItemGroup><PackageReference Include="Payload" Version="1.0.0" /></ItemGroup></Project>"#).unwrap();
+        let err = parse(&dir).expect_err("imported package references must not disappear");
+        assert!(err.to_string().contains("Import"));
+        cleanup(&dir);
     }
 
     #[test]
