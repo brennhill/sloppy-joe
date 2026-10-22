@@ -15,6 +15,22 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
     let content = strip_xml_comments(&content);
 
+    for ancestor in csproj.parent().into_iter().flat_map(Path::ancestors) {
+        for name in [
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Packages.props",
+        ] {
+            if super::path_detected(&ancestor.join(name))? {
+                bail!(
+                    "Unsupported MSBuild Import '{}' in {}: implicit dependency imports are not trusted yet",
+                    name,
+                    csproj.display()
+                );
+            }
+        }
+    }
+
     if content.split('<').skip(1).any(|tag| {
         tag.split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
             .next()
@@ -204,6 +220,22 @@ mod tests {
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
         setup_test_dir("csproj", "test.csproj", content)
+    }
+
+    #[test]
+    fn reject_implicit_dependency_imports() {
+        for imported in [
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Directory.Packages.props",
+        ] {
+            let dir = setup_dir("<Project />");
+            std::fs::write(dir.join(imported), r#"<Project><ItemGroup><PackageReference Include="Payload" Version="1.0.0" /></ItemGroup></Project>"#).unwrap();
+            let err = parse(&dir)
+                .expect_err("automatically imported package references must not disappear");
+            assert!(err.to_string().contains(imported));
+            cleanup(&dir);
+        }
     }
 
     #[test]
