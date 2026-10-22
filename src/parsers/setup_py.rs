@@ -8,6 +8,13 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
 pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
+    // shortcut: the literal scanner cannot model triple-quoted strings; reject until tokenized properly.
+    if content.contains("\"\"\"") || content.contains("'''") {
+        bail!(
+            "Scan not supported: triple-quoted setup.py strings in {}",
+            path.display()
+        );
+    }
     let setup_call = extract_setup_call(&content)?;
     if setup_call.is_none() {
         bail!(
@@ -434,6 +441,19 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "payload");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn triple_quoted_strings_cannot_hide_setup_calls() {
+        for (index, source) in [
+            "DOC = \"\"\"\" setup(install_requires=[]) \"\"\"\nsetup(install_requires=['payload==1.0.0'])\n",
+            "DOC = r\"\"\"\" setup(install_requires=[]) \"\"\"\nsetup(install_requires=['payload==1.0.0'])\n",
+        ].iter().enumerate() {
+            let dir = setup_test_dir(&format!("setup-triple-{index}"), "setup.py", source);
+            let error = parse(&dir).expect_err("triple quoted strings are outside the supported grammar");
+            assert!(error.to_string().contains("Scan not supported"), "{error}");
+            cleanup(&dir);
+        }
     }
 
     #[test]
