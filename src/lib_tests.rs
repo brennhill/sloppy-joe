@@ -4788,6 +4788,50 @@ impl OsvClient for VulnOsvClient {
 }
 
 #[tokio::test]
+async fn js_dependency_rewrites_cannot_bypass_manifest_lockfile_sync() {
+    for policy in ["pnpm", "resolutions", "workspace"] {
+        let dir = unique_dir();
+        let manager = if policy == "resolutions" {
+            "yarn"
+        } else {
+            "pnpm"
+        };
+        let mut manifest = serde_json::json!({"name":"app", "packageManager":format!("{manager}@1.0.0"), "dependencies":{"react":"18.3.1"}});
+        if policy == "pnpm" {
+            manifest[policy] = serde_json::json!({"overrides":{"react":"npm:payload@1.0.0"}});
+        } else if policy == "resolutions" {
+            manifest[policy] = serde_json::json!({"react":"npm:payload@1.0.0"});
+        } else {
+            std::fs::write(
+                dir.join("pnpm-workspace.yaml"),
+                "packages: []\noverrides:\n  react: npm:payload@1.0.0\n",
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("package.json"), manifest.to_string()).unwrap();
+        if manager == "pnpm" {
+            std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      react:\n        specifier: 18.3.1\n        version: 18.3.1\npackages:\n  react@18.3.1:\n    resolution:\n      integrity: sha512-demo\n").unwrap();
+        } else {
+            std::fs::write(dir.join("yarn.lock"), "# yarn lockfile v1\nreact@18.3.1:\n  version \"18.3.1\"\n  resolved \"https://registry.yarnpkg.com/react/-/react-18.3.1.tgz\"\n  integrity sha512-demo\n").unwrap();
+        }
+        let err = scan_with_source_full_options(
+            &dir,
+            Some("npm"),
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("unmodeled dependency rewrites must fail closed");
+        assert!(err.to_string().contains("rewrite"), "{policy}: {err}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn repo_package_manager_config_cannot_redirect_trusted_js_sources() {
     for (filename, manager) in [
         (".npmrc", "npm"),

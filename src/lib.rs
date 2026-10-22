@@ -472,6 +472,7 @@ fn preflight_project_inputs_with_options(
         if spec.kind == ProjectInputKind::Npm {
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_supported_js_manager(spec)?;
+            validate_js_manifest_security_policy(spec, manifest)?;
             match spec
                 .js_binding
                 .as_ref()
@@ -479,7 +480,6 @@ fn preflight_project_inputs_with_options(
                 .unwrap_or(JsPackageManager::Npm)
             {
                 JsPackageManager::Npm => {
-                    validate_npm_manifest_security_policy(spec, manifest)?;
                     let allowed_alias_targets = selected_lockfile_path(spec)
                         .and_then(|path| npm_alias_targets.get(&path))
                         .cloned()
@@ -3728,13 +3728,19 @@ fn validate_lockfile_syntax(
     Ok(())
 }
 
-fn validate_npm_manifest_security_policy(
+fn validate_js_manifest_security_policy(
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
 ) -> Result<()> {
     if manifest.get("overrides").is_some() {
         anyhow::bail!(
             "package.json '{}' uses npm overrides. Overrides change the resolved dependency graph, and sloppy-joe does not yet have strict override verification. Remove overrides or review this project with another control until strict support exists.",
+            spec.manifest_path.display()
+        );
+    }
+    if manifest.get("resolutions").is_some() || manifest.get("pnpm").is_some() {
+        anyhow::bail!(
+            "Unsupported JS dependency rewrite configuration in '{}': resolutions and pnpm settings cannot be verified against the lockfile",
             spec.manifest_path.display()
         );
     }
@@ -4056,6 +4062,15 @@ fn parse_pnpm_workspaces(workspace_dir: &std::path::Path) -> Result<Option<Vec<S
             err
         )
     })?;
+    if value
+        .as_mapping()
+        .is_some_and(|mapping| mapping.keys().any(|key| key.as_str() != Some("packages")))
+    {
+        anyhow::bail!(
+            "Unsupported pnpm workspace dependency rewrite configuration '{}': only package membership is supported",
+            path.display()
+        );
+    }
     let packages = value
         .get("packages")
         .and_then(|value| value.as_sequence())
