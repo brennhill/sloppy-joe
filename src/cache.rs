@@ -303,7 +303,7 @@ pub fn read_json_cache<T: serde::de::DeserializeOwned>(
     }
     let content = std::fs::read_to_string(path).ok()?;
     let data: T = serde_json::from_str(&content).ok()?;
-    let age = now_epoch().saturating_sub(timestamp_extractor(&data));
+    let age = now_epoch().checked_sub(timestamp_extractor(&data))?;
     if age < ttl_secs { Some(data) } else { None }
 }
 

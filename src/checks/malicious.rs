@@ -411,6 +411,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn future_dated_clean_cache_does_not_hide_vulnerabilities() {
+        let dir = crate::parsers::test_utils::empty_test_dir("osv-future-cache");
+        let path = dir.join("osv-cache.json");
+        cache::atomic_write_json(
+            &path,
+            &serde_json::json!({
+                "timestamp": cache::now_epoch() + 86400,
+                "entries": {"npm:some-pkg:": {"vuln_ids": []}}
+            }),
+        );
+        let client = MockOsvClient {
+            responses: HashMap::from([(
+                "some-pkg".to_string(),
+                vec!["NEW-VULNERABILITY".to_string()],
+            )]),
+        };
+        let issues = check_malicious_with_cache(
+            &client,
+            &[dep("some-pkg")],
+            &ResolutionResult::default(),
+            Some(&path),
+        )
+        .await
+        .unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("NEW-VULNERABILITY"))
+        );
+        crate::parsers::test_utils::cleanup(&dir);
+    }
+
+    #[tokio::test]
     async fn cache_used_when_fresh() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
