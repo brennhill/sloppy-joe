@@ -278,6 +278,13 @@ fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
     let mut idx = 0usize;
     while idx < tokens.len() {
         match &tokens[idx] {
+            GradleToken::Ident(name) if matches!(name.as_str(), "apply" | "includeBuild") => {
+                bail!(
+                    "Unsupported Gradle script source '{}' in {}: applied scripts and composite builds cannot be verified",
+                    name,
+                    path.display()
+                );
+            }
             GradleToken::Ident(name)
                 if matches!(name.as_str(), "repositories" | "dependencies")
                     && matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{'))) =>
@@ -410,6 +417,22 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "org.slf4j:slf4j-api");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_unmodeled_gradle_script_sources() {
+        for expression in [
+            "apply from: 'dependencies.gradle'",
+            "apply(from = \"dependencies.gradle.kts\")",
+            "includeBuild('../payload')",
+        ] {
+            let dir = setup_gradle(&format!("{expression}\ndependencies {{}}"));
+            assert!(
+                parse(&dir).is_err(),
+                "unmodeled script sources must fail closed: {expression}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]
