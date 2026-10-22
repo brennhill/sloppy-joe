@@ -286,6 +286,14 @@ pub(crate) async fn check_similarity_with_options(
     ecosystem: Ecosystem,
     options: SimilarityRunOptions<'_>,
 ) -> Result<Vec<Issue>> {
+    for dep in deps {
+        if !ecosystem.supports_package_name_length(dep.package_name()) {
+            anyhow::bail!(
+                "Scan not supported: oversized package name for {}",
+                ecosystem
+            );
+        }
+    }
     let SimilarityRunOptions {
         cache_dir,
         no_cache,
@@ -775,6 +783,18 @@ mod tests {
     }
 
     // -- Repeated chars --
+
+    #[tokio::test]
+    async fn reject_oversized_names_before_mutations() {
+        let registry = FakeRegistry::empty();
+        for ecosystem in [Ecosystem::Npm, Ecosystem::PyPI, Ecosystem::Go] {
+            let deps = vec![dep_eco(&"ab".repeat(1024), ecosystem)];
+            let err = check_similarity(&registry, &deps, ecosystem)
+                .await
+                .expect_err("oversized names must not reach mutation generation");
+            assert!(err.to_string().contains("Scan not supported"), "{err}");
+        }
+    }
 
     #[tokio::test]
     async fn repeated_chars_caught() {

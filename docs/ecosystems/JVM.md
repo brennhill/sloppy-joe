@@ -52,6 +52,8 @@ Maven scans continue in reduced-confidence mode because there is no trusted proj
 
 ## Current limitations
 
+- A lockfile containing packages with no supported direct dependency declarations reports `Scan not supported` (exit 2). The scanner cannot verify that dependency graph.
+
 - Gradle is the only strict JVM path today.
 - Maven has no trusted project-local lockfile model in `sloppy-joe` yet, so exact lockfile-backed verification is reduced-confidence there.
 - Gradle custom repository and local project provenance are not modeled yet and therefore fail closed.

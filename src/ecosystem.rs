@@ -110,8 +110,16 @@ impl Ecosystem {
         }
     }
 
+    pub(crate) fn supports_package_name_length(&self, name: &str) -> bool {
+        // shortcut: cap supported names to bound quadratic typo mutations; revisit for longer registry names.
+        name.len() <= if *self == Self::Npm { 214 } else { 1024 }
+    }
+
     /// Whether the package name matches the expected shape for this ecosystem.
     pub fn has_valid_package_name_shape(&self, name: &str) -> bool {
+        if !self.supports_package_name_length(name) {
+            return false;
+        }
         match self {
             Self::Npm => valid_npm_name(name),
             Self::PyPI => valid_simple_name(name),

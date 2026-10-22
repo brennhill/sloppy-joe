@@ -448,6 +448,12 @@ pub(crate) fn first_requirements_file(dir: &Path) -> Result<Option<std::path::Pa
 }
 
 pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Result<()> {
+    if !dep.ecosystem.supports_package_name_length(&dep.name) {
+        bail!(
+            "Scan not supported: oversized package name in {}",
+            source_path.display()
+        );
+    }
     let escaped_name: String = dep
         .name
         .chars()

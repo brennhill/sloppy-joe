@@ -38,6 +38,8 @@ sloppy-joe check
 
 ## Current limitations
 
+- A lockfile containing packages with no supported direct dependency declarations reports `Scan not supported` (exit 2). The scanner cannot verify that dependency graph.
+
 - The current .NET trust model is centered on `PackageReference` plus `packages.lock.json`.
 - Feed/source policy is not yet modeled as a separate first-class trust surface.
 

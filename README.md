@@ -16,6 +16,8 @@
 
 AI code generators hallucinate package names [~20% of the time](https://arxiv.org/abs/2406.10279). Attackers register those names and wait. sloppy-joe catches them in CI before `npm install` or `pip install` runs.
 
+Package names are limited to 214 bytes for npm and 1,024 bytes for other ecosystems to bound typo-analysis work. Longer names report `Scan not supported` (exit 2).
+
 ## How to Use
 
 ```bash

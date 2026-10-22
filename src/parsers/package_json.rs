@@ -133,6 +133,19 @@ mod tests {
     }
 
     #[test]
+    fn reject_oversized_package_names() {
+        for size in [215, 1024, 2048] {
+            let dir = setup_test_dir(
+                &format!("npm-long-{size}"),
+                "package.json",
+                &format!(r#"{{"dependencies":{{"{}":"1.0.0"}}}}"#, "a".repeat(size)),
+            );
+            assert!(parse(&dir).is_err(), "accepted {size} byte npm name");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
     fn parse_dependencies_and_dev_dependencies() {
         let dir = setup_dir(
             r#"{
