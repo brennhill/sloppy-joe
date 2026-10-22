@@ -58,10 +58,10 @@ fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
     let mut in_require = false;
 
     for line in content.lines() {
-        let line = line.trim();
+        let line = line.split_once("//").map_or(line, |(code, _)| code).trim();
         let requirement = line
             .strip_prefix("require")
-            .filter(|rest| rest.starts_with(char::is_whitespace));
+            .filter(|rest| rest.starts_with(char::is_whitespace) || rest.starts_with('('));
 
         if requirement.is_some_and(|rest| rest.trim() == "(") {
             in_require = true;
@@ -181,6 +181,8 @@ mod tests {
         for requirement in [
             "require\tgithub.com/gin-gonic/gin v1.9.1",
             "require\t(\n github.com/gin-gonic/gin v1.9.1\n)",
+            "require(\n github.com/gin-gonic/gin v1.9.1\n)",
+            "require ( // module requirements\n github.com/gin-gonic/gin v1.9.1\n) // end",
         ] {
             let dir = setup_dir(&format!("module example.com/app\n{requirement}\n"));
             let deps = parse(&dir).unwrap();
