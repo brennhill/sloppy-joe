@@ -4788,6 +4788,39 @@ impl OsvClient for VulnOsvClient {
 }
 
 #[tokio::test]
+async fn repo_package_manager_config_cannot_redirect_trusted_js_sources() {
+    for (filename, manager) in [
+        (".npmrc", "npm"),
+        (".yarnrc", "yarn"),
+        (".yarnrc.yml", "yarn"),
+        (".pnpmfile.cjs", "pnpm"),
+        ("bunfig.toml", "bun"),
+    ] {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            format!(r#"{{"name":"app","packageManager":"{manager}@1.0.0","dependencies":{{}}}}"#),
+        )
+        .unwrap();
+        std::fs::write(dir.join(filename), "registry=https://attacker.example\n").unwrap();
+        let err = scan_with_source_full_options(
+            &dir,
+            Some("npm"),
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("repo-controlled manager configuration must not redirect trusted identities");
+        assert!(err.to_string().contains(filename), "{err}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn internal_direct_packages_are_not_reported_again_as_transitives() {
     let dir = fixture_dir("transitive-typosquat");
     let config =

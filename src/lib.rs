@@ -1175,6 +1175,23 @@ fn resolve_js_project_binding(
     };
     let canonical_root_dir = std::fs::canonicalize(&root_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
+    for dir in ancestor_dirs_inclusive(&canonical_project_dir, &ancestry_root)? {
+        for (filename, owner) in [
+            (".npmrc", None),
+            (".yarnrc", Some(JsPackageManager::Yarn)),
+            (".yarnrc.yml", Some(JsPackageManager::Yarn)),
+            (".pnpmfile.cjs", Some(JsPackageManager::Pnpm)),
+            ("bunfig.toml", Some(JsPackageManager::Bun)),
+        ] {
+            let path = dir.join(filename);
+            if owner.is_none_or(|owner| owner == manager) && parsers::path_detected(&path)? {
+                anyhow::bail!(
+                    "Unsupported JS package-manager configuration '{}': registry redirects and dependency rewrites cannot be verified",
+                    path.display()
+                );
+            }
+        }
+    }
     let lockfile_path = match manager {
         JsPackageManager::Npm => {
             first_existing_lockfile(&root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
