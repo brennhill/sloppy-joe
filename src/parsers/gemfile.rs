@@ -13,25 +13,21 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         let method = line
             .split(|c: char| !c.is_alphanumeric() && c != '_')
             .next();
-        let trusted_source = line.strip_prefix("source").is_some_and(|argument| {
-            [
-                "'https://rubygems.org'",
-                "\"https://rubygems.org\"",
-                "'https://rubygems.org/'",
-                "\"https://rubygems.org/\"",
-            ]
-            .iter()
-            .any(|url| {
-                argument
-                    .trim_start()
-                    .trim_start_matches('(')
-                    .trim_start()
-                    .strip_prefix(url)
-                    .is_some_and(|tail| {
-                        matches!(tail.trim().trim_start_matches(')').trim(), "" | "do")
-                    })
+        let trusted_source = line
+            .strip_prefix("source")
+            .and_then(|argument| {
+                literal_arguments(
+                    argument
+                        .trim()
+                        .strip_suffix("do")
+                        .unwrap_or(argument)
+                        .trim(),
+                )
             })
-        });
+            .is_some_and(|arguments| {
+                arguments.len() == 1 && arguments[0].trim_end_matches('/') == "https://rubygems.org"
+            });
+
         if matches!(method, Some("git" | "path" | "github" | "git_source"))
             || (method == Some("source") && !trusted_source)
         {
@@ -93,13 +89,22 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
                 current.clear();
             } else {
                 let method = trimmed.split_whitespace().next().unwrap_or_default();
-                if matches!(method, "source" | "ruby" | "end")
-                    || (matches!(method, "group" | "platform" | "platforms")
-                        && trimmed.ends_with("do"))
+                let literal_runtime = method == "ruby"
+                    && literal_arguments(trimmed[4..].trim())
+                        .is_some_and(|arguments| arguments.len() == 1);
+                let literal_group = matches!(method, "group" | "platform" | "platforms")
+                    && trimmed.strip_suffix("do").is_some_and(|prefix| {
+                        prefix[method.len()..].split(',').all(|symbol| {
+                            symbol.trim().strip_prefix(':').is_some_and(|name| {
+                                !name.is_empty()
+                                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                            })
+                        })
+                    });
+                if (method == "source" || trimmed == "end" || literal_runtime || literal_group)
+                    && !trimmed.contains(';')
                 {
-                    if !trimmed.contains(';') {
-                        continue;
-                    }
+                    continue;
                 }
                 anyhow::bail!(
                     "Unsupported Gemfile statement: dependency declarations cannot be verified"
@@ -150,31 +155,40 @@ fn has_unsupported_gem_source(line: &str) -> bool {
 }
 
 fn extract_gem_spec(line: &str) -> Option<(String, Option<String>)> {
-    // Match gem 'name' or gem "name"
-    let after_gem = line.trim_start().strip_prefix("gem")?.trim_start();
-    let after_gem = after_gem.trim_start_matches('(').trim_start();
-    let quote = after_gem.chars().next()?;
-    if quote != '\'' && quote != '"' {
+    let args = line.trim_start().strip_prefix("gem")?;
+    let mut arguments = literal_arguments(args)?.into_iter();
+    let name = arguments.next()?;
+    let version = arguments.next();
+    if arguments.next().is_some() {
         return None;
     }
-    let rest = &after_gem[1..];
-    let end = rest.find(quote)?;
-    let name = rest[..end].to_string();
-    let version = after_gem[end + 2..]
-        .split(',')
-        .map(str::trim)
-        .find_map(|part| {
-            let part = part.trim_start_matches(',').trim();
-            if part.starts_with('\'') || part.starts_with('"') {
-                let q = part.chars().next()?;
-                let remainder = &part[1..];
-                let end = remainder.find(q)?;
-                Some(remainder[..end].to_string())
-            } else {
-                None
-            }
-        });
     Some((name, version))
+}
+
+fn literal_arguments(expression: &str) -> Option<Vec<String>> {
+    let mut remaining = expression.trim();
+    if let Some(body) = remaining.strip_prefix('(') {
+        remaining = body.strip_suffix(')')?.trim();
+    }
+    let mut arguments = Vec::new();
+    loop {
+        let quote = remaining.chars().next()?;
+        if !matches!(quote, '\'' | '"') {
+            return None;
+        }
+        let body = &remaining[1..];
+        let end = body.find(quote)?;
+        let literal = &body[..end];
+        if literal.contains('\\') || literal.contains("#{") {
+            return None;
+        }
+        arguments.push(literal.to_string());
+        remaining = body[end + 1..].trim();
+        if remaining.is_empty() {
+            return Some(arguments);
+        }
+        remaining = remaining.strip_prefix(',')?.trim();
+    }
 }
 
 fn strip_ruby_comments(line: &str) -> String {
@@ -355,6 +369,23 @@ mod tests {
             extract_gem_spec("gem 'rails', '7.0.4'"),
             Some(("rails".to_string(), Some("7.0.4".to_string())))
         );
+    }
+
+    #[test]
+    fn reject_side_effects_in_otherwise_literal_gemfile_statements() {
+        for body in [
+            "gem 'rake', '13.0.6' and gem 'payload', '1.0.0'",
+            "gem 'rake', '13.0.6', require: gem('payload', '1.0.0')",
+            "group gem('payload', '1.0.0') do\nend",
+            "ruby '3.2' if gem('payload', '1.0.0')",
+        ] {
+            let dir = setup_dir(body);
+            assert!(
+                parse(&dir).is_err(),
+                "unmodeled expressions must fail closed: {body}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]
