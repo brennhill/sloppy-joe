@@ -35,6 +35,22 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read build.gradle")?;
     validate_gradle_source_policy(&content, path)?;
+    let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
+    let boundary = crate::config::registry::find_git_root(&project_dir)
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_else(|| project_dir.clone());
+    for ancestor in project_dir
+        .ancestors()
+        .take_while(|dir| dir.starts_with(&boundary))
+    {
+        for filename in ["settings.gradle", "settings.gradle.kts"] {
+            let settings = ancestor.join(filename);
+            if super::path_detected(&settings)? {
+                let content = super::read_file_limited(&settings, super::MAX_MANIFEST_BYTES)?;
+                validate_gradle_source_policy(&content, &settings)?;
+            }
+        }
+    }
     let mut deps = Vec::new();
 
     let tokens = tokenize_gradle(&content);
@@ -394,6 +410,18 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "org.slf4j:slf4j-api");
         cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_custom_sources_in_gradle_settings() {
+        for settings in ["settings.gradle", "settings.gradle.kts"] {
+            let dir = setup_gradle("dependencies { implementation 'com.example:lib:1.0.0' }");
+            std::fs::write(dir.join(settings), "dependencyResolutionManagement { repositories { maven { url = uri(\"https://attacker.example\") } } }").unwrap();
+            let err =
+                parse(&dir).expect_err("settings repositories must obey the same source policy");
+            assert!(err.to_string().contains(settings));
+            cleanup(&dir);
+        }
     }
 
     #[test]
