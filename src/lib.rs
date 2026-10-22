@@ -6195,6 +6195,7 @@ async fn scan_with_config(
     }
 
     if opts.scan_mode.runs_full_checks()
+        && !report.has_errors()
         && let Err(reason) =
             persist_successful_full_scan_fingerprint(&projects, &cache_base, &config, opts)
     {

@@ -6883,6 +6883,48 @@ fn full_scan_recommendation_reasons_include_policy_changed_when_config_differs()
 }
 
 #[tokio::test]
+async fn failed_full_scan_keeps_the_recommendation_to_run_a_successful_scan() {
+    let dir = fixture_dir("transitive-typosquat");
+    let external = unique_dir();
+    let config_path = external.join("policy.json");
+    std::fs::write(&config_path, r#"{"internal":{"npm":["react","expresss"]}}"#).unwrap();
+    cache::atomic_write_json(
+        &external.join("osv-cache.json"),
+        &serde_json::json!({
+            "timestamp": cache::now_epoch(),
+            "entries": {
+                "npm:react:18.3.1": {"vuln_ids": ["TEST-VULNERABILITY"]},
+                "npm:expresss:1.0.0": {"vuln_ids": []}
+            }
+        }),
+    );
+    let opts = ScanOptions {
+        cache_dir: Some(&external),
+        ..Default::default()
+    };
+    let failed = scan_with_source_full_options(&dir, Some("npm"), config_path.to_str(), &opts)
+        .await
+        .unwrap();
+    assert!(failed.has_errors());
+    let fast = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        config_path.to_str(),
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            ..opts
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fast.full_scan_reasons,
+        vec![report::FullScanRecommendationReason::NoSuccessfulFullScan]
+    );
+    std::fs::remove_dir_all(external).unwrap();
+}
+
+#[tokio::test]
 async fn fast_mode_recommends_full_when_no_successful_full_scan_exists() {
     let dir = fixture_dir("transitive-typosquat");
     let cache_dir = unique_dir();
