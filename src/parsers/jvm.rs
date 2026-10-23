@@ -210,9 +210,62 @@ fn extract_gradle_dep(line: &str, source_path: &Path) -> Result<Option<Dependenc
     Ok(None)
 }
 
-fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
-    let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
+/// Read a POM with XML comments removed, so commented-out declarations are
+/// never mistaken for real ones, and reject documents Maven itself would not
+/// read unambiguously.
+pub(crate) fn read_pom(path: &Path) -> Result<String> {
+    let raw = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read pom.xml")?;
+    let content = strip_xml_comments(&raw)?;
+    validate_pom_structure(&content)?;
+    Ok(content)
+}
+
+/// Remove `<!-- ... -->` comments. An unterminated comment is an error: the
+/// rest of the file would be ignored by an XML parser.
+pub(crate) fn strip_xml_comments(content: &str) -> Result<String> {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        let Some(end) = rest[start + 4..].find("-->") else {
+            bail!("Unterminated XML comment in POM");
+        };
+        rest = &rest[start + 4 + end + 3..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// Sections that may appear only once under `<project>`. Which of two copies
+/// Maven would honor depends on its version and strictness, so more than one
+/// is rejected rather than guessed at.
+const POM_SINGLE_SECTIONS: &[&str] = &[
+    "parent",
+    "properties",
+    "dependencyManagement",
+    "dependencies",
+    "build",
+    "profiles",
+];
+
+pub(crate) fn validate_pom_structure(content: &str) -> Result<()> {
+    let Some(project) = maven_project_body(content) else {
+        return Ok(());
+    };
+    let children = xml_direct_children(project);
+    for section in POM_SINGLE_SECTIONS {
+        if children.iter().filter(|(name, _)| name == section).count() > 1 {
+            bail!(
+                "Unsupported POM: <{section}> is declared more than once, so the versions Maven uses cannot be determined"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
+    let content = read_pom(path)?;
     validate_pom_source_policy(&content, path)?;
     let mut deps = Vec::new();
     let mut remaining = content.as_str();
@@ -220,13 +273,20 @@ fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
         let (body, tail) = body
             .split_once("</dependency>")
             .context("Unterminated Maven dependency declaration")?;
-        let group =
-            extract_xml_value(body, "groupId").context("Maven dependency is missing groupId")?;
-        let artifact = extract_xml_value(body, "artifactId")
-            .context("Maven dependency is missing artifactId")?;
+        // Direct children only: an `<exclusion>` carries its own groupId,
+        // artifactId and sometimes version, none of which belong to the dependency.
+        let children = xml_direct_children(body);
+        let direct = |name: &str| {
+            children
+                .iter()
+                .find(|(child, _)| child == name)
+                .map(|(_, value)| value.trim().to_string())
+        };
+        let group = direct("groupId").context("Maven dependency is missing groupId")?;
+        let artifact = direct("artifactId").context("Maven dependency is missing artifactId")?;
         let dep = Dependency {
-            name: format!("{}:{}", group.trim(), artifact.trim()),
-            version: extract_xml_value(body, "version").map(|v| v.trim().to_string()),
+            name: format!("{group}:{artifact}"),
+            version: direct("version").filter(|version| !version.is_empty()),
             ecosystem: crate::Ecosystem::Jvm,
             actual_name: None,
         };
@@ -413,6 +473,9 @@ pub(crate) fn maven_local_parent(
     let Ok(parent_content) = super::read_file_limited(&candidate, super::MAX_MANIFEST_BYTES) else {
         return Ok(None);
     };
+    let Ok(parent_content) = strip_xml_comments(&parent_content) else {
+        return Ok(None);
+    };
     let Some(project_body) = maven_project_body(&parent_content) else {
         return Ok(None);
     };
@@ -463,10 +526,6 @@ fn maven_parent_is_local(
         relative_path_declared,
     )?
     .is_some())
-}
-
-fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
-    super::extract_xml_value(line, tag)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

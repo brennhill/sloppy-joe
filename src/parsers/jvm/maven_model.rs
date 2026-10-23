@@ -113,6 +113,36 @@ struct PomLevel {
     dep_mgmt: Managed,
     plugin_mgmt: Managed,
     imports: Vec<Coordinate>,
+    /// Dependencies, build plugins and extensions this POM declares itself;
+    /// a child inherits them.
+    declared: Vec<Declared>,
+    /// Values a `<profile>` assigns. A profile may be active by default or by
+    /// `-P`, so a value that differs from the base cannot be relied on.
+    profile_properties: Vec<(String, String)>,
+    profile_dep_mgmt: Vec<(String, String)>,
+    profile_plugin_mgmt: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+struct Declared {
+    name: String,
+    version: Option<String>,
+    plugin: bool,
+}
+
+/// Management key. Entries with a classifier or a non-jar type manage a
+/// different artifact than the plain `group:artifact`, so they get their own key.
+fn management_key(entry: &[(String, String)], group: &str, artifact: &str) -> String {
+    let classifier = text_of(entry, "classifier");
+    let kind = text_of(entry, "type").filter(|kind| kind != "jar");
+    match (classifier, kind) {
+        (None, None) => format!("{group}:{artifact}"),
+        (classifier, kind) => format!(
+            "{group}:{artifact}:{}:{}",
+            classifier.unwrap_or_default(),
+            kind.unwrap_or_default()
+        ),
+    }
 }
 
 fn manage(map: &mut Managed, key: String, version: String) {
@@ -143,7 +173,9 @@ fn body_of<'a>(children: &'a [(String, String)], name: &str) -> Option<&'a str> 
 }
 
 fn parse_level(content: &str) -> Result<PomLevel> {
-    let Some(project) = maven_project_body(content) else {
+    let content = strip_xml_comments(content)?;
+    validate_pom_structure(&content)?;
+    let Some(project) = maven_project_body(&content) else {
         bail!("POM has no <project> element");
     };
     let children = xml_direct_children(project);
@@ -197,7 +229,8 @@ fn parse_level(content: &str) -> Result<PomLevel> {
                     version,
                 });
             } else {
-                manage(&mut level.dep_mgmt, format!("{group}:{artifact}"), version);
+                let key = management_key(&entry, &group, &artifact);
+                manage(&mut level.dep_mgmt, key, version);
             }
         }
     }
@@ -214,14 +247,105 @@ fn parse_level(content: &str) -> Result<PomLevel> {
             else {
                 continue;
             };
-            manage(
-                &mut level.plugin_mgmt,
-                format!("{group}:{artifact}"),
-                version,
-            );
+            let key = management_key(&entry, &group, &artifact);
+            manage(&mut level.plugin_mgmt, key, version);
         }
     }
+    collect_declared(&children, &mut level)?;
+    collect_profiles(&children, &mut level)?;
     Ok(level)
+}
+
+fn plugin_group(entry: &[(String, String)]) -> String {
+    text_of(entry, "groupId").unwrap_or_else(|| MAVEN_DEFAULT_PLUGIN_GROUP.to_string())
+}
+
+fn collect_declared(children: &[(String, String)], level: &mut PomLevel) -> Result<()> {
+    if let Some(dependencies) = body_of(children, "dependencies") {
+        for body in maven_element_bodies(dependencies, "dependency")? {
+            let entry = xml_direct_children(body);
+            if let (Some(group), Some(artifact)) =
+                (text_of(&entry, "groupId"), text_of(&entry, "artifactId"))
+            {
+                level.declared.push(Declared {
+                    name: format!("{group}:{artifact}"),
+                    version: text_of(&entry, "version"),
+                    plugin: false,
+                });
+            }
+        }
+    }
+    if let Some(build) = body_of(children, "build") {
+        let build = xml_direct_children(build);
+        for (section, element, default_group) in [
+            ("plugins", "plugin", true),
+            ("extensions", "extension", false),
+        ] {
+            let Some(body) = body_of(&build, section) else {
+                continue;
+            };
+            for body in maven_element_bodies(body, element)? {
+                let entry = xml_direct_children(body);
+                let group = if default_group {
+                    Some(plugin_group(&entry))
+                } else {
+                    text_of(&entry, "groupId")
+                };
+                if let (Some(group), Some(artifact)) = (group, text_of(&entry, "artifactId")) {
+                    level.declared.push(Declared {
+                        name: format!("{group}:{artifact}"),
+                        version: text_of(&entry, "version"),
+                        plugin: true,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_profiles(children: &[(String, String)], level: &mut PomLevel) -> Result<()> {
+    let Some(profiles) = body_of(children, "profiles") else {
+        return Ok(());
+    };
+    for body in maven_element_bodies(profiles, "profile")? {
+        let profile = xml_direct_children(body);
+        if let Some(properties) = body_of(&profile, "properties") {
+            for (name, value) in xml_direct_children(properties) {
+                level.profile_properties.push((name, value.trim().to_string()));
+            }
+        }
+        if let Some(management) = body_of(&profile, "dependencyManagement")
+            && let Some(dependencies) = body_of(&xml_direct_children(management), "dependencies")
+        {
+            for body in maven_element_bodies(dependencies, "dependency")? {
+                let entry = xml_direct_children(body);
+                if let (Some(group), Some(artifact), Some(version)) = (
+                    text_of(&entry, "groupId"),
+                    text_of(&entry, "artifactId"),
+                    text_of(&entry, "version"),
+                ) {
+                    let key = management_key(&entry, &group, &artifact);
+                    level.profile_dep_mgmt.push((key, version));
+                }
+            }
+        }
+        if let Some(build) = body_of(&profile, "build")
+            && let Some(management) = body_of(&xml_direct_children(build), "pluginManagement")
+            && let Some(plugins) = body_of(&xml_direct_children(management), "plugins")
+        {
+            for body in maven_element_bodies(plugins, "plugin")? {
+                let entry = xml_direct_children(body);
+                if let (Some(artifact), Some(version)) =
+                    (text_of(&entry, "artifactId"), text_of(&entry, "version"))
+                {
+                    let key = management_key(&entry, &plugin_group(&entry), &artifact);
+                    level.profile_plugin_mgmt.push((key, version));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `${name}` substitution against `properties`. `None` when a reference is
@@ -324,6 +448,26 @@ fn effective(chain: &Chain) -> Effective {
     for level in &chain.levels {
         imports.extend(level.imports.clone());
     }
+    // A profile can be active by default or through `-P`. Anything it sets to a
+    // value other than the base value cannot be relied on, so it is dropped
+    // (the version then stays unresolved).
+    for level in &chain.levels {
+        for (name, value) in &level.profile_properties {
+            if properties.get(name) != Some(value) {
+                properties.remove(name);
+            }
+        }
+        for (key, version) in &level.profile_dep_mgmt {
+            if dep_mgmt.get(key) != Some(&Some(version.clone())) {
+                dep_mgmt.insert(key.clone(), None);
+            }
+        }
+        for (key, version) in &level.profile_plugin_mgmt {
+            if plugin_mgmt.get(key) != Some(&Some(version.clone())) {
+                plugin_mgmt.insert(key.clone(), None);
+            }
+        }
+    }
     let leaf = &chain.levels[0];
     let parent_coordinate = leaf.parent.as_ref().map(|parent| &parent.coordinate);
     let group = leaf
@@ -418,6 +562,46 @@ async fn bom_management(
     Ok(managed)
 }
 
+/// Property names a project's `.mvn/maven.config` (or an ancestor's, up to the
+/// repository root) defines on the command line. Those override the POM, and
+/// their values are not modeled, so the properties are dropped.
+fn maven_config_defines(pom_path: &Path) -> Vec<String> {
+    let Some(start) = pom_path.parent() else {
+        return Vec::new();
+    };
+    let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    let root = crate::config::registry::find_git_root(&start)
+        .ok()
+        .flatten();
+    let mut names = Vec::new();
+    let mut current = Some(start.as_path());
+    while let Some(dir) = current {
+        if let Ok(config) = std::fs::read_to_string(dir.join(".mvn").join("maven.config")) {
+            let mut tokens = config.split_whitespace();
+            while let Some(token) = tokens.next() {
+                let define = if let Some(rest) = token.strip_prefix("--define=") {
+                    Some(rest)
+                } else if token == "-D" || token == "--define" {
+                    tokens.next()
+                } else {
+                    token.strip_prefix("-D")
+                };
+                if let Some(define) = define {
+                    let name = define.split('=').next().unwrap_or(define);
+                    if !name.is_empty() {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+        }
+        if root.as_deref() == Some(dir) {
+            break;
+        }
+        current = dir.parent();
+    }
+    names
+}
+
 /// Fill in the versions Maven would derive for `deps`, which were read
 /// statically from `pom_path`. Fetch failures are errors (fail closed);
 /// versions that cannot be derived come back as `None`.
@@ -426,12 +610,14 @@ pub(crate) async fn resolve_pom_versions(
     deps: Vec<Dependency>,
     source: &dyn PomSource,
 ) -> Result<Vec<Dependency>> {
-    let content = super::super::read_file_limited(pom_path, super::super::MAX_MANIFEST_BYTES)
-        .context("Failed to read pom.xml")?;
+    let content = read_pom(pom_path)?;
     let leaf = parse_level(&content)?;
     let mut budget = Budget(MAX_FETCHES);
     let chain = load_chain(leaf, Some(pom_path), source, &mut budget).await?;
     let mut model = effective(&chain);
+    for name in maven_config_defines(pom_path) {
+        model.properties.remove(&name);
+    }
 
     // BOMs: entries the POM chain manages itself win; among imports the first wins.
     let mut seen = HashSet::new();
@@ -446,13 +632,50 @@ pub(crate) async fn resolve_pom_versions(
         }
     }
 
-    let mut plugin_names = HashSet::new();
-    for body in maven_element_bodies(&content, "plugin")? {
-        let entry = xml_direct_children(body);
-        if let Some(artifact) = text_of(&entry, "artifactId") {
-            let group = text_of(&entry, "groupId")
-                .unwrap_or_else(|| MAVEN_DEFAULT_PLUGIN_GROUP.to_string());
-            plugin_names.insert(format!("{group}:{artifact}"));
+    // Only plugins the build itself declares are versioned from plugin
+    // management; a `pluginManagement` entry alone never runs.
+    let mut plugin_names: HashSet<String> = chain.levels[0]
+        .declared
+        .iter()
+        .filter(|declared| declared.plugin)
+        .map(|declared| declared.name.clone())
+        .collect();
+
+    // Everything an ancestor declares is inherited by this project, so it is
+    // installed (or executed) by this build too.
+    let mut deps = deps;
+    let mut known: HashSet<(String, Option<String>)> = deps
+        .iter()
+        .map(|dep| (dep.name.clone(), dep.version.clone()))
+        .collect();
+    for level in chain.levels.iter().skip(1) {
+        let mut inherited: Vec<(String, Option<String>, bool)> = level
+            .declared
+            .iter()
+            .map(|declared| (declared.name.clone(), declared.version.clone(), declared.plugin))
+            .collect();
+        if let Some(parent) = &level.parent {
+            let coordinate = &parent.coordinate;
+            inherited.push((
+                format!("{}:{}", coordinate.group, coordinate.artifact),
+                Some(coordinate.version.clone()),
+                false,
+            ));
+        }
+        for (name, version, plugin) in inherited {
+            if plugin {
+                plugin_names.insert(name.clone());
+            }
+            if known.insert((name.clone(), version.clone())) {
+                let dep = Dependency {
+                    name,
+                    version,
+                    ecosystem: crate::Ecosystem::Jvm,
+                    actual_name: None,
+                };
+                crate::parsers::validate_dependency(&dep, pom_path)?;
+                deps.push(dep);
+            }
         }
     }
 
@@ -473,14 +696,12 @@ pub(crate) async fn resolve_pom_versions(
                 }
                 Some(declared) => Some(declared.to_string()),
                 None => {
-                    let (first, second) = if plugin_names.contains(&dep.name) {
-                        (&model.plugin_mgmt, &model.dep_mgmt)
+                    let map = if plugin_names.contains(&dep.name) {
+                        &model.plugin_mgmt
                     } else {
-                        (&model.dep_mgmt, &model.plugin_mgmt)
+                        &model.dep_mgmt
                     };
-                    managed_version(first, &dep.name)
-                        .or_else(|| managed_version(second, &dep.name))
-                        .flatten()
+                    managed_version(map, &dep.name).flatten()
                 }
             };
             dep
