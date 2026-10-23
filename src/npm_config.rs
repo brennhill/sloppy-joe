@@ -3,6 +3,54 @@ use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Route name for the unscoped `registry=` key in `trusted_registries.npm`.
+pub(crate) const DEFAULT_ROUTE: &str = "default";
+
+fn valid_scope(scope: &str) -> bool {
+    scope.starts_with('@')
+        && scope.len() > 1
+        && !scope.contains('/')
+        && crate::registry::validate_package_name(&format!("{scope}/package"))
+}
+
+/// Validate a `trusted_registries.npm` route name: `default` or `@scope`.
+pub(crate) fn valid_route_name(name: &str) -> bool {
+    name == DEFAULT_ROUTE || valid_scope(name)
+}
+
+/// Normalize an npm registry URL as written in `.npmrc` or out-of-repo config.
+/// A `${NAME}` placeholder may occupy a whole path segment and becomes `*`.
+/// Returns None for anything other than a credential-free HTTPS base URL.
+pub(crate) fn normalize_registry_url(value: &str) -> Option<String> {
+    let value = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+        .unwrap_or(value);
+    // Unset CI project IDs can occupy a whole path segment; no secret expansion is needed.
+    let mut segments = Vec::new();
+    for segment in value.split('/') {
+        if segment.starts_with("${") && segment.ends_with('}') && segment.len() > 3 {
+            segments.push("*");
+        } else if segment.contains(['$', '{', '}', '*']) {
+            return None;
+        } else {
+            segments.push(segment);
+        }
+    }
+    let url = reqwest::Url::parse(&segments.join("/")).ok()?;
+    if url.scheme() != "https"
+        || url.host_str().is_none_or(|host| host.contains('*'))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    Some(format!("{}/", url.as_str().trim_end_matches('/')))
+}
+
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct NpmRegistries(pub(crate) BTreeMap<String, String>);
 
@@ -43,11 +91,7 @@ impl NpmRegistries {
             let scope = if key == "registry" {
                 ""
             } else if let Some(scope) = key.strip_suffix(":registry") {
-                if !scope.starts_with('@')
-                    || scope.len() == 1
-                    || scope.contains('/')
-                    || !crate::registry::validate_package_name(&format!("{scope}/package"))
-                {
+                if !valid_scope(scope) {
                     return Err(invalid());
                 }
                 scope
@@ -65,48 +109,29 @@ impl NpmRegistries {
             } else {
                 return Err(invalid());
             };
-            let value = value.trim();
-            let value = value
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-                .unwrap_or(value);
-            // Unset CI project IDs can occupy a whole path segment; no secret expansion is needed.
-            let mut segments = Vec::new();
-            for segment in value.split('/') {
-                if segment.starts_with("${") && segment.ends_with('}') && segment.len() > 3 {
-                    segments.push("*");
-                } else if segment.contains(['$', '{', '}', '*']) {
-                    return Err(invalid());
-                } else {
-                    segments.push(segment);
-                }
-            }
-            let value = segments.join("/");
-            let url = reqwest::Url::parse(&value).map_err(|_| invalid())?;
-            if url.scheme() != "https"
-                || url.host_str().is_none_or(|host| host.contains('*'))
-                || !url.username().is_empty()
-                || url.password().is_some()
-                || url.query().is_some()
-                || url.fragment().is_some()
-            {
-                return Err(invalid());
-            }
-            self.0.insert(
-                scope.to_string(),
-                format!("{}/", url.as_str().trim_end_matches('/')),
-            );
+            let value = normalize_registry_url(value.trim()).ok_or_else(invalid)?;
+            self.0.insert(scope.to_string(), value);
         }
         Ok(())
     }
 
     pub(crate) fn private_registry(&self, package: &str) -> Option<&str> {
+        self.private_route(package).map(|(_, registry)| registry)
+    }
+
+    /// The `.npmrc` route (`"default"` or `"@scope"`) and normalized registry
+    /// URL that redirect `package` away from the public npm registry, if any.
+    pub(crate) fn private_route(&self, package: &str) -> Option<(&str, &str)> {
         let scope = package.split_once('/').map(|(scope, _)| scope);
-        let registry = scope
-            .and_then(|scope| self.0.get(scope))
-            .or_else(|| self.0.get(""))?;
-        (registry != "https://registry.npmjs.org/").then_some(registry.as_str())
+        let (route, registry) = scope
+            .and_then(|scope| self.0.get_key_value(scope))
+            .or_else(|| self.0.get_key_value(""))?;
+        let route = if route.is_empty() {
+            DEFAULT_ROUTE
+        } else {
+            route.as_str()
+        };
+        (registry != "https://registry.npmjs.org/").then_some((route, registry.as_str()))
     }
 
     pub(crate) fn matches_private_source(&self, package: &str, resolved: &str) -> bool {

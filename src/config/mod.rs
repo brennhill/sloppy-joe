@@ -488,6 +488,16 @@ impl SloppyJoeConfig {
             .unwrap_or(&[])
     }
 
+    /// Whether out-of-repo config allowlists this exact npm `.npmrc` route
+    /// (`default` or `@scope`) to point at `registry` (a normalized URL).
+    pub(crate) fn is_trusted_npm_registry(&self, route: &str, registry: &str) -> bool {
+        self.trusted_registries("npm").iter().any(|rule| {
+            rule.name == route
+                && crate::npm_config::normalize_registry_url(rule.source.trim()).as_deref()
+                    == Some(registry)
+        })
+    }
+
     pub fn trusted_git_sources(&self, ecosystem: &str) -> &[String] {
         self.trusted_git_sources
             .get(ecosystem)
@@ -675,6 +685,14 @@ impl SloppyJoeConfig {
                     errors.push(format!(
                         "Invalid trusted registry in {}: name and source must be non-empty",
                         eco
+                    ));
+                } else if eco == "npm"
+                    && (!crate::npm_config::valid_route_name(&rule.name)
+                        || crate::npm_config::normalize_registry_url(rule.source.trim()).is_none())
+                {
+                    errors.push(format!(
+                        "Invalid trusted registry in npm: name must be \"{}\" or an @scope, and source must be a credential-free https:// registry URL",
+                        crate::npm_config::DEFAULT_ROUTE
                     ));
                 }
             }

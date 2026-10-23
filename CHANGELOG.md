@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stop repository `.npmrc` registry routes from opting packages out of OSV advisory checks; in `--ci`, block routes not allowlisted under `trusted_registries.npm` in the out-of-repo config.
+
 - Reject transitive npm links to external, unscanned, or incorrectly named local targets before a full scan can pass or save a success fingerprint.
 - Resolve npm workspace dependencies from the member directory upward, preserve nested versions in vulnerability checks, and use the same lookup for aliases and local links.
 - Check ancestor workspace membership before validating manager conflicts, so unrelated parent errors do not suppress independent child scans.
