@@ -80,6 +80,8 @@ sloppy-joe init > /secure/location/sloppy-joe.json
 nix profile install github:brennhill/sloppy-joe
 ```
 
+The flake on `main` pins the published binary release and its checksums.
+
 **Scan modes:**
 - `sloppy-joe check` runs the fast local guardrail. It always enforces manifest parsing, lockfile/sync, provenance, and unsupported-source policy. If dependency or policy state changed, or the last successful full scan is older than 24 hours, it recommends `sloppy-joe check --full`.
 - `sloppy-joe check --full` runs the strict online scan and refreshes the recorded successful full-scan state.
