@@ -40,6 +40,8 @@ pub(super) struct GradleScript {
     /// `pluginManagement { repositories {} }`, if declared.
     pub plugin_repositories: Option<Vec<PluginRepository>>,
     pub has_plugin_management: bool,
+    /// A `repositories {}` block declares `google()`.
+    pub uses_google_maven: bool,
     /// The script customizes version catalogs, so `libs` may not be
     /// `gradle/libs.versions.toml`.
     pub custom_catalogs: bool,

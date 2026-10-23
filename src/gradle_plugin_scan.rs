@@ -219,8 +219,17 @@ pub(super) fn plugin_registry_for(
     project: &ParsedProject,
     client: reqwest::Client,
 ) -> Result<Option<Box<dyn Registry>>> {
-    if !(project.unlocked_tooling && project.spec.kind == ProjectInputKind::Gradle) {
+    if project.spec.kind != ProjectInputKind::Gradle {
         return Ok(None);
+    }
+    if !project.unlocked_tooling {
+        // Dependencies come from Maven Central, plus Google's repository when
+        // the build lists `google()`.
+        let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
+        return Ok(build.uses_google_maven.then(|| {
+            Box::new(registry::google_maven::MavenWithGoogleRegistry::with_client(client))
+                as Box<dyn Registry>
+        }));
     }
     let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
     Ok(Some(Box::new(GradlePluginRegistry::new(

@@ -1,5 +1,6 @@
 pub mod crates_io;
 pub mod go;
+pub mod google_maven;
 pub mod gradle_plugins;
 pub mod maven;
 pub mod npm;

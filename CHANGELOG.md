@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Gradle: support a plain `google()` repository (Android builds). Dependencies are then checked against Maven Central and Google's Maven repository, which count as existing if either serves them, with publish dates from the POM `Last-Modified` header. `google { }`, `google(...)` with arguments, `maven { }` and other repository forms still block.
 - Gradle: look up OSV advisories for the implementation artifacts a `plugins {}` marker delegates to (read from the marker POM's dependencies), not just the marker. A marker POM that cannot be read, or that names a dependency whose version is missing, a property, or a range, blocks.
 - Config: validate `trusted_registries.jvm` entries. The name must be `gradle-plugins` (the only name sloppy-joe reads) and the source a credential-free https URL, so a typo no longer leaves a repository silently untrusted.
 - pnpm: read multi-document `pnpm-lock.yaml` files, which pnpm writes when it manages its own version (`packageManagerDependencies`). The last document is the project lockfile; the packages of earlier documents must be plain registry entries with integrity hashes and are scanned as transitives of the root. More than four documents, a malformed document, or a non-registry env package blocks.

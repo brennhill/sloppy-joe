@@ -12,6 +12,9 @@ pub(crate) struct GradleBuild {
     pub deps: Vec<Dependency>,
     pub plugins: Vec<Dependency>,
     pub plugin_repositories: Vec<crate::registry::gradle_plugins::PluginRepository>,
+    /// A build or settings script lists `google()`, so dependencies may also
+    /// resolve from Google's Maven repository.
+    pub uses_google_maven: bool,
 }
 
 const GRADLE_DEPENDENCY_CONFIGS: &[&str] = &[
@@ -137,6 +140,10 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
         deps,
         plugins,
         plugin_repositories: gradle_plugins::plugin_repositories(&settings),
+        uses_google_maven: script.uses_google_maven
+            || settings
+                .iter()
+                .any(|(_, settings)| settings.uses_google_maven),
     })
 }
 
@@ -494,12 +501,27 @@ fn find_gradle_block_end(tokens: &[GradleToken], open_idx: usize) -> Option<usiz
     None
 }
 
-fn validate_gradle_repositories_block(tokens: &[GradleToken], path: &Path) -> Result<()> {
-    for window in tokens.windows(2) {
+fn validate_gradle_repositories_block(
+    tokens: &[GradleToken],
+    path: &Path,
+    script: &mut gradle_plugins::GradleScript,
+) -> Result<()> {
+    for (idx, window) in tokens.windows(2).enumerate() {
         let [GradleToken::Ident(name), GradleToken::Symbol(next)] = window else {
             continue;
         };
         if !matches!(next, '{' | '(') {
+            continue;
+        }
+        // A bare `google()` is Google's Maven repository; any option block or
+        // argument could narrow or redirect it, so only the plain call is
+        // understood.
+        if name == "google"
+            && *next == '('
+            && matches!(tokens.get(idx + 2), Some(GradleToken::Symbol(')')))
+            && !matches!(tokens.get(idx + 3), Some(GradleToken::Symbol('{')))
+        {
+            script.uses_google_maven = true;
             continue;
         }
         if matches!(
@@ -507,7 +529,7 @@ fn validate_gradle_repositories_block(tokens: &[GradleToken], path: &Path) -> Re
             "maven" | "mavenLocal" | "flatDir" | "ivy" | "google" | "gradlePluginPortal"
         ) {
             bail!(
-                "Unsupported Gradle repository in {}: only mavenCentral() is supported for trusted registry resolution",
+                "Unsupported Gradle repository in {}: only mavenCentral() and google() are supported for trusted registry resolution",
                 path.display()
             );
         }
@@ -711,7 +733,7 @@ fn walk_gradle_script(
                         .get_or_insert_with(Vec::new)
                         .extend(gradle_plugins::parse_plugin_repositories(block, path)?);
                 } else {
-                    validate_gradle_repositories_block(block, path)?;
+                    validate_gradle_repositories_block(block, path, script)?;
                 }
                 idx = end;
             }
@@ -1296,6 +1318,42 @@ mod tests {
         let err = parse(&dir).expect_err("classifier-bearing Gradle coords must fail closed");
         assert!(err.to_string().contains("classifier-bearing coordinates"));
         cleanup(&dir);
+    }
+
+    #[test]
+    fn plain_google_repository_is_supported_and_flagged() {
+        let dir = setup_gradle(
+            "repositories {\n    google()\n    mavenCentral()\n}\ndependencies { implementation 'androidx.core:core:1.12.0' }",
+        );
+        let build = parse_gradle_build(&dir.join("build.gradle")).unwrap();
+        assert!(build.uses_google_maven);
+        assert_eq!(build.deps[0].name, "androidx.core:core");
+        cleanup(&dir);
+        let dir = setup_gradle(
+            "repositories { mavenCentral() }\ndependencies { implementation 'a.b:c:1.0' }",
+        );
+        assert!(
+            !parse_gradle_build(&dir.join("build.gradle"))
+                .unwrap()
+                .uses_google_maven
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn google_repository_with_options_still_blocks() {
+        for repo in [
+            "google { content { includeGroup 'x' } }",
+            "google() { content { includeGroup 'x' } }",
+            "google('https://evil.example')",
+        ] {
+            let dir = setup_gradle(&format!("repositories {{ mavenCentral()\n {repo} }}"));
+            assert!(
+                parse_gradle_build(&dir.join("build.gradle")).is_err(),
+                "{repo}"
+            );
+            cleanup(&dir);
+        }
     }
 
     #[test]

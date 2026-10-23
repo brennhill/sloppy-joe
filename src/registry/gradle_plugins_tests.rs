@@ -487,3 +487,96 @@ async fn unreadable_marker_blocks() {
     .unwrap();
     assert_eq!(issues.len(), 1);
 }
+
+fn google_registry(google: &MockServer) -> crate::registry::google_maven::MavenWithGoogleRegistry {
+    struct NoCentral;
+    #[async_trait::async_trait]
+    impl RegistryExistence for NoCentral {
+        async fn exists(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn ecosystem(&self) -> &str {
+            "jvm"
+        }
+    }
+    #[async_trait::async_trait]
+    impl RegistryMetadata for NoCentral {
+        async fn metadata(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> anyhow::Result<Option<crate::registry::PackageMetadata>> {
+            Ok(None)
+        }
+    }
+    crate::registry::google_maven::MavenWithGoogleRegistry::with_central(
+        Box::new(NoCentral),
+        reqwest::Client::new(),
+        format!("{}/maven2/", google.origin),
+    )
+}
+
+#[tokio::test]
+async fn google_maven_artifacts_exist_with_dates_when_central_lacks_them() {
+    let server = mock_server(HashMap::from([
+        (
+            "/maven2/androidx/core/core/maven-metadata.xml".to_string(),
+            ok(
+                &metadata_xml(&["1.0.0", "1.12.0"], "20240101000000"),
+                vec![],
+            ),
+        ),
+        (
+            "/maven2/androidx/core/core/1.12.0/core-1.12.0.pom".to_string(),
+            ok(
+                "<project/>",
+                vec![("Last-Modified", "Mon, 01 Jan 2024 00:00:00 GMT")],
+            ),
+        ),
+        (
+            "/maven2/androidx/core/core/1.0.0/core-1.0.0.pom".to_string(),
+            ok(
+                "<project/>",
+                vec![("Last-Modified", "Fri, 01 Dec 2023 12:30:00 GMT")],
+            ),
+        ),
+    ]))
+    .await;
+    let registry = google_registry(&server);
+    assert!(registry.exists("androidx.core:core").await.unwrap());
+    assert!(!registry.exists("androidx.core:missing").await.unwrap());
+    let metadata = registry
+        .metadata("androidx.core:core", Some("1.12.0"))
+        .await
+        .unwrap()
+        .expect("served by Google Maven");
+    assert_eq!(
+        metadata.latest_version_date.as_deref(),
+        Some("2024-01-01T00:00:00Z")
+    );
+    assert_eq!(metadata.created.as_deref(), Some("2023-12-01T12:30:00Z"));
+}
+
+#[tokio::test]
+async fn google_maven_rejects_unsafe_coordinates_before_any_request() {
+    let server = mock_server(HashMap::new()).await;
+    let registry = google_registry(&server);
+    for name in ["a/b:c", "a:b/../c", "a..b:c", "a b:c"] {
+        assert!(registry.exists(name).await.is_err(), "{name}");
+    }
+    assert!(server.requests().is_empty());
+}
+
+#[tokio::test]
+async fn google_maven_server_errors_fail_closed() {
+    let server = mock_server(HashMap::from([(
+        "/maven2/x/y/maven-metadata.xml".to_string(),
+        Route {
+            status: 500,
+            headers: vec![],
+            body: String::new(),
+        },
+    )]))
+    .await;
+    assert!(google_registry(&server).exists("x:y").await.is_err());
+}
