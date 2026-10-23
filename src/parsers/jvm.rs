@@ -139,7 +139,215 @@ fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
         deps.push(dep);
         remaining = tail;
     }
+
+    // Build-time coordinates: parent POM, build plugins and build extensions
+    // are all downloaded from the repository and executed or inherited by the
+    // build, so they get the same checks as dependencies.
+    for (tag, default_group) in [
+        ("parent", None),
+        ("plugin", Some(MAVEN_DEFAULT_PLUGIN_GROUP)),
+        ("extension", None),
+    ] {
+        for body in maven_element_bodies(&content, tag)? {
+            let children = xml_direct_children(body);
+            let child = |name: &str| {
+                children
+                    .iter()
+                    .find(|(child, _)| child == name)
+                    .map(|(_, value)| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            };
+            let group = child("groupId")
+                .or_else(|| default_group.map(str::to_string))
+                .ok_or_else(|| anyhow::anyhow!("Maven <{tag}> is missing groupId"))?;
+            let artifact = child("artifactId")
+                .ok_or_else(|| anyhow::anyhow!("Maven <{tag}> is missing artifactId"))?;
+            let version = child("version");
+            if tag == "parent"
+                && maven_parent_is_local(
+                    path,
+                    &group,
+                    &artifact,
+                    version.as_deref(),
+                    child("relativePath"),
+                    children.iter().any(|(name, _)| name == "relativePath"),
+                )?
+            {
+                continue;
+            }
+            let dep = Dependency {
+                name: format!("{group}:{artifact}"),
+                version,
+                ecosystem: crate::Ecosystem::Jvm,
+                actual_name: None,
+            };
+            super::validate_dependency(&dep, path)?;
+            deps.push(dep);
+        }
+    }
     Ok(deps)
+}
+
+const MAVEN_DEFAULT_PLUGIN_GROUP: &str = "org.apache.maven.plugins";
+
+/// Return the inner text of every `<tag>...</tag>` element. These elements do
+/// not nest in a POM, so the first closing tag terminates each body.
+fn maven_element_bodies<'a>(content: &'a str, tag: &str) -> Result<Vec<&'a str>> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut bodies = Vec::new();
+    let mut remaining = content;
+    while let Some((_, body)) = remaining.split_once(open.as_str()) {
+        let (body, tail) = body
+            .split_once(close.as_str())
+            .with_context(|| format!("Unterminated Maven <{tag}> declaration"))?;
+        bodies.push(body);
+        remaining = tail;
+    }
+    Ok(bodies)
+}
+
+/// Collect `(name, text)` for the direct child elements of an XML fragment,
+/// ignoring anything nested deeper (plugin `<configuration>`, plugin
+/// `<dependencies>`, ...). Self-closing children yield an empty value.
+fn xml_direct_children(body: &str) -> Vec<(String, String)> {
+    let mut children = Vec::new();
+    let mut depth = 0usize;
+    let mut current: Option<(String, usize)> = None;
+    let mut rest = body;
+    let mut offset = 0usize;
+    while let Some(start) = rest.find('<') {
+        let tag_start = offset + start;
+        let after = &rest[start + 1..];
+        let (inner, skip) = if after.starts_with("!--") {
+            (None, after.find("-->").map(|i| i + 3))
+        } else {
+            match after.find('>') {
+                Some(end) => (Some(&after[..end]), Some(end + 1)),
+                None => (None, None),
+            }
+        };
+        let Some(skip) = skip else {
+            break;
+        };
+        let tag_end = tag_start + 1 + skip;
+        if let Some(inner) = inner {
+            if let Some(name) = inner.strip_prefix('/') {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some((open_name, value_start)) = current.take()
+                    && open_name == name.trim()
+                {
+                    children.push((open_name, body[value_start..tag_start].to_string()));
+                }
+            } else if !inner.starts_with(['?', '!']) {
+                let name = inner
+                    .split(|c: char| c.is_whitespace() || c == '/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if inner.ends_with('/') {
+                    if depth == 0 {
+                        children.push((name, String::new()));
+                    }
+                } else {
+                    if depth == 0 {
+                        current = Some((name, tag_end));
+                    }
+                    depth += 1;
+                }
+            }
+        }
+        offset = tag_end;
+        rest = &body[offset..];
+    }
+    children
+}
+
+/// Inner content of the root `<project ...>` element (attributes allowed).
+fn maven_project_body(content: &str) -> Option<&str> {
+    let mut search = 0usize;
+    while let Some(found) = content[search..].find("<project") {
+        let start = search + found + "<project".len();
+        let next = content[start..].chars().next()?;
+        if next == '>' || next.is_whitespace() {
+            let open_end = start + content[start..].find('>')? + 1;
+            let close = content.rfind("</project>")?;
+            return (close >= open_end).then(|| &content[open_end..close]);
+        }
+        search = start;
+    }
+    None
+}
+
+/// Maven resolves `<parent>` from `relativePath` (default `../pom.xml`) when
+/// the POM found there has the same coordinates; only otherwise is it fetched
+/// from the repository. A local reactor parent is not a registry dependency.
+fn maven_parent_is_local(
+    pom_path: &Path,
+    group: &str,
+    artifact: &str,
+    version: Option<&str>,
+    relative_path: Option<String>,
+    relative_path_declared: bool,
+) -> Result<bool> {
+    let relative = match (relative_path, relative_path_declared) {
+        (Some(relative), _) => relative,
+        // `<relativePath/>` disables local lookup.
+        (None, true) => return Ok(false),
+        (None, false) => "../pom.xml".to_string(),
+    };
+    let base = pom_path.parent().unwrap_or(Path::new("."));
+    let mut candidate = base.join(&relative);
+    if !candidate.is_file() {
+        candidate = candidate.join("pom.xml");
+    }
+    if !super::path_detected(&candidate)? {
+        return Ok(false);
+    }
+    let Ok(candidate) = std::fs::canonicalize(&candidate) else {
+        return Ok(false);
+    };
+    let project_dir = std::fs::canonicalize(base)?;
+    if let Some(root) =
+        crate::config::registry::find_git_root(&project_dir).map_err(anyhow::Error::msg)?
+        && !candidate.starts_with(&root)
+    {
+        return Ok(false);
+    }
+    let Ok(parent_content) = super::read_file_limited(&candidate, super::MAX_MANIFEST_BYTES) else {
+        return Ok(false);
+    };
+    let Some(project_body) = maven_project_body(&parent_content) else {
+        return Ok(false);
+    };
+    let children = xml_direct_children(project_body);
+    let child = |name: &str| {
+        children
+            .iter()
+            .find(|(child, _)| child == name)
+            .map(|(_, value)| value.trim().to_string())
+    };
+    let inherited = children
+        .iter()
+        .find(|(name, _)| name == "parent")
+        .map(|(_, body)| xml_direct_children(body));
+    let inherited_child = |name: &str| {
+        inherited.as_ref().and_then(|children| {
+            children
+                .iter()
+                .find(|(child, _)| child == name)
+                .map(|(_, value)| value.trim().to_string())
+        })
+    };
+    let local_group = child("groupId").or_else(|| inherited_child("groupId"));
+    let local_version = child("version").or_else(|| inherited_child("version"));
+    Ok(local_group.as_deref() == Some(group)
+        && child("artifactId").as_deref() == Some(artifact)
+        && match (version, local_version.as_deref()) {
+            (Some(wanted), Some(found)) => wanted == found,
+            _ => true,
+        })
 }
 
 fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
@@ -533,17 +741,19 @@ fn xml_contains_open_tag(content: &str, target: &str) -> bool {
 }
 
 fn validate_pom_source_policy(content: &str, path: &Path) -> Result<()> {
-    if content.split('<').skip(1).any(|tag| {
-        let name = tag
-            .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
-            .next()
-            .unwrap_or_default();
-        name.rsplit(':').next() == Some("dependency") && !tag.starts_with("dependency>")
-    }) {
-        bail!(
-            "Unsupported Maven dependency tag in {}: namespaced or attributed dependency elements cannot be verified",
-            path.display()
-        );
+    for element in ["dependency", "parent", "plugin", "extension"] {
+        if content.split('<').skip(1).any(|tag| {
+            let name = tag
+                .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
+                .next()
+                .unwrap_or_default();
+            name.rsplit(':').next() == Some(element) && !tag.starts_with(&format!("{element}>"))
+        }) {
+            bail!(
+                "Unsupported Maven {element} tag in {}: namespaced or attributed {element} elements cannot be verified",
+                path.display()
+            );
+        }
     }
     if [
         "repositories",
@@ -782,6 +992,148 @@ mod tests {
                 parse(&dir).is_err(),
                 "unmodeled dependency tags must fail closed: {open}"
             );
+            cleanup(&dir);
+        }
+    }
+
+    fn names(deps: &[Dependency]) -> Vec<String> {
+        let mut names: Vec<String> = deps.iter().map(|dep| dep.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn parse_maven_parent_plugins_and_extensions() {
+        let dir = setup_pom(
+            r#"<project>
+  <parent>
+    <groupId>com.evil</groupId>
+    <artifactId>evil-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>com.evil</groupId>
+        <artifactId>evil-maven-plugin</artifactId>
+        <version>1.0.0</version>
+      </plugin>
+    </plugins>
+    <extensions>
+      <extension>
+        <groupId>com.evil</groupId>
+        <artifactId>evil-extension</artifactId>
+        <version>1.0.0</version>
+      </extension>
+    </extensions>
+  </build>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>31.1-jre</version>
+    </dependency>
+  </dependencies>
+</project>"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(
+            names(&deps),
+            vec![
+                "com.evil:evil-extension",
+                "com.evil:evil-maven-plugin",
+                "com.evil:evil-parent",
+                "com.google.guava:guava",
+            ]
+        );
+        let parent = deps
+            .iter()
+            .find(|dep| dep.name == "com.evil:evil-parent")
+            .unwrap();
+        assert_eq!(parent.version.as_deref(), Some("1.0.0"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn maven_plugin_uses_default_group_and_ignores_nested_coordinates() {
+        let dir = setup_pom(
+            r#"<project><build><pluginManagement><plugins>
+  <plugin>
+    <artifactId>maven-dependency-plugin</artifactId>
+    <version>3.6.0</version>
+    <extensions>true</extensions>
+    <configuration>
+      <artifactItems><artifactItem><groupId>com.config</groupId><artifactId>item</artifactId></artifactItem></artifactItems>
+    </configuration>
+    <dependencies>
+      <dependency><groupId>com.nested</groupId><artifactId>plugin-dep</artifactId><version>2.0.0</version></dependency>
+    </dependencies>
+  </plugin>
+</plugins></pluginManagement></build></project>"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(
+            names(&deps),
+            vec![
+                "com.nested:plugin-dep",
+                "org.apache.maven.plugins:maven-dependency-plugin",
+            ]
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn maven_local_reactor_parent_is_not_a_registry_dependency() {
+        let root = empty_test_dir("jvm");
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project><groupId>com.acme</groupId><artifactId>acme-parent</artifactId><version>1.0.0</version><dependencies><dependency><groupId>com.other</groupId><artifactId>x</artifactId></dependency></dependencies></project>",
+        )
+        .unwrap();
+        let child = root.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let child_pom = "<project><parent><groupId>com.acme</groupId><artifactId>acme-parent</artifactId><version>1.0.0</version>{rel}</parent><artifactId>child</artifactId></project>";
+        std::fs::write(child.join("pom.xml"), child_pom.replace("{rel}", "")).unwrap();
+        assert!(
+            parse(&child).unwrap().is_empty(),
+            "parent resolved from ../pom.xml is part of the local reactor"
+        );
+
+        // An explicitly empty relativePath forces repository resolution.
+        std::fs::write(
+            child.join("pom.xml"),
+            child_pom.replace("{rel}", "<relativePath/>"),
+        )
+        .unwrap();
+        assert_eq!(names(&parse(&child).unwrap()), vec!["com.acme:acme-parent"]);
+
+        // A local pom with different coordinates does not satisfy the parent.
+        std::fs::write(
+            child.join("pom.xml"),
+            child_pom
+                .replace("acme-parent", "evil-parent")
+                .replace("{rel}", ""),
+        )
+        .unwrap();
+        assert_eq!(names(&parse(&child).unwrap()), vec!["com.acme:evil-parent"]);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn reject_maven_build_coordinates_without_artifact_or_with_unmodeled_tags() {
+        for body in [
+            "<parent><groupId>com.evil</groupId><version>1</version></parent>",
+            "<parent><artifactId>evil</artifactId><version>1</version></parent>",
+            "<build><extensions><extension><artifactId>evil</artifactId></extension></extensions></build>",
+            "<build><plugins><plugin><groupId>com.evil</groupId></plugin></plugins></build>",
+            "<build><plugins><m:plugin><groupId>com.evil</groupId><artifactId>x</artifactId></m:plugin></plugins></build>",
+            "<build><plugins><plugin combine.self=\"override\"><groupId>com.evil</groupId><artifactId>x</artifactId></plugin></plugins></build>",
+            "<parent xmlns=\"x\"><groupId>com.evil</groupId><artifactId>x</artifactId></parent>",
+        ] {
+            let dir = setup_pom(&format!(
+                "<project xmlns:m=\"http://maven.apache.org/POM/4.0.0\">{body}</project>"
+            ));
+            assert!(parse(&dir).is_err(), "must fail closed: {body}");
             cleanup(&dir);
         }
     }
