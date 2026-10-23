@@ -11183,3 +11183,43 @@ async fn npm_default_registry_overrides_and_cache_changes_remain_visible() {
     std::fs::remove_dir_all(dir).unwrap();
     std::fs::remove_dir_all(cache_dir).unwrap();
 }
+
+#[tokio::test]
+async fn npm_workspace_peer_ranges_resolve_from_the_authoritative_root_lockfile() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("packages/worker")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","workspaces":["packages/*"],"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/worker/package.json"),
+        r#"{"name":"worker","peerDependencies":{"react":"^18.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("package-lock.json"), serde_json::json!({"lockfileVersion":3,"packages":{
+        "":{"name":"app","workspaces":["packages/*"],"dependencies":{"react":"18.3.1"}},
+        "packages/worker":{"name":"worker","peerDependencies":{"react":"^18.0.0"}},
+        "node_modules/worker":{"resolved":"packages/worker","link":true},
+        "node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}
+    }}).to_string()).unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report.has_errors(),
+        "workspace peer should use the root's exact locked version: {:?}",
+        report.issues
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

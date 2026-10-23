@@ -295,9 +295,9 @@ fn read_lockfile(
                     project_dir,
                 )?));
             }
-            let Some(path) =
+            let Some(path) = lockfile_override.map(PathBuf::from).or_else(|| {
                 first_existing(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
-            else {
+            }) else {
                 return Ok(ParsedLockfile::None);
             };
             let file_name = path
