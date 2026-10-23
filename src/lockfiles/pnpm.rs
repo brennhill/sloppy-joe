@@ -338,10 +338,9 @@ pub(crate) fn validate_provenance(
             .and_then(|value| value.as_str())
             .map(str::trim)
             .filter(|value| !value.is_empty())
+            && !registries.matches_private_source(package_name, tarball)
         {
-            if !registries.matches_private_source(package_name, tarball) {
-                validate_pnpm_tarball_identity(package_name, version, tarball, lockfile_path)?;
-            }
+            validate_pnpm_tarball_identity(package_name, version, tarball, lockfile_path)?;
         }
     }
 

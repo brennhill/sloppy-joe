@@ -901,7 +901,7 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
 
 pub(crate) fn redact_url_for_display(url: &str) -> String {
     let Ok(mut parsed) = reqwest::Url::parse(url) else {
-        return url.to_string();
+        return "<invalid URL redacted>".to_string();
     };
     let _ = parsed.set_username("");
     let _ = parsed.set_password(None);

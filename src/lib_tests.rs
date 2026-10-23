@@ -11032,6 +11032,7 @@ async fn pnpm_private_registry_routing_is_unvetted_with_integrity_still_required
     for tarball in [
         "https://user:secret-must-not-appear@registry.example/private/client.tgz",
         "https://attacker.example/client.tgz",
+        "https://user:secret-must-not-appear@[invalid/client.tgz",
         "https://registry.npmjs.org/@company/client/-/client-1.0.0.tgz?token=secret-must-not-appear",
     ] {
         std::fs::write(
