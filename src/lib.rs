@@ -299,9 +299,20 @@ fn preflight_project_inputs(
     preflight_project_inputs_with_options(scan_root, specs, config, &ScanOptions::default())
 }
 
+#[cfg(test)]
 fn preflight_project_inputs_with_options(
     scan_root: &std::path::Path,
     specs: &[ProjectInputSpec],
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Result<Vec<Issue>> {
+    preflight_selected_project_inputs(scan_root, specs, specs, config, opts)
+}
+
+fn preflight_selected_project_inputs(
+    scan_root: &std::path::Path,
+    specs: &[ProjectInputSpec],
+    selected: &[ProjectInputSpec],
     config: &config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> Result<Vec<Issue>> {
@@ -314,10 +325,19 @@ fn preflight_project_inputs_with_options(
     })?;
     let npm_manifests = load_npm_manifests(specs)?;
     let npm_index = index_npm_projects(&npm_manifests)?;
-    let npm_alias_targets = npm_alias_targets_by_lockfile(specs, &npm_manifests)?;
+    let selected_locks: std::collections::HashSet<_> =
+        selected.iter().filter_map(selected_lockfile_path).collect();
+    let alias_specs: Vec<_> = specs
+        .iter()
+        .filter(|spec| {
+            selected_lockfile_path(spec).is_some_and(|path| selected_locks.contains(&path))
+        })
+        .cloned()
+        .collect();
+    let npm_alias_targets = npm_alias_targets_by_lockfile(&alias_specs, &npm_manifests)?;
     let mut warnings = Vec::new();
 
-    for spec in specs {
+    for spec in selected {
         let npm_manifest = npm_manifests.get(&spec.manifest_path);
         let parsed_input = match spec.kind {
             ProjectInputKind::Npm => {
@@ -6358,12 +6378,46 @@ async fn scan_with_config(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
     let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
-    let mut preflight_warnings =
-        preflight_project_inputs_with_options(project_dir, &specs, &config, opts)?;
-    preflight_warnings.extend(local_overlay_relaxation_issues(&config));
-    let projects = parse_project_inputs_with_options(project_dir, &specs, &config, opts)?;
-
-    if projects.is_empty() {
+    let mut preflight_warnings = local_overlay_relaxation_issues(&config);
+    let mut projects = Vec::new();
+    let mut project_runs = Vec::new();
+    for spec in &specs {
+        let prepared = (|| -> Result<Vec<ParsedProject>> {
+            let warnings = preflight_selected_project_inputs(
+                project_dir,
+                &specs,
+                std::slice::from_ref(spec),
+                &config,
+                opts,
+            )?;
+            let parsed = parse_project_inputs_with_options(
+                project_dir,
+                std::slice::from_ref(spec),
+                &config,
+                opts,
+            )?;
+            preflight_warnings.extend(warnings.into_iter().map(|mut issue| {
+                issue.project = Some(spec.manifest_path.display().to_string());
+                issue
+            }));
+            Ok(parsed)
+        })();
+        match prepared {
+            Ok(parsed) => projects.extend(parsed),
+            Err(error) => {
+                if specs.len() == 1 {
+                    return Err(error);
+                }
+                preflight_warnings.push(incomplete_project_issue(spec, &error));
+                project_runs.push(project_scan_summary(
+                    spec,
+                    0,
+                    report::ProjectScanStatus::Unsupported,
+                ));
+            }
+        }
+    }
+    if projects.is_empty() && project_runs.is_empty() {
         parsers::parse_dependencies(project_dir, project_type)?;
         return Ok(ScanReport::from_issues(0, preflight_warnings));
     }
@@ -6396,16 +6450,48 @@ async fn scan_with_config(
     let mut all_review_candidates = Vec::new();
 
     for project in &projects {
-        if project.deps.is_empty() {
-            continue;
+        let result = if let Some(dep) = project.deps.first() {
+            let registry = registry::registry_for_with_client(dep.ecosystem, client.clone())?;
+            scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await
+        } else {
+            Ok(ScanReport::empty())
+        };
+        match result {
+            Ok(mut report) => {
+                let status = if report.has_errors()
+                    || all_issues.iter().any(|issue| {
+                        issue.project.as_deref()
+                            == Some(project.spec.manifest_path.to_string_lossy().as_ref())
+                            && issue.severity == Severity::Error
+                    }) {
+                    report::ProjectScanStatus::Blocked
+                } else {
+                    report::ProjectScanStatus::Passed
+                };
+                project_runs.push(project_scan_summary(
+                    &project.spec,
+                    report.packages_checked,
+                    status,
+                ));
+                for issue in &mut report.issues {
+                    issue.project = Some(project.spec.manifest_path.display().to_string());
+                }
+                total_packages += report.packages_checked;
+                all_issues.extend(report.issues);
+                all_review_candidates.extend(report.review_candidates);
+            }
+            Err(error) => {
+                if specs.len() == 1 {
+                    return Err(error);
+                }
+                all_issues.push(incomplete_project_issue(&project.spec, &error));
+                project_runs.push(project_scan_summary(
+                    &project.spec,
+                    0,
+                    report::ProjectScanStatus::Unsupported,
+                ));
+            }
         }
-        let ecosystem = project.deps[0].ecosystem;
-        let registry = registry::registry_for_with_client(ecosystem, client.clone())?;
-        let report =
-            scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await?;
-        total_packages += report.packages_checked;
-        all_issues.extend(report.issues);
-        all_review_candidates.extend(report.review_candidates);
     }
 
     let report = ScanReport::from_issues_with_review_candidates(
@@ -6415,6 +6501,8 @@ async fn scan_with_config(
     );
     let mut report = report;
     report.full_scan_reasons = full_scan_reasons;
+    project_runs.sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
+    report.projects = project_runs;
 
     // Save hash after successful scan
     if !opts.no_cache {
@@ -6450,6 +6538,31 @@ async fn scan_with_config(
     }
 
     Ok(report)
+}
+
+fn project_scan_summary(
+    spec: &ProjectInputSpec,
+    packages_checked: usize,
+    status: report::ProjectScanStatus,
+) -> report::ProjectScan {
+    report::ProjectScan {
+        manifest_path: spec.manifest_path.display().to_string(),
+        lockfile_path: selected_lockfile_path(spec).map(|path| path.display().to_string()),
+        manager: spec
+            .js_binding
+            .as_ref()
+            .map(|binding| binding.manager.as_str().to_string()),
+        packages_checked,
+        status,
+    }
+}
+
+fn incomplete_project_issue(spec: &ProjectInputSpec, error: &anyhow::Error) -> Issue {
+    let mut issue = Issue::new("<project>", checks::names::SCAN_INCOMPLETE_PROJECT, Severity::Error)
+        .message(format!("Project scan incomplete: {error:#}"))
+        .fix("Resolve the unsupported input or runtime error for this project; other independent project results are retained.");
+    issue.project = Some(spec.manifest_path.display().to_string());
+    issue
 }
 
 fn private_npm_warning(dep: &Dependency, source: &str) -> Issue {

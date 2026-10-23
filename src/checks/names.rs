@@ -2,6 +2,7 @@
 //! should reference a constant from here to prevent typos.
 
 // -- Top-level checks --
+pub const SCAN_INCOMPLETE_PROJECT: &str = "scan/incomplete-project";
 pub const CANONICAL: &str = "canonical";
 pub const EXISTENCE: &str = "existence";
 pub const EXISTENCE_REGISTRY_UNREACHABLE: &str = "existence/registry-unreachable";
@@ -96,6 +97,7 @@ mod tests {
     fn all_constants() -> Vec<&'static str> {
         vec![
             CANONICAL,
+            SCAN_INCOMPLETE_PROJECT,
             EXISTENCE,
             EXISTENCE_REGISTRY_UNREACHABLE,
             METADATA_VERSION_AGE,

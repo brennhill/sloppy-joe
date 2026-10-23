@@ -448,6 +448,9 @@ async fn main() {
                             println!("\n{}", fast_mode_ci_guidance());
                         }
                     }
+                    if report.has_incomplete_projects() {
+                        process::exit(2);
+                    }
                     if report.has_errors() {
                         process::exit(1);
                     }

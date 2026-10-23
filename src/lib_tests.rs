@@ -11292,11 +11292,21 @@ async fn planning_spikes_are_ignored_by_default_but_application_manifests_are_sc
         r#"{"dependencies":{"react":"18.3.1"}}"#,
     )
     .unwrap();
-    let error = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+    let report = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
         .await
-        .expect_err("application packages must still be checked");
-    assert!(error.to_string().contains("web"), "{error}");
-    assert!(!error.to_string().contains(".planning"), "{error}");
+        .unwrap();
+    assert!(report.has_errors() && report.has_incomplete_projects());
+    assert!(report.issues.iter().any(|i| {
+        i.project
+            .as_deref()
+            .is_some_and(|p| p.ends_with("web/package.json"))
+    }));
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|i| i.message.contains(".planning"))
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -11330,10 +11340,17 @@ async fn directory_exclusions_are_configurable_and_can_be_disabled() {
         .unwrap();
     assert!(!report.has_errors());
     std::fs::write(&policy, r#"{"ignore_dirs":[]}"#).unwrap();
-    let error = scan_with_source_full_options(&dir, Some("npm"), policy.to_str(), &opts)
+    let report = scan_with_source_full_options(&dir, Some("npm"), policy.to_str(), &opts)
         .await
-        .expect_err("an empty exclusion list must include planning projects");
-    assert!(error.to_string().contains(".planning"), "{error}");
+        .unwrap();
+    assert!(report.has_errors() && report.has_incomplete_projects());
+    assert!(
+        report
+            .projects
+            .iter()
+            .any(|p| p.manifest_path.contains(".planning")
+                && p.status == report::ProjectScanStatus::Unsupported)
+    );
     for invalid in ["", ".", "..", "some/path", "some\\path", "*"] {
         std::fs::write(
             &policy,
@@ -11461,4 +11478,90 @@ async fn independent_npm_chains_under_a_pnpm_marker_keep_their_own_locked_versio
             .any(|i| i.check == "resolution/independent-install-root")
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn independent_project_runs_continue_after_an_unsupported_dependency_chain() {
+    let dir = unique_dir();
+    for name in ["a-unsupported", "z-private"] {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+    }
+    std::fs::write(
+        dir.join("a-unsupported/package.json"),
+        r#"{"name":"experiment","dependencies":{},"overrides":{"adm-zip":"0.6.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("a-unsupported/package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"name":"experiment","dependencies":{}}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("z-private/.npmrc"),
+        "@company:registry=https://registry.example/private/\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("z-private/package.json"),
+        r#"{"dependencies":{"@company/client":"1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("z-private/package-lock.json"), r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"@company/client":"1.0.0"}},"node_modules/@company/client":{"version":"1.0.0","resolved":"https://registry.example/private/client.tgz","integrity":"sha512-demo"}}}"#).unwrap();
+    let cache_dir = unique_dir();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            cache_dir: Some(&cache_dir),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("an unsupported project must not prevent independent chains from running");
+    assert_eq!(report.packages_checked, 1);
+    assert!(
+        report.has_errors(),
+        "incomplete repository scans must still block CI"
+    );
+    let json = serde_json::to_value(&report).unwrap();
+    let projects = json["projects"]
+        .as_array()
+        .expect("report must identify the independently scanned projects");
+    assert_eq!(projects.len(), 2);
+    assert!(projects.iter().any(|p| {
+        p["manifest_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("a-unsupported/package.json")
+            && p["status"] == "unsupported"
+    }));
+    assert!(projects.iter().any(|p| {
+        p["manifest_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("z-private/package.json")
+            && p["status"] == "passed"
+            && p["manager"] == "npm"
+    }));
+    let private = json["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["check"] == "resolution/private-registry-unvetted")
+        .unwrap();
+    assert!(
+        private["project"]
+            .as_str()
+            .unwrap()
+            .ends_with("z-private/package.json")
+    );
+    assert!(
+        !cache_dir.join("full-scan-fingerprint.json").exists(),
+        "partial scans must not be cached as successful full scans"
+    );
+    assert!(report.render_human().contains("z-private"));
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(cache_dir).unwrap();
 }

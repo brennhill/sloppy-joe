@@ -60,6 +60,9 @@ pub struct Issue {
     /// None defaults to direct for backward compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Manifest identifying the independent project run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 impl Issue {
@@ -75,6 +78,7 @@ impl Issue {
             suggestion: None,
             registry_url: None,
             source: None,
+            project: None,
         }
     }
 
@@ -103,12 +107,30 @@ pub(crate) fn sanitize_for_terminal(text: &str) -> String {
     text.chars().flat_map(|ch| ch.escape_default()).collect()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectScanStatus {
+    Passed,
+    Blocked,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectScan {
+    pub manifest_path: String,
+    pub lockfile_path: Option<String>,
+    pub manager: Option<String>,
+    pub packages_checked: usize,
+    pub status: ProjectScanStatus,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScanReport {
     pub packages_checked: usize,
     pub issues: Vec<Issue>,
     pub review_candidates: Vec<ReviewExceptionCandidate>,
     pub full_scan_reasons: Vec<FullScanRecommendationReason>,
+    pub projects: Vec<ProjectScan>,
 }
 
 impl Serialize for ScanReport {
@@ -118,14 +140,15 @@ impl Serialize for ScanReport {
     {
         let mut state = serializer.serialize_struct(
             "ScanReport",
-            if self.review_candidates.is_empty() {
-                4
-            } else {
-                5
-            },
+            3 + usize::from(!self.projects.is_empty())
+                + usize::from(!self.review_candidates.is_empty())
+                + usize::from(!self.full_scan_reasons.is_empty()),
         )?;
         state.serialize_field("packages_checked", &self.packages_checked)?;
         state.serialize_field("issues", &self.issues)?;
+        if !self.projects.is_empty() {
+            state.serialize_field("projects", &self.projects)?;
+        }
         if !self.review_candidates.is_empty() {
             state.serialize_field("review_candidates", &self.review_candidates)?;
         }
@@ -144,6 +167,7 @@ impl ScanReport {
             issues: vec![],
             review_candidates: vec![],
             full_scan_reasons: vec![],
+            projects: vec![],
         }
     }
 
@@ -153,6 +177,7 @@ impl ScanReport {
             issues,
             review_candidates: vec![],
             full_scan_reasons: vec![],
+            projects: vec![],
         }
     }
 
@@ -166,6 +191,7 @@ impl ScanReport {
             issues,
             review_candidates,
             full_scan_reasons: vec![],
+            projects: vec![],
         }
     }
 
@@ -175,6 +201,12 @@ impl ScanReport {
 
     pub fn has_issues(&self) -> bool {
         !self.issues.is_empty()
+    }
+
+    pub fn has_incomplete_projects(&self) -> bool {
+        self.projects
+            .iter()
+            .any(|project| project.status == ProjectScanStatus::Unsupported)
     }
 
     pub fn has_errors(&self) -> bool {
@@ -193,6 +225,19 @@ impl ScanReport {
 
     pub fn render_human(&self) -> String {
         let mut out = String::new();
+        for project in &self.projects {
+            let _ = writeln!(
+                out,
+                "Project: {} [{}], {} packages, {:?}",
+                sanitize_for_terminal(&project.manifest_path),
+                project.manager.as_deref().unwrap_or("auto"),
+                project.packages_checked,
+                project.status
+            );
+            if let Some(lockfile) = &project.lockfile_path {
+                let _ = writeln!(out, "  Lockfile: {}", sanitize_for_terminal(lockfile));
+            }
+        }
         if self.issues.is_empty() {
             let _ = writeln!(
                 out,
@@ -283,6 +328,10 @@ impl ScanReport {
 }
 
 fn render_issue(out: &mut String, issue: &Issue) {
+    if let Some(project) = &issue.project {
+        let _ = writeln!(out, "  Project: {}", sanitize_for_terminal(project));
+    }
+
     let safe_package = sanitize_for_terminal(&issue.package);
     let (label, colorized_package) = match issue.severity {
         Severity::Error => ("ERROR".red().bold(), safe_package.red().bold()),
@@ -436,6 +485,7 @@ mod tests {
             suggestion: Some("bar".to_string()),
             registry_url: None,
             source: None,
+            project: None,
         };
         let built = Issue::new("foo", "test", Severity::Warning)
             .message("msg")
@@ -481,6 +531,7 @@ mod tests {
                 FullScanRecommendationReason::NoSuccessfulFullScan,
                 FullScanRecommendationReason::LastFullScanStale,
             ],
+            projects: vec![],
         }
     }
 
