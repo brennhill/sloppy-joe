@@ -5061,10 +5061,13 @@ fn validate_npm_lockfile_entry_fields(
         && !registries.matches_private_source(package_name, resolved)
     {
         anyhow::bail!(
-            "Required lockfile '{}' entry '{}' has untrusted resolved source '{}'. sloppy-joe only trusts npm registry tarball URLs in package-lock.json and npm-shrinkwrap.json.",
+            "Required lockfile '{}' entry '{}' has untrusted resolved source at host '{}' (URL redacted). Expected a public npm tarball or a URL within its configured private registry.",
             lockfile_path.display(),
             package_name,
-            crate::report::sanitize_for_terminal(resolved)
+            reqwest::Url::parse(resolved)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_string))
+                .unwrap_or_else(|| "<invalid>".to_string())
         );
     }
     if is_trusted_npm_resolved_source(resolved) {

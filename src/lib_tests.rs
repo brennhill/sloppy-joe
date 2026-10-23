@@ -10952,3 +10952,48 @@ async fn private_npm_registry_packages_are_unvetted_nonblocking_and_never_querie
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn private_npm_registry_source_mismatches_block_without_leaking_credentials() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join(".npmrc"),
+        "@company:registry=https://registry.example/private/\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","dependencies":{"@company/client":"1.0.0"}}"#,
+    )
+    .unwrap();
+    for resolved in [
+        "https://user:secret-must-not-appear@registry.example/private/client.tgz",
+        "https://attacker.example/private/client.tgz",
+        "https://registry.example/private-other/client.tgz",
+        "http://registry.example/private/client.tgz",
+    ] {
+        std::fs::write(dir.join("package-lock.json"), serde_json::json!({
+            "lockfileVersion":3,"packages": {
+                "":{"dependencies":{"@company/client":"1.0.0"}},
+                "node_modules/@company/client":{"version":"1.0.0","resolved":resolved,"integrity":"sha512-demo"}
+            }
+        }).to_string()).unwrap();
+        let err = scan_with_source_full_options(
+            &dir,
+            Some("npm"),
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("unvetted registry support must preserve source boundary validation");
+        assert!(
+            !err.to_string().contains("secret-must-not-appear"),
+            "credential leaked: {err}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
