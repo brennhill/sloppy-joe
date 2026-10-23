@@ -200,3 +200,162 @@ fn build_system_requires_reject_direct_references() {
     assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
     cleanup(&dir);
 }
+
+#[test]
+fn uv_dev_dependencies_are_dev_group_scoped() {
+    let dir = setup_test_dir(
+        "pyproject-uv-dev",
+        "pyproject.toml",
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests"]
+
+[tool.uv]
+dev-dependencies = ["evil-uv-dev>=1"]
+constraint-dependencies = ["evil-constraint==1"]
+override-dependencies = ["evil-override==1"]
+"#,
+    );
+    let path = dir.join("pyproject.toml");
+    let deps = parse_legacy_scoped_file(&path).unwrap();
+    let dev = deps
+        .iter()
+        .find(|dep| dep.dependency.name == "evil-uv-dev")
+        .expect("uv dev-dependencies must be parsed");
+    assert!(dev.groups.contains("dev"));
+    assert!(!dev.runtime_default);
+    // Constraints and overrides only steer resolution; they are not lockfile roots.
+    assert!(!scoped_names(&deps).contains(&"evil-constraint".to_string()));
+
+    let tooling = names(&parse_unlocked_tooling_file(&path).unwrap());
+    assert!(
+        tooling.contains(&"evil-constraint".to_string()),
+        "{tooling:?}"
+    );
+    assert!(
+        tooling.contains(&"evil-override".to_string()),
+        "{tooling:?}"
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn uv_override_dependencies_reject_direct_references() {
+    let dir = setup_test_dir(
+        "pyproject-uv-override-url",
+        "pyproject.toml",
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.uv]
+override-dependencies = ["requests @ https://evil.example/requests.whl"]
+"#,
+    );
+    assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
+    cleanup(&dir);
+}
+
+#[test]
+fn uv_dev_dependencies_must_be_an_array() {
+    let dir = setup_test_dir(
+        "pyproject-uv-dev-string",
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.uv]\ndev-dependencies = \"evil\"\n",
+    );
+    assert!(parse_legacy_scoped_file(&dir.join("pyproject.toml")).is_err());
+    cleanup(&dir);
+}
+
+#[test]
+fn pdm_dev_dependencies_and_hatch_env_dependencies_are_group_scoped() {
+    let dir = setup_test_dir(
+        "pyproject-pdm-hatch",
+        "pyproject.toml",
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests"]
+
+[tool.pdm.dev-dependencies]
+dev = ["evil-pdm-dev>=1"]
+
+[tool.hatch.envs.default]
+dependencies = ["evil-hatch-env>=1"]
+extra-dependencies = ["evil-hatch-extra>=1"]
+"#,
+    );
+    let deps = parse_legacy_scoped_file(&dir.join("pyproject.toml")).unwrap();
+    let pdm = deps
+        .iter()
+        .find(|dep| dep.dependency.name == "evil-pdm-dev")
+        .expect("PDM dev-dependencies must be parsed");
+    assert!(pdm.groups.contains("dev"));
+    let hatch = deps
+        .iter()
+        .find(|dep| dep.dependency.name == "evil-hatch-env")
+        .expect("Hatch environment dependencies must be parsed");
+    assert!(hatch.groups.contains("default"));
+    assert!(!hatch.runtime_default);
+    assert!(
+        deps.iter()
+            .any(|dep| dep.dependency.name == "evil-hatch-extra")
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn hatch_env_overrides_that_declare_dependencies_fail_closed() {
+    let dir = setup_test_dir(
+        "pyproject-hatch-overrides",
+        "pyproject.toml",
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.hatch.envs.test.overrides]
+matrix.version.dependencies = [{ value = "evil-matrix", if = ["3.12"] }]
+"#,
+    );
+    let err = parse_legacy_scoped_file(&dir.join("pyproject.toml")).unwrap_err();
+    assert!(err.to_string().contains("overrides"), "{err}");
+    cleanup(&dir);
+}
+
+#[test]
+fn hatch_build_and_env_plugins_and_pdm_overrides_are_unlocked_tooling() {
+    let dir = setup_test_dir(
+        "pyproject-hatch-build",
+        "pyproject.toml",
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+
+[tool.hatch.env]
+requires = ["evil-env-plugin"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+dependencies = ["evil-build-hook==1.0"]
+
+[tool.pdm.resolution.overrides]
+evil-pdm-override = ">=1.0"
+"#,
+    );
+    let tooling = names(&parse_unlocked_tooling_file(&dir.join("pyproject.toml")).unwrap());
+    for expected in ["evil-env-plugin", "evil-build-hook", "evil-pdm-override"] {
+        assert!(tooling.contains(&expected.to_string()), "{tooling:?}");
+    }
+    cleanup(&dir);
+}
+
+#[test]
+fn pdm_override_urls_fail_closed() {
+    let dir = setup_test_dir(
+        "pyproject-pdm-override-url",
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.pdm.resolution.overrides]\nrequests = \"https://evil.example/requests.whl\"\n",
+    );
+    assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
+    cleanup(&dir);
+}
