@@ -421,6 +421,25 @@ async fn uv_empty_dependencies_scans_uv_lock_packages() {
 }
 
 #[tokio::test]
+async fn pipenv_empty_pipfile_scans_pipfile_lock_packages() {
+    let dir = unique_dir();
+    write(
+        &dir,
+        "Pipfile",
+        "[[source]]\nname = \"pypi\"\nurl = \"https://pypi.org/simple\"\nverify_ssl = true\n\n[packages]\n",
+    );
+    write(
+        &dir,
+        "Pipfile.lock",
+        r#"{"_meta":{"sources":[{"name":"pypi","url":"https://pypi.org/simple","verify_ssl":true}]},"default":{"zzghost":{"hashes":["sha256:1111111111111111111111111111111111111111111111111111111111111111"],"index":"pypi","version":"==9.0.0"}},"develop":{}}"#,
+    );
+    scan_dir(&dir, "pypi", "pypi", vec![])
+        .await
+        .assert_ghost_scanned();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn dotnet_empty_project_with_locked_packages_blocks() {
     let dir = unique_dir();
     write(

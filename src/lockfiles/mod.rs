@@ -4,6 +4,7 @@ mod composer;
 mod dotnet;
 mod gradle;
 pub(crate) mod npm;
+pub(crate) mod pipfile_lock;
 pub(crate) mod pnpm;
 pub(crate) mod python;
 mod ruby;
@@ -134,6 +135,7 @@ enum ParsedLockfile {
     Gradle(String),
     Python(toml::Value),
     Uv(toml::Value),
+    Pipfile(serde_json::Value),
     Ruby(String),
     None,
 }
@@ -396,10 +398,13 @@ fn read_lockfile_for_project_kind(
             Some(value) => Ok(ParsedLockfile::Uv(value)),
             None => Ok(ParsedLockfile::None),
         },
+        crate::ProjectInputKind::PyPipfile => match pipfile_lock::read_lockfile(project_dir)? {
+            Some(value) => Ok(ParsedLockfile::Pipfile(value)),
+            None => Ok(ParsedLockfile::None),
+        },
         crate::ProjectInputKind::PyRequirements
         | crate::ProjectInputKind::PyRequirementsTrusted
         | crate::ProjectInputKind::PyProjectLegacy
-        | crate::ProjectInputKind::PyPipfile
         | crate::ProjectInputKind::PySetupPy
         | crate::ProjectInputKind::PySetupCfg => Ok(ParsedLockfile::None),
         crate::ProjectInputKind::Cargo => {
@@ -467,6 +472,9 @@ fn resolve_from_parsed(
         ParsedLockfile::Uv(value) => {
             uv::resolve_from_value_with_mode_and_profile(value, deps, mode, python_profile)
         }
+        ParsedLockfile::Pipfile(value) => {
+            pipfile_lock::resolve_from_value_with_mode(value, deps, mode)
+        }
         ParsedLockfile::Ruby(content) => ruby::resolve_from_content_with_mode(content, deps, mode),
         ParsedLockfile::None => {
             let mut result = ResolutionResult::default();
@@ -490,6 +498,7 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
         ParsedLockfile::Gradle(content) => gradle::parse_all_from_content(content),
         ParsedLockfile::Python(value) => python::parse_all_from_value(value),
         ParsedLockfile::Uv(value) => uv::parse_all_from_value(value),
+        ParsedLockfile::Pipfile(value) => pipfile_lock::parse_all_from_value(value),
         ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
         ParsedLockfile::None => Ok(vec![]),
     }

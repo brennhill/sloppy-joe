@@ -451,6 +451,9 @@ fn preflight_selected_project_inputs(
                     );
                 }
                 warnings.push(python_legacy_warning(spec));
+                if spec.kind == ProjectInputKind::PyPipfile {
+                    validate_pipfile_lockfile(spec, config)?;
+                }
             }
             ProjectInputKind::Cargo => ensure_lockfile_readable(
                 &authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?,
@@ -621,6 +624,20 @@ fn preflight_selected_project_inputs(
     }
 
     Ok(warnings)
+}
+
+/// When a Pipfile.lock is committed, reconcile it with the Pipfile and check
+/// every locked entry's provenance before anything is scanned.
+fn validate_pipfile_lockfile(
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<()> {
+    let Some(path) = selected_lockfile_path(spec) else {
+        return Ok(());
+    };
+    let lock = lockfiles::pipfile_lock::read_lockfile_at(&path)?;
+    let pipfile = parsers::pipfile::parse_file_categories(&spec.manifest_path)?;
+    lockfiles::pipfile_lock::validate(&lock, &pipfile, &path, config)
 }
 
 fn python_legacy_warning(spec: &ProjectInputSpec) -> Issue {
@@ -6291,9 +6308,11 @@ fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf>
         ProjectInputKind::PyProjectPoetry => Some(project_dir.join("poetry.lock")),
         ProjectInputKind::PyProjectUv => Some(project_dir.join("uv.lock")),
         ProjectInputKind::PyRequirementsTrusted => Some(spec.manifest_path.clone()),
+        ProjectInputKind::PyPipfile => {
+            first_existing_lockfile(project_dir, &[lockfiles::pipfile_lock::LOCKFILE_NAME])
+        }
         ProjectInputKind::PyRequirements
         | ProjectInputKind::PyProjectLegacy
-        | ProjectInputKind::PyPipfile
         | ProjectInputKind::PySetupPy
         | ProjectInputKind::PySetupCfg
         | ProjectInputKind::Maven => None,
@@ -7564,3 +7583,7 @@ mod yarn_orphan_scan_tests;
 #[cfg(test)]
 #[path = "empty_manifest_lockfile_tests.rs"]
 mod empty_manifest_lockfile_tests;
+
+#[cfg(test)]
+#[path = "pipfile_lock_tests.rs"]
+mod pipfile_lock_tests;

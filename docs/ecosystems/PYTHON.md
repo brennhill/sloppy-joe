@@ -69,6 +69,8 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Poetry or uv projects whose locked graph resolves from a non-PyPI source that is not allowlisted exactly in `trusted_indexes.pypi`.
 - Poetry or uv dependencies whose declared source intent disagrees with the resolved source in the lockfile.
 - Poetry or uv source declarations that reuse the reserved name `pypi` for a non-canonical index URL.
+- A committed `Pipfile.lock` that is out of sync with the Pipfile: a `[packages]`, `[dev-packages]`, or custom-category package missing from its `default`, `develop`, or category section, or locked at a version its Pipfile specifier does not allow.
+- `Pipfile.lock` entries without an exact `==` pin or hashes, entries installed from `git`, `path`, `file`, or `editable` sources, entries resolved from a non-PyPI `index`, and `_meta.sources` indexes that are not allowlisted in `trusted_indexes.pypi` or not declared in the Pipfile. Lock entries the Pipfile does not declare are treated as transitive dependencies and scanned.
 - Hash-locked pip-tools requirements that are missing hashes, use non-exact pins, or inherit an included file that is not fully hash-locked.
 - Hash-locked pip-tools requirements that declare an explicit Python index URL not allowlisted in `trusted_indexes.pypi`.
 - Unsafe legacy dependency forms, including:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pipenv: reconcile a committed `Pipfile.lock` with the Pipfile in both directions. Every package in `[packages]`, `[dev-packages]`, and custom categories must be locked in the matching section with an exact `==` pin and hashes, and must satisfy its Pipfile specifier; lock-only entries are scanned as transitive dependencies at their locked versions. Entries from `git`/`path`/`file`/`editable` sources or a non-PyPI index, and lock sources outside `trusted_indexes.pypi` or not declared in the Pipfile, block.
 - Scan the lockfile of a project whose manifest declares no dependencies instead of skipping it: npm, pnpm, Yarn, Bun, Cargo, Bundler, Composer, Poetry and uv lockfile packages are now validated and scanned (or flagged as stale), and Gradle/NuGet lockfiles with packages still block. pnpm now reports packages no importer reaches as `lockfile/orphan-entries` warnings for a standalone lockfile and scans them from the root importer of a workspace or when the graph cannot be fully resolved.
 
 - Python: scan every dependency group and extra by default (Poetry groups, PEP 735 `[dependency-groups]`, uv dev dependencies, optional dependencies; PDM/Hatch environments as unlocked tooling). `--python-groups`/`--python-extras` now narrow the selection and warn about the groups and extras they exclude. Resolve PEP 735 `include-group` entries, blocking on cycles, unknown groups, and malformed include tables.
