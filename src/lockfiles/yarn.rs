@@ -379,12 +379,20 @@ pub(crate) fn validate_manifest_consistency(
 
 pub(crate) fn validate_provenance(parsed: &ParsedYarnLock) -> Result<()> {
     for entry in &parsed.entries {
+        // Yarn Berry's lockfile header block, not a package.
+        if entry.selectors.len() == 1 && entry.selectors[0] == "__metadata" {
+            continue;
+        }
         let Some((name, source)) = entry
             .selectors
             .iter()
             .find_map(|selector| selector_package_name_and_source(selector))
         else {
-            continue;
+            anyhow::bail!(
+                "Required lockfile '{}' entry '{}' has a selector sloppy-joe cannot attribute to a package. Unattributable entries cannot be verified.",
+                parsed.path.display(),
+                crate::report::sanitize_for_terminal(&entry.selectors.join(", "))
+            );
         };
         match source {
             "workspace" => {
@@ -657,9 +665,11 @@ fn selector_package_name_and_source(selector: &str) -> Option<(&str, &str)> {
     }
 
     let split = if selector.starts_with('@') {
+        // `slash` indexes the full selector (leading '@' included), so the leaf
+        // starts right after it. '/' is ASCII, so this is a char boundary.
         let slash = selector.find('/')?;
-        let after_scope = 1 + slash + 1;
-        let version_at = selector[after_scope..].rfind('@')?;
+        let after_scope = slash + 1;
+        let version_at = selector.get(after_scope..)?.rfind('@')?;
         after_scope + version_at
     } else {
         selector.rfind('@')?
