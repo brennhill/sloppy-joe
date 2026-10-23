@@ -192,7 +192,7 @@ In scope:
 - `--cache-dir` CLI flag to override cache location.
 - `--no-cache` CLI flag to disable all disk caching.
 - Per-registry concurrency limits (crates.io: 2, Go: 5, others: 20).
-- Fail-closed on registry errors: >5 failures or >10% failure rate blocks the build.
+- Fail-closed on registry errors: any registry failure blocks the build.
 - Input validation on package names: rejects path traversal (`..`) and null bytes.
 - Mutation cap of 50 per dependency to bound registry queries.
 

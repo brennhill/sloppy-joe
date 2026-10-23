@@ -16,7 +16,7 @@
 - If a check can't run, emit a blocking error. Never fail open.
 - All caches must use `cache.rs` shared utilities (symlink protection, atomic writes, 0o600 permissions).
 - Validate package names before URL construction (`validate_package_name` in registry/mod.rs).
-- Registry errors must be tracked and fail closed above threshold (>5 errors OR >10% failure rate).
+- Registry errors must be tracked and fail closed: any registry error blocks (`has_query_errors` in `checks/mod.rs`). There is no error-rate threshold.
 
 ## Architecture
 - Similarity is registry-based and async: `check_similarity(registry, deps, ecosystem) -> Result<Vec<Issue>>`. No corpus.
