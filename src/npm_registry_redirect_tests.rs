@@ -1,11 +1,13 @@
 //! A scanned repository's `.npmrc` can redirect packages to another registry.
-//! Such a redirect is repo-controlled input and must never opt packages out of
-//! name-based advisory checks, and in CI it must be allowlisted out of repo.
+//! Routed packages are private: their names are never sent to the public
+//! registry or OSV. Because the redirect is repo-controlled input, CI blocks
+//! every route that is not allowlisted in the out-of-repo config.
 use super::*;
 use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
 use crate::report::Severity;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -46,17 +48,37 @@ impl RegistryMetadata for NoPublicRegistry {
     }
 }
 
-struct VulnOsv(Vec<&'static str>);
+/// Records every package name sent to OSV and reports a known advisory for
+/// each name in `vulnerable`.
+#[derive(Default)]
+struct RecordingOsv {
+    vulnerable: Vec<&'static str>,
+    queried: Arc<Mutex<Vec<String>>>,
+}
+
+impl RecordingOsv {
+    fn vulnerable(names: &[&'static str]) -> Self {
+        Self {
+            vulnerable: names.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn queried(&self) -> Vec<String> {
+        self.queried.lock().unwrap().clone()
+    }
+}
 
 #[async_trait]
-impl OsvClient for VulnOsv {
+impl OsvClient for RecordingOsv {
     async fn query(
         &self,
         name: &str,
         _ecosystem: &str,
         _version: Option<&str>,
     ) -> Result<Vec<String>> {
-        Ok(if self.0.contains(&name) {
+        self.queried.lock().unwrap().push(name.to_string());
+        Ok(if self.vulnerable.contains(&name) {
             vec!["MAL-2026-0001".to_string()]
         } else {
             vec![]
@@ -132,24 +154,39 @@ fn has(report: &ScanReport, package: &str, check: &str, severity: Severity) -> b
         .any(|i| i.package == package && i.check == check && i.severity == severity)
 }
 
+fn has_osv_issue(report: &ScanReport, package: &str) -> bool {
+    report
+        .issues
+        .iter()
+        .any(|i| i.package == package && i.check == checks::names::MALICIOUS_KNOWN_VULNERABILITY)
+}
+
 #[tokio::test]
-async fn repo_npmrc_default_registry_redirect_does_not_skip_osv() {
+async fn allowlisted_default_route_sends_no_private_names_to_osv() {
     let dir = unique_dir();
     write_redirected_project(&dir, "registry=https://npm.example.com/\n");
+    let osv = RecordingOsv::vulnerable(&["lodahs", "helpr"]);
     let report = scan(
         &dir,
-        config::SloppyJoeConfig::default(),
-        &VulnOsv(vec!["lodahs", "helpr"]),
-        ScanMode::Full,
+        trusting("default", "https://npm.example.com/"),
+        &osv,
+        ScanMode::Ci,
     )
     .await;
+    assert!(!report.has_errors(), "{:?}", report.issues);
+    assert!(
+        osv.queried().is_empty(),
+        "private names must never reach OSV: {:?}",
+        osv.queried()
+    );
     for (package, source) in [("lodahs", "direct"), ("helpr", "transitive")] {
+        assert!(!has_osv_issue(&report, package), "{:?}", report.issues);
         assert!(
             report.issues.iter().any(|i| i.package == package
-                && i.check == checks::names::MALICIOUS_KNOWN_VULNERABILITY
-                && i.severity == Severity::Error
+                && i.check == checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED
+                && i.severity == Severity::Warning
                 && i.source.as_deref() == Some(source)),
-            "OSV must still run for {package} routed by repo .npmrc: {:?}",
+            "{package}: {:?}",
             report.issues
         );
     }
@@ -157,7 +194,7 @@ async fn repo_npmrc_default_registry_redirect_does_not_skip_osv() {
 }
 
 #[tokio::test]
-async fn repo_npmrc_scoped_registry_redirect_does_not_skip_osv() {
+async fn allowlisted_scoped_route_keeps_public_osv_but_sends_no_private_names() {
     let dir = unique_dir();
     std::fs::write(
         dir.join(".npmrc"),
@@ -166,29 +203,33 @@ async fn repo_npmrc_scoped_registry_redirect_does_not_skip_osv() {
     .unwrap();
     std::fs::write(
         dir.join("package.json"),
-        r#"{"name":"app","dependencies":{"@company/client":"1.0.0"}}"#,
+        r#"{"name":"app","dependencies":{"@company/client":"1.0.0","react":"18.3.1"}}"#,
     )
     .unwrap();
     std::fs::write(dir.join("package-lock.json"), serde_json::json!({
         "lockfileVersion":3,"packages": {
-            "":{"dependencies":{"@company/client":"1.0.0"}},
-            "node_modules/@company/client":{"version":"1.0.0","resolved":"https://registry.example/private/client.tgz","integrity":"sha512-demo"}
+            "":{"dependencies":{"@company/client":"1.0.0","react":"18.3.1"}},
+            "node_modules/@company/client":{"version":"1.0.0","resolved":"https://registry.example/private/client.tgz","integrity":"sha512-demo"},
+            "node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}
         }
     }).to_string()).unwrap();
+    let osv = RecordingOsv::vulnerable(&["@company/client", "react"]);
     let report = scan(
         &dir,
         trusting("@company", "https://registry.example/private/"),
-        &VulnOsv(vec!["@company/client"]),
+        &osv,
         ScanMode::Ci,
     )
     .await;
+    let queried = osv.queried();
     assert!(
-        has(
-            &report,
-            "@company/client",
-            checks::names::MALICIOUS_KNOWN_VULNERABILITY,
-            Severity::Error
-        ),
+        !queried.iter().any(|n| n == "@company/client"),
+        "{queried:?}"
+    );
+    assert!(queried.iter().any(|n| n == "react"), "{queried:?}");
+    assert!(has_osv_issue(&report, "react"), "{:?}", report.issues);
+    assert!(
+        !has_osv_issue(&report, "@company/client"),
         "{:?}",
         report.issues
     );
@@ -199,14 +240,14 @@ async fn repo_npmrc_scoped_registry_redirect_does_not_skip_osv() {
 async fn ci_blocks_unallowlisted_repo_npmrc_registry_redirect() {
     let dir = unique_dir();
     write_redirected_project(&dir, "registry=https://npm.example.com/\n");
-    let report = scan(
-        &dir,
-        config::SloppyJoeConfig::default(),
-        &VulnOsv(vec![]),
-        ScanMode::Ci,
-    )
-    .await;
+    let osv = RecordingOsv::vulnerable(&["lodahs", "helpr"]);
+    let report = scan(&dir, config::SloppyJoeConfig::default(), &osv, ScanMode::Ci).await;
     assert!(report.has_errors(), "{:?}", report.issues);
+    assert!(
+        osv.queried().is_empty(),
+        "an unallowlisted route still must not leak names to OSV: {:?}",
+        osv.queried()
+    );
     for package in ["lodahs", "helpr"] {
         assert!(
             has(
@@ -223,17 +264,19 @@ async fn ci_blocks_unallowlisted_repo_npmrc_registry_redirect() {
 }
 
 #[tokio::test]
-async fn non_ci_unallowlisted_registry_redirect_warns_without_blocking() {
+async fn non_ci_unallowlisted_registry_redirect_warns_and_stays_private() {
     let dir = unique_dir();
     write_redirected_project(&dir, "registry=https://npm.example.com/\n");
+    let osv = RecordingOsv::vulnerable(&["lodahs", "helpr"]);
     let report = scan(
         &dir,
         config::SloppyJoeConfig::default(),
-        &VulnOsv(vec![]),
+        &osv,
         ScanMode::Full,
     )
     .await;
     assert!(!report.has_errors(), "{:?}", report.issues);
+    assert!(osv.queried().is_empty(), "{:?}", osv.queried());
     assert!(has(
         &report,
         "lodahs",
@@ -250,7 +293,7 @@ async fn ci_accepts_registry_redirect_allowlisted_in_external_config() {
     let report = scan(
         &dir,
         trusting("default", "https://npm.example.com/"),
-        &VulnOsv(vec![]),
+        &RecordingOsv::default(),
         ScanMode::Ci,
     )
     .await;
@@ -271,7 +314,7 @@ async fn trusting_a_scoped_route_does_not_trust_the_default_route() {
     let report = scan(
         &dir,
         trusting("@company", "https://npm.example.com/"),
-        &VulnOsv(vec![]),
+        &RecordingOsv::default(),
         ScanMode::Ci,
     )
     .await;
@@ -295,7 +338,7 @@ async fn trusting_a_different_registry_url_does_not_trust_the_route() {
     let report = scan(
         &dir,
         trusting("default", "https://npm.example.com/other/"),
-        &VulnOsv(vec![]),
+        &RecordingOsv::default(),
         ScanMode::Ci,
     )
     .await;

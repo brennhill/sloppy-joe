@@ -8,7 +8,9 @@
 
 - Reject cache directories inside the scanned repository (or scan root), including symlinked and not-yet-created paths, and ignore relative `XDG_CACHE_HOME`/`HOME` values; committed cache files can no longer forge OSV or similarity results.
 
-- Stop repository `.npmrc` registry routes from opting packages out of OSV advisory checks; in `--ci`, block routes not allowlisted under `trusted_registries.npm` in the out-of-repo config.
+- Report `yarn.lock` entries no dependency reaches as a non-blocking `lockfile/orphan-entries` warning instead of leaving them silently unscanned; when reachability is uncertain (workspace roots, unresolved edges), scan them instead. Block yarn and pnpm lockfile entries with invalid package names and duplicate `yarn.lock` selectors, and resolve Yarn transitive dependencies by their locked identity.
+
+- In `--ci`, block repository `.npmrc` registry routes not allowlisted under `trusted_registries.npm` in the out-of-repo config. Routed package names stay private: they are never sent to the public registry or OSV.
 
 - Reject transitive npm links to external, unscanned, or incorrectly named local targets before a full scan can pass or save a success fingerprint.
 - Resolve npm workspace dependencies from the member directory upward, preserve nested versions in vulnerability checks, and use the same lookup for aliases and local links.

@@ -10926,8 +10926,8 @@ async fn private_npm_registry_packages_are_unvetted_nonblocking_and_never_querie
             "node_modules/@company/helper":{"version":"2.0.0","resolved":"https://gitlab.example/api/v4/projects/42/packages/npm/@company/helper/-/@company/helper-2.0.0.tgz","integrity":"sha512-demo"}
         }
     }).to_string()).unwrap();
-    // The registry knows no packages: success proves private identities are not
-    // checked against the public registry. OSV still runs by name.
+    // Recording services prove private identities stay local: no public
+    // registry or OSV query names them. CI needs the route allowlisted.
     let mut config = config::SloppyJoeConfig::default();
     config.trusted_registries.insert(
         "npm".into(),
@@ -10936,12 +10936,21 @@ async fn private_npm_registry_packages_are_unvetted_nonblocking_and_never_querie
             source: "https://gitlab.example/api/v4/projects/${PROJECT_ID}/packages/npm/".into(),
         }],
     );
+    let exists_names = Arc::new(Mutex::new(Vec::new()));
+    let metadata_names = Arc::new(Mutex::new(Vec::new()));
+    let osv_names = Arc::new(Mutex::new(Vec::new()));
     let report = scan_fixture_with_fake_services(
         &dir,
         Some("npm"),
         config,
-        &FakeRegistry { existing: vec![] },
-        &FakeOsvClient,
+        &RecordingNameRegistry {
+            existing: vec![],
+            exists_names: exists_names.clone(),
+            metadata_names: metadata_names.clone(),
+        },
+        &RecordingNameOsvClient {
+            queried_names: osv_names.clone(),
+        },
         &ScanOptions {
             scan_mode: ScanMode::Ci,
             no_cache: true,
@@ -10952,6 +10961,9 @@ async fn private_npm_registry_packages_are_unvetted_nonblocking_and_never_querie
     .await
     .expect("private registries must not prevent scans");
     assert!(!report.has_errors(), "{:?}", report.issues);
+    for names in [&exists_names, &metadata_names, &osv_names] {
+        assert!(names.lock().unwrap().is_empty(), "{:?}", names);
+    }
     assert_eq!(report.packages_checked, 2);
     assert_eq!(report.issues.len(), 2);
     for (name, source) in [
@@ -11046,17 +11058,21 @@ async fn pnpm_private_registry_routing_is_unvetted_with_integrity_still_required
             source: "https://registry.example/private/".into(),
         }],
     );
+    let osv_names = Arc::new(Mutex::new(Vec::new()));
     let report = scan_fixture_with_fake_services(
         &dir,
         Some("npm"),
         trusted,
         &FakeRegistry { existing: vec![] },
-        &FakeOsvClient,
+        &RecordingNameOsvClient {
+            queried_names: osv_names.clone(),
+        },
         &opts,
     )
     .await
     .unwrap();
     assert!(!report.has_errors(), "{:?}", report.issues);
+    assert!(osv_names.lock().unwrap().is_empty(), "{osv_names:?}");
     assert_eq!(report.issues.len(), 1);
     assert_eq!(
         report.issues[0].check,
@@ -11124,10 +11140,18 @@ async fn private_npm_routes_preserve_public_direct_and_transitive_vulnerability_
     lock["packages"]["node_modules/@company/client"] = serde_json::json!({"version":"1.0.0","resolved":"https://registry.example/client.tgz","integrity":"sha512-demo"});
     std::fs::write(&manifest_path, manifest.to_string()).unwrap();
     std::fs::write(&lock_path, lock.to_string()).unwrap();
+    let mut trusted = config::SloppyJoeConfig::default();
+    trusted.trusted_registries.insert(
+        "npm".into(),
+        vec![config::TrustedRegistry {
+            name: "@company".into(),
+            source: "https://registry.example/".into(),
+        }],
+    );
     let report = scan_fixture_with_fake_services(
         &dir,
         Some("npm"),
-        config::SloppyJoeConfig::default(),
+        trusted,
         &FakeRegistry {
             existing: vec!["react".into(), "expresss".into()],
         },
@@ -11157,13 +11181,10 @@ async fn private_npm_routes_preserve_public_direct_and_transitive_vulnerability_
         .issues
         .iter()
         .filter(|i| i.package == "@company/client")
-        .map(|i| (i.check.as_str(), i.severity))
         .collect();
-    // A repo .npmrc route never opts a package out of advisory checks, and in
-    // CI an unallowlisted route blocks.
-    assert_eq!(private.len(), 2, "{private:?}");
-    assert!(private.contains(&("malicious/known-vulnerability", Severity::Error)));
-    assert!(private.contains(&("resolution/untrusted-registry-source", Severity::Error)));
+    // OSV would flag @company/client, but private names are never sent to OSV.
+    assert_eq!(private.len(), 1, "{private:?}");
+    assert_eq!(private[0].check, "resolution/private-registry-unvetted");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -11183,33 +11204,23 @@ async fn npm_default_registry_overrides_and_cache_changes_remain_visible() {
     let full = ScanOptions {
         scan_mode: ScanMode::Ci,
         cache_dir: Some(&cache_dir),
-        no_cache: true,
-        disable_osv_disk_cache: true,
         ..Default::default()
     };
-    let mut trusted = config::SloppyJoeConfig::default();
-    trusted.trusted_registries.insert(
-        "npm".into(),
-        vec![config::TrustedRegistry {
-            name: "default".into(),
-            source: "https://registry.example/".into(),
-        }],
-    );
-    let report = scan_fixture_with_fake_services(
-        &dir,
-        Some("npm"),
-        trusted.clone(),
-        &FakeRegistry { existing: vec![] },
-        &FakeOsvClient,
-        &full,
+    // Out-of-repo config allowlists the route for CI. Every package is routed
+    // privately, so nothing is sent to the public registry or OSV.
+    let config_dir = unique_dir();
+    let config_path = config_dir.join("sloppy-joe.json");
+    std::fs::write(
+        &config_path,
+        r#"{"trusted_registries":{"npm":[{"name":"default","source":"https://registry.example/"}]}}"#,
     )
-    .await
     .unwrap();
+    let report = scan_with_source_full_options(&dir, Some("npm"), config_path.to_str(), &full)
+        .await
+        .unwrap();
     assert!(!report.has_errors(), "{:?}", report.issues);
     assert_eq!(report.issues.len(), 2);
-    let specs = detected_project_inputs_with_config(&dir, Some("npm"), &trusted).unwrap();
-    let projects = parse_project_inputs(&dir, &specs, &trusted).unwrap();
-    persist_successful_full_scan_fingerprint(&projects, &cache_dir, &trusted, &full).unwrap();
+    std::fs::remove_dir_all(config_dir).unwrap();
     std::fs::write(&npmrc, "registry=https://registry.npmjs.org/\n").unwrap();
     let report = scan_with_source_full_options(
         &dir,
@@ -11619,21 +11630,11 @@ async fn independent_project_runs_continue_after_an_unsupported_dependency_chain
     .unwrap();
     std::fs::write(dir.join("z-private/package-lock.json"), r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"@company/client":"1.0.0"}},"node_modules/@company/client":{"version":"1.0.0","resolved":"https://registry.example/private/client.tgz","integrity":"sha512-demo"}}}"#).unwrap();
     let cache_dir = unique_dir();
-    // Out-of-repo config allowlists the route; a fresh OSV cache keeps the
-    // name-based advisory check for the private package offline.
+    // Out-of-repo config allowlists the route so CI accepts it.
     let config_path = cache_dir.join("sloppy-joe.json");
     std::fs::write(
         &config_path,
         r#"{"trusted_registries":{"npm":[{"name":"@company","source":"https://registry.example/private/"}]}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        cache_dir.join("osv-cache.json"),
-        serde_json::json!({
-            "timestamp": cache::now_epoch(),
-            "entries": {"npm:@company/client:1.0.0": {"vuln_ids": []}}
-        })
-        .to_string(),
     )
     .unwrap();
     let config_source = config_path.to_str().unwrap();
@@ -11702,7 +11703,7 @@ async fn independent_project_runs_continue_after_an_unsupported_dependency_chain
         Some(config_source),
         &ScanOptions {
             scan_mode: ScanMode::Ci,
-            cache_dir: Some(&cache_dir),
+            no_cache: true,
             ..Default::default()
         },
     )
