@@ -5288,21 +5288,11 @@ fn validate_npm_lockfile_entry_fields(
         );
     }
 
-    let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
-        return Ok(());
-    };
-
-    let resolved = entry
-        .get("resolved")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' entry '{}' is missing a resolved source URL. sloppy-joe only trusts npm lockfile entries with explicit tarball provenance.",
-                lockfile_path.display(),
-                package_name
-            )
-        })?;
-    if !is_trusted_npm_resolved_source(resolved)
+    let resolved = entry.get("resolved").and_then(|value| value.as_str());
+    // Host trust is checked before anything else so an entry cannot skip it by
+    // omitting other fields such as `version`.
+    if let Some(resolved) = resolved
+        && !is_trusted_npm_resolved_source(resolved)
         && !registries.matches_private_source(package_name, resolved)
     {
         anyhow::bail!(
@@ -5315,6 +5305,22 @@ fn validate_npm_lockfile_entry_fields(
                 .unwrap_or_else(|| "<invalid>".to_string())
         );
     }
+
+    let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' is missing a version. sloppy-joe cannot verify npm lockfile entries without an exact locked version.",
+            lockfile_path.display(),
+            package_name
+        );
+    };
+
+    let resolved = resolved.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' entry '{}' is missing a resolved source URL. sloppy-joe only trusts npm lockfile entries with explicit tarball provenance.",
+            lockfile_path.display(),
+            package_name
+        )
+    })?;
     if is_trusted_npm_resolved_source(resolved) {
         validate_npm_resolved_identity(package_name, version, resolved, lockfile_path)?;
     }

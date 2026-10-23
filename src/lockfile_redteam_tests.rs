@@ -93,6 +93,64 @@ fn npm_lockfile_version_float_one_is_not_allowed_by_legacy_opt_in() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn write_npm_project_with_extra_entry(dir: &std::path::Path, extra_entry: &str) {
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","version":"1.0.0","dependencies":{"lodash":"^4.17.21"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        format!(
+            r#"{{
+  "name": "app", "version": "1.0.0", "lockfileVersion": 3, "requires": true,
+  "packages": {{
+    "": {{"name":"app","version":"1.0.0","dependencies":{{"lodash":"^4.17.21"}}}},
+    "node_modules/lodash": {{"version":"4.17.21","resolved":"https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz","integrity":"sha512-abc"}},
+    {extra_entry}
+  }}
+}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn npm_entries_without_version_still_get_provenance_checks() {
+    for (label, entry, expected) in [
+        (
+            "untrusted host, no version",
+            r#""node_modules/minimist": {"resolved":"https://evil.example/minimist-backdoored.tgz"}"#,
+            "untrusted resolved source",
+        ),
+        (
+            "trusted host, no version",
+            r#""node_modules/minimist": {"resolved":"https://registry.npmjs.org/minimist/-/minimist-1.2.8.tgz","integrity":"sha512-abc"}"#,
+            "missing a version",
+        ),
+        (
+            "trusted host, no version, no integrity",
+            r#""node_modules/minimist": {"resolved":"https://registry.npmjs.org/minimist/-/minimist-1.2.8.tgz"}"#,
+            "missing a version",
+        ),
+        (
+            "empty entry",
+            r#""node_modules/minimist": {}"#,
+            "missing a version",
+        ),
+    ] {
+        let dir = unique_dir();
+        write_npm_project_with_extra_entry(&dir, entry);
+        let err = preflight_scan_inputs(&dir, Some("npm"))
+            .expect_err(&format!("{label} must block"));
+        assert!(
+            err.to_string().contains(expected),
+            "{label}: unexpected error {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn bun_transitive_file_descriptor_outside_scan_root_blocks() {
     let dir = unique_dir();
