@@ -132,6 +132,7 @@ fn default_cargo_git_policy() -> CargoGitPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrustedRegistry {
     pub name: String,
     pub source: String,
@@ -179,6 +180,7 @@ pub(crate) fn python_index_url_has_supported_scheme(url: &str) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimilarityException {
     pub package: String,
     pub candidate: String,
@@ -196,6 +198,7 @@ impl SimilarityException {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetadataException {
     pub package: String,
     pub check: String,
@@ -226,6 +229,7 @@ impl MetadataException {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CanonicalGroupSuggestion {
     pub packages: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,6 +237,7 @@ pub struct CanonicalGroupSuggestion {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BootstrapReview {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub suggested_internal: HashMap<String, Vec<String>>,
@@ -251,6 +256,7 @@ impl BootstrapReview {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SloppyJoeConfig {
     /// Directory names excluded from recursive project discovery.
     #[serde(default = "default_ignore_dirs")]
@@ -945,6 +951,71 @@ pub(crate) fn redact_url_for_display(url: &str) -> String {
     parsed.to_string()
 }
 
+/// Walks any JSON value and rejects objects that repeat a key. serde_json
+/// otherwise keeps the last value for map keys, silently dropping policy.
+struct NoDuplicateKeys;
+
+impl<'de> Deserialize<'de> for NoDuplicateKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(NoDuplicateKeysVisitor)
+    }
+}
+
+struct NoDuplicateKeysVisitor;
+
+impl<'de> serde::de::Visitor<'de> for NoDuplicateKeysVisitor {
+    type Value = NoDuplicateKeys;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(NoDuplicateKeys)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(NoDuplicateKeys)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(NoDuplicateKeys)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(NoDuplicateKeys)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(NoDuplicateKeys)
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(NoDuplicateKeys)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        while seq.next_element::<NoDuplicateKeys>()?.is_some() {}
+        Ok(NoDuplicateKeys)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut seen = std::collections::HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(serde::de::Error::custom(format!("duplicate key `{key}`")));
+            }
+            map.next_value::<NoDuplicateKeys>()?;
+        }
+        Ok(NoDuplicateKeys)
+    }
+}
+
+fn reject_duplicate_keys(content: &str, label: &str, source: &str) -> Result<(), String> {
+    match serde_json::from_str::<NoDuplicateKeys>(content) {
+        // Syntax errors are reported by the typed parse with better hints.
+        Err(e) if e.is_data() => Err(format!(
+            "{label} has a duplicate key.\n  Source: {source}\n  Error: {e}\n  Fix: Remove the repeated key; only one value per key is allowed."
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Parse config JSON content with actionable error messages.
 fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, String> {
     if content.trim().is_empty() {
@@ -954,6 +1025,7 @@ fn parse_config_content(content: &str, source: &str) -> Result<SloppyJoeConfig, 
         ));
     }
 
+    reject_duplicate_keys(content, "Config", source)?;
     let mut config: SloppyJoeConfig = serde_json::from_str(content).map_err(|e| {
         let mut msg = format!(
             "Config is not valid JSON.\n  Source: {}\n  Error: {}",
@@ -1000,6 +1072,7 @@ fn parse_local_overlay_content(content: &str, source: &str) -> Result<LocalOverl
         ));
     }
 
+    reject_duplicate_keys(content, "Local overlay config", source)?;
     serde_json::from_str(content).map_err(|e| {
         format!(
             "Local overlay config is not valid JSON.\n  Source: {}\n  Error: {}\n  Fix: Use a JSON object with only local provenance fields.",
@@ -1565,6 +1638,10 @@ pub fn template_json() -> String {
 pub fn print_template() {
     println!("{}", template_json());
 }
+
+#[cfg(test)]
+#[path = "strict_parsing_tests.rs"]
+mod strict_parsing_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject unknown and duplicate keys in sloppy-joe config and local overlay files instead of silently ignoring them.
+
 - Reject cache directories inside the scanned repository (or scan root), including symlinked and not-yet-created paths, and ignore relative `XDG_CACHE_HOME`/`HOME` values; committed cache files can no longer forge OSV or similarity results.
 
 - Stop repository `.npmrc` registry routes from opting packages out of OSV advisory checks; in `--ci`, block routes not allowlisted under `trusted_registries.npm` in the out-of-repo config.
