@@ -42,7 +42,8 @@ sloppy-joe check --dir ./my-project
 # Check only npm dependencies
 sloppy-joe check --type npm
 
-# Check the Python runtime plus selected groups/extras
+# Python: every dependency group and extra is scanned by default.
+# Narrow to the groups/extras your install actually uses (others are reported as not scanned)
 sloppy-joe check --python-groups dev,test --python-version 3.12
 sloppy-joe check --python-extras docs --python-platform linux --python-version 3.12
 
@@ -86,7 +87,7 @@ The flake on `main` pins the published binary release and its checksums.
 - `sloppy-joe check` runs the fast local guardrail. It always enforces manifest parsing, lockfile/sync, provenance, and unsupported-source policy. If dependency or policy state changed, or the last successful full scan is older than 24 hours, it recommends `sloppy-joe check --full`.
 - `sloppy-joe check --full` runs the strict online scan and refreshes the recorded successful full-scan state.
 - `sloppy-joe check --ci` runs the same strict coverage as `--full`, with CI-oriented intent.
-- For Python, `sloppy-joe check` evaluates the `runtime` profile by default. If scoped dependencies exist, it warns and tells you to pass explicit `--python-groups`, `--python-extras`, `--python-platform`, and/or `--python-version` flags for CI/build parity.
+- For Python, `sloppy-joe check` scans every declared dependency group (Poetry groups, PEP 735 `[dependency-groups]` including `include-group`, uv/PDM dev dependencies, Hatch environments) and every extra by default, because uv and Poetry install groups without extra flags. `--python-groups` and `--python-extras` narrow the scan to the named groups/extras and warn (`resolution/python-groups-not-scanned`) about the declared ones they leave out. Environment markers are evaluated for the current host unless you pass `--python-platform`, `--python-arch`, or `--python-version`; sloppy-joe warns when markers were evaluated implicitly.
 - Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
 **Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking findings, `2` = unsupported scan input or runtime error. Unsupported syntax/configuration is not a malware finding.

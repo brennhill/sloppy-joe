@@ -698,13 +698,12 @@ fn active_python_profile(opts: &ScanOptions<'_>) -> parsers::python_scope::Pytho
         ));
         profile.explicit_selection = true;
     }
-    for group in &opts.python_groups {
-        profile.selected_groups.insert(group.clone());
-        profile.explicit_selection = true;
+    // Every group and extra is scanned unless the operator narrows the selection explicitly.
+    if !opts.python_groups.is_empty() {
+        profile.narrow_groups(&opts.python_groups);
     }
-    for extra in &opts.python_extras {
-        profile.selected_extras.insert(extra.clone());
-        profile.explicit_selection = true;
+    if !opts.python_extras.is_empty() {
+        profile.narrow_extras(&opts.python_extras);
     }
     profile
 }
@@ -726,11 +725,71 @@ fn implicit_runtime_profile_warning(spec: &ProjectInputSpec) -> Issue {
         Severity::Warning,
     )
     .message(format!(
-        "Python scoped dependencies were detected in '{}', but no explicit Python profile was provided. sloppy-joe evaluated only the runtime profile for this run.",
+        "Python dependencies in '{}' use environment markers, but no target environment was provided. sloppy-joe evaluated those markers for the current host; every dependency group and extra was still included.",
         spec.manifest_path.display()
     ))
     .fix(
-        "For CI or build gating, pass the actual Python profile with `--python-groups`, `--python-extras`, `--python-platform`, `--python-arch`, or `--python-version` so sloppy-joe checks the same dependency shape your install uses.",
+        "For CI or build gating, pass the target environment with `--python-platform`, `--python-arch`, or `--python-version` so sloppy-joe evaluates markers for the environment your install uses.",
+    )
+}
+
+/// Groups and extras declared in the manifest that a `--python-groups` / `--python-extras`
+/// selection left out of this scan.
+fn python_unscanned_scope_warning(
+    spec: &ProjectInputSpec,
+    scoped: &[parsers::python_scope::PythonScopedDependency],
+    profile: &parsers::python_scope::PythonProfile,
+) -> Option<Issue> {
+    let mut groups = std::collections::BTreeSet::new();
+    let mut extras = std::collections::BTreeSet::new();
+    for dep in scoped {
+        groups.extend(
+            dep.groups
+                .iter()
+                .filter(|group| !profile.includes_group(group))
+                .cloned(),
+        );
+        extras.extend(
+            dep.extras
+                .iter()
+                .filter(|extra| !profile.includes_extra(extra))
+                .cloned(),
+        );
+    }
+    if groups.is_empty() && extras.is_empty() {
+        return None;
+    }
+    let describe = |label: &str, names: &std::collections::BTreeSet<String>| {
+        (!names.is_empty()).then(|| {
+            format!(
+                "{label} {}",
+                names
+                    .iter()
+                    .map(|name| format!("'{}'", report::sanitize_for_terminal(name)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+    };
+    let excluded = [describe("groups", &groups), describe("extras", &extras)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" and ");
+    Some(
+        Issue::new(
+            spec.manifest_path.display().to_string(),
+            checks::names::RESOLUTION_PYTHON_GROUPS_NOT_SCANNED,
+            Severity::Warning,
+        )
+        .message(format!(
+            "The --python-groups/--python-extras selection excluded {} declared in '{}'. Packages declared only there were not scanned.",
+            excluded,
+            spec.manifest_path.display()
+        ))
+        .fix(
+            "Omit --python-groups and --python-extras to scan every dependency group and extra, or add the excluded names if your install uses them.",
+        ),
     )
 }
 
@@ -1052,6 +1111,9 @@ fn read_validated_uv_lockfile(
         &path,
         Some(&lock_profile),
     )?;
+    // Bidirectional: every locked root dependency, extra, and group entry must be declared.
+    let declared = parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?;
+    crate::lockfiles::uv::validate_root_declarations_are_declared(&lockfile, &declared, &path)?;
     crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
     let declared_sources = parsers::pyproject_toml::parse_uv_sources(&spec.manifest_path)?;
     let profile = active_python_profile(opts);
@@ -5760,6 +5822,14 @@ fn project_input_from_path(
 #[path = "python_manifest_coverage_tests.rs"]
 mod python_manifest_coverage_tests;
 
+#[cfg(test)]
+#[path = "python_group_scope_tests.rs"]
+mod python_group_scope_tests;
+
+#[cfg(test)]
+#[path = "uv_lock_groups_tests.rs"]
+mod uv_lock_groups_tests;
+
 fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<ProjectInputKind>> {
     Ok(match path.file_name().and_then(|name| name.to_str()) {
         Some("package.json") => Some(ProjectInputKind::Npm),
@@ -6096,16 +6166,24 @@ fn parse_python_project_dependencies(
     let mut warnings = Vec::new();
     if scoped
         .iter()
-        .any(parsers::python_scope::PythonScopedDependency::is_scoped)
+        .any(parsers::python_scope::PythonScopedDependency::has_environment_scope)
         && !profile.explicit_selection
     {
         warnings.push(implicit_runtime_profile_warning(spec));
     }
+    warnings.extend(python_unscanned_scope_warning(spec, &scoped, &profile));
 
     let mut deps = Vec::new();
+    let mut tool_env_deps = Vec::new();
     let mut root_extras: PythonRootExtras = PythonRootExtras::new();
     for dep in &scoped {
         if dep.is_in_scope(&profile)? {
+            if dep.unlocked_tool_env {
+                // Hatch/PDM environments are installable but never recorded in uv.lock or
+                // poetry.lock: scan them as unlocked tooling instead of reporting lock drift.
+                tool_env_deps.push(dep.dependency.clone());
+                continue;
+            }
             if !dep.requested_extras.is_empty() {
                 root_extras
                     .entry(parsers::requirements::normalize_distribution_name(
@@ -6125,7 +6203,7 @@ fn parse_python_project_dependencies(
             dep.actual_name.clone(),
         ))
     });
-    let unlocked_tooling_deps = match spec.kind {
+    let mut unlocked_tooling_deps = match spec.kind {
         ProjectInputKind::PyProjectPoetry
         | ProjectInputKind::PyProjectUv
         | ProjectInputKind::PyProjectLegacy => {
@@ -6133,6 +6211,15 @@ fn parse_python_project_dependencies(
         }
         _ => Vec::new(),
     };
+    unlocked_tooling_deps.extend(tool_env_deps);
+    let mut seen_tooling = std::collections::HashSet::new();
+    unlocked_tooling_deps.retain(|dep| {
+        seen_tooling.insert((
+            dep.package_name().to_string(),
+            dep.version.clone(),
+            dep.actual_name.clone(),
+        ))
+    });
     Ok(ParsedInput {
         deps,
         warnings,

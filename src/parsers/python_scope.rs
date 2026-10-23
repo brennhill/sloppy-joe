@@ -13,6 +13,10 @@ pub(crate) struct PythonScopedDependency {
     pub extras: BTreeSet<String>,
     pub requested_extras: BTreeSet<String>,
     pub runtime_default: bool,
+    /// Declared only in a tool-managed environment table (PDM dev-dependencies, Hatch
+    /// environments) that neither uv.lock nor poetry.lock records. Such packages are still
+    /// installable, so they are scanned, but without lockfile reconciliation.
+    pub unlocked_tool_env: bool,
 }
 
 pub(crate) type PythonRootExtras = BTreeMap<String, BTreeSet<String>>;
@@ -60,8 +64,17 @@ pub(crate) struct PythonProfile {
     pub target_arch: String,
     pub python_version: Option<String>,
     pub python_full_version: Option<String>,
+    /// Every declared dependency group is in scope. This is the default: uv and Poetry install
+    /// groups without extra flags, so nothing installable may be hidden unless the operator
+    /// narrows the selection with `--python-groups`.
+    pub all_groups: bool,
+    /// Every declared extra is in scope (default). `--python-extras` narrows the selection.
+    pub all_extras: bool,
+    /// Normalized group names selected with `--python-groups` (used when `all_groups` is false).
     pub selected_groups: BTreeSet<String>,
+    /// Normalized extra names selected with `--python-extras` (used when `all_extras` is false).
     pub selected_extras: BTreeSet<String>,
+    /// The target environment (platform, arch or Python version) was chosen explicitly.
     pub explicit_selection: bool,
 }
 
@@ -76,7 +89,16 @@ impl PythonScopedDependency {
             extras: BTreeSet::new(),
             requested_extras: BTreeSet::new(),
             runtime_default: true,
+            unlocked_tool_env: false,
         }
+    }
+
+    /// Scoped only by environment (markers or Poetry python/platform shorthands), which are
+    /// evaluated against the target environment rather than a group/extra selection.
+    pub(crate) fn has_environment_scope(&self) -> bool {
+        self.marker.is_some()
+            || self.python_constraint.is_some()
+            || self.platform_constraint.is_some()
     }
 
     #[cfg(test)]
@@ -113,20 +135,12 @@ impl PythonScopedDependency {
         .with_group(group)
     }
 
-    pub(crate) fn is_scoped(&self) -> bool {
-        self.marker.is_some()
-            || self.python_constraint.is_some()
-            || self.platform_constraint.is_some()
-            || !self.groups.is_empty()
-            || !self.extras.is_empty()
-    }
-
     pub(crate) fn is_in_scope(&self, profile: &PythonProfile) -> Result<bool> {
         if !self.groups.is_empty()
             && !self
                 .groups
                 .iter()
-                .any(|group| profile.selected_groups.contains(group))
+                .any(|group| profile.includes_group(group))
         {
             return Ok(false);
         }
@@ -134,7 +148,7 @@ impl PythonScopedDependency {
             && !self
                 .extras
                 .iter()
-                .any(|extra| profile.selected_extras.contains(extra))
+                .any(|extra| profile.includes_extra(extra))
         {
             return Ok(false);
         }
@@ -157,10 +171,15 @@ impl PythonScopedDependency {
             return Ok(false);
         }
         if let Some(marker) = &self.marker {
-            return evaluate_marker_for_extras(marker, profile, &profile.selected_extras);
+            return evaluate_marker_for_profile_extras(marker, profile);
         }
         Ok(true)
     }
+}
+
+/// Group and extra names compare after PEP 503/685 normalization.
+pub(crate) fn normalize_scope_name(name: &str) -> String {
+    crate::parsers::requirements::normalize_distribution_name(name)
 }
 
 impl PythonProfile {
@@ -187,10 +206,34 @@ impl PythonProfile {
                         .map(|version| version.python_full_version.clone())
                 })
                 .or_else(|| python_version.as_deref().map(normalize_python_full_version)),
+            all_groups: true,
+            all_extras: true,
             selected_groups: BTreeSet::new(),
             selected_extras: BTreeSet::new(),
             explicit_selection: false,
         }
+    }
+
+    pub(crate) fn includes_group(&self, group: &str) -> bool {
+        self.all_groups || self.selected_groups.contains(&normalize_scope_name(group))
+    }
+
+    pub(crate) fn includes_extra(&self, extra: &str) -> bool {
+        self.all_extras || self.selected_extras.contains(&normalize_scope_name(extra))
+    }
+
+    /// Restrict the scanned groups to `groups` (the `--python-groups` selection).
+    pub(crate) fn narrow_groups<'a>(&mut self, groups: impl IntoIterator<Item = &'a String>) {
+        self.all_groups = false;
+        self.selected_groups
+            .extend(groups.into_iter().map(|group| normalize_scope_name(group)));
+    }
+
+    /// Restrict the scanned extras to `extras` (the `--python-extras` selection).
+    pub(crate) fn narrow_extras<'a>(&mut self, extras: impl IntoIterator<Item = &'a String>) {
+        self.all_extras = false;
+        self.selected_extras
+            .extend(extras.into_iter().map(|extra| normalize_scope_name(extra)));
     }
 
     #[cfg(test)]
@@ -209,6 +252,8 @@ impl PythonProfile {
             target_arch: target_arch.to_string(),
             python_version: Some(python_version.to_string()),
             python_full_version: Some(normalize_python_full_version(python_version)),
+            all_groups: true,
+            all_extras: true,
             selected_groups: BTreeSet::new(),
             selected_extras: BTreeSet::new(),
             explicit_selection: true,
@@ -217,8 +262,13 @@ impl PythonProfile {
 
     #[cfg(test)]
     pub(crate) fn with_group(mut self, group: &str) -> Self {
-        self.selected_groups.insert(group.to_string());
-        self.explicit_selection = true;
+        self.narrow_groups([&group.to_string()]);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_no_groups(mut self) -> Self {
+        self.narrow_groups(std::iter::empty());
         self
     }
 }
@@ -364,6 +414,29 @@ enum MarkerToken {
 #[cfg(test)]
 pub(crate) fn evaluate_marker(marker: &str, profile: &PythonProfile) -> Result<bool> {
     evaluate_marker_with_extra(marker, profile, None)
+}
+
+/// Evaluate a project-level marker against the profile's extra selection. When every extra is
+/// in scope, the marker matches if it holds for the base install or for any extra it names.
+pub(crate) fn evaluate_marker_for_profile_extras(
+    marker: &str,
+    profile: &PythonProfile,
+) -> Result<bool> {
+    if !profile.all_extras {
+        return evaluate_marker_for_extras(marker, profile, &profile.selected_extras);
+    }
+    let mut candidates: BTreeSet<String> = BTreeSet::from([String::new()]);
+    for token in tokenize_marker(marker)? {
+        if let MarkerToken::String(value) = token {
+            candidates.insert(value);
+        }
+    }
+    for extra in &candidates {
+        if evaluate_marker_with_extra(marker, profile, Some(extra))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn evaluate_marker_for_extras(
@@ -854,9 +927,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_profile_excludes_group_only_dependency() {
+    fn default_profile_includes_group_only_dependency() {
         let dep = PythonScopedDependency::group_only("pytest", "==8.1.1", "dev");
         let profile = PythonProfile::runtime_for_current_host();
+        assert!(dep.is_in_scope(&profile).unwrap());
+    }
+
+    #[test]
+    fn narrowed_profile_excludes_unselected_group_only_dependency() {
+        let dep = PythonScopedDependency::group_only("pytest", "==8.1.1", "dev");
+        let profile = PythonProfile::runtime_for_current_host().with_no_groups();
         assert!(!dep.is_in_scope(&profile).unwrap());
     }
 
@@ -865,6 +945,26 @@ mod tests {
         let dep = PythonScopedDependency::group_only("pytest", "==8.1.1", "dev");
         let profile = PythonProfile::runtime_for_current_host().with_group("dev");
         assert!(dep.is_in_scope(&profile).unwrap());
+    }
+
+    #[test]
+    fn group_selection_compares_normalized_names() {
+        let dep = PythonScopedDependency::group_only("pytest", "==8.1.1", "Test_Utils");
+        let profile = PythonProfile::runtime_for_current_host().with_group("test-utils");
+        assert!(dep.is_in_scope(&profile).unwrap());
+    }
+
+    #[test]
+    fn all_extras_profile_matches_extra_markers() {
+        let profile = PythonProfile::for_target("linux", "3.12");
+        assert!(evaluate_marker_for_profile_extras(r#"extra == "cli""#, &profile).unwrap());
+        assert!(
+            !evaluate_marker_for_profile_extras(
+                r#"extra == "cli" and sys_platform == "win32""#,
+                &profile
+            )
+            .unwrap()
+        );
     }
 
     #[test]

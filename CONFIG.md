@@ -7,7 +7,7 @@ sloppy-joe works with zero configuration. Config adds canonical enforcement (rej
 - `sloppy-joe check` is the fast local mode. It always enforces local trust boundaries such as manifest parsing, lockfile requirements, sync/provenance checks, and unsupported-source blocking.
 - `sloppy-joe check --full` runs the strict online scan.
 - `sloppy-joe check --ci` runs the same strict coverage as `--full`, intended for CI workflows.
-- For Python, `sloppy-joe check` evaluates the `runtime` profile by default. If scoped dependencies exist, it warns and tells you to pass explicit `--python-groups`, `--python-extras`, `--python-platform`, and/or `--python-version` flags so CI/build checks the same dependency shape you install.
+- For Python, `sloppy-joe check` scans every declared dependency group (Poetry groups, PEP 735 `[dependency-groups]` including `include-group`, uv/PDM dev dependencies, Hatch environments) and every extra by default, because uv and Poetry install groups without extra flags. `--python-groups` and `--python-extras` narrow the scan to the named groups/extras and warn (`resolution/python-groups-not-scanned`) about the declared ones they leave out. Environment markers are evaluated for the current host unless you pass `--python-platform`, `--python-arch`, or `--python-version`; sloppy-joe warns when markers were evaluated implicitly.
 - Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
 Fast mode does not auto-escalate into a full scan. Instead, it warns when you should run `sloppy-joe check --full`:
@@ -175,12 +175,12 @@ Exact allowlist of project `.npmrc` registry routes. A route is named `default` 
 
 Trusted Python modes evaluate one concrete install profile at a time.
 
-- Default: `runtime`
-- Explicit groups: `--python-groups dev,test`
-- Explicit extras: `--python-extras docs`
+- Default: every declared dependency group and every extra. This covers Poetry groups (optional ones too) and `dev-dependencies`, PEP 735 `[dependency-groups]` (with `include-group` resolved), `[tool.uv] dev-dependencies`, `[project.optional-dependencies]`, and Poetry extras. PDM `dev-dependencies` and Hatch environment dependencies are scanned as unlocked tooling, because neither `uv.lock` nor `poetry.lock` records them.
+- Narrow groups: `--python-groups dev,test` scans the main dependencies plus only the named groups. Group names are matched after PEP 503 normalization, and selecting a group includes the groups it pulls in with `include-group`.
+- Narrow extras: `--python-extras docs` scans only the named extras. The two flags narrow independently, so `--python-groups dev` alone still scans every extra.
 - Explicit marker target: `--python-platform linux --python-arch aarch64 --python-version 3.12`
 
-If scoped Python dependencies exist and you do not pass an explicit profile, sloppy-joe warns that only the runtime dependency shape was checked. Profile aliases/defaults are not configurable in `config.json` yet.
+When `--python-groups` or `--python-extras` leaves declared groups or extras out, sloppy-joe reports them in a `resolution/python-groups-not-scanned` warning. When environment markers are evaluated without an explicit platform, arch, or version, it warns (`resolution/python-implicit-runtime-profile`) that the current host was used. Lockfile checks follow the same selection: a dependency declared in a scanned group but missing from `poetry.lock` or `uv.lock` blocks. Profile aliases/defaults are not configurable in `config.json` yet.
 
 ### `bootstrap_review`
 

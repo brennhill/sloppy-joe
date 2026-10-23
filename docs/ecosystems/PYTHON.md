@@ -35,15 +35,17 @@ Legacy Python manifests still scan by default, but they are not the trusted path
   - `Pipfile`
   - `setup.cfg`
   - statically readable `setup.py`
-- Poetry projects require `poetry.lock` and use it for exact version resolution plus trusted transitive coverage.
-- uv projects require `uv.lock` and use it for exact version resolution plus trusted transitive coverage.
+- Poetry projects require `poetry.lock` and use it for exact version resolution plus trusted transitive coverage. Every scanned group dependency must have a resolved package in `poetry.lock`; a missing one blocks.
+- uv projects require `uv.lock` and use it for exact version resolution plus trusted transitive coverage. sloppy-joe reads the root package's `dependencies`, `optional-dependencies`, and `dev-dependencies` (dependency groups, including `[tool.uv] dev-dependencies` recorded as `dev`) together with `metadata.requires-dist` / `metadata.requires-dev`, and follows locked package extras (`[package.optional-dependencies]`) transitively.
+- uv.lock consistency is checked in both directions: every scanned manifest dependency must be locked with the same specifier, and every root entry in uv.lock (main, extra, or group) must be declared in the matching pyproject.toml section, whether or not that group was selected for scanning.
 - Supported uv version ranges are trusted only when lock metadata matches the manifest and the selected version satisfies the range; ambiguous or stale selections fail.
 - An adjacent `uv.lock` identifies a uv project without requiring an otherwise empty `[tool.uv]` section. Both virtual roots and packaged `editable = "."` roots are supported; external editable paths remain unsupported.
 - Fully hash-locked pip-tools requirements provide exact pinned versions only when every installable requirement is exact-pinned and fully hash-covered, including recursively included requirement files.
 - pip-tools reaches exact source provenance only when the committed requirements graph binds its own primary `--index-url` and any `--extra-index-url` values with supported HTTP(S) URLs. If the primary index is not explicitly file-bound, sloppy-joe downgrades pip-tools to reduced-confidence mode.
-- Trusted Poetry and uv inputs are evaluated against one concrete Python install profile at a time instead of flattening dev/groups/extras/markers into unconditional direct dependencies.
-- The default Python profile is `runtime`. When scoped dependencies exist and you do not provide a profile, sloppy-joe warns that only the runtime dependency shape was checked.
-- Explicit profile selection is currently CLI-driven: `--python-groups`, `--python-extras`, `--python-platform`, `--python-arch`, and `--python-version`.
+- Trusted Poetry and uv inputs are evaluated against one concrete Python install profile at a time: environment markers are evaluated for one target environment rather than flattened into unconditional direct dependencies.
+- By default every declared dependency group and extra is in scope, because uv and Poetry install the dev group without any flag. This covers Poetry groups (including `optional = true` groups) and `dev-dependencies`, PEP 735 `[dependency-groups]`, `[tool.uv] dev-dependencies`, `[project.optional-dependencies]`, and Poetry extras. PDM `dev-dependencies` and Hatch environments are scanned as unlocked tooling because no Poetry/uv lockfile records them.
+- PEP 735 `{ include-group = "..." }` entries are resolved transitively. Unknown groups, include cycles, duplicate normalized group names, and include tables with any other keys block.
+- `--python-groups` and `--python-extras` narrow the scan to the named groups/extras (matched after name normalization) and warn about the declared ones they leave out. `--python-platform`, `--python-arch`, and `--python-version` select the marker target environment; without them, markers are evaluated for the current host and sloppy-joe warns.
 - Repo-visible Poetry and uv sources can use exact normalized Python index allowlists through `trusted_indexes.pypi`.
 - For Poetry and uv, manifest source intent and lockfile provenance must agree before a non-PyPI source is trusted.
 - For Poetry and uv, reachable non-PyPI packages must also be authorized by the in-scope root dependency graph; declaring an alternate source does not automatically authorize unrelated transitives.
@@ -61,6 +63,8 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - uv projects without a readable `uv.lock`.
 - Malformed Poetry lockfiles.
 - Malformed, stale, or unsupported `uv.lock` files.
+- A dependency declared in a scanned group or extra that is missing from `poetry.lock` or `uv.lock`.
+- A `uv.lock` root dependency, extra, or group entry (resolved or in `requires-dev`) that pyproject.toml does not declare in that section, and registry packages in `uv.lock` that claim `dev-dependencies`.
 - Mixed Poetry and uv project metadata in the same `pyproject.toml`.
 - Poetry or uv projects whose locked graph resolves from a non-PyPI source that is not allowlisted exactly in `trusted_indexes.pypi`.
 - Poetry or uv dependencies whose declared source intent disagrees with the resolved source in the lockfile.
@@ -91,7 +95,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 ## Recommended workflow
 
 - Prefer Poetry or uv with a committed lockfile.
-- If the repo uses scoped Python dependencies, make CI pass the real profile explicitly with `--python-groups`, `--python-extras`, `--python-platform`, `--python-arch`, and `--python-version`.
+- If the repo uses environment markers, make CI pass the real target with `--python-platform`, `--python-arch`, and `--python-version`. Only pass `--python-groups`/`--python-extras` when you intentionally scan a narrower install than the full project.
 - In CI or production, prefer `poetry_lock_policy = "strict"` so missing Poetry proof blocks instead of silently downgrading trust.
 - If you use non-PyPI Poetry or uv sources, allowlist the exact normalized index URL under `trusted_indexes.pypi`.
 - If you use pip-tools, compile exact pins with hashes, commit the compiled requirements graph, and bind the primary index with `--index-url`. Any non-PyPI `--extra-index-url` must also be allowlisted under `trusted_indexes.pypi`.
