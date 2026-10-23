@@ -40,11 +40,11 @@ impl Ecosystem {
     }
 
     /// Whether the registry treats package names case-insensitively.
+    ///
+    /// npm is case-sensitive: legacy mixed-case packages (e.g. `JSONStream`)
+    /// coexist with distinct lowercase packages (`jsonstream`).
     pub fn is_case_insensitive(&self) -> bool {
-        matches!(
-            self,
-            Self::Npm | Self::PyPI | Self::Cargo | Self::Dotnet | Self::Php
-        )
+        matches!(self, Self::PyPI | Self::Cargo | Self::Dotnet | Self::Php)
     }
 
     /// Max concurrent registry queries for similarity checks.
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn is_case_insensitive_correct() {
-        assert!(Ecosystem::Npm.is_case_insensitive());
+        assert!(!Ecosystem::Npm.is_case_insensitive());
         assert!(Ecosystem::PyPI.is_case_insensitive());
         assert!(Ecosystem::Cargo.is_case_insensitive());
         assert!(Ecosystem::Dotnet.is_case_insensitive());

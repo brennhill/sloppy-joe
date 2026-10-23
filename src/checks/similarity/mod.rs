@@ -363,16 +363,20 @@ pub(crate) async fn check_similarity_with_options(
     for dep in deps {
         if let Some(scope) = extract_scope(dep.package_name(), ecosystem) {
             let scope_lower = scope.to_lowercase();
-            for known in known_scopes(ecosystem)
-                .iter()
-                .copied()
-                .chain(configured_scopes.iter().map(String::as_str))
-            {
+            let all_known = || {
+                known_scopes(ecosystem)
+                    .iter()
+                    .copied()
+                    .chain(configured_scopes.iter().map(String::as_str))
+            };
+            // Exact match to any known scope is safe -- check the whole list
+            // first, since a real scope (e.g. @auth0) can be a near-match of
+            // another real scope listed earlier (@auth).
+            if all_known().any(|known| known.to_lowercase() == scope_lower) {
+                continue;
+            }
+            for known in all_known() {
                 let known_lower = known.to_lowercase();
-                if scope_lower == known_lower {
-                    // Exact match to a known scope -- safe
-                    break;
-                }
                 let distance = strsim::levenshtein(&scope_lower, &known_lower);
                 let threshold = max_distance(scope_lower.len());
                 if distance > 0 && distance <= threshold {
@@ -1109,9 +1113,9 @@ mod tests {
 
     #[tokio::test]
     async fn case_insensitive_registry_no_case_variant() {
-        let registry = FakeRegistry::with(&["react"]);
-        let deps = vec![dep("React")];
-        let issues = check_similarity(&registry, &deps, Ecosystem::Npm)
+        let registry = FakeRegistry::with(&["requests"]);
+        let deps = vec![dep_eco("Requests", Ecosystem::PyPI)];
+        let issues = check_similarity(&registry, &deps, Ecosystem::PyPI)
             .await
             .unwrap();
         let case_issues: Vec<_> = issues
@@ -1209,7 +1213,7 @@ mod tests {
 
     #[test]
     fn is_case_insensitive_correct() {
-        assert!(is_case_insensitive(Ecosystem::Npm));
+        assert!(!is_case_insensitive(Ecosystem::Npm));
         assert!(is_case_insensitive(Ecosystem::PyPI));
         assert!(is_case_insensitive(Ecosystem::Cargo));
         assert!(is_case_insensitive(Ecosystem::Dotnet));

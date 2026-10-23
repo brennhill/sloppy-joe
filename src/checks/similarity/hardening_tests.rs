@@ -259,3 +259,68 @@ fn separator_insertion_is_bounded() {
     let insertions = generators::separator_insertions(&long, Ecosystem::Npm);
     assert!(insertions.len() <= generators::MAX_SEPARATOR_INSERTIONS);
 }
+
+// ── Finding 7: real scopes must not be reported as scope squats ──
+
+#[tokio::test]
+async fn exact_known_scope_is_never_a_scope_squat() {
+    let registry = FakeRegistry::with(&[]);
+    for name in [
+        "@auth0/auth0-react",
+        "@gitlab/ui",
+        "@nextjs/foo",
+        "@auth/core",
+    ] {
+        let issues = check_similarity(&registry, &[dep(name, Ecosystem::Npm)], Ecosystem::Npm)
+            .await
+            .unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING),
+            "{name}: {issues:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn near_known_scope_is_still_a_scope_squat() {
+    let registry = FakeRegistry::with(&[]);
+    let issues = check_similarity(
+        &registry,
+        &[dep("@gitlabb/ui", Ecosystem::Npm)],
+        Ecosystem::Npm,
+    )
+    .await
+    .unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING)
+    );
+}
+
+// ── Finding 8: npm registry names are case-sensitive ──
+
+#[tokio::test]
+async fn npm_case_variant_is_checked() {
+    let registry = FakeRegistry::with(&["jsonstream"]);
+    let issues = check_similarity(
+        &registry,
+        &[dep("JSONStream", Ecosystem::Npm)],
+        Ecosystem::Npm,
+    )
+    .await
+    .unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.check == crate::checks::names::SIMILARITY_CASE_VARIANT),
+        "{issues:?}"
+    );
+}
+
+#[test]
+fn npm_is_not_treated_as_case_insensitive() {
+    assert!(!Ecosystem::Npm.is_case_insensitive());
+}
