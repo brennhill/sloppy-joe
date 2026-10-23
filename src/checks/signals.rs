@@ -217,6 +217,73 @@ pub(crate) fn check_maintainer_change(
     )
 }
 
+/// Download counts could not be fetched, so download-based signals
+/// (low-downloads, install-script amplifier, download disparity) are blind.
+/// Non-blocking per spec, but never silent.
+pub(crate) fn check_downloads_unavailable(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+) -> Option<Issue> {
+    let reason = meta.downloads_unavailable.as_deref()?;
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_DOWNLOADS_UNAVAILABLE, Severity::Warning)
+            .message(format!(
+                "Download counts for '{}' are unavailable ({}). Download-based signals (low downloads, install-script risk amplifier, typosquat download disparity) were not evaluated for this package.",
+                lookup.package, reason
+            ))
+            .fix("Retry the scan when the downloads API is reachable, or review the package's popularity manually."),
+    )
+}
+
+/// The registry manifest contradicts itself about install scripts, which is a
+/// symptom of manifest confusion (packument and tarball disagreeing).
+pub(crate) fn check_manifest_inconsistency(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+) -> Option<Issue> {
+    let detail = meta.manifest_inconsistency.as_deref()?;
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_MANIFEST_INCONSISTENCY, Severity::Error)
+            .message(format!(
+                "Registry metadata for '{}' is internally inconsistent: {}. The registry does not verify that published metadata matches the package tarball, so install-script and dependency signals for this version cannot be trusted.",
+                lookup.package, detail
+            ))
+            .fix("Inspect the package tarball's package.json directly (npm pack <pkg>@<version>) before installing."),
+    )
+}
+
+/// The version published immediately before the selected one was removed.
+/// Publisher and dependency comparisons skip over it; if no earlier version
+/// survives at all, publisher history is unknown and the signal blocks.
+pub(crate) fn check_removed_previous_version(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+) -> Option<Issue> {
+    if lookup.unresolved_version {
+        return None;
+    }
+    let removed = meta.removed_previous_version.as_deref()?;
+    let history_unknown = meta.previous_publisher.is_none();
+    let severity = if history_unknown {
+        Severity::Error
+    } else {
+        Severity::Warning
+    };
+    let consequence = if history_unknown {
+        "No earlier version remains, so a publisher change cannot be ruled out."
+    } else {
+        "Publisher and dependency changes were compared against the nearest surviving earlier version."
+    };
+    Some(
+        Issue::new(&lookup.package, super::names::METADATA_REMOVED_PREVIOUS_VERSION, severity)
+            .message(format!(
+                "The version of '{}' published immediately before this one ({}) has been removed from the registry. {}",
+                lookup.package, removed, consequence
+            ))
+            .fix("Review the package's release history and current publisher before installing."),
+    )
+}
+
 /// Package exists but metadata couldn't be parsed.
 pub(crate) fn check_parse_failed(lookup: &MetadataLookup) -> Option<Issue> {
     if lookup.metadata.is_some() || !lookup.exists {
@@ -389,6 +456,10 @@ pub(crate) fn check_no_repository(
             )),
     )
 }
+
+#[cfg(test)]
+#[path = "signals_hardening_tests.rs"]
+mod hardening_tests;
 
 #[cfg(test)]
 mod tests {

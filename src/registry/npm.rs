@@ -46,22 +46,15 @@ fn metadata_from_body(
             .or_else(|| version_list.last().cloned())
     })?;
 
-    let previous_ver = version_list
-        .iter()
-        .position(|v| v == &selected_ver)
-        .and_then(|p| {
-            if p > 0 {
-                Some(version_list[p - 1].clone())
-            } else {
-                None
-            }
-        });
+    // The previous version is the nearest earlier publish that still exists in
+    // `versions`. `time` keeps entries for removed versions; skipping over one
+    // must not blank the previous publisher, but it is reported.
+    let (previous_ver, removed_previous_version) =
+        previous_existing_version(&version_list, &body["versions"], &selected_ver);
 
-    let scripts = &body["versions"][selected_ver.as_str()]["scripts"];
-    let has_install_scripts = scripts["preinstall"].is_string()
-        || scripts["postinstall"].is_string()
-        || scripts["install"].is_string()
-        || scripts["prepare"].is_string();
+    let install = install_script_facts(&body["versions"][selected_ver.as_str()]);
+    let has_install_scripts = install.has_install_scripts;
+    let manifest_inconsistency = install.inconsistency;
 
     let dependency_count = body["versions"][selected_ver.as_str()]["dependencies"]
         .as_object()
@@ -98,7 +91,106 @@ fn metadata_from_body(
         previous_publisher,
         repository_url,
         version_history,
+        downloads_unavailable: None,
+        manifest_inconsistency,
+        removed_previous_version,
     })
+}
+
+/// Find the nearest version published before `selected` that still exists in
+/// `versions`. Also returns the version published immediately before
+/// `selected` when that one has been removed from `versions`.
+fn previous_existing_version(
+    version_list: &[String],
+    versions: &serde_json::Value,
+    selected: &str,
+) -> (Option<String>, Option<String>) {
+    let Some(position) = version_list.iter().position(|v| v == selected) else {
+        return (None, None);
+    };
+    let earlier = &version_list[..position];
+    let removed = earlier
+        .last()
+        .filter(|v| !versions[v.as_str()].is_object())
+        .cloned();
+    let previous = earlier
+        .iter()
+        .rev()
+        .find(|v| versions[v.as_str()].is_object())
+        .cloned();
+    (previous, removed)
+}
+
+struct InstallScriptFacts {
+    has_install_scripts: bool,
+    inconsistency: Option<String>,
+}
+
+/// Derive install-script facts from a packument version object.
+///
+/// The packument is publisher-supplied and npm does not validate it against
+/// the tarball ("manifest confusion"). As a partial mitigation, every install
+/// indicator is honoured (declared `scripts`, the registry's `hasInstallScript`
+/// flag, and `gypfile`, which makes npm run `node-gyp rebuild` implicitly), and
+/// disagreement between them is reported as an inconsistency.
+fn install_script_facts(version_obj: &serde_json::Value) -> InstallScriptFacts {
+    let scripts = &version_obj["scripts"];
+    let lifecycle = ["preinstall", "install", "postinstall"]
+        .iter()
+        .any(|hook| scripts[*hook].is_string());
+    let prepare = scripts["prepare"].is_string();
+    let gypfile = version_obj["gypfile"].as_bool() == Some(true);
+    let registry_flag = version_obj["hasInstallScript"].as_bool();
+
+    let inconsistency = match registry_flag {
+        Some(true) if !lifecycle && !gypfile => Some(
+            "the registry reports an install script (hasInstallScript) but the published manifest declares no preinstall/install/postinstall script or gypfile"
+                .to_string(),
+        ),
+        Some(false) if lifecycle => Some(
+            "the published manifest declares a preinstall/install/postinstall script but the registry reports hasInstallScript=false"
+                .to_string(),
+        ),
+        _ => None,
+    };
+
+    InstallScriptFacts {
+        has_install_scripts: lifecycle || prepare || gypfile || registry_flag == Some(true),
+        inconsistency,
+    }
+}
+
+/// Interpret an npm downloads API response. Any non-success status or a body
+/// without a numeric count means downloads are unavailable.
+fn downloads_from_response(
+    status: reqwest::StatusCode,
+    body: &serde_json::Value,
+) -> std::result::Result<u64, String> {
+    if !status.is_success() {
+        return Err(format!(
+            "npm downloads API returned HTTP {}",
+            status.as_u16()
+        ));
+    }
+    body["downloads"]
+        .as_u64()
+        .ok_or_else(|| "npm downloads API response had no download count".to_string())
+}
+
+/// Record a downloads lookup outcome on the metadata. Failures are kept
+/// visible via `downloads_unavailable` instead of silently disabling the
+/// download-based signals.
+fn apply_downloads(meta: &mut super::PackageMetadata, result: Result<u64>) {
+    match result {
+        Ok(count) => {
+            meta.downloads = Some(count);
+            meta.downloads_unavailable = None;
+        }
+        Err(err) => {
+            meta.downloads = None;
+            meta.downloads_unavailable = Some(err.to_string());
+        }
+    }
 }
 
 /// Get ordered version list from the `time` object, excluding "created" and "modified" meta-keys.
@@ -143,11 +235,7 @@ fn build_version_history(
 
         let publisher = ver_data["_npmUser"]["name"].as_str().map(|s| s.to_string());
 
-        let scripts = &ver_data["scripts"];
-        let has_install_scripts = scripts["preinstall"].is_string()
-            || scripts["postinstall"].is_string()
-            || scripts["install"].is_string()
-            || scripts["prepare"].is_string();
+        let has_install_scripts = install_script_facts(ver_data).has_install_scripts;
 
         let sort_key = date_str
             .clone()
@@ -169,18 +257,25 @@ fn build_version_history(
 }
 
 /// Fetch last-month download count from the npm downloads API.
-/// Returns Ok(Some(count)) on success, Ok(None) if unavailable.
-async fn fetch_downloads(client: &reqwest::Client, package_name: &str) -> Result<Option<u64>> {
+/// Any failure (transport, non-2xx, malformed body) is an error so callers
+/// can surface it rather than silently dropping download-based signals.
+async fn fetch_downloads(client: &reqwest::Client, package_name: &str) -> Result<u64> {
     let url = format!(
         "https://api.npmjs.org/downloads/point/last-month/{}",
         package_name
     );
-    let resp = super::retry_get(client, &url).await?;
-    if !resp.status().is_success() {
-        return Ok(None);
-    }
-    let body: serde_json::Value = resp.json().await?;
-    Ok(body["downloads"].as_u64())
+    let resp = super::retry_get(client, &url)
+        .await
+        .map_err(|e| anyhow::anyhow!("npm downloads API request failed: {e}"))?;
+    let status = resp.status();
+    let body: serde_json::Value = if status.is_success() {
+        resp.json()
+            .await
+            .map_err(|e| anyhow::anyhow!("npm downloads API returned invalid JSON: {e}"))?
+    } else {
+        serde_json::Value::Null
+    };
+    downloads_from_response(status, &body).map_err(anyhow::Error::msg)
 }
 
 #[async_trait]
@@ -223,13 +318,15 @@ impl super::RegistryMetadata for NpmRegistry {
             None => return Ok(None),
         };
 
-        if let Ok(downloads) = downloads_result {
-            meta.downloads = downloads;
-        }
+        apply_downloads(&mut meta, downloads_result);
 
         Ok(Some(meta))
     }
 }
+
+#[cfg(test)]
+#[path = "npm_hardening_tests.rs"]
+mod hardening_tests;
 
 #[cfg(test)]
 mod tests {
