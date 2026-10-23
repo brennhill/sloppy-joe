@@ -11688,3 +11688,64 @@ async fn repository_reports_separate_node_and_rust_dependency_chains() {
     assert_eq!(report.packages_checked, 2);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn transitive_npm_links_outside_the_scan_root_cannot_pass_full_checks() {
+    let dir = unique_dir();
+    let outside = unique_dir();
+    let cache_dir = unique_dir();
+    std::fs::write(
+        outside.join("package.json"),
+        r#"{"name":"evil","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"dependencies":{"is-number":"7.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("package-lock.json"), serde_json::json!({"lockfileVersion":3,"packages":{
+        "":{"dependencies":{"is-number":"7.0.0"}},
+        "node_modules/is-number":{"version":"7.0.0","resolved":"https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz","integrity":"sha512-demo","dependencies":{"evil":format!("file:{}",outside.display())}},
+        "node_modules/evil":{"resolved":outside.display().to_string(),"link":true}
+    }}).to_string()).unwrap();
+    let error = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config::SloppyJoeConfig::default(),
+        &FakeRegistry {
+            existing: vec!["is-number".into()],
+        },
+        &FakeOsvClient,
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_err("an installable external transitive link must not disappear from a full scan");
+    assert!(
+        error.to_string().contains("evil") && error.to_string().contains("outside the scan root"),
+        "{error}"
+    );
+    let result = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            cache_dir: Some(&cache_dir),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "unsupported transitive sources must block before online checks"
+    );
+    assert!(!cache_dir.join("full-scan-fingerprint.json").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+    std::fs::remove_dir_all(cache_dir).unwrap();
+}

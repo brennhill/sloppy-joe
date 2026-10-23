@@ -1633,6 +1633,51 @@ fn validate_local_npm_dependencies(
         validate_local_npm_lockfile_target(spec, lockfile, &name, &local_spec, &expected_target)?;
     }
 
+    if let Some(packages) = lockfile.get("packages").and_then(|value| value.as_object()) {
+        let lockfile_path =
+            selected_lockfile_path(spec).expect("npm preflight selected a lockfile");
+        let lockfile_dir = lockfile_path
+            .parent()
+            .expect("lockfile has a parent directory");
+        for (key, entry) in packages {
+            if entry.get("link").and_then(|value| value.as_bool()) != Some(true) {
+                continue;
+            }
+            let Some((_, name)) = key.rsplit_once("node_modules/") else {
+                continue;
+            };
+            let resolved = entry
+                .get("resolved")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Required lockfile '{}' link '{}' is missing its resolved local target.",
+                        lockfile_path.display(),
+                        name
+                    )
+                })?;
+            let target = resolve_local_npm_target(
+                trusted_root,
+                spec,
+                name,
+                &format!("file:{resolved}"),
+                lockfile_dir,
+            )?;
+            if npm_index
+                .names_by_dir
+                .get(&target)
+                .is_none_or(|actual| actual != name)
+            {
+                anyhow::bail!(
+                    "Required lockfile '{}' link '{}' must resolve to a scanned local project with that package identity; target '{}' is unscanned or has a different name.",
+                    lockfile_path.display(),
+                    name,
+                    target.display()
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
