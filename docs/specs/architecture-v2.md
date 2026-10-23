@@ -90,6 +90,10 @@ This refactor restructures the internals without changing any external behavior 
 
 ### 4. Global error budget
 
+> **Superseded.** This design was not built. The shipped behavior is stricter: any registry
+> error blocks the scan (`has_query_errors` in `src/checks/mod.rs`). There is no `ErrorBudget`
+> and no error-rate threshold. The criteria below are kept as design history only.
+
 - **Given** the `ErrorBudget` struct,
   **Then** it tracks total errors and total queries across all checks.
 - **Given** registry errors from similarity, existence, and metadata checks,
