@@ -10769,3 +10769,42 @@ async fn uv_locked_ranges_reject_excluded_and_mismatched_versions() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[tokio::test]
+async fn uv_ranges_accept_valid_prerelease_postrelease_and_local_versions() {
+    let fixture = ecosystem_fixture_dir("python", "uv-pass");
+    for (version, specifier) in [
+        ("2.32.3rc1", ">=2.32.3rc1,<3"),
+        ("2.32.3.post1", ">=2.32.3,<3"),
+        ("2.32.3+build.1", ">=2.32,<3"),
+    ] {
+        let dir = unique_dir();
+        let manifest = std::fs::read_to_string(fixture.join("pyproject.toml"))
+            .unwrap()
+            .replace("==2.32.3", specifier);
+        let locked = std::fs::read_to_string(fixture.join("uv.lock"))
+            .unwrap()
+            .replace("2.32.3", version)
+            .replace(&format!("=={version}"), specifier);
+        std::fs::write(dir.join("pyproject.toml"), manifest).unwrap();
+        std::fs::write(dir.join("uv.lock"), locked).unwrap();
+        let report = scan_with_source_full_options(
+            &dir,
+            Some("pypi"),
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("valid PEP440 versions must be supported");
+        assert!(
+            !report.has_errors(),
+            "valid version {version} failed: {:?}",
+            report.issues
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

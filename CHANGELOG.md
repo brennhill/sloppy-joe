@@ -12,7 +12,7 @@
 - Bound package-name lengths before typo mutation generation.
 - Include legacy Python build and test dependencies.
 - Recognize packaged uv project roots and uv lockfiles without redundant tool metadata.
-- Verify supported uv version ranges against exact locked selections instead of requiring redundant manifest pins.
+- Verify supported uv version ranges against exact locked selections instead of requiring redundant manifest pins, using PEP 440 parsing for prerelease, postrelease, and local versions.
 - Follow OSV advisory pagination and reject malformed or incomplete query responses.
 - Separate maintenance-only unmaintained notices from vulnerability records; retain blocking unsoundness advisories.
 - Update affected direct and transitive dependencies to patched versions before release.

@@ -1226,132 +1226,47 @@ fn extract_root_requires(parsed: &toml::Value) -> Option<HashMap<String, Option<
 }
 
 pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str>) -> Result<bool> {
-    let Some(specifier) = specifier
-        .map(str::trim)
-        .filter(|specifier| !specifier.is_empty())
-    else {
+    let version: pep440_rs::Version = version.parse()?;
+    let Some(specifier) = specifier.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(true);
     };
-    for clause in specifier
-        .split(',')
-        .map(str::trim)
-        .filter(|clause| !clause.is_empty())
-    {
-        if let Some(exact) = clause.strip_prefix("==") {
-            if let Some(prefix) = exact.strip_suffix(".*") {
-                if !matches_uv_wildcard(version, prefix)? {
-                    return Ok(false);
-                }
-                continue;
-            }
-            if version != exact.trim() {
-                return Ok(false);
-            }
+    let mut clauses = Vec::new();
+    for clause in specifier.split(',').map(str::trim) {
+        if clause == "*" {
             continue;
         }
-        if let Some(not_equal) = clause.strip_prefix("!=") {
-            let excluded = if let Some(prefix) = not_equal.trim().strip_suffix(".*") {
-                matches_uv_wildcard(version, prefix)?
-            } else {
-                version == not_equal.trim()
-            };
-            if excluded {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(lower) = clause.strip_prefix(">=") {
-            if compare_numeric_release_versions(version, lower.trim())? == std::cmp::Ordering::Less
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(lower) = clause.strip_prefix('>') {
-            if compare_numeric_release_versions(version, lower.trim())?
-                != std::cmp::Ordering::Greater
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(upper) = clause.strip_prefix("<=") {
-            if compare_numeric_release_versions(version, upper.trim())?
-                == std::cmp::Ordering::Greater
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(upper) = clause.strip_prefix('<') {
-            if compare_numeric_release_versions(version, upper.trim())? != std::cmp::Ordering::Less
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(requirement) = clause.strip_prefix("^") {
-            let lower = requirement.trim();
-            let upper = caret_upper_bound(lower)?;
-            if compare_numeric_release_versions(version, lower)? == std::cmp::Ordering::Less
-                || compare_numeric_release_versions(version, &upper)? != std::cmp::Ordering::Less
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(requirement) = clause.strip_prefix("~=") {
-            let lower = requirement.trim();
-            let upper = compatible_release_upper_bound(lower)?;
-            if compare_numeric_release_versions(version, lower)? == std::cmp::Ordering::Less
-                || compare_numeric_release_versions(version, &upper)? != std::cmp::Ordering::Less
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if let Some(requirement) = clause.strip_prefix('~') {
-            let lower = requirement.trim();
-            let upper = tilde_upper_bound(lower)?;
-            if compare_numeric_release_versions(version, lower)? == std::cmp::Ordering::Less
-                || compare_numeric_release_versions(version, &upper)? != std::cmp::Ordering::Less
-            {
-                return Ok(false);
-            }
-            continue;
-        }
-        if version != clause {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn matches_uv_wildcard(version: &str, prefix: &str) -> Result<bool> {
-    let actual = parse_numeric_release(version)?;
-    let expected = parse_numeric_release(prefix)?;
-    Ok(expected
-        .iter()
-        .enumerate()
-        .all(|(index, part)| actual.get(index).copied().unwrap_or_default() == *part))
-}
-
-fn compare_numeric_release_versions(left: &str, right: &str) -> Result<std::cmp::Ordering> {
-    let left = parse_numeric_release(left)?;
-    let right = parse_numeric_release(right)?;
-    let max_len = left.len().max(right.len());
-    for index in 0..max_len {
-        match left
-            .get(index)
-            .copied()
-            .unwrap_or_default()
-            .cmp(&right.get(index).copied().unwrap_or_default())
+        if let Some(lower) = clause.strip_prefix('^') {
+            clauses.push(format!(">={},<{}", lower.trim(), caret_upper_bound(lower)?));
+        } else if let Some(lower) = clause
+            .strip_prefix('~')
+            .filter(|value| !value.starts_with('='))
         {
-            std::cmp::Ordering::Equal => {}
-            ordering => return Ok(ordering),
+            clauses.push(format!(">={},<{}", lower.trim(), tilde_upper_bound(lower)?));
+        } else if clause.starts_with(|ch: char| ch.is_ascii_digit()) {
+            clauses.push(format!("=={clause}"));
+        } else {
+            clauses.push(clause.to_string());
         }
     }
-    Ok(std::cmp::Ordering::Equal)
+    let constraints: pep440_rs::VersionSpecifiers = clauses.join(",").parse()?;
+    Ok(constraints.iter().all(|constraint| {
+        match constraint.operator() {
+            // shortcut: guard truncated wildcards in pep440_rs 0.7.3; remove after an upstream fix.
+            pep440_rs::Operator::EqualStar | pep440_rs::Operator::NotEqualStar => {
+                let prefix = constraint.version();
+                let matches = prefix.epoch() == version.epoch()
+                    && prefix.release().iter().enumerate().all(|(index, part)| {
+                        version.release().get(index).copied().unwrap_or_default() == *part
+                    });
+                if *constraint.operator() == pep440_rs::Operator::EqualStar {
+                    matches
+                } else {
+                    !matches
+                }
+            }
+            _ => constraint.contains(&version),
+        }
+    }))
 }
 
 fn parse_numeric_release(value: &str) -> Result<Vec<u64>> {
@@ -1378,19 +1293,9 @@ fn caret_upper_bound(value: &str) -> Result<String> {
         .iter()
         .position(|part| *part != 0)
         .unwrap_or(parts.len() - 1);
-    parts[index] += 1;
-    parts.truncate(index + 1);
-    Ok(parts
-        .into_iter()
-        .map(|part| part.to_string())
-        .collect::<Vec<_>>()
-        .join("."))
-}
-
-fn compatible_release_upper_bound(value: &str) -> Result<String> {
-    let mut parts = parse_numeric_release(value)?;
-    let index = if parts.len() <= 1 { 0 } else { parts.len() - 2 };
-    parts[index] += 1;
+    parts[index] = parts[index]
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("Python version constraint upper bound is too large"))?;
     parts.truncate(index + 1);
     Ok(parts
         .into_iter()
@@ -1402,7 +1307,9 @@ fn compatible_release_upper_bound(value: &str) -> Result<String> {
 fn tilde_upper_bound(value: &str) -> Result<String> {
     let mut parts = parse_numeric_release(value)?;
     let index = if parts.len() <= 1 { 0 } else { 1 };
-    parts[index] += 1;
+    parts[index] = parts[index]
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("Python version constraint upper bound is too large"))?;
     parts.truncate(index + 1);
     Ok(parts
         .into_iter()
