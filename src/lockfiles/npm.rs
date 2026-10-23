@@ -6,10 +6,38 @@ use std::path::Path;
 #[cfg(test)]
 use super::first_existing;
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
     add_manifest_exact_fallback, add_manifest_exact_fallbacks, missing_entry_issue,
     out_of_sync_issue, parse_failed_issue,
 };
+
+/// Resolve a dependency from the importing package's location, then its ancestors.
+pub(crate) fn installed_package_entry<'a>(
+    packages: &'a serde_json::Map<String, serde_json::Value>,
+    project_key: &str,
+    name: &str,
+) -> Option<(&'a str, &'a serde_json::Map<String, serde_json::Value>)> {
+    let mut directory = project_key;
+    loop {
+        if directory.rsplit('/').next() != Some("node_modules") {
+            let key = if directory.is_empty() {
+                format!("node_modules/{name}")
+            } else {
+                format!("{directory}/node_modules/{name}")
+            };
+            if let Some((key, entry)) = packages.get_key_value(&key) {
+                return entry.as_object().map(|entry| (key.as_str(), entry));
+            }
+        }
+        if directory.is_empty() {
+            return None;
+        }
+        directory = directory
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+    }
+}
 
 /// Read + parse + resolve in one step (used by resolve_versions test API).
 #[cfg(test)]
@@ -37,7 +65,7 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
         }
     };
 
-    resolve_from_value(&parsed, deps, &file_name)
+    resolve_from_value(&parsed, deps, &file_name, "", ResolutionMode::Direct)
 }
 
 /// Resolve versions from a pre-parsed npm lockfile JSON value.
@@ -45,6 +73,8 @@ pub(super) fn resolve_from_value(
     parsed: &serde_json::Value,
     deps: &[Dependency],
     file_name: &str,
+    project_key: &str,
+    mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
     let packages = parsed.get("packages").and_then(|value| value.as_object());
     let dependencies = parsed
@@ -63,9 +93,21 @@ pub(super) fn resolve_from_value(
     let mut result = ResolutionResult::default();
     for dep in deps {
         let package_entry = packages.and_then(|packages| {
-            packages
-                .get(&format!("node_modules/{}", dep.name))
-                .and_then(|entry| entry.as_object())
+            if mode == ResolutionMode::Transitive {
+                return packages.iter().find_map(|(key, entry)| {
+                    let (_, installed_name) = key.rsplit_once("node_modules/")?;
+                    let entry = entry.as_object()?;
+                    let name = entry
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(installed_name);
+                    (name == dep.package_name()
+                        && entry.get("version").and_then(|value| value.as_str())
+                            == dep.version.as_deref())
+                    .then_some(entry)
+                });
+            }
+            installed_package_entry(packages, project_key, &dep.name).map(|(_, entry)| entry)
         });
         let dependency_entry = dependencies.and_then(|dependencies| {
             dependencies
@@ -136,10 +178,15 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
 pub(super) fn parse_transitive_from_value(
     parsed: &serde_json::Value,
     direct_deps: &[Dependency],
+    project_key: &str,
 ) -> Result<Vec<Dependency>> {
+    let packages = parsed.get("packages").and_then(|value| value.as_object());
     let direct_root_paths = direct_deps
         .iter()
-        .map(|dep| format!("node_modules/{}", dep.name))
+        .filter_map(|dep| {
+            installed_package_entry(packages?, project_key, &dep.name)
+                .map(|(key, _)| key.to_string())
+        })
         .collect::<std::collections::HashSet<_>>();
     parse_dependencies_from_value(parsed, Some(&direct_root_paths))
 }

@@ -11749,3 +11749,87 @@ async fn transitive_npm_links_outside_the_scan_root_cannot_pass_full_checks() {
     std::fs::remove_dir_all(outside).unwrap();
     std::fs::remove_dir_all(cache_dir).unwrap();
 }
+
+#[tokio::test]
+async fn npm_workspace_members_use_the_nearest_locked_dependency_version() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+    )
+    .unwrap();
+    let mut packages = serde_json::json!({
+        "":{"name":"root","workspaces":["packages/*"]},
+        "node_modules/is-number":{"version":"7.0.0","resolved":"https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz","integrity":"sha512-demo"},
+        "packages/b/node_modules/is-number":{"version":"6.0.0","resolved":"https://registry.npmjs.org/is-number/-/is-number-6.0.0.tgz","integrity":"sha512-demo"}
+    });
+    for (name, version) in [("a", "7.0.0"), ("b", "6.0.0")] {
+        let path = dir.join("packages").join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        let manifest =
+            serde_json::json!({"name":name,"version":"1.0.0","dependencies":{"is-number":version}});
+        std::fs::write(path.join("package.json"), manifest.to_string()).unwrap();
+        packages[format!("packages/{name}")] = manifest;
+        packages[format!("node_modules/{name}")] =
+            serde_json::json!({"resolved":format!("packages/{name}"),"link":true});
+    }
+    std::fs::write(
+        dir.join("package-lock.json"),
+        serde_json::json!({"name":"root","lockfileVersion":3,"packages":packages}).to_string(),
+    )
+    .unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report.has_errors(),
+        "npm's valid nested version must win over the hoisted version: {:?}",
+        report.issues
+    );
+    let versions = Arc::new(Mutex::new(Vec::new()));
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config::SloppyJoeConfig::default(),
+        &FakeRegistry {
+            existing: vec!["is-number".into()],
+        },
+        &RecordingOsvClient {
+            versions: versions.clone(),
+        },
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|i| i.check.starts_with("resolution/") && i.severity == Severity::Error),
+        "{:?}",
+        report.issues
+    );
+    for version in ["6.0.0", "7.0.0"] {
+        assert!(
+            versions
+                .lock()
+                .unwrap()
+                .contains(&Some(version.to_string())),
+            "installed version {version} must reach vulnerability checks"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

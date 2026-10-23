@@ -1903,8 +1903,8 @@ fn validate_local_npm_lockfile_target(
         .expect("npm projects must have a selected lockfile during preflight");
     let entry = lockfile
         .get("packages")
-        .and_then(|packages| packages.get(format!("node_modules/{dep_name}")))
-        .and_then(|value| value.as_object())
+        .and_then(|packages| packages.as_object())
+        .and_then(|packages| lockfiles::npm::installed_package_entry(packages, spec.npm_lockfile_package_key(), dep_name).map(|(_, entry)| entry))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Required lockfile '{}' is out of sync with package.json: local npm dependency '{}' is missing its lockfile entry.",
@@ -4816,8 +4816,8 @@ fn validate_npm_lockfile_consistency(
             })?;
             let entry = lockfile
                 .get("packages")
-                .and_then(|packages| packages.get(format!("node_modules/{alias_name}")))
-                .and_then(|entry| entry.as_object())
+                .and_then(|packages| packages.as_object())
+                .and_then(|packages| lockfiles::npm::installed_package_entry(packages, package_entry_key, &alias_name).map(|(_, entry)| entry))
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "Required lockfile '{}' is out of sync with package.json: missing npm alias entry for '{}'.",

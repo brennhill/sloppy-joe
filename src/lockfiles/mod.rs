@@ -3,7 +3,7 @@ mod cargo;
 mod composer;
 mod dotnet;
 mod gradle;
-mod npm;
+pub(crate) mod npm;
 pub(crate) mod pnpm;
 pub(crate) mod python;
 mod ruby;
@@ -106,6 +106,7 @@ enum ParsedLockfile {
     Npm {
         value: serde_json::Value,
         file_name: String,
+        project_key: String,
     },
     NpmLegacy {
         value: serde_json::Value,
@@ -279,7 +280,7 @@ fn read_lockfile(
                     crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
                 let value: serde_json::Value = json5::from_str(&content)
                     .map_err(|err| anyhow::anyhow!("Failed to parse bun.lock: {}", err))?;
-                let importer_key = bun_importer_key(project_dir, path)?;
+                let importer_key = js_importer_key(project_dir, path)?;
                 return Ok(ParsedLockfile::Bun {
                     value,
                     importer_key,
@@ -312,7 +313,11 @@ fn read_lockfile(
             if value["lockfileVersion"].as_u64() == Some(1) {
                 Ok(ParsedLockfile::NpmLegacy { value, file_name })
             } else {
-                Ok(ParsedLockfile::Npm { value, file_name })
+                Ok(ParsedLockfile::Npm {
+                    value,
+                    file_name,
+                    project_key: js_importer_key(project_dir, &path)?,
+                })
             }
         }
         Some(Ecosystem::Cargo) => {
@@ -407,9 +412,13 @@ fn resolve_from_parsed(
     python_profile: Option<&PythonLockfileProfile>,
 ) -> Result<ResolutionResult> {
     match parsed {
-        ParsedLockfile::Npm { value, file_name } => npm::resolve_from_value(value, deps, file_name),
+        ParsedLockfile::Npm {
+            value,
+            file_name,
+            project_key,
+        } => npm::resolve_from_value(value, deps, file_name, project_key, mode),
         ParsedLockfile::NpmLegacy { value, file_name } => {
-            npm::resolve_from_value(value, deps, file_name)
+            npm::resolve_from_value(value, deps, file_name, "", mode)
         }
         ParsedLockfile::Pnpm {
             value,
@@ -469,7 +478,9 @@ fn parse_all_from_parsed_for_project(
     python_profile: Option<&PythonLockfileProfile>,
 ) -> Result<Vec<Dependency>> {
     match parsed {
-        ParsedLockfile::Npm { value, .. } => npm::parse_transitive_from_value(value, direct_deps),
+        ParsedLockfile::Npm {
+            value, project_key, ..
+        } => npm::parse_transitive_from_value(value, direct_deps, project_key),
         ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
         ParsedLockfile::Pnpm {
             value,
@@ -582,7 +593,7 @@ fn pnpm_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String>
     Ok(key)
 }
 
-fn bun_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String> {
+fn js_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String> {
     let canonical_project_dir = std::fs::canonicalize(project_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?;
     let lockfile_dir = lockfile_path
@@ -597,7 +608,7 @@ fn bun_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String> 
         .strip_prefix(&canonical_lockfile_dir)
         .map_err(|_| {
             anyhow::anyhow!(
-                "Project '{}' is outside Bun lockfile root '{}'.",
+                "Project '{}' is outside JS lockfile root '{}'.",
                 canonical_project_dir.display(),
                 canonical_lockfile_dir.display()
             )
@@ -612,7 +623,7 @@ fn bun_importer_key(project_dir: &Path, lockfile_path: &Path) -> Result<String> 
         .join("/");
     if key.is_empty() {
         anyhow::bail!(
-            "Could not derive Bun workspace key for '{}' relative to '{}'.",
+            "Could not derive JS workspace key for '{}' relative to '{}'.",
             canonical_project_dir.display(),
             canonical_lockfile_dir.display()
         );
