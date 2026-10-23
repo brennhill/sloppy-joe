@@ -213,7 +213,9 @@ fn collect_hatch_build_dependencies(
 }
 
 /// Development dependency declarations from tool-specific tables. They are group scoped, like
-/// PEP 735 groups, so they are evaluated when the corresponding group is selected.
+/// PEP 735 groups. PDM and Hatch environments are additionally marked as unlocked tool
+/// environments: uv.lock and poetry.lock never record them, so they are scanned without
+/// lockfile reconciliation.
 fn collect_tool_dev_dependencies_scoped(
     parsed: &toml::Value,
     path: &Path,
@@ -222,14 +224,25 @@ fn collect_tool_dev_dependencies_scoped(
     let Some(tool) = parsed.get("tool") else {
         return Ok(());
     };
-
     if let Some(uv) = tool.get("uv")
         && let Some(dev) = uv.get("dev-dependencies")
     {
         require_requirement_array(dev, "[tool.uv] dev-dependencies", path)?;
         collect_requirement_array_scoped(Some(dev), path, deps, Some("dev"), None)?;
     }
+    let tool_env_start = deps.len();
+    collect_tool_env_dependencies_scoped(tool, path, deps)?;
+    for dep in &mut deps[tool_env_start..] {
+        dep.unlocked_tool_env = true;
+    }
+    Ok(())
+}
 
+fn collect_tool_env_dependencies_scoped(
+    tool: &toml::Value,
+    path: &Path,
+    deps: &mut Vec<PythonScopedDependency>,
+) -> Result<()> {
     if let Some(pdm_dev) = tool.get("pdm").and_then(|pdm| pdm.get("dev-dependencies")) {
         let groups = pdm_dev.as_table().ok_or_else(|| {
             anyhow::anyhow!(
@@ -776,20 +789,143 @@ fn collect_dependency_groups_scoped(
     path: &Path,
     deps: &mut Vec<PythonScopedDependency>,
 ) -> Result<()> {
-    if let Some(groups) =
+    let Some(groups) =
         optional_table(parsed.get("dependency-groups"), "[dependency-groups]", path)?
-    {
-        for (group_name, group) in groups {
-            collect_requirement_array_scoped(
-                Some(group),
-                path,
-                deps,
-                Some(group_name.as_str()),
-                None,
-            )?;
+    else {
+        return Ok(());
+    };
+    for (group_name, requirements) in resolve_dependency_groups(groups, path)? {
+        for spec in requirements {
+            if let Some(dep) = super::requirements::parse_scoped_requirement_spec(spec, path)? {
+                deps.push(dep.with_group(&group_name));
+            }
         }
     }
     Ok(())
+}
+
+/// Maximum `include-group` nesting depth. Real projects nest a handful of levels; anything
+/// deeper is rejected instead of risking unbounded recursion.
+const MAX_INCLUDE_GROUP_DEPTH: usize = 64;
+
+type DependencyGroupIndex<'a> = HashMap<String, (&'a String, &'a toml::Value)>;
+
+/// Expand PEP 735 `{include-group = "..."}` entries. Each group maps to its own requirement
+/// strings plus those of every group it includes (transitively). Group names are matched after
+/// normalization; duplicate normalized names, unknown includes, cycles and malformed entries
+/// fail closed.
+fn resolve_dependency_groups<'a>(
+    groups: &'a toml::value::Table,
+    path: &Path,
+) -> Result<Vec<(String, Vec<&'a str>)>> {
+    let mut index: DependencyGroupIndex<'a> = HashMap::new();
+    for (name, value) in groups {
+        let normalized = crate::parsers::python_scope::normalize_scope_name(name);
+        if let Some((previous, _)) = index.insert(normalized, (name, value)) {
+            bail!(
+                "Unsupported [dependency-groups] in {}: duplicate group names '{}' and '{}' normalize to the same group",
+                path.display(),
+                crate::report::sanitize_for_terminal(previous),
+                crate::report::sanitize_for_terminal(name)
+            );
+        }
+    }
+    let mut memo: HashMap<String, Vec<&'a str>> = HashMap::new();
+    let mut resolved = Vec::new();
+    for name in groups.keys() {
+        let normalized = crate::parsers::python_scope::normalize_scope_name(name);
+        let requirements =
+            flatten_dependency_group(&normalized, &index, &mut memo, &mut Vec::new(), path)?;
+        resolved.push((name.clone(), requirements));
+    }
+    Ok(resolved)
+}
+
+fn flatten_dependency_group<'a>(
+    normalized: &str,
+    index: &DependencyGroupIndex<'a>,
+    memo: &mut HashMap<String, Vec<&'a str>>,
+    stack: &mut Vec<String>,
+    path: &Path,
+) -> Result<Vec<&'a str>> {
+    if let Some(done) = memo.get(normalized) {
+        return Ok(done.clone());
+    }
+    if stack.iter().any(|entry| entry == normalized) {
+        let mut chain = stack.clone();
+        chain.push(normalized.to_string());
+        bail!(
+            "Unsupported [dependency-groups] in {}: include-group cycle {}",
+            path.display(),
+            crate::report::sanitize_for_terminal(&chain.join(" -> "))
+        );
+    }
+    if stack.len() >= MAX_INCLUDE_GROUP_DEPTH {
+        bail!(
+            "Unsupported [dependency-groups] in {}: include-group nesting deeper than {} levels",
+            path.display(),
+            MAX_INCLUDE_GROUP_DEPTH
+        );
+    }
+    let (declared, value) = index.get(normalized).copied().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unsupported [dependency-groups] in {}: unknown dependency group '{}'",
+            path.display(),
+            crate::report::sanitize_for_terminal(normalized)
+        )
+    })?;
+    let entries = value.as_array().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unsupported [dependency-groups] group '{}' in {}: expected an array of requirement strings",
+            crate::report::sanitize_for_terminal(declared),
+            path.display()
+        )
+    })?;
+
+    stack.push(normalized.to_string());
+    let mut requirements: Vec<&'a str> = Vec::new();
+    for entry in entries {
+        match entry {
+            toml::Value::String(spec) => {
+                if !requirements.contains(&spec.as_str()) {
+                    requirements.push(spec.as_str());
+                }
+            }
+            toml::Value::Table(table) => {
+                let target = match (table.len(), table.get("include-group")) {
+                    (1, Some(toml::Value::String(target))) => target,
+                    _ => bail!(
+                        "Unsupported entry in [dependency-groups] group '{}' in {}: tables must contain exactly one string 'include-group' key",
+                        crate::report::sanitize_for_terminal(declared),
+                        path.display()
+                    ),
+                };
+                let target_normalized = crate::parsers::python_scope::normalize_scope_name(target);
+                if !index.contains_key(&target_normalized) {
+                    bail!(
+                        "Unsupported [dependency-groups] group '{}' in {}: include-group references unknown dependency group '{}'",
+                        crate::report::sanitize_for_terminal(declared),
+                        path.display(),
+                        crate::report::sanitize_for_terminal(target)
+                    );
+                }
+                for spec in flatten_dependency_group(&target_normalized, index, memo, stack, path)?
+                {
+                    if !requirements.contains(&spec) {
+                        requirements.push(spec);
+                    }
+                }
+            }
+            _ => bail!(
+                "Unsupported entry in [dependency-groups] group '{}' in {}: expected a requirement string or an include-group table",
+                crate::report::sanitize_for_terminal(declared),
+                path.display()
+            ),
+        }
+    }
+    stack.pop();
+    memo.insert(normalized.to_string(), requirements.clone());
+    Ok(requirements)
 }
 
 fn parse_toml(path: &Path) -> Result<toml::Value> {

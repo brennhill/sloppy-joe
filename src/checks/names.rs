@@ -90,6 +90,7 @@ pub const RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS: &str =
     "resolution/python-hash-locked-requirements";
 pub const RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE: &str =
     "resolution/python-implicit-runtime-profile";
+pub const RESOLUTION_PYTHON_GROUPS_NOT_SCANNED: &str = "resolution/python-groups-not-scanned";
 pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
 
 #[cfg(test)]
@@ -154,6 +155,7 @@ mod tests {
             RESOLUTION_PYTHON_LEGACY_MANIFEST,
             RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS,
             RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE,
+            RESOLUTION_PYTHON_GROUPS_NOT_SCANNED,
             CONFIG_LOCAL_OVERLAY_RELAXATION,
         ]
     }

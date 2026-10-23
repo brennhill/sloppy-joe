@@ -5562,7 +5562,7 @@ content-hash = "__CONTENT_HASH__"
 }
 
 #[test]
-fn poetry_runtime_profile_does_not_validate_dev_only_source_packages() {
+fn poetry_narrowed_profile_does_not_validate_dev_only_source_packages() {
     let dir = unique_dir();
     let pyproject = r#"[tool.poetry]
 name = "demo"
@@ -5616,9 +5616,10 @@ content-hash = "__CONTENT_HASH__"
         &dir,
         &specs,
         &config,
-        &python_profile_opts(&[], &[], Some("3.12")),
+        // Narrowed to the main dependencies: the dev group is explicitly excluded.
+        &python_profile_opts(&["main"], &[], Some("3.12")),
     )
-    .expect("runtime profile should ignore dev-only private index package");
+    .expect("narrowed profile should ignore dev-only private index package");
     assert!(
         warnings
             .iter()
@@ -5873,6 +5874,7 @@ requires-dist = [{ name = "private-lib", specifier = "==1.0.0" }]
 
 #[test]
 fn poetry_source_intents_ignore_unselected_group_for_same_package_name() {
+    // Narrowed to the main dependencies: the dev group is explicitly excluded.
     let dir = unique_dir();
     let pyproject = r#"[tool.poetry]
 name = "demo"
@@ -5914,9 +5916,9 @@ content-hash = "__CONTENT_HASH__"
         &dir,
         &specs,
         &config,
-        &python_profile_opts(&[], &[], Some("3.12")),
+        &python_profile_opts(&["main"], &[], Some("3.12")),
     )
-    .expect("runtime profile should ignore dev-only source intent for same package");
+    .expect("narrowed profile should ignore dev-only source intent for same package");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -6129,7 +6131,7 @@ fn pip_tools_included_requirements_must_also_be_hash_locked() {
 }
 
 #[test]
-fn poetry_runtime_profile_excludes_dev_group_dependencies_and_warns() {
+fn poetry_default_profile_includes_dev_group_and_narrowing_excludes_it_with_warning() {
     let dir = unique_dir();
     let pyproject = r#"[tool.poetry]
 name = "demo"
@@ -6173,15 +6175,29 @@ content-hash = "__CONTENT_HASH__"
     let warnings =
         preflight_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default())
             .unwrap();
-    assert!(
-        warnings.iter().any(|issue| {
-            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
-        })
-    );
+    assert!(!warnings.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+            || issue.check == checks::names::RESOLUTION_PYTHON_GROUPS_NOT_SCANNED
+    }));
 
     let projects =
         parse_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default()).unwrap();
     assert_eq!(projects.len(), 1);
+    let names: Vec<_> = projects[0]
+        .deps
+        .iter()
+        .map(|dep| dep.name.as_str())
+        .collect();
+    assert!(names.contains(&"requests"));
+    assert!(names.contains(&"pytest"));
+
+    let narrowed = python_profile_opts(&["main"], &[], None);
+    let warnings = preflight_project_inputs_with_options(&dir, &specs, &config, &narrowed).unwrap();
+    assert!(warnings.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_PYTHON_GROUPS_NOT_SCANNED
+            && issue.message.contains("'dev'")
+    }));
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &narrowed).unwrap();
     let names: Vec<_> = projects[0]
         .deps
         .iter()
@@ -6256,7 +6272,7 @@ content-hash = "__CONTENT_HASH__"
 }
 
 #[test]
-fn uv_runtime_profile_excludes_optional_extra_dependencies_and_warns() {
+fn uv_default_profile_includes_optional_extras_and_narrowing_excludes_them() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("pyproject.toml"),
@@ -6299,13 +6315,17 @@ wheels = [
 name = "demo"
 version = "0.1.0"
 source = { virtual = "." }
-dependencies = [{ name = "requests" }, { name = "mkdocs" }]
+dependencies = [{ name = "requests" }]
+
+[package.optional-dependencies]
+docs = [{ name = "mkdocs" }]
 
 [package.metadata]
 requires-dist = [
     { name = "requests", specifier = "==2.31.0" },
-    { name = "mkdocs", specifier = "==1.6.0" },
+    { name = "mkdocs", marker = "extra == 'docs'", specifier = "==1.6.0" },
 ]
+provides-extras = ["docs"]
 "#,
     )
     .unwrap();
@@ -6315,14 +6335,28 @@ requires-dist = [
     let warnings =
         preflight_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default())
             .unwrap();
-    assert!(
-        warnings.iter().any(|issue| {
-            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
-        })
-    );
+    assert!(!warnings.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
+            || issue.check == checks::names::RESOLUTION_PYTHON_GROUPS_NOT_SCANNED
+    }));
 
     let projects =
         parse_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default()).unwrap();
+    let names: Vec<_> = projects[0]
+        .deps
+        .iter()
+        .map(|dep| dep.name.as_str())
+        .collect();
+    assert!(names.contains(&"requests"));
+    assert!(names.contains(&"mkdocs"));
+
+    let narrowed = python_profile_opts(&[], &["cli"], None);
+    let warnings = preflight_project_inputs_with_options(&dir, &specs, &config, &narrowed).unwrap();
+    assert!(warnings.iter().any(|issue| {
+        issue.check == checks::names::RESOLUTION_PYTHON_GROUPS_NOT_SCANNED
+            && issue.message.contains("'docs'")
+    }));
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &narrowed).unwrap();
     let names: Vec<_> = projects[0]
         .deps
         .iter()
@@ -6378,13 +6412,17 @@ wheels = [
 name = "demo"
 version = "0.1.0"
 source = { virtual = "." }
-dependencies = [{ name = "requests" }, { name = "mkdocs" }]
+dependencies = [{ name = "requests" }]
+
+[package.optional-dependencies]
+docs = [{ name = "mkdocs" }]
 
 [package.metadata]
 requires-dist = [
     { name = "requests", specifier = "==2.31.0" },
-    { name = "mkdocs", specifier = "==1.6.0" },
+    { name = "mkdocs", marker = "extra == 'docs'", specifier = "==1.6.0" },
 ]
+provides-extras = ["docs"]
 "#,
     )
     .unwrap();
@@ -6412,7 +6450,7 @@ requires-dist = [
 }
 
 #[tokio::test]
-async fn poetry_runtime_profile_excludes_dev_transitive_dependencies() {
+async fn poetry_default_profile_includes_dev_transitive_dependencies() {
     let dir = unique_dir();
     let pyproject = r#"[tool.poetry]
 name = "demo"
@@ -6508,7 +6546,7 @@ content-hash = "__CONTENT_HASH__"
             |issue| issue.package == "urllib3" && issue.source.as_deref() == Some("transitive")
         )
     );
-    assert!(!report.issues.iter().any(
+    assert!(report.issues.iter().any(
         |issue| issue.package == "pluggy" && issue.source.as_deref() == Some("transitive")
     ));
 
@@ -6579,13 +6617,17 @@ wheels = [
 name = "demo"
 version = "0.1.0"
 source = { virtual = "." }
-dependencies = [{ name = "requests" }, { name = "mkdocs" }]
+dependencies = [{ name = "requests" }]
+
+[package.optional-dependencies]
+docs = [{ name = "mkdocs" }]
 
 [package.metadata]
 requires-dist = [
     { name = "requests", specifier = "==2.31.0" },
-    { name = "mkdocs", specifier = "==1.6.0" },
+    { name = "mkdocs", marker = "extra == 'docs'", specifier = "==1.6.0" },
 ]
+provides-extras = ["docs"]
 "#,
     )
     .unwrap();

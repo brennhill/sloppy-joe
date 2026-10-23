@@ -24,8 +24,8 @@ Examples:
   sloppy-joe check                              Fast local guardrail
   sloppy-joe check --full                       Strict online scan
   sloppy-joe check --ci                         Strict CI-oriented scan
-  sloppy-joe check --python-groups dev,test    Include Python dependency groups
-  sloppy-joe check --python-extras docs        Include Python extras
+  sloppy-joe check --python-groups dev,test    Scan only these Python groups (default: all)
+  sloppy-joe check --python-extras docs        Scan only these Python extras (default: all)
   sloppy-joe check --type npm                   Check npm only
   sloppy-joe check --dir ./project              Check a specific directory
   sloppy-joe check --config /etc/sj/config.json Enforce canonical rules
@@ -124,11 +124,11 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
 
-        /// Include these Python dependency groups (comma-separated).
+        /// Scan only these Python dependency groups (comma-separated). Default: every group.
         #[arg(long, value_name = "GROUPS")]
         python_groups: Option<String>,
 
-        /// Include these Python extras (comma-separated).
+        /// Scan only these Python extras (comma-separated). Default: every extra.
         #[arg(long, value_name = "EXTRAS")]
         python_extras: Option<String>,
 

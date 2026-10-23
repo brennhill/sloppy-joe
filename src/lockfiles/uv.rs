@@ -7,7 +7,10 @@ use crate::{
     lockfiles::{PythonLockfileProfile, PythonPackageIdentity},
     parsers::{
         pyproject_toml::PythonDependencySourceIntent,
-        python_scope::{PythonPackageRequest, PythonProfile, evaluate_marker_for_extras},
+        python_scope::{
+            PythonPackageRequest, PythonProfile, evaluate_marker_for_extras,
+            evaluate_marker_for_profile_extras,
+        },
     },
 };
 use anyhow::{Result, bail};
@@ -1044,7 +1047,7 @@ fn effective_python_profile(lock_profile: Option<&PythonLockfileProfile>) -> Pyt
 
 fn root_marker_matches_profile(marker: Option<&str>, profile: &PythonProfile) -> Result<bool> {
     match marker {
-        Some(marker) => evaluate_marker_for_extras(marker, profile, &profile.selected_extras),
+        Some(marker) => evaluate_marker_for_profile_extras(marker, profile),
         None => Ok(true),
     }
 }

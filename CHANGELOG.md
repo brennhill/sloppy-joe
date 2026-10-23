@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Python: scan every dependency group and extra by default (Poetry groups, PEP 735 `[dependency-groups]`, uv dev dependencies, optional dependencies; PDM/Hatch environments as unlocked tooling). `--python-groups`/`--python-extras` now narrow the selection and warn about the groups and extras they exclude. Resolve PEP 735 `include-group` entries, blocking on cycles, unknown groups, and malformed include tables.
+
 - GitHub Action: download and extract the release in a fresh temp directory, verify the archive against its published `.sha256`, and never install or put on PATH files from the PR checkout.
 
 - Reject unknown and duplicate keys in sloppy-joe config and local overlay files instead of silently ignoring them.
