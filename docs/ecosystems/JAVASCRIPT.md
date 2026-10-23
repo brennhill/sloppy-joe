@@ -64,3 +64,5 @@ If the project is a workspace or monorepo, scan the workspace root when possible
 - Scan the workspace root for workspace-managed repos.
 - Use `sloppy-joe check` as the fast local guardrail and `sloppy-joe check --ci` in CI.
 - If you are on legacy npm v5/v6 and must keep `lockfileVersion: 1`, turn on `allow_legacy_npm_v1_lockfile: true` only temporarily and expect reduced-confidence warnings.
+
+A repository with scoped private-registry routing in `.npmrc` currently reports an unsupported scan. Marking a package `internal` or `allowed` does not add private-registry provenance support. For CI, scan a clean checkout and preserve the installer's actual source configuration; removing `.npmrc` just to obtain a passing result changes the graph being verified.

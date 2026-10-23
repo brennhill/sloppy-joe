@@ -11,6 +11,8 @@
 - Enforce version-age policy when publication dates are missing or invalid, and account for timezone offsets.
 - Bound package-name lengths before typo mutation generation.
 - Avoid reporting Cargo hyphen/underscore spellings of the same crate as typosquats.
+- Discard invalid generated package names before similarity queries instead of misreporting them as registry outages.
+- Accept legacy registry UTC publication timestamps while preserving timezone-aware age checks.
 - Include legacy Python build and test dependencies.
 - Recognize packaged uv project roots and uv lockfiles without redundant tool metadata.
 - Verify supported uv version ranges against exact locked selections instead of requiring redundant manifest pins, using PEP 440 parsing for prerelease, postrelease, and local versions.
