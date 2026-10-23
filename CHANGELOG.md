@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Poetry: match lockfile artifact filenames to packages by normalized name, so projects whose files keep the original punctuation (`jaraco.classes-3.4.0-...` for `jaraco-classes`) are no longer downgraded to reduced confidence and flooded with `resolution/no-exact-version` errors. The version must also end exactly where the wheel tag or sdist extension begins, so `requests-1.0.1` no longer counts as `1.0`.
 - Poetry: scan every locked version when a root dependency has several entries from Python-version splits in `poetry.lock` (for example `platformdirs` 4.12.4 and 4.13.0), instead of rejecting the project as ambiguous. A split where any candidate comes from a non-default source still fails closed.
 - Python: accept PEP 508 version specifiers written in parentheses (`poetry-core (>=2.1.0,<3.0.0)`), which Poetry 2 projects emit, instead of rejecting them as an invalid package name. Unbalanced parentheses are still rejected.
 - Pipenv: check `Pipfile.lock`'s `_meta.hash` against the Pipfile using pipenv's own algorithm (validated against real published locks). A lock generated from a different Pipfile now blocks as out of date, and a missing `_meta.hash` blocks. Pipfiles holding values pipenv's hash cannot reproduce here (floats, datetimes) keep the package-level reconciliation only.

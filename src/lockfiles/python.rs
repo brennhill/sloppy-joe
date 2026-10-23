@@ -633,20 +633,20 @@ fn poetry_filename_matches_package_version(
     version: &str,
     file_name: &str,
 ) -> bool {
+    const SDIST_EXTENSIONS: [&str; 6] = [".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".zip", ".egg"];
     let normalized = normalize_name(package_name);
-    let version_suffix = format!("-{version}");
-    [
-        normalized.clone(),
-        normalized.replace('-', "_"),
-        package_name.to_ascii_lowercase(),
-        package_name.to_ascii_lowercase().replace('-', "_"),
-        package_name.to_ascii_lowercase().replace('_', "-"),
-    ]
-    .into_iter()
-    .any(|candidate| {
-        file_name
-            .to_ascii_lowercase()
-            .starts_with(&(candidate + &version_suffix))
+    let file_name = file_name.to_ascii_lowercase();
+    let version_marker = format!("-{}", version.to_ascii_lowercase());
+    // The project name may keep punctuation the lock normalizes away
+    // (`jaraco.classes-3.4.0-...` for `jaraco-classes`), and the version must end
+    // exactly where the wheel tag or sdist extension begins.
+    file_name.match_indices(&version_marker).any(|(index, _)| {
+        let remainder = &file_name[index + version_marker.len()..];
+        normalize_name(&file_name[..index]) == normalized
+            && (remainder.starts_with('-')
+                || SDIST_EXTENSIONS
+                    .iter()
+                    .any(|extension| remainder == *extension))
     })
 }
 
@@ -1371,6 +1371,56 @@ fn poetry_package_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filename_matching_accepts_original_project_name_punctuation() {
+        // The lock names the project `jaraco-classes`; PyPI files keep the dot.
+        assert!(poetry_filename_matches_package_version(
+            "jaraco-classes",
+            "3.4.0",
+            "jaraco.classes-3.4.0-py3-none-any.whl"
+        ));
+        assert!(poetry_filename_matches_package_version(
+            "jaraco-classes",
+            "3.4.0",
+            "jaraco.classes-3.4.0.tar.gz"
+        ));
+        assert!(poetry_filename_matches_package_version(
+            "zope-interface",
+            "7.0",
+            "zope.interface-7.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+        ));
+        assert!(poetry_filename_matches_package_version(
+            "Typing_Extensions",
+            "4.12.2",
+            "typing_extensions-4.12.2-py3-none-any.whl"
+        ));
+    }
+
+    #[test]
+    fn filename_matching_rejects_other_packages_and_versions() {
+        assert!(!poetry_filename_matches_package_version(
+            "requests",
+            "2.32.3",
+            "requests_toolbelt-2.32.3-py3-none-any.whl"
+        ));
+        assert!(!poetry_filename_matches_package_version(
+            "requests",
+            "2.32.3",
+            "requests-2.32.30-py3-none-any.whl"
+        ));
+        assert!(!poetry_filename_matches_package_version(
+            "requests",
+            "1.0",
+            "requests-1.0.1.tar.gz"
+        ));
+        assert!(!poetry_filename_matches_package_version(
+            "requests",
+            "1.0",
+            "requests-1.0.1-py3-none-any.whl"
+        ));
+    }
+
     use crate::parsers::pyproject_toml::PythonDependencySourceIntent;
 
     const POETRY_LOCK: &str = r#"
