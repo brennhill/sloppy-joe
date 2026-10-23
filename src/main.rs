@@ -483,8 +483,9 @@ async fn main() {
             .await
             {
                 Ok(report) => {
+                    report.print_human();
                     eprintln!(
-                        "Cache warmed. {} packages indexed.",
+                        "Cache warm-up finished. {} packages indexed.",
                         report.packages_checked
                     );
                 }
