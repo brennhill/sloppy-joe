@@ -4868,7 +4868,6 @@ async fn js_dependency_rewrites_cannot_bypass_manifest_lockfile_sync() {
 #[tokio::test]
 async fn repo_package_manager_config_cannot_redirect_trusted_js_sources() {
     for (filename, manager) in [
-        (".npmrc", "npm"),
         (".yarnrc", "yarn"),
         (".yarnrc.yml", "yarn"),
         (".pnpmfile.cjs", "pnpm"),
@@ -10900,6 +10899,56 @@ async fn generated_scoped_npm_names_do_not_cause_registry_outage_findings() {
         !report.has_errors(),
         "invalid generated candidates must be discarded before registry queries: {:?}",
         report.issues
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn private_npm_registry_packages_are_unvetted_nonblocking_and_never_queried_publicly() {
+    let dir = unique_dir();
+    std::fs::write(dir.join(".npmrc"), "@company:registry=https://gitlab.example/api/v4/projects/${PROJECT_ID}/packages/npm/\n//gitlab.example/:_authToken=secret-must-not-appear\n").unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","dependencies":{"@company/client":"1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("package-lock.json"), serde_json::json!({
+        "lockfileVersion":3,"packages": {
+            "":{"dependencies":{"@company/client":"1.0.0"}},
+            "node_modules/@company/client":{"version":"1.0.0","resolved":"https://gitlab.example/api/v4/projects/42/packages/npm/@company/client/-/@company/client-1.0.0.tgz","integrity":"sha512-demo","dependencies":{"@company/helper":"2.0.0"}},
+            "node_modules/@company/helper":{"version":"2.0.0","resolved":"https://gitlab.example/api/v4/projects/42/packages/npm/@company/helper/-/@company/helper-2.0.0.tgz","integrity":"sha512-demo"}
+        }
+    }).to_string()).unwrap();
+    // Both remote hosts are nonexistent: success also proves private identities stay local.
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("private registries must not prevent scans");
+    assert!(!report.has_errors(), "{:?}", report.issues);
+    assert_eq!(report.packages_checked, 2);
+    assert_eq!(report.issues.len(), 2);
+    for (name, source) in [
+        ("@company/client", "direct"),
+        ("@company/helper", "transitive"),
+    ] {
+        let warning = report.issues.iter().find(|i| i.package == name).unwrap();
+        assert_eq!(warning.check, "resolution/private-registry-unvetted");
+        assert_eq!(warning.severity, Severity::Warning);
+        assert_eq!(warning.source.as_deref(), Some(source));
+        assert!(warning.message.contains("unvetted"));
+    }
+    assert!(
+        !serde_json::to_string(&report)
+            .unwrap()
+            .contains("secret-must-not-appear")
     );
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -69,6 +69,7 @@ pub const RESOLUTION_AMBIGUOUS: &str = "resolution/ambiguous";
 pub const RESOLUTION_NO_EXACT_VERSION: &str = "resolution/no-exact-version";
 pub const RESOLUTION_NO_TRUSTED_LOCKFILE: &str = "resolution/no-trusted-lockfile";
 pub const RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC: &str = "resolution/no-trusted-lockfile-sync";
+pub const RESOLUTION_PRIVATE_REGISTRY_UNVETTED: &str = "resolution/private-registry-unvetted";
 pub const RESOLUTION_NPM_ALIAS: &str = "resolution/npm-alias";
 pub const RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE: &str =
     "resolution/no-trusted-transitive-coverage";
@@ -131,6 +132,7 @@ mod tests {
             RESOLUTION_NO_TRUSTED_LOCKFILE,
             RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC,
             RESOLUTION_NPM_ALIAS,
+            RESOLUTION_PRIVATE_REGISTRY_UNVETTED,
             RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,
             RESOLUTION_LOCAL_DEPENDENCY_SOURCE,
             RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,

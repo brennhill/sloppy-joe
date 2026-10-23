@@ -6,6 +6,7 @@ pub mod ecosystem;
 pub use ecosystem::Ecosystem;
 pub mod config;
 pub(crate) mod lockfiles;
+mod npm_config;
 pub mod parsers;
 pub mod registry;
 pub mod report;
@@ -195,6 +196,7 @@ struct JsProjectBinding {
     root_manifest_path: std::path::PathBuf,
     lockfile_path: Option<std::path::PathBuf>,
     package_entry_key: String,
+    npm_registries: npm_config::NpmRegistries,
 }
 
 impl ProjectInputSpec {
@@ -769,7 +771,16 @@ fn read_validated_npm_lockfile(
     })?;
     validate_npm_lockfile_version(&lockfile, &path, config)?;
     validate_npm_lockfile_consistency(manifest, &lockfile, &path, spec.npm_lockfile_package_key())?;
-    validate_npm_lockfile_provenance(&lockfile, &path, allowed_alias_targets)?;
+    validate_npm_lockfile_provenance(
+        &lockfile,
+        &path,
+        allowed_alias_targets,
+        &spec
+            .js_binding
+            .as_ref()
+            .map(|b| b.npm_registries.clone())
+            .unwrap_or_default(),
+    )?;
 
     let warnings = if npm_lockfile_version(&lockfile) == 1 && config.allow_legacy_npm_v1_lockfile {
         legacy_npm_v1_warnings(&path)
@@ -1196,9 +1207,17 @@ fn resolve_js_project_binding(
     };
     let canonical_root_dir = std::fs::canonicalize(&root_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
-    for dir in ancestor_dirs_inclusive(&canonical_project_dir, &ancestry_root)? {
+    let mut npm_registries = npm_config::NpmRegistries::default();
+    for dir in ancestor_dirs_inclusive(&canonical_project_dir, &ancestry_root)?
+        .into_iter()
+        .rev()
+    {
+        let npmrc = dir.join(".npmrc");
+        if parsers::path_detected(&npmrc)? {
+            npm_registries.read(&npmrc)?;
+            npm_registries.validate_manager(manager.as_str(), &npmrc)?;
+        }
         for (filename, owner) in [
-            (".npmrc", None),
             (".yarnrc", Some(JsPackageManager::Yarn)),
             (".yarnrc.yml", Some(JsPackageManager::Yarn)),
             (".pnpmfile.cjs", Some(JsPackageManager::Pnpm)),
@@ -1249,6 +1268,7 @@ fn resolve_js_project_binding(
         root_manifest_path,
         lockfile_path,
         package_entry_key,
+        npm_registries,
     })
 }
 
@@ -3667,6 +3687,11 @@ fn validate_lockfile_syntax(
                         &lockfile,
                         &path,
                         &std::collections::HashMap::new(),
+                        &spec
+                            .js_binding
+                            .as_ref()
+                            .map(|b| b.npm_registries.clone())
+                            .unwrap_or_default(),
                     )?;
                 }
                 JsPackageManager::Pnpm => {
@@ -4865,10 +4890,17 @@ fn validate_npm_lockfile_provenance(
     lockfile: &serde_json::Value,
     lockfile_path: &std::path::Path,
     allowed_alias_targets: &std::collections::HashMap<String, String>,
+    registries: &npm_config::NpmRegistries,
 ) -> Result<()> {
     if let Some(packages) = lockfile.get("packages").and_then(|value| value.as_object()) {
         for (key, entry) in packages {
-            validate_npm_lockfile_package_entry(key, entry, lockfile_path, allowed_alias_targets)?;
+            validate_npm_lockfile_package_entry(
+                key,
+                entry,
+                lockfile_path,
+                allowed_alias_targets,
+                registries,
+            )?;
         }
         return Ok(());
     }
@@ -4881,6 +4913,7 @@ fn validate_npm_lockfile_provenance(
             dependencies,
             lockfile_path,
             allowed_alias_targets,
+            registries,
         )?;
     }
 
@@ -4892,6 +4925,7 @@ fn validate_npm_lockfile_package_entry(
     entry: &serde_json::Value,
     lockfile_path: &std::path::Path,
     allowed_alias_targets: &std::collections::HashMap<String, String>,
+    registries: &npm_config::NpmRegistries,
 ) -> Result<()> {
     if key.is_empty() {
         return Ok(());
@@ -4923,13 +4957,19 @@ fn validate_npm_lockfile_package_entry(
             locked_name
         );
     }
-    validate_npm_lockfile_entry_fields(locked_name.unwrap_or(expected_name), entry, lockfile_path)
+    validate_npm_lockfile_entry_fields(
+        locked_name.unwrap_or(expected_name),
+        entry,
+        lockfile_path,
+        registries,
+    )
 }
 
 fn validate_npm_lockfile_dependency_entries(
     dependencies: &serde_json::Map<String, serde_json::Value>,
     lockfile_path: &std::path::Path,
     allowed_alias_targets: &std::collections::HashMap<String, String>,
+    registries: &npm_config::NpmRegistries,
 ) -> Result<()> {
     for (name, entry) in dependencies {
         let Some(entry) = entry.as_object() else {
@@ -4952,12 +4992,22 @@ fn validate_npm_lockfile_dependency_entries(
                 locked_name
             );
         }
-        validate_npm_lockfile_entry_fields(locked_name.unwrap_or(name), entry, lockfile_path)?;
+        validate_npm_lockfile_entry_fields(
+            locked_name.unwrap_or(name),
+            entry,
+            lockfile_path,
+            registries,
+        )?;
         if let Some(nested) = entry
             .get("dependencies")
             .and_then(|value| value.as_object())
         {
-            validate_npm_lockfile_dependency_entries(nested, lockfile_path, allowed_alias_targets)?;
+            validate_npm_lockfile_dependency_entries(
+                nested,
+                lockfile_path,
+                allowed_alias_targets,
+                registries,
+            )?;
         }
     }
     Ok(())
@@ -4967,6 +5017,7 @@ fn validate_npm_lockfile_entry_fields(
     package_name: &str,
     entry: &serde_json::Map<String, serde_json::Value>,
     lockfile_path: &std::path::Path,
+    registries: &npm_config::NpmRegistries,
 ) -> Result<()> {
     if entry
         .get("link")
@@ -5006,7 +5057,9 @@ fn validate_npm_lockfile_entry_fields(
                 package_name
             )
         })?;
-    if !is_trusted_npm_resolved_source(resolved) {
+    if !is_trusted_npm_resolved_source(resolved)
+        && !registries.matches_private_source(package_name, resolved)
+    {
         anyhow::bail!(
             "Required lockfile '{}' entry '{}' has untrusted resolved source '{}'. sloppy-joe only trusts npm registry tarball URLs in package-lock.json and npm-shrinkwrap.json.",
             lockfile_path.display(),
@@ -5014,7 +5067,9 @@ fn validate_npm_lockfile_entry_fields(
             crate::report::sanitize_for_terminal(resolved)
         );
     }
-    validate_npm_resolved_identity(package_name, version, resolved, lockfile_path)?;
+    if is_trusted_npm_resolved_source(resolved) {
+        validate_npm_resolved_identity(package_name, version, resolved, lockfile_path)?;
+    }
 
     let integrity = entry
         .get("integrity")
@@ -5866,6 +5921,14 @@ fn project_state_hash_for_projects(projects: &[ParsedProject]) -> std::result::R
         .collect();
     tuples.sort();
     tuples.hash(&mut hasher);
+    for project in projects {
+        project
+            .spec
+            .js_binding
+            .as_ref()
+            .map(|b| &b.npm_registries)
+            .hash(&mut hasher);
+    }
 
     let mut hashed_manifests = std::collections::HashSet::new();
     let mut manifests: Vec<_> = projects
@@ -5927,6 +5990,7 @@ fn project_binding_hash_for_projects(projects: &[ParsedProject]) -> u64 {
                             .as_ref()
                             .map(|path| path.display().to_string()),
                         binding.package_entry_key.clone(),
+                        binding.npm_registries.clone(),
                     )
                 }),
             )
@@ -6276,6 +6340,14 @@ async fn scan_with_config(
     Ok(report)
 }
 
+fn private_npm_warning(dep: &Dependency, source: &str) -> Issue {
+    let mut issue = Issue::new(&dep.name, checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED, Severity::Warning)
+        .message(format!("Private registry package '{}' at {} is unvetted: public existence, similarity, metadata, and advisory checks do not verify this registry's contents.", dep.package_name(), dep.version.as_deref().unwrap_or("locked version")))
+        .fix("Review private registry access, upstream provenance, and package contents separately. Private hosting does not guarantee a safe release.");
+    issue.source = Some(source.to_string());
+    issue
+}
+
 async fn scan_parsed_project(
     project: &ParsedProject,
     config: config::SloppyJoeConfig,
@@ -6288,8 +6360,41 @@ async fn scan_parsed_project(
     }
 
     let ecosystem = project.deps[0].ecosystem;
-    let (checkable, non_internal, internal) = classify_deps(&project.deps, &config, ecosystem);
-    let lockfile_data = lockfile_data_for_scan(project, &non_internal, &config, opts)?;
+    let registries = project
+        .spec
+        .js_binding
+        .as_ref()
+        .map(|b| b.npm_registries.clone())
+        .unwrap_or_default();
+    let mut lockfile_data = lockfile_data_for_scan(project, &project.deps, &config, opts)?;
+    let mut private_issues = Vec::new();
+    let mut public_deps = Vec::new();
+    let mut private_direct = std::collections::HashSet::new();
+    for dep in &project.deps {
+        if registries.private_registry(dep.package_name()).is_some() {
+            private_direct.insert((
+                dep.package_name().to_string(),
+                lockfile_data
+                    .resolution
+                    .exact_version(dep)
+                    .map(str::to_string),
+            ));
+            private_issues.push(private_npm_warning(dep, "direct"));
+        } else {
+            public_deps.push(dep.clone());
+        }
+    }
+    lockfile_data.transitive_deps.retain(|dep| {
+        if registries.private_registry(dep.package_name()).is_none() {
+            return true;
+        }
+        if !private_direct.contains(&(dep.package_name().to_string(), dep.version.clone())) {
+            private_issues.push(private_npm_warning(dep, "transitive"));
+        }
+        false
+    });
+    let private_count = private_issues.len();
+    let (checkable, non_internal, internal) = classify_deps(&public_deps, &config, ecosystem);
 
     let ctx = checks::CheckContext {
         checkable_deps: &checkable,
@@ -6314,8 +6419,9 @@ async fn scan_parsed_project(
             &config,
         ));
         mark_source(&mut acc.issues, "direct");
+        acc.issues.extend(private_issues);
         return Ok(ScanReport::from_issues_with_review_candidates(
-            non_internal.len(),
+            non_internal.len() + private_count,
             acc.issues,
             acc.review_candidates,
         ));
@@ -6351,8 +6457,9 @@ async fn scan_parsed_project(
     let transitive_count =
         scan_transitive_dependencies(&lockfile_data, &ctx, &project.deps, &mut acc).await?;
 
+    acc.issues.extend(private_issues);
     Ok(ScanReport::from_issues_with_review_candidates(
-        non_internal.len() + transitive_count,
+        non_internal.len() + transitive_count + private_count,
         acc.issues,
         acc.review_candidates,
     ))
