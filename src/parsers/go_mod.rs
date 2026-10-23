@@ -154,6 +154,63 @@ fn validate_tool_directives(
     Ok(())
 }
 
+/// Every required module version must have a well-formed `<version>/go.mod`
+/// checksum in go.sum. Go always needs that hash, so a requirement without one
+/// means go.sum was not produced by `go mod tidy` for this go.mod and Go would
+/// fetch the module unverified. Local replacements are exempt; extra go.sum
+/// entries (older versions kept by `go mod tidy`) are normal and ignored.
+pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
+    let mut hashes: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
+    for line in go_sum.lines().filter(|line| !line.trim().is_empty()) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [module, version, hash] = fields[..] else {
+            anyhow::bail!("Malformed go.sum line {line:?}: expected '<module> <version> <hash>'");
+        };
+        if !is_go_h1_hash(hash) {
+            anyhow::bail!("Malformed go.sum hash {hash:?} for {module} {version}");
+        }
+        let key = (module.to_string(), version.to_string());
+        if let Some(previous) = hashes.insert(key, hash.to_string())
+            && previous != hash
+        {
+            anyhow::bail!("go.sum has conflicting hashes for {module} {version}");
+        }
+    }
+
+    let local = parse_local_replace_targets(go_mod);
+    let mut missing: Vec<String> = parse_requirements(go_mod)
+        .into_iter()
+        .filter(|(name, _)| !local.contains(name.as_str()))
+        .filter_map(|(name, version)| {
+            let version = version?;
+            let key = (name.clone(), format!("{version}/go.mod"));
+            (!hashes.contains_key(&key)).then(|| format!("{name} {version}"))
+        })
+        .collect();
+    missing.sort();
+    missing.dedup();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "go.sum has no checksum for required module version(s): {}. Fix: run `go mod tidy` so Go records dependency checksums in go.sum.",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `h1:` followed by a 44-character standard base64 SHA-256 digest.
+fn is_go_h1_hash(hash: &str) -> bool {
+    let Some(digest) = hash.strip_prefix("h1:") else {
+        return false;
+    };
+    digest.len() == 44
+        && digest.ends_with('=')
+        && digest[..43]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
+}
+
 pub(crate) fn requires_go_sum(content: &str) -> bool {
     let required: HashSet<String> = parse_requirements(content)
         .into_iter()
@@ -227,6 +284,10 @@ fn parse_local_replace_entry(entry: &str) -> Option<(String, String)> {
 fn is_local_replace_target(path: &str) -> bool {
     path.starts_with("./") || path.starts_with("../") || path.starts_with('/')
 }
+
+#[cfg(test)]
+#[path = "go_sum_tests.rs"]
+mod go_sum_tests;
 
 #[cfg(test)]
 mod tests {

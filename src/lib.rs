@@ -480,10 +480,20 @@ fn preflight_selected_project_inputs(
                     )
                 })?;
                 if parsers::go_mod::requires_go_sum(&manifest_content) {
+                    let go_sum_path = spec.project_dir().join("go.sum");
                     ensure_lockfile_readable(
-                        &spec.project_dir().join("go.sum"),
+                        &go_sum_path,
                         spec.kind.missing_lockfile_help().unwrap(),
                     )?;
+                    // Vendored builds ignore go.sum, so only enforce it otherwise.
+                    if !spec.project_dir().join("vendor/modules.txt").is_file() {
+                        let go_sum =
+                            parsers::read_file_limited(&go_sum_path, parsers::MAX_MANIFEST_BYTES)?;
+                        parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum)
+                            .map_err(|err| {
+                                anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err)
+                            })?;
+                    }
                 }
             }
             ProjectInputKind::Ruby => ensure_lockfile_readable(
@@ -7600,3 +7610,7 @@ mod pipfile_lock_tests;
 #[cfg(test)]
 #[path = "lockfile_integrity_scan_tests.rs"]
 mod lockfile_integrity_scan_tests;
+
+#[cfg(test)]
+#[path = "go_sum_preflight_tests.rs"]
+mod go_sum_preflight_tests;
