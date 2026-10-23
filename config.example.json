@@ -39,5 +39,7 @@
     "pypi": ["company-fork-of-requests"]
   },
 
-  "min_version_age_hours": 72
+  "min_version_age_hours": 72,
+
+  "max_npm_tarball_verifications": 100
 }

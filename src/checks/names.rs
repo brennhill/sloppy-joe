@@ -22,6 +22,8 @@ pub const METADATA_MANIFEST_INCONSISTENCY: &str = "metadata/manifest-inconsisten
 pub const METADATA_REMOVED_PREVIOUS_VERSION: &str = "metadata/removed-previous-version";
 pub const METADATA_TARBALL_UNVERIFIED: &str = "metadata/tarball-unverified";
 pub const METADATA_TARBALL_INTEGRITY: &str = "metadata/tarball-integrity-mismatch";
+pub const METADATA_LOCKFILE_INTEGRITY_MISMATCH: &str = "metadata/lockfile-integrity-mismatch";
+pub const METADATA_LOCKFILE_INTEGRITY_UNVERIFIED: &str = "metadata/lockfile-integrity-unverified";
 
 // -- Similarity --
 pub const SIMILARITY_REGISTRY_UNREACHABLE: &str = "similarity/registry-unreachable";
@@ -120,6 +122,8 @@ mod tests {
             METADATA_REMOVED_PREVIOUS_VERSION,
             METADATA_TARBALL_UNVERIFIED,
             METADATA_TARBALL_INTEGRITY,
+            METADATA_LOCKFILE_INTEGRITY_MISMATCH,
+            METADATA_LOCKFILE_INTEGRITY_UNVERIFIED,
             SIMILARITY_REGISTRY_UNREACHABLE,
             SIMILARITY_SCOPE_SQUATTING,
             SIMILARITY_CASE_VARIANT,

@@ -364,11 +364,14 @@ pub async fn check_metadata(
                 cache_dir: None,
                 no_cache: true,
                 verify_all: false,
-                max_fetches: super::tarball_verification::DEFAULT_MAX_TARBALL_FETCHES,
+                max_fetches: config.max_npm_tarball_verifications,
             },
         )
         .await,
     );
+    issues.extend(super::lockfile_integrity::check_lockfile_integrity(
+        &lookups, deps, resolution,
+    ));
     issues.extend(issues_from_lookups(&lookups, config, similarity_flagged));
     Ok(issues)
 }

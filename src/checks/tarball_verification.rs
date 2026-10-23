@@ -13,8 +13,9 @@
 //! flagged by any metadata or similarity signal, published within the last 30
 //! days (or undated), belongs to a package created within 30 days, has fewer
 //! than 1,000 downloads (or unknown downloads), or when policy requires every
-//! version (`--paranoid`). At most `max_fetches` tarballs are downloaded per
-//! scan; verified results are cached by name, version and integrity.
+//! version (`--paranoid`). At most `max_npm_tarball_verifications` (config,
+//! default 100) tarballs are downloaded per scan; verified results are cached
+//! by name, version and integrity.
 //!
 //! Fail closed: a selected version whose tarball cannot be fetched, verified
 //! or read, or that falls beyond the per-scan limit, gets a blocking
@@ -58,12 +59,12 @@ pub(crate) struct TarballVerificationOptions<'a> {
 }
 
 impl<'a> TarballVerificationOptions<'a> {
-    pub(crate) fn from_scan(opts: &crate::ScanOptions<'a>) -> Self {
+    pub(crate) fn from_scan(opts: &crate::ScanOptions<'a>, config: &SloppyJoeConfig) -> Self {
         Self {
             cache_dir: opts.cache_dir,
             no_cache: opts.no_cache,
             verify_all: opts.paranoid,
-            max_fetches: DEFAULT_MAX_TARBALL_FETCHES,
+            max_fetches: config.max_npm_tarball_verifications,
         }
     }
 }
@@ -212,14 +213,21 @@ pub(crate) async fn verify_npm_tarballs(
         (units[*a].priority, &units[*a].package).cmp(&(units[*b].priority, &units[*b].package))
     });
     let overflow = to_fetch.split_off(to_fetch.len().min(options.max_fetches));
+    let selected = to_fetch.len() + overflow.len();
+    let skipped = overflow.len();
     for index in overflow {
-        outcomes[index] = Some(Outcome::Failed(unverified_issue(
-            &units[index],
-            &format!(
-                "the per-scan tarball verification limit ({}) was reached",
-                options.max_fetches
+        outcomes[index] = Some(Outcome::Failed(
+            unverified_issue(
+                &units[index],
+                &format!(
+                    "the per-scan tarball verification limit ({}) was reached; {skipped} of {selected} selected npm versions needing a download were not verified",
+                    options.max_fetches
+                ),
+            )
+            .fix(
+                "Re-run the scan: verified tarballs are cached, so each run verifies more versions. To verify more per scan, raise max_npm_tarball_verifications (up to 1000) in the sloppy-joe config.",
             ),
-        )));
+        ));
     }
 
     let units_ref = &units;
@@ -344,3 +352,7 @@ fn unverified_issue(unit: &Unit, reason: &str) -> Issue {
 #[cfg(test)]
 #[path = "tarball_verification_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tarball_cap_tests.rs"]
+mod cap_tests;

@@ -291,6 +291,22 @@ Minimum age (in hours) a package version must have before it's accepted. Default
 
 Set to `0` to disable.
 
+### `max_npm_tarball_verifications`
+
+Maximum number of npm tarballs downloaded per scan to verify them against registry metadata. Default: `100`. Allowed range: `1` to `1000`; other values are rejected at load time.
+
+```json
+{
+  "max_npm_tarball_verifications": 250
+}
+```
+
+**What it does:** npm versions selected for tarball verification (flagged by any signal, published or created within 30 days, fewer than 1,000 downloads, or every version with `--paranoid`) are downloaded and checked against the packument. Cache hits do not count toward the limit. Selected versions beyond the limit are not skipped: each gets a blocking `metadata/tarball-unverified` error that names the limit and how many selected versions went unverified. Verified results are cached, so re-running a scan also makes progress.
+
+**When to raise it:** large monorepos or `--paranoid` scans that hit the limit on a cold cache. Raising it costs more registry downloads per scan; it never weakens a check.
+
+This key is only read from the out-of-repo config, not from the local overlay.
+
 ### `allow_legacy_npm_v1_lockfile`
 
 Controls whether sloppy-joe will allow legacy npm v5/v6 `lockfileVersion: 1` lockfiles in reduced-confidence mode.

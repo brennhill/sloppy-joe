@@ -122,10 +122,18 @@ impl Check for MetadataCheck {
                     &mut lookups,
                     ctx.config,
                     &acc.similarity_flagged,
-                    &super::tarball_verification::TarballVerificationOptions::from_scan(ctx.opts),
+                    &super::tarball_verification::TarballVerificationOptions::from_scan(
+                        ctx.opts, ctx.config,
+                    ),
                 )
                 .await,
             );
+            acc.issues
+                .extend(super::lockfile_integrity::check_lockfile_integrity(
+                    &lookups,
+                    ctx.non_internal_deps,
+                    ctx.resolution,
+                ));
             acc.issues.extend(super::metadata::issues_from_lookups(
                 &lookups,
                 ctx.config,

@@ -7587,3 +7587,7 @@ mod empty_manifest_lockfile_tests;
 #[cfg(test)]
 #[path = "pipfile_lock_tests.rs"]
 mod pipfile_lock_tests;
+
+#[cfg(test)]
+#[path = "lockfile_integrity_scan_tests.rs"]
+mod lockfile_integrity_scan_tests;
