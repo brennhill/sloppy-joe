@@ -46,6 +46,54 @@ fn nameless_requirement_lines_fail_closed() {
 }
 
 #[test]
+fn utf8_bom_prefixed_requirements_parse() {
+    let dir = setup_test_dir(
+        "req-bom",
+        "requirements.txt",
+        "\u{feff}requests==2.31.0\nevil-bom==1.0\n",
+    );
+    let names: Vec<String> = parse(&dir).unwrap().into_iter().map(|d| d.name).collect();
+    assert_eq!(names, vec!["requests".to_string(), "evil-bom".to_string()]);
+    cleanup(&dir);
+}
+
+#[test]
+fn utf8_bom_prefixed_python_manifests_parse() {
+    let pyproject = setup_test_dir(
+        "pyproject-bom",
+        "pyproject.toml",
+        "\u{feff}[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\"requests\"]\n",
+    );
+    assert_eq!(
+        crate::parsers::pyproject_toml::parse_legacy(&pyproject).unwrap()[0].name,
+        "requests"
+    );
+    cleanup(&pyproject);
+
+    let pipfile = setup_test_dir(
+        "pipfile-bom",
+        "Pipfile",
+        "\u{feff}[packages]\nrequests = \"*\"\n",
+    );
+    assert_eq!(
+        crate::parsers::pipfile::parse(&pipfile).unwrap()[0].name,
+        "requests"
+    );
+    cleanup(&pipfile);
+
+    let cfg = setup_test_dir(
+        "cfg-bom",
+        "setup.cfg",
+        "\u{feff}[options]\ninstall_requires = requests==2.31.0\n",
+    );
+    assert_eq!(
+        crate::parsers::setup_cfg::parse(&cfg).unwrap()[0].name,
+        "requests"
+    );
+    cleanup(&cfg);
+}
+
+#[test]
 fn moderate_include_chains_still_parse() {
     let dir = empty_test_dir("req-chain-ok");
     write_include_chain(&dir, 32);

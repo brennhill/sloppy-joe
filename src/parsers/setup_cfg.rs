@@ -8,7 +8,9 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
 pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
-    let lines: Vec<&str> = content.lines().collect();
+    let lines: Vec<&str> = super::requirements::strip_utf8_bom(&content)
+        .lines()
+        .collect();
     let mut deps = Vec::new();
     let mut section = String::new();
     let mut index = 0usize;

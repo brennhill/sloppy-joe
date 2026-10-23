@@ -434,11 +434,17 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Drop a leading UTF-8 byte-order mark, which Windows editors commonly write and which
+/// pip and configparser ignore.
+pub(crate) fn strip_utf8_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
+}
+
 fn logical_requirement_lines(content: &str) -> Vec<String> {
     let mut entries = Vec::new();
     let mut current = String::new();
 
-    for raw_line in content.lines() {
+    for raw_line in strip_utf8_bom(content).lines() {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
