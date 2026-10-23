@@ -26,14 +26,14 @@ impl RegistryMetadata for FakeRegistry {
         self.metadata_calls.lock().unwrap().push(name.to_string());
         Ok(match name {
             "express" => Some(PackageMetadata {
-                downloads: Some(12),
+                downloads: Some(50_000_000),
                 created: Some("2010-01-01T00:00:00Z".into()),
                 latest_version_date: Some("2020-01-01T00:00:00Z".into()),
                 repository_url: Some("https://github.com/expressjs/express".into()),
                 ..Default::default()
             }),
             "expresss" => Some(PackageMetadata {
-                downloads: Some(50_000_000),
+                downloads: Some(12),
                 created: Some("2010-01-01T00:00:00Z".into()),
                 latest_version_date: Some("2020-01-01T00:00:00Z".into()),
                 repository_url: Some("https://github.com/x/y".into()),
@@ -54,8 +54,8 @@ impl super::super::malicious::OsvClient for NoOsv {
 
 #[tokio::test]
 async fn download_disparity_evidence_reaches_similarity_in_default_pipeline() {
-    // The dependency in the manifest is the popular one; the near-name
-    // candidate on the registry has almost no downloads.
+    // The dependency in the manifest has almost no downloads; the near-name
+    // candidate on the registry is the popular package it imitates.
     let deps = vec![crate::Dependency {
         name: "expresss".into(),
         version: Some("1.0.0".into()),
