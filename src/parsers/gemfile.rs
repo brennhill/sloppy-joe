@@ -210,7 +210,7 @@ fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependenc
             rest = &rest[1..];
         }
         let mut literals = Vec::new();
-        let mut after_last = rest;
+        let mut after_last;
         loop {
             rest = rest.trim_start();
             let Some((literal, tail)) = take_string_literal(rest) else {
