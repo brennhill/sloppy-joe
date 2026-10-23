@@ -350,7 +350,7 @@ fn read_lockfile(
             Some(value) => Ok(ParsedLockfile::Dotnet(value)),
             None => Ok(ParsedLockfile::None),
         },
-        Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir) {
+        Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir)? {
             Some(content) => Ok(ParsedLockfile::Ruby(content)),
             None => Ok(ParsedLockfile::None),
         },

@@ -210,6 +210,124 @@ packages:
     assert!(value.get("packages").is_some());
 }
 
+fn ruby_dep(name: &str) -> Dependency {
+    Dependency {
+        name: name.to_string(),
+        version: None,
+        ecosystem: Ecosystem::Ruby,
+        actual_name: None,
+    }
+}
+
+fn parse_ruby(lockfile: &str) -> Result<LockfileData> {
+    let dir = unique_dir();
+    std::fs::write(dir.join("Gemfile.lock"), lockfile).unwrap();
+    let result = LockfileData::parse_for_kind(
+        &dir,
+        Some(crate::ProjectInputKind::Ruby),
+        &[ruby_dep("rake")],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+#[test]
+fn gemfile_lock_git_and_path_sections_block() {
+    let git = r#"GIT
+  remote: https://github.com/attacker/rake.git
+  revision: 0000000000000000000000000000000000000000
+  specs:
+    rake (13.2.1)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rake!
+"#;
+    let err = parse_ruby(git).err().expect("GIT sources must block");
+    assert!(err.to_string().contains("GIT"), "{err}");
+
+    let path = r#"PATH
+  remote: ../vendor/rake
+  specs:
+    rake (13.2.1)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rake!
+"#;
+    let err = parse_ruby(path).err().expect("PATH sources must block");
+    assert!(err.to_string().contains("PATH"), "{err}");
+
+    let plugin = r#"PLUGIN SOURCE
+  remote: https://github.com/attacker/plugin.git
+  revision: 0000000000000000000000000000000000000000
+  specs:
+    rake (13.2.1)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+
+DEPENDENCIES
+  rake!
+"#;
+    assert!(
+        parse_ruby(plugin).is_err(),
+        "PLUGIN SOURCE sections must block"
+    );
+}
+
+#[test]
+fn gemfile_lock_registry_gem_section_still_parses() {
+    let lock = r#"GEM
+  remote: https://rubygems.org/
+  specs:
+    rake (13.2.1)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rake
+
+BUNDLED WITH
+   2.5.9
+"#;
+    let data = parse_ruby(lock).expect("registry-only Gemfile.lock should parse");
+    assert_eq!(
+        data.resolution.exact_version(&ruby_dep("rake")),
+        Some("13.2.1")
+    );
+}
+
+#[test]
+fn gemfile_lock_read_errors_propagate() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("Gemfile.lock")).unwrap();
+    assert!(
+        LockfileData::parse_for_kind(
+            &dir,
+            Some(crate::ProjectInputKind::Ruby),
+            &[ruby_dep("rake")]
+        )
+        .is_err(),
+        "an unreadable Gemfile.lock must not be treated as absent"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn bun_transitives_include_optional_dependencies() {
     let dir = unique_dir();
