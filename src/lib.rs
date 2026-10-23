@@ -1284,7 +1284,7 @@ fn resolve_js_project_binding(
         .rev()
     {
         let npmrc = dir.join(".npmrc");
-        if parsers::path_detected(&npmrc)? {
+        if dir == canonical_root_dir && parsers::path_detected(&npmrc)? {
             npm_registries.read(&npmrc)?;
             npm_registries.validate_manager(manager.as_str(), &npmrc)?;
         }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Scan independent install roots in mixed-manager repositories without treating an incomplete ancestor npm/pnpm workspace declaration as authoritative.
+- Report each project and its lockfile separately, retain completed sibling results when another project is unsupported, and return exit 2 for incomplete repository scans.
+- Keep registry routing scoped to the selected install root and preserve each chain's direct and transitive version selections.
+
 - Ignore `.planning` during recursive project discovery by default; add the external-policy `ignore_dirs` setting for custom directory exclusions.
 
 - Support default and scoped HTTPS npm registry routing in project-local `.npmrc` for npm and pnpm.

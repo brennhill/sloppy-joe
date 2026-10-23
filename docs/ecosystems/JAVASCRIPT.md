@@ -21,6 +21,16 @@ sloppy-joe check --ci
 
 If the project is a workspace or monorepo, scan the workspace root when possible.
 
+## Independent install roots
+
+A repository can contain separate npm, pnpm, Yarn, or Bun projects alongside a backend in another language. Each project's dependency chain uses its selected lockfile; versions from one install root do not resolve dependencies in another.
+
+For npm/pnpm workspace detection, an ancestor declaration alone does not claim a child with its own lockfile. If the ancestor has no explicit `packageManager` and its lockfile does not record that child, Sloppy Joe scans the child independently and emits `resolution/independent-install-root`. A root that explicitly selects its manager retains ownership, and malformed ancestor lockfiles remain errors. Existing Yarn/Bun workspace ownership rules remain conservative. An active workspace still rejects conflicting child lockfiles.
+
+Results include a `projects` array with each manifest, manager, selected lockfile, package count, and status (`passed`, `blocked`, or `unsupported`). Findings carry a `project` manifest path. Outcomes describe the selected mode: `passed` in fast mode does not mean online checks ran. Shared dependencies may be checked in more than one project context.
+
+Once projects are identified, binding, preflight, and scan errors are isolated per project. Multi-project scans retain completed results and return exit 2 if any project is unsupported; ordinary blocking findings return exit 1. An incomplete scan is never recorded as a successful full scan. Repository discovery failures that prevent safe project enumeration remain fatal. The scanner does not execute or infer arbitrary CI scripts; keep the selected install roots and managers aligned with the actual build.
+
 ## What sloppy-joe checks
 
 - `package.json` is required.
@@ -75,7 +85,7 @@ npm and pnpm projects can retain their project-local `.npmrc` with default or sc
 //gitlab.example/:_authToken=${PACKAGE_TOKEN}
 ```
 
-Supported routing follows [npm's default and scoped registry syntax](https://docs.npmjs.com/cli/v11/configuring-npm/npmrc/). Ancestor settings are applied before child settings; a scope-specific route wins over the default registry. A `${NAME}` placeholder can occupy an entire registry path segment, such as a CI project ID. Hostname placeholders and other interpolation forms report an unsupported scan. The scanner does not read user/global npm configuration or model installer command-line/environment registry overrides; CI must keep effective install routing consistent with committed project configuration.
+Supported routing follows [npm's default and scoped registry syntax](https://docs.npmjs.com/cli/v11/configuring-npm/npmrc/). Registry settings come from the selected install root's `.npmrc`; an unrelated parent or workspace member `.npmrc` does not change that install root. A scope-specific route wins over the default registry. A `${NAME}` placeholder can occupy an entire registry path segment, such as a CI project ID. Hostname placeholders and other interpolation forms report an unsupported scan. The scanner does not read user/global npm configuration or model installer command-line/environment registry overrides; CI must keep effective install routing consistent with committed project configuration.
 
 Credentials are ignored without environment expansion and are never used for network requests. Registry URLs with embedded credentials, HTTP routes, unsupported configuration keys, and mismatched lockfile sources report errors with values redacted. The parser also accepts comments, quoted registry values, registry-scoped authentication settings, and the non-routing keys `always-auth`, `strict-ssl`, `audit`, `fund`, `ignore-scripts`, `save-exact`, and `engine-strict`.
 

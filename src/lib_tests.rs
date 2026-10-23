@@ -11501,6 +11501,41 @@ async fn independent_npm_chains_under_a_pnpm_marker_keep_their_own_locked_versio
     .await
     .expect("a lockfile for unrelated pnpm projects must not claim the npm chains");
     assert_eq!(report.packages_checked, 4);
+    std::fs::write(
+        dir.join(".npmrc"),
+        "registry=https://unrelated-private.example/\n",
+    )
+    .unwrap();
+    let isolated_versions = Arc::new(Mutex::new(Vec::new()));
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config::SloppyJoeConfig::default(),
+        &FakeRegistry {
+            existing: vec!["react".into(), "helper".into()],
+        },
+        &RecordingOsvClient {
+            versions: isolated_versions.clone(),
+        },
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        isolated_versions.lock().unwrap().len(),
+        4,
+        "a parent registry setting must not mark independent npm chains as private/unvetted"
+    );
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|i| i.check == "resolution/private-registry-unvetted")
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
