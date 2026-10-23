@@ -820,11 +820,12 @@ fn read_validated_npm_lockfile(
             .unwrap_or_default(),
     )?;
 
-    let warnings = if npm_lockfile_version(&lockfile) == 1 && config.allow_legacy_npm_v1_lockfile {
-        legacy_npm_v1_warnings(&path)
-    } else {
-        Vec::new()
-    };
+    let warnings =
+        if npm_lockfile_version(&lockfile, &path)? == 1 && config.allow_legacy_npm_v1_lockfile {
+            legacy_npm_v1_warnings(&path)
+        } else {
+            Vec::new()
+        };
 
     Ok((lockfile, warnings))
 }
@@ -843,7 +844,7 @@ fn read_validated_pnpm_lockfile(
                 err
             )
         })?;
-    let lockfile: serde_yaml::Value = serde_yaml::from_str(&content)
+    let lockfile: serde_yaml::Value = crate::lockfiles::parse_yaml_guarded(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::pnpm::validate_provenance(
@@ -882,7 +883,7 @@ fn read_validated_bun_lockfile(
                 err
             )
         })?;
-    let lockfile: serde_json::Value = json5::from_str(&content)
+    let lockfile: serde_json::Value = crate::lockfiles::parse_json5_guarded(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_bun_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::bun::validate_provenance(&lockfile, &path)?;
@@ -1334,9 +1335,10 @@ fn js_workspace_records_project(
     let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
     match root.manager {
         JsPackageManager::Pnpm => {
-            let value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|error| {
-                anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
-            })?;
+            let value: serde_yaml::Value =
+                crate::lockfiles::parse_yaml_guarded(&content).map_err(|error| {
+                    anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
+                })?;
             Ok(value
                 .get("importers")
                 .and_then(|entries| entries.get(&key))
@@ -1824,6 +1826,55 @@ fn validate_local_bun_dependencies(
         validate_local_bun_lockfile_target(spec, lockfile, &name, &local_spec, &expected_target)?;
     }
 
+    validate_bun_lockfile_local_packages(trusted_root, spec, lockfile, npm_index)
+}
+
+/// Every workspace:/file:/link: entry in bun.lock (including transitive ones the
+/// manifest never declares) must resolve to a scanned local project with the
+/// same package identity, mirroring the npm `link: true` check.
+fn validate_bun_lockfile_local_packages(
+    trusted_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    lockfile: &serde_json::Value,
+    npm_index: &NpmProjectIndex,
+) -> Result<()> {
+    let lockfile_path = selected_lockfile_path(spec).expect("bun preflight selected a lockfile");
+    let lockfile_dir = lockfile_path
+        .parent()
+        .expect("lockfile has a parent directory");
+    for local in crate::lockfiles::bun::local_package_entries(lockfile) {
+        let target = resolve_local_npm_target(
+            trusted_root,
+            spec,
+            local.name,
+            &format!("file:{}", local.target),
+            lockfile_dir,
+        )
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' local Bun package '{}' ({}{}) must resolve to a scanned local project: {}",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(local.key),
+                local.protocol,
+                crate::report::sanitize_for_terminal(local.target),
+                err
+            )
+        })?;
+        if local.name.is_empty()
+            || npm_index
+                .names_by_dir
+                .get(&target)
+                .is_none_or(|actual| actual != local.name)
+        {
+            anyhow::bail!(
+                "Required lockfile '{}' local Bun package '{}' ('{}') must resolve to a scanned local project with that package identity; target '{}' is unscanned or has a different name.",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(local.key),
+                crate::report::sanitize_for_terminal(local.name),
+                target.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -4290,13 +4341,14 @@ fn parse_pnpm_workspaces(workspace_dir: &std::path::Path) -> Result<Option<Vec<S
         return Ok(None);
     }
     let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-    let value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|err| {
-        anyhow::anyhow!(
-            "Broken manifest '{}': failed to parse YAML: {}",
-            path.display(),
-            err
-        )
-    })?;
+    let value: serde_yaml::Value =
+        crate::lockfiles::parse_yaml_guarded(&content).map_err(|err| {
+            anyhow::anyhow!(
+                "Broken manifest '{}': failed to parse YAML: {}",
+                path.display(),
+                err
+            )
+        })?;
     if value
         .as_mapping()
         .is_some_and(|mapping| mapping.keys().any(|key| key.as_str() != Some("packages")))
@@ -4470,11 +4522,12 @@ fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
     }
 }
 
-fn npm_lockfile_version(lockfile: &serde_json::Value) -> u64 {
-    lockfile
-        .get("lockfileVersion")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0)
+fn npm_lockfile_version(
+    lockfile: &serde_json::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<u64> {
+    crate::lockfiles::npm::lockfile_version(lockfile)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", lockfile_path.display(), err))
 }
 
 fn npm_registry_tarball_path(resolved: &str) -> Option<&str> {
@@ -4535,7 +4588,7 @@ fn validate_npm_lockfile_version(
     lockfile_path: &std::path::Path,
     config: &config::SloppyJoeConfig,
 ) -> Result<()> {
-    let version = npm_lockfile_version(lockfile);
+    let version = npm_lockfile_version(lockfile, lockfile_path)?;
 
     if version == 1 && !config.allow_legacy_npm_v1_lockfile {
         anyhow::bail!(
@@ -5138,6 +5191,7 @@ fn validate_npm_lockfile_package_entry(
         .map(|(_, name)| name)
         .unwrap_or(key);
     let locked_name = entry.get("name").and_then(|value| value.as_str());
+    ensure_valid_npm_lockfile_names(key, expected_name, locked_name, lockfile_path)?;
     let allowed_alias_target = allowed_alias_targets.get(expected_name).map(String::as_str);
     if let Some(locked_name) = locked_name
         && locked_name != expected_name
@@ -5158,6 +5212,27 @@ fn validate_npm_lockfile_package_entry(
     )
 }
 
+/// Lockfile entries whose installed or declared name cannot be scanned must
+/// block instead of being silently dropped from the transitive set.
+fn ensure_valid_npm_lockfile_names(
+    key: &str,
+    installed_name: &str,
+    locked_name: Option<&str>,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    for candidate in std::iter::once(installed_name).chain(locked_name) {
+        if !crate::registry::validate_package_name(candidate) {
+            anyhow::bail!(
+                "Required lockfile '{}' entry '{}' has an invalid package name '{}'.",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(key),
+                crate::report::sanitize_for_terminal(candidate)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_npm_lockfile_dependency_entries(
     dependencies: &serde_json::Map<String, serde_json::Value>,
     lockfile_path: &std::path::Path,
@@ -5173,6 +5248,7 @@ fn validate_npm_lockfile_dependency_entries(
             );
         };
         let locked_name = entry.get("name").and_then(|value| value.as_str());
+        ensure_valid_npm_lockfile_names(name, name, locked_name, lockfile_path)?;
         let allowed_alias_target = allowed_alias_targets.get(name).map(String::as_str);
         if let Some(locked_name) = locked_name
             && locked_name != name
@@ -5236,21 +5312,11 @@ fn validate_npm_lockfile_entry_fields(
         );
     }
 
-    let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
-        return Ok(());
-    };
-
-    let resolved = entry
-        .get("resolved")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' entry '{}' is missing a resolved source URL. sloppy-joe only trusts npm lockfile entries with explicit tarball provenance.",
-                lockfile_path.display(),
-                package_name
-            )
-        })?;
-    if !is_trusted_npm_resolved_source(resolved)
+    let resolved = entry.get("resolved").and_then(|value| value.as_str());
+    // Host trust is checked before anything else so an entry cannot skip it by
+    // omitting other fields such as `version`.
+    if let Some(resolved) = resolved
+        && !is_trusted_npm_resolved_source(resolved)
         && !registries.matches_private_source(package_name, resolved)
     {
         anyhow::bail!(
@@ -5263,6 +5329,22 @@ fn validate_npm_lockfile_entry_fields(
                 .unwrap_or_else(|| "<invalid>".to_string())
         );
     }
+
+    let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' is missing a version. sloppy-joe cannot verify npm lockfile entries without an exact locked version.",
+            lockfile_path.display(),
+            package_name
+        );
+    };
+
+    let resolved = resolved.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' entry '{}' is missing a resolved source URL. sloppy-joe only trusts npm lockfile entries with explicit tarball provenance.",
+            lockfile_path.display(),
+            package_name
+        )
+    })?;
     if is_trusted_npm_resolved_source(resolved) {
         validate_npm_resolved_identity(package_name, version, resolved, lockfile_path)?;
     }
@@ -7312,3 +7394,7 @@ mod npm_registry_redirect_tests;
 #[cfg(test)]
 #[path = "cache_boundary_tests.rs"]
 mod cache_boundary_tests;
+
+#[cfg(test)]
+#[path = "lockfile_redteam_tests.rs"]
+mod lockfile_redteam_tests;

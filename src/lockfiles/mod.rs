@@ -10,6 +10,9 @@ mod ruby;
 pub(crate) mod uv;
 pub(crate) mod yarn;
 
+#[cfg(test)]
+mod redteam_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
@@ -256,7 +259,7 @@ fn read_lockfile(
                 let path = lockfile_override.expect("checked above");
                 let content =
                     crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                let value: serde_yaml::Value = serde_yaml::from_str(&content)
+                let value: serde_yaml::Value = parse_yaml_guarded(&content)
                     .map_err(|err| anyhow::anyhow!("Failed to parse pnpm-lock.yaml: {}", err))?;
                 let importer_key = pnpm_importer_key(project_dir, path)?;
                 return Ok(ParsedLockfile::Pnpm {
@@ -278,7 +281,7 @@ fn read_lockfile(
                 }
                 let content =
                     crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                let value: serde_json::Value = json5::from_str(&content)
+                let value: serde_json::Value = parse_json5_guarded(&content)
                     .map_err(|err| anyhow::anyhow!("Failed to parse bun.lock: {}", err))?;
                 let importer_key = js_importer_key(project_dir, path)?;
                 return Ok(ParsedLockfile::Bun {
@@ -310,7 +313,9 @@ fn read_lockfile(
                 crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
             let value: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
-            if value["lockfileVersion"].as_u64() == Some(1) {
+            let version = npm::lockfile_version(&value)
+                .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+            if version == 1 {
                 Ok(ParsedLockfile::NpmLegacy { value, file_name })
             } else {
                 Ok(ParsedLockfile::Npm {
@@ -345,7 +350,7 @@ fn read_lockfile(
             Some(value) => Ok(ParsedLockfile::Dotnet(value)),
             None => Ok(ParsedLockfile::None),
         },
-        Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir) {
+        Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir)? {
             Some(content) => Ok(ParsedLockfile::Ruby(content)),
             None => Ok(ParsedLockfile::None),
         },
@@ -526,6 +531,138 @@ pub(crate) fn resolve_versions(
             Ok(result)
         }
     }
+}
+
+/// Parse a JSON5 lockfile (bun.lock) after rejecting pathological nesting
+/// that would overflow the recursive-descent parser's stack.
+pub(crate) fn parse_json5_guarded(content: &str) -> Result<serde_json::Value> {
+    ensure_nesting_depth(content, NestingSyntax::Json5)?;
+    Ok(json5::from_str(content)?)
+}
+
+/// Parse a YAML lockfile or workspace file after rejecting pathological flow
+/// nesting that makes the YAML scanner burn minutes of CPU.
+pub(crate) fn parse_yaml_guarded(content: &str) -> Result<serde_yaml::Value> {
+    ensure_nesting_depth(content, NestingSyntax::Yaml)?;
+    Ok(serde_yaml::from_str(content)?)
+}
+
+/// Real lockfiles nest well under 10 levels. This cap stays far below the
+/// depth at which json5's recursive parser overflows a 2 MiB thread stack.
+const MAX_LOCKFILE_NESTING_DEPTH: usize = 64;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NestingSyntax {
+    Json5,
+    Yaml,
+}
+
+/// Cheap linear pre-scan of `[`/`{` nesting depth that skips string literals
+/// and comments, so brackets inside strings neither trip nor hide the limit.
+fn ensure_nesting_depth(content: &str, syntax: NestingSyntax) -> Result<()> {
+    let bytes = content.as_bytes();
+    let mut depth = 0usize;
+    let mut index = 0usize;
+    // Last significant byte on the current line outside strings/comments;
+    // `None` at the start of a line. YAML quotes only open a string at a token
+    // start, so `it's` stays a plain scalar.
+    let mut previous: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let opens_string = match byte {
+            b'"' | b'\'' => {
+                syntax == NestingSyntax::Json5
+                    || matches!(
+                        previous,
+                        None | Some(b':' | b',' | b'[' | b'{' | b'-' | b'?')
+                    )
+            }
+            _ => false,
+        };
+        if opens_string {
+            index = skip_string(bytes, index, syntax);
+            previous = Some(b'"');
+            continue;
+        }
+        match byte {
+            b'/' if syntax == NestingSyntax::Json5 && bytes.get(index + 1) == Some(&b'/') => {
+                index = skip_until(bytes, index + 2, b"\n");
+                continue;
+            }
+            b'/' if syntax == NestingSyntax::Json5 && bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_until(bytes, index + 2, b"*/") + 2;
+                continue;
+            }
+            b'#' if syntax == NestingSyntax::Yaml
+                && (index == 0 || bytes[index - 1].is_ascii_whitespace()) =>
+            {
+                index = skip_until(bytes, index + 1, b"\n");
+                continue;
+            }
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_LOCKFILE_NESTING_DEPTH {
+                    anyhow::bail!(
+                        "lockfile nests deeper than {} levels; refusing to parse a pathologically nested file",
+                        MAX_LOCKFILE_NESTING_DEPTH
+                    );
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            b'\n' => {
+                previous = None;
+                index += 1;
+                continue;
+            }
+            b' ' | b'\t' | b'\r' => {
+                index += 1;
+                continue;
+            }
+            _ => {}
+        }
+        previous = Some(byte);
+        index += 1;
+    }
+    Ok(())
+}
+
+/// Index just past the string literal opening at `start`.
+fn skip_string(bytes: &[u8], start: usize, syntax: NestingSyntax) -> usize {
+    let quote = bytes[start];
+    let backslash_escapes = syntax == NestingSyntax::Json5 || quote == b'"';
+    let mut index = start + 1;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\\' && backslash_escapes {
+            index += 2;
+            continue;
+        }
+        if byte == quote {
+            // YAML single-quoted strings escape a quote by doubling it.
+            if syntax == NestingSyntax::Yaml
+                && quote == b'\''
+                && bytes.get(index + 1) == Some(&b'\'')
+            {
+                index += 2;
+                continue;
+            }
+            return index + 1;
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+/// Index of the first occurrence of `needle` at or after `start` (or the end).
+fn skip_until(bytes: &[u8], start: usize, needle: &[u8]) -> usize {
+    bytes
+        .get(start..)
+        .and_then(|rest| {
+            rest.windows(needle.len())
+                .position(|window| window == needle)
+        })
+        .map(|position| start + position)
+        .unwrap_or(bytes.len())
 }
 
 // -- Shared helpers used by npm.rs and cargo.rs --

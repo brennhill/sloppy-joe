@@ -113,7 +113,10 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
             continue;
         };
         if !crate::registry::validate_package_name(name) {
-            continue;
+            anyhow::bail!(
+                "bun.lock package '{}' has an invalid package name.",
+                crate::report::sanitize_for_terminal(name)
+            );
         }
         deps.push(Dependency {
             name: name.to_string(),
@@ -139,23 +142,30 @@ pub(super) fn parse_all_from_value_for_importer(
         return Ok(vec![]);
     };
 
-    let mut deps = Vec::new();
-    let mut seen_keys = HashSet::new();
-    let mut queue = VecDeque::new();
+    let mut keys = reachable_package_keys(packages, importer_dependency_entries(importer));
 
-    for (dep_name, specifier) in importer_dependency_entries(importer) {
-        let target_name = bun_specifier_package_name(&dep_name, &specifier);
-        if let Some((key, _version)) =
-            resolve_package_ref(packages, &dep_name, &target_name, &specifier)
-        {
-            queue.push_back(key);
+    // The root importer also owns any package entry no workspace reaches, so
+    // an orphan entry can never sit in the lockfile unscanned.
+    if importer_key.is_empty() {
+        let mut reachable_from_any = HashSet::new();
+        for workspace in workspaces.values() {
+            reachable_from_any.extend(reachable_package_keys(
+                packages,
+                importer_dependency_entries(workspace),
+            ));
         }
+        let orphan_roots = packages
+            .keys()
+            .filter(|key| !reachable_from_any.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.extend(walk_package_keys(packages, orphan_roots));
     }
 
-    while let Some(package_key) = queue.pop_front() {
-        if !seen_keys.insert(package_key.clone()) {
-            continue;
-        }
+    let mut ordered = keys.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    let mut deps = Vec::new();
+    for package_key in ordered {
         let Some(value) = packages.get(&package_key) else {
             continue;
         };
@@ -165,15 +175,53 @@ pub(super) fn parse_all_from_value_for_importer(
         let Some((name, version)) = bun_descriptor_parts(descriptor) else {
             continue;
         };
-        if crate::registry::validate_package_name(name) {
-            deps.push(Dependency {
-                name: name.to_string(),
-                version: Some(version.to_string()),
-                ecosystem: crate::Ecosystem::Npm,
-                actual_name: None,
-            });
+        if !crate::registry::validate_package_name(name) {
+            anyhow::bail!(
+                "bun.lock package '{}' has an invalid package name '{}'.",
+                crate::report::sanitize_for_terminal(&package_key),
+                crate::report::sanitize_for_terminal(name)
+            );
         }
+        deps.push(Dependency {
+            name: name.to_string(),
+            version: Some(version.to_string()),
+            ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
+        });
+    }
 
+    Ok(deps)
+}
+
+/// Package keys reachable from an importer's declared dependency edges.
+fn reachable_package_keys(
+    packages: &serde_json::Map<String, serde_json::Value>,
+    roots: Vec<(String, String)>,
+) -> HashSet<String> {
+    let start = roots
+        .into_iter()
+        .filter_map(|(dep_name, specifier)| {
+            let target_name = bun_specifier_package_name(&dep_name, &specifier);
+            resolve_package_ref(packages, &dep_name, &target_name, &specifier).map(|(key, _)| key)
+        })
+        .collect();
+    walk_package_keys(packages, start)
+}
+
+/// Breadth-first closure over package dependency edges starting at `start`.
+fn walk_package_keys(
+    packages: &serde_json::Map<String, serde_json::Value>,
+    start: Vec<String>,
+) -> HashSet<String> {
+    let mut seen_keys = HashSet::new();
+    let mut queue = VecDeque::from(start);
+    while let Some(package_key) = queue.pop_front() {
+        if !seen_keys.insert(package_key.clone()) {
+            continue;
+        }
+        let Some(value) = packages.get(&package_key) else {
+            continue;
+        };
         for (child_name, child_specifier) in bun_dependency_entries(value) {
             let target_name = bun_specifier_package_name(&child_name, &child_specifier);
             if let Some((child_key, _)) =
@@ -183,8 +231,7 @@ pub(super) fn parse_all_from_value_for_importer(
             }
         }
     }
-
-    Ok(deps)
+    seen_keys
 }
 
 fn importer_dependency_specifier<'a>(
@@ -228,19 +275,22 @@ fn importer_dependency_entries(importer: &serde_json::Value) -> Vec<(String, Str
     entries
 }
 
-fn bun_dependency_entries(value: &serde_json::Value) -> Vec<(String, String)> {
+/// Every dependency edge a Bun package entry can install. Optional and peer
+/// edges are installed by Bun just like regular ones, so they must be walked
+/// (matching the pnpm and Yarn walkers).
+pub(crate) fn bun_dependency_entries(value: &serde_json::Value) -> Vec<(String, String)> {
     let mut entries = Vec::new();
-    let Some(deps) = value
-        .as_array()
-        .and_then(|parts| parts.get(2))
-        .and_then(|meta| meta.get("dependencies"))
-        .and_then(|deps| deps.as_object())
-    else {
+    let Some(meta) = value.as_array().and_then(|parts| parts.get(2)) else {
         return entries;
     };
-    for (name, specifier) in deps {
-        if let Some(specifier) = specifier.as_str() {
-            entries.push((name.to_string(), specifier.to_string()));
+    for section in ["dependencies", "optionalDependencies", "peerDependencies"] {
+        let Some(deps) = meta.get(section).and_then(|deps| deps.as_object()) else {
+            continue;
+        };
+        for (name, specifier) in deps {
+            if let Some(specifier) = specifier.as_str() {
+                entries.push((name.to_string(), specifier.to_string()));
+            }
         }
     }
     entries
@@ -425,6 +475,63 @@ fn split_npm_package_and_spec(spec: &str) -> Option<(&str, &str)> {
     let split = spec.rfind('@')?;
     let (name, version) = spec.split_at(split);
     Some((name, version.trim_start_matches('@')))
+}
+
+/// A `packages` entry that Bun installs from the local filesystem rather than a
+/// registry (`name@workspace:path`, `name@file:path`, `name@link:path`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BunLocalPackage<'a> {
+    pub(crate) key: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) protocol: &'static str,
+    pub(crate) target: &'a str,
+}
+
+/// Every local (workspace:/file:/link:) package entry in a Bun lockfile,
+/// regardless of whether the manifest declares it directly. Callers must prove
+/// each target is a scanned local project.
+pub(crate) fn local_package_entries(parsed: &serde_json::Value) -> Vec<BunLocalPackage<'_>> {
+    let Some(packages) = parsed.get("packages").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for (key, value) in packages {
+        let Some(descriptor) = bun_package_descriptor(value) else {
+            continue;
+        };
+        let descriptor = descriptor.trim();
+        // Mirror the `contains` checks that exempt these entries from registry
+        // provenance: any marker anywhere makes the entry local. Prefer a
+        // marker after a leading scope '@' so "@scope/name@file:x" keeps its
+        // name; a marker only at position 0 yields an empty name, which the
+        // caller rejects.
+        let mut matches = ["workspace:", "file:", "link:"]
+            .into_iter()
+            .flat_map(|protocol| {
+                let marker_len = protocol.len() + 1;
+                descriptor
+                    .match_indices(&format!("@{protocol}"))
+                    .map(move |(pos, _)| (pos, protocol, marker_len))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|(pos, _, _)| *pos);
+        let found = matches
+            .iter()
+            .find(|(pos, _, _)| *pos > 0)
+            .or_else(|| matches.first())
+            .copied();
+        let Some((pos, protocol, marker_len)) = found else {
+            continue;
+        };
+        entries.push(BunLocalPackage {
+            key: key.as_str(),
+            name: &descriptor[..pos],
+            protocol,
+            target: &descriptor[pos + marker_len..],
+        });
+    }
+    entries
 }
 
 fn bun_package_descriptor(value: &serde_json::Value) -> Option<&str> {
