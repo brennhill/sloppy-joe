@@ -43,6 +43,7 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
             path.display()
         );
     }
+    validate_setup_keywords(setup_call.as_deref().unwrap_or_default(), path)?;
     let mut deps = Vec::new();
 
     for key in ["install_requires", "setup_requires", "tests_require"] {
@@ -57,6 +58,150 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(deps)
+}
+
+/// setup() keywords whose values are parsed as dependency lists.
+const DEPENDENCY_KEYWORDS: &[&str] = &[
+    "install_requires",
+    "setup_requires",
+    "tests_require",
+    "extras_require",
+];
+
+/// Standard setuptools/distutils keywords that cannot add or redirect installed dependencies.
+/// `requires`/`provides`/`obsoletes` are PEP 314 metadata that installers ignore, and
+/// `python_requires` constrains the interpreter, not packages. `options` is checked
+/// separately for `easy_install` source overrides.
+const NON_DEPENDENCY_KEYWORDS: &[&str] = &[
+    "name",
+    "version",
+    "description",
+    "long_description",
+    "long_description_content_type",
+    "author",
+    "author_email",
+    "maintainer",
+    "maintainer_email",
+    "url",
+    "download_url",
+    "project_urls",
+    "license",
+    "license_file",
+    "license_files",
+    "classifiers",
+    "keywords",
+    "platforms",
+    "packages",
+    "package_dir",
+    "package_data",
+    "exclude_package_data",
+    "include_package_data",
+    "py_modules",
+    "scripts",
+    "entry_points",
+    "zip_safe",
+    "python_requires",
+    "namespace_packages",
+    "test_suite",
+    "eager_resources",
+    "requires",
+    "provides",
+    "obsoletes",
+];
+
+/// Every keyword in the literal setup() call must be one the scanner models. Keywords that
+/// point installers at other sources (`dependency_links`, `options={'easy_install': ...}`),
+/// plugin keywords that load dependencies from elsewhere (`pbr=True`), unknown keywords, and
+/// repeated keywords block instead of being skipped.
+fn validate_setup_keywords(setup_call: &str, source_path: &Path) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for keyword in setup_keywords(setup_call)? {
+        if !seen.insert(keyword.clone()) {
+            bail!(
+                "Scan not supported: setup.py keyword '{}' is repeated in {}",
+                keyword,
+                source_path.display()
+            );
+        }
+        match keyword.as_str() {
+            "dependency_links" => {
+                let value = extract_argument_literal(Some(setup_call), &keyword, source_path)?
+                    .unwrap_or_default();
+                let (links, _) = parse_python_string_list(&value, 0)?;
+                if !links.is_empty() {
+                    bail!(
+                        "Scan not supported: setup.py dependency_links in {} can redirect where dependencies are downloaded from",
+                        source_path.display()
+                    );
+                }
+            }
+            "options" => {
+                let value = extract_argument_literal(Some(setup_call), &keyword, source_path)?
+                    .unwrap_or_default();
+                if value.contains("easy_install") || value.contains("easy-install") {
+                    bail!(
+                        "Scan not supported: setup.py easy_install options in {} can redirect where build dependencies are downloaded from",
+                        source_path.display()
+                    );
+                }
+            }
+            known
+                if DEPENDENCY_KEYWORDS.contains(&known)
+                    || NON_DEPENDENCY_KEYWORDS.contains(&known) => {}
+            unknown => bail!(
+                "Scan not supported: unrecognized setup.py keyword '{}' in {} may carry dependencies",
+                crate::report::sanitize_for_terminal(unknown),
+                source_path.display()
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Top-level keyword names of a setup() call that `validate_literal_setup_arguments`
+/// already accepted.
+fn setup_keywords(content: &str) -> Result<Vec<String>> {
+    let bytes = content.as_bytes();
+    let mut keywords = Vec::new();
+    let mut index = 0;
+    let mut depth = 0usize;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'\'' | b'"' => index = parse_python_string(content, index)?.1,
+            b'#' => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'[' | b'{' | b'(' => {
+                depth += 1;
+                index += 1;
+            }
+            b']' | b'}' | b')' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                let start = index;
+                while bytes
+                    .get(index)
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+                {
+                    index += 1;
+                }
+                let mut next = index;
+                skip_ws(bytes, &mut next);
+                if depth == 0
+                    && bytes.get(next) == Some(&b'=')
+                    && bytes.get(next + 1) != Some(&b'=')
+                {
+                    keywords.push(content[start..index].to_string());
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    Ok(keywords)
 }
 
 fn extract_argument_literal(
@@ -373,7 +518,7 @@ fn parse_python_string_list(input: &str, start: usize) -> Result<(Vec<String>, u
     let mut index = start;
     skip_ws_and_commas(bytes, &mut index);
     if bytes.get(index).copied() != Some(b'[') {
-        bail!("Expected Python list literal");
+        bail!("Scan not supported: expected a Python list literal of strings");
     }
     index += 1;
 
@@ -391,7 +536,7 @@ fn parse_python_string_list(input: &str, start: usize) -> Result<(Vec<String>, u
                     bail!("Scan not supported: nonliteral Python list expression");
                 }
             }
-            Some(_) => bail!("Unsupported Python list literal entry"),
+            Some(_) => bail!("Scan not supported: unsupported Python list literal entry"),
             None => bail!("Unterminated Python list literal"),
         }
     }
@@ -402,7 +547,7 @@ fn parse_python_string_dict_values(input: &str, start: usize) -> Result<(Vec<Str
     let mut index = start;
     skip_ws_and_commas(bytes, &mut index);
     if bytes.get(index).copied() != Some(b'{') {
-        bail!("Expected Python dict literal");
+        bail!("Scan not supported: expected a Python dict literal");
     }
     index += 1;
 
@@ -416,7 +561,7 @@ fn parse_python_string_dict_values(input: &str, start: usize) -> Result<(Vec<Str
                 index = next_index;
                 skip_ws(bytes, &mut index);
                 if bytes.get(index).copied() != Some(b':') {
-                    bail!("Unsupported Python dict literal");
+                    bail!("Scan not supported: unsupported Python dict literal");
                 }
                 index += 1;
                 let (group_values, next_index) = parse_python_string_list(input, index)?;
@@ -427,7 +572,7 @@ fn parse_python_string_dict_values(input: &str, start: usize) -> Result<(Vec<Str
                     bail!("Scan not supported: nonliteral Python dict expression");
                 }
             }
-            Some(_) => bail!("Unsupported Python dict literal entry"),
+            Some(_) => bail!("Scan not supported: unsupported Python dict literal entry"),
             None => bail!("Unterminated Python dict literal"),
         }
     }
@@ -494,6 +639,10 @@ fn collect_dependency_lines(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "setup_py_redteam_tests.rs"]
+mod redteam_tests;
 
 #[cfg(test)]
 mod tests {

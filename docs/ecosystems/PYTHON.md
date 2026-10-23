@@ -46,7 +46,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - By default every declared dependency group and extra is in scope, because uv and Poetry install the dev group without any flag. This covers Poetry groups (including `optional = true` groups) and `dev-dependencies`, PEP 735 `[dependency-groups]`, `[tool.uv] dev-dependencies`, `[project.optional-dependencies]`, and Poetry extras. PDM `dev-dependencies` and Hatch environments are scanned as unlocked tooling because no Poetry/uv lockfile records them.
 - PEP 735 `{ include-group = "..." }` entries are resolved transitively. Unknown groups, include cycles, duplicate normalized group names, and include tables with any other keys block.
 - `--python-groups` and `--python-extras` narrow the scan to the named groups/extras (matched after name normalization) and warn about the declared ones they leave out. `--python-platform`, `--python-arch`, and `--python-version` select the marker target environment; without them, markers are evaluated for the current host and sloppy-joe warns.
-- Repo-visible Poetry and uv sources can use exact normalized Python index allowlists through `trusted_indexes.pypi`.
+- Repo-visible Poetry and uv sources can use exact normalized Python index allowlists through `trusted_indexes.pypi`. The same allowlist applies to `--index-url` / `--extra-index-url` options in every scanned requirements file.
 - For Poetry and uv, manifest source intent and lockfile provenance must agree before a non-PyPI source is trusted.
 - For Poetry and uv, reachable non-PyPI packages must also be authorized by the in-scope root dependency graph; declaring an alternate source does not automatically authorize unrelated transitives.
 - A repo-defined Poetry or uv source named `pypi` is not trusted unless it resolves to the canonical PyPI simple index. A custom index pretending to be `pypi` fails closed.
@@ -56,6 +56,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Legacy `setup.py` and `setup.cfg` scans include `install_requires`, `setup_requires`, `tests_require`, and extras.
 - `setup.cfg` supports both `=` and `:` option delimiters case-insensitive option names, and trailing section comments. `DEFAULT` inheritance reports `Scan not supported` rather than silently omitting inherited dependencies.
 - `setup.py` accepts standard setuptools imports, string metadata assignments, comments, and one `setup(...)` call with literal arguments. Executable preambles, computed metadata, custom source encodings, and trailing statements report `Scan not supported`. It requires complete literal dependency values. Concatenated lists or strings, encoded string escapes, expanded keyword arguments, multiple setup calls, triple-quoted strings, and unrecognized calls report `Scan not supported` (exit 2).
+- `setup.py` keywords are checked against a fixed list. `install_requires`, `setup_requires`, `tests_require`, and `extras_require` (a dict of string keys to lists of strings) are scanned. Standard metadata (`name`, `python_requires`, `classifiers`, `entry_points`, the PEP 314 `requires`/`provides`/`obsoletes`, and similar) is ignored. Unknown or plugin keywords (for example `pbr=True`), repeated keywords, a non-empty `dependency_links`, `options` that set `easy_install`, and string-valued or non-literal dependency values report `Scan not supported`.
 
 ## What blocks
 
@@ -72,7 +73,8 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - A committed `Pipfile.lock` that is out of sync with the Pipfile: a `[packages]`, `[dev-packages]`, or custom-category package missing from its `default`, `develop`, or category section, or locked at a version its Pipfile specifier does not allow.
 - `Pipfile.lock` entries without an exact `==` pin or hashes, entries installed from `git`, `path`, `file`, or `editable` sources, entries resolved from a non-PyPI `index`, and `_meta.sources` indexes that are not allowlisted in `trusted_indexes.pypi` or not declared in the Pipfile. Lock entries the Pipfile does not declare are treated as transitive dependencies and scanned.
 - Hash-locked pip-tools requirements that are missing hashes, use non-exact pins, or inherit an included file that is not fully hash-locked.
-- Hash-locked pip-tools requirements that declare an explicit Python index URL not allowlisted in `trusted_indexes.pypi`.
+- Any `requirements*.txt` file (hash-locked or not, including files reached through `-r`/`-c` includes) whose `--index-url`, `-i`, or `--extra-index-url` names an index that is neither the default PyPI index (`https://pypi.org/simple`) nor allowlisted exactly in `trusted_indexes.pypi`. The error names the `resolution/untrusted-registry-source` check, the index, and the file that declared it. Without this, sloppy-joe would vet the public PyPI package while pip installs whatever the other index serves.
+- `--find-links`/`-f`, `--no-index`, and index options placed after a requirement on the same line are unsupported pip options and block.
 - Unsafe legacy dependency forms, including:
   - direct URLs
   - editable installs

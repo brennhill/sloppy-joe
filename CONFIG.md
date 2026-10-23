@@ -153,7 +153,9 @@ PyPI itself is implicitly trusted as `https://pypi.org/simple/`.
 
 **Unused sources:** Declared non-PyPI Poetry/uv sources that are not used by the locked graph warn, but do not block. The warning suggests removing them for clarity and maintenance.
 
-**Current scope:** This covers repo-visible Poetry and uv source/index declarations, plus pip-tools requirements files that bind their own `--index-url` / `--extra-index-url` values in the committed requirements graph. Hash-locked pip-tools still downgrades to reduced-confidence when the primary index is not explicitly file-bound, because pip source state can otherwise still come from host-local pip config or environment variables.
+**Requirements files:** Every scanned `requirements*.txt` (hash-locked or not, including `-r`/`-c` includes) is checked too. An `--index-url`, `-i`, or `--extra-index-url` that is neither PyPI nor listed here blocks the project with a `resolution/untrusted-registry-source` error naming the index and the file that declared it. `--find-links` and `--no-index` are unsupported and also block.
+
+**Current scope:** This covers repo-visible Poetry and uv source/index declarations, plus index options in requirements files. Hash-locked pip-tools still downgrades to reduced-confidence when the primary index is not explicitly file-bound, because pip source state can otherwise still come from host-local pip config or environment variables.
 
 ### `trusted_registries.npm`
 

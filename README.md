@@ -111,7 +111,7 @@ The flake on `main` pins the published binary release and its checksums.
 | JavaScript / pnpm | `package.json` | `pnpm-lock.yaml` |
 | JavaScript / Yarn | `package.json` | `yarn.lock` |
 | JavaScript / Bun | `package.json` | `bun.lock` |
-| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`, trusted uv path uses `uv.lock`, and fully hash-locked pip-tools is trusted only when the committed requirements graph binds `--index-url` and any `--extra-index-url` values exactly; repo-visible Python indexes can be allowlisted via `trusted_indexes.pypi`; trusted Python modes evaluate one selected install profile at a time (`runtime` by default, explicit groups/extras/platform/arch/version via CLI); legacy manifests allowed with warnings by default |
+| Python | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, or `setup.py` | trusted Poetry path uses `poetry.lock`, trusted uv path uses `uv.lock`, and fully hash-locked pip-tools is trusted only when the committed requirements graph binds `--index-url` and any `--extra-index-url` values exactly; repo-visible Python indexes can be allowlisted via `trusted_indexes.pypi`, and any `--index-url`/`--extra-index-url` in a requirements file that is not PyPI or allowlisted blocks (`resolution/untrusted-registry-source`); trusted Python modes evaluate one selected install profile at a time (`runtime` by default, explicit groups/extras/platform/arch/version via CLI); legacy manifests allowed with warnings by default |
 | Rust | `Cargo.toml` | `Cargo.lock` |
 | Go | `go.mod` | `go.sum` required for external deps |
 | Ruby | `Gemfile` | `Gemfile.lock` |

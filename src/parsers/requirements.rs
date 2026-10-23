@@ -1,7 +1,7 @@
 use crate::Dependency;
 use crate::parsers::python_scope::PythonScopedDependency;
 use anyhow::{Context, Result, bail};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,6 +14,8 @@ enum IncludeDirective<'a> {
 pub(crate) struct RequirementsSourceProvenance {
     pub primary_index: Option<String>,
     pub extra_indexes: BTreeSet<String>,
+    /// The requirements file that first declared each index, for error messages.
+    pub origins: BTreeMap<String, PathBuf>,
 }
 
 enum SupportedSourceDirective {
@@ -70,6 +72,35 @@ pub(crate) fn source_provenance(
         .with_context(|| format!("Failed to inspect scan root {}", scan_root.display()))?;
     let mut visited = HashSet::new();
     collect_source_provenance_inner(path, &scan_root, &mut visited)
+}
+
+/// Every `--index-url` / `-i` / `--extra-index-url` in the requirements graph (including `-r`
+/// and `-c` includes) decides where pip downloads from. Each must be the default PyPI index or
+/// exactly allowlisted in `trusted_indexes.pypi`; otherwise the scanner would vet the public
+/// package while pip installs whatever the other index serves.
+pub(crate) fn ensure_trusted_indexes(
+    path: &Path,
+    scan_root: &Path,
+    config: &crate::config::SloppyJoeConfig,
+) -> Result<RequirementsSourceProvenance> {
+    let provenance = source_provenance(path, scan_root)?;
+    for index in provenance.all_indexes() {
+        if config.is_trusted_index("pypi", index) {
+            continue;
+        }
+        let declared_in = provenance
+            .origins
+            .get(index)
+            .map(|origin| origin.display().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        bail!(
+            "Untrusted Python index ({}): requirements file '{}' declares untrusted Python index '{}': it is not the default PyPI index and is not allowlisted in trusted_indexes.pypi. pip would install from that index while sloppy-joe vetted the public PyPI package. Add the exact URL to trusted_indexes.pypi in the out-of-repo sloppy-joe config, or remove the index option.",
+            crate::checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+            declared_in,
+            crate::report::sanitize_for_terminal(index),
+        );
+    }
+    Ok(provenance)
 }
 
 /// Maximum nesting of `-r` / `-c` includes. pip itself recurses without a limit, so a hostile
@@ -615,6 +646,13 @@ fn normalize_distribution_atom(raw: &str) -> String {
 
 impl RequirementsSourceProvenance {
     fn observe(&mut self, directive: SupportedSourceDirective, source_path: &Path) -> Result<()> {
+        let url = match &directive {
+            SupportedSourceDirective::PrimaryIndex(url)
+            | SupportedSourceDirective::ExtraIndex(url) => url,
+        };
+        self.origins
+            .entry(url.clone())
+            .or_insert_with(|| source_path.to_path_buf());
         match directive {
             SupportedSourceDirective::PrimaryIndex(url) => {
                 if let Some(existing) = &self.primary_index
@@ -637,6 +675,9 @@ impl RequirementsSourceProvenance {
     }
 
     fn merge(&mut self, other: RequirementsSourceProvenance) -> Result<()> {
+        for (url, origin) in other.origins {
+            self.origins.entry(url).or_insert(origin);
+        }
         if let Some(url) = other.primary_index {
             self.observe(
                 SupportedSourceDirective::PrimaryIndex(url),
