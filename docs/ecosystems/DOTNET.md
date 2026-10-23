@@ -27,6 +27,7 @@ sloppy-joe check
 - Both self-closing and nested `<PackageReference>` forms are supported.
 - `packages.lock.json` provides trusted exact version and transitive coverage.
 - XML comments are stripped before dependency extraction, so commented references are not treated as real packages.
+- Publish dates for the version-age gate come from NuGet's SemVer 2.0.0 registration hive (`registration5-gz-semver2`), so SemVer 2.0.0-only packages and versions (such as `1.0.0-rc.1`) are covered. Paged registration indexes are followed (up to 128 pages). Page URLs must stay on the NuGet host under the package's own registration directory, redirects are not followed, and gzip bodies are capped (16 MiB compressed, 64 MiB decompressed); any violation, or malformed registration data, makes the package's metadata lookup fail and the scan block. Unlisted versions (NuGet's `1900-01-01` publish date) have no usable date and fail the version-age gate.
 
 ## What blocks
 
