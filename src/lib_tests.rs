@@ -10642,3 +10642,29 @@ fn legacy_python_build_and_test_dependencies_are_visible() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[tokio::test]
+async fn uv_packaged_editable_root_is_scanned_as_the_local_project() {
+    let dir = unique_dir();
+    let fixture = ecosystem_fixture_dir("python", "uv-pass");
+    std::fs::copy(fixture.join("pyproject.toml"), dir.join("pyproject.toml")).unwrap();
+    let locked = std::fs::read_to_string(fixture.join("uv.lock"))
+        .unwrap()
+        .replace("virtual = \".\"", "editable = \".\"");
+    std::fs::write(dir.join("uv.lock"), locked).unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("pypi"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("uv editable root should be trusted as the project, not a dependency");
+    assert_eq!(report.packages_checked, 1);
+    assert!(!report.has_errors());
+    std::fs::remove_dir_all(dir).unwrap();
+}

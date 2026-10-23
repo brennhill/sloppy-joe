@@ -123,7 +123,7 @@ pub(crate) fn validate_manifest_consistency(
                 pkg.get("name")
                     .and_then(|value| value.as_str())
                     .is_some_and(|name| normalize_name(name) == normalized)
-                    && !is_virtual_package(pkg)
+                    && !is_local_root_package(pkg)
             })
             .collect();
 
@@ -185,7 +185,7 @@ pub(crate) fn validate_provenance(parsed: &toml::Value, source_path: &Path) -> R
                 )
             })?;
 
-        if is_virtual_package(pkg) {
+        if is_local_root_package(pkg) {
             continue;
         }
 
@@ -243,7 +243,7 @@ pub(crate) fn validate_source_policy(
         .collect();
 
     for pkg in package_entries(parsed) {
-        if is_virtual_package(pkg) {
+        if is_local_root_package(pkg) {
             continue;
         }
 
@@ -494,7 +494,7 @@ fn uv_source_urls_by_identity(
 ) -> Result<HashMap<PythonPackageIdentity, String>> {
     let mut sources = HashMap::new();
     for pkg in package_entries(parsed) {
-        if is_virtual_package(pkg) {
+        if is_local_root_package(pkg) {
             continue;
         }
         let name = pkg
@@ -696,7 +696,7 @@ pub(super) fn parse_all_from_value_for_roots(
     )?;
     Ok(package_entries(parsed)
         .into_iter()
-        .filter(|pkg| !is_virtual_package(pkg))
+        .filter(|pkg| !is_local_root_package(pkg))
         .filter_map(|pkg| {
             let name = pkg.get("name")?.as_str()?;
             let version = pkg.get("version")?.as_str()?;
@@ -783,7 +783,7 @@ fn reachable_package_identities_from_nodes(
 fn uv_package_nodes(parsed: &toml::Value) -> Result<Vec<UvPackageNode>> {
     package_entries(parsed)
         .into_iter()
-        .filter(|pkg| !is_virtual_package(pkg))
+        .filter(|pkg| !is_local_root_package(pkg))
         .map(|pkg| {
             let name = pkg
                 .get("name")
@@ -901,7 +901,7 @@ fn resolve_root_request_version(
 fn extract_packages(parsed: &toml::Value) -> Vec<(String, String)> {
     package_entries(parsed)
         .into_iter()
-        .filter(|pkg| !is_virtual_package(pkg))
+        .filter(|pkg| !is_local_root_package(pkg))
         .filter_map(|pkg| {
             let name = pkg.get("name")?.as_str()?;
             let version = pkg.get("version")?.as_str()?;
@@ -1098,7 +1098,7 @@ fn select_root_dependency(
 fn extract_root_requires_entries(parsed: &toml::Value) -> Result<Option<Vec<UvRootRequiresEntry>>> {
     let Some(root) = package_entries(parsed)
         .into_iter()
-        .find(|pkg| is_virtual_package(pkg))
+        .find(|pkg| is_local_root_package(pkg))
     else {
         return Ok(None);
     };
@@ -1141,7 +1141,7 @@ fn extract_root_dependency_entries(
 ) -> Result<Option<Vec<UvRootDependencyEntry>>> {
     let Some(root) = package_entries(parsed)
         .into_iter()
-        .find(|pkg| is_virtual_package(pkg))
+        .find(|pkg| is_local_root_package(pkg))
     else {
         return Ok(None);
     };
@@ -1176,7 +1176,7 @@ fn extract_root_dependency_entries(
 fn extract_root_requires(parsed: &toml::Value) -> Option<HashMap<String, Option<String>>> {
     let root = package_entries(parsed)
         .into_iter()
-        .find(|pkg| is_virtual_package(pkg))?;
+        .find(|pkg| is_local_root_package(pkg))?;
     let requires = root
         .get("metadata")
         .and_then(|value| value.as_table())?
@@ -1372,12 +1372,12 @@ fn tilde_upper_bound(value: &str) -> Result<String> {
         .join("."))
 }
 
-fn is_virtual_package(pkg: &toml::value::Table) -> bool {
+fn is_local_root_package(pkg: &toml::value::Table) -> bool {
     pkg.get("source")
         .and_then(|value| value.as_table())
-        .and_then(|source| source.get("virtual"))
+        .and_then(|source| source.get("virtual").or_else(|| source.get("editable")))
         .and_then(|value| value.as_str())
-        .is_some()
+        == Some(".")
 }
 
 fn has_artifact_identity(pkg: &toml::value::Table) -> bool {
