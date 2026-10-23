@@ -185,3 +185,90 @@ async fn unlocked_tooling_scan_blocks_unknown_build_backend_but_only_warns_on_ra
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn monorepo_walk_discovers_requirements_directory_layouts() {
+    let dir = unique_dir();
+    let reqs = dir.join("py").join("requirements");
+    std::fs::create_dir_all(&reqs).unwrap();
+    std::fs::write(reqs.join("base.txt"), "evil-reqdir==1\n").unwrap();
+    std::fs::write(reqs.join("prod.txt"), "-r base.txt\n").unwrap();
+    std::fs::write(reqs.join("lint.txt"), "evil-lint==1\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, None, &config).unwrap();
+    let manifests: Vec<_> = specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::PyRequirements)
+        .map(|spec| spec.manifest_path.file_name().unwrap().to_owned())
+        .collect();
+    assert!(manifests.contains(&"prod.txt".into()), "{manifests:?}");
+    assert!(manifests.contains(&"lint.txt".into()), "{manifests:?}");
+
+    let projects = parse_project_inputs(&dir, &specs, &config).unwrap();
+    let names: Vec<&str> = projects
+        .iter()
+        .flat_map(|project| project.deps.iter().map(|dep| dep.name.as_str()))
+        .collect();
+    assert!(names.contains(&"evil-reqdir"), "{names:?}");
+    assert!(names.contains(&"evil-lint"), "{names:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn monorepo_walk_discovers_suffix_named_requirements_files() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("dev-requirements.txt"), "evil-dev==1\n").unwrap();
+    std::fs::write(dir.join("test_requirements.txt"), "evil-test==1\n").unwrap();
+    std::fs::write(dir.join("notes.txt"), "not a manifest\n").unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, None, &config).unwrap();
+    let manifests: Vec<_> = specs
+        .iter()
+        .map(|spec| spec.manifest_path.file_name().unwrap().to_owned())
+        .collect();
+    assert!(
+        manifests.contains(&"dev-requirements.txt".into()),
+        "{manifests:?}"
+    );
+    assert!(
+        manifests.contains(&"test_requirements.txt".into()),
+        "{manifests:?}"
+    );
+    assert!(!manifests.contains(&"notes.txt".into()), "{manifests:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn requirements_directory_beside_poetry_project_is_treated_like_sibling_requirements() {
+    let dir = unique_dir();
+    write_poetry_project_with_build_system(&dir);
+    std::fs::create_dir_all(dir.join("requirements")).unwrap();
+    std::fs::write(
+        dir.join("requirements").join("export.txt"),
+        "requests==2.31.0\n",
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    assert!(
+        specs
+            .iter()
+            .all(|spec| spec.kind == ProjectInputKind::PyProjectPoetry),
+        "{specs:#?}"
+    );
+    let warnings = preflight_project_inputs(&dir, &specs, &config).unwrap();
+    assert!(
+        warnings.iter().any(|issue| {
+            issue.check == checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST
+                && issue.package.ends_with("export.txt")
+        }),
+        "ignored requirements files must be reported: {warnings:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -466,6 +466,28 @@ fn logical_requirement_lines(content: &str) -> Vec<String> {
     entries
 }
 
+/// Whether a file is a pip requirements manifest by naming convention: any `*.txt` whose name
+/// contains `requirements` (`requirements-dev.txt`, `dev-requirements.txt`, ...), or any `*.txt`
+/// inside a `requirements/` directory (`requirements/base.txt`).
+pub(crate) fn is_requirements_manifest_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lowered = name.to_ascii_lowercase();
+    let Some(stem) = lowered.strip_suffix(".txt") else {
+        return false;
+    };
+    stem.contains("requirements") || is_in_requirements_directory(path)
+}
+
+/// Whether a file lives directly inside a directory named `requirements`.
+pub(crate) fn is_in_requirements_directory(path: &Path) -> bool {
+    path.parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("requirements"))
+}
+
 pub(crate) fn requirement_looks_like_local_path(line: &str) -> bool {
     let candidate = line.trim();
     if candidate == "." || candidate.starts_with("./") || candidate.starts_with("../") {

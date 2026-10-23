@@ -4600,15 +4600,20 @@ fn legacy_requirements_files(project_dir: &std::path::Path) -> Result<Vec<std::p
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name == "requirements.txt"
-                        || (name.starts_with("requirements") && name.ends_with(".txt"))
-                })
-        })
+        .filter(|path| parsers::requirements::is_requirements_manifest_path(path))
         .collect::<Vec<_>>();
+    let requirements_dir = project_dir.join("requirements");
+    if std::fs::symlink_metadata(&requirements_dir).is_ok_and(|meta| meta.is_dir()) {
+        candidates.extend(
+            std::fs::read_dir(&requirements_dir)
+                .map_err(|err| {
+                    anyhow::anyhow!("Failed to inspect {}: {}", requirements_dir.display(), err)
+                })?
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| parsers::requirements::is_requirements_manifest_path(path)),
+        );
+    }
     candidates.sort();
     Ok(candidates)
 }
@@ -5684,8 +5689,7 @@ fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<Project
         Some("Pipfile") => Some(ProjectInputKind::PyPipfile),
         Some("setup.py") => Some(ProjectInputKind::PySetupPy),
         Some("setup.cfg") => Some(ProjectInputKind::PySetupCfg),
-        Some("requirements.txt") => Some(ProjectInputKind::PyRequirements),
-        Some(name) if name.starts_with("requirements") && name.ends_with(".txt") => {
+        Some(_) if parsers::requirements::is_requirements_manifest_path(path) => {
             Some(ProjectInputKind::PyRequirements)
         }
         Some("Cargo.toml") => Some(ProjectInputKind::Cargo),
@@ -5725,7 +5729,16 @@ fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
         if !spec.kind.is_python() {
             return true;
         }
-        if trusted_pyproject_dirs.contains(spec.project_dir()) {
+        // `requirements/*.txt` belongs to the project in the parent directory.
+        let owner_dir = if parsers::requirements::is_in_requirements_directory(&spec.manifest_path)
+        {
+            spec.project_dir().parent().unwrap_or(spec.project_dir())
+        } else {
+            spec.project_dir()
+        };
+        if trusted_pyproject_dirs.contains(spec.project_dir())
+            || trusted_pyproject_dirs.contains(owner_dir)
+        {
             return matches!(
                 spec.kind,
                 ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
