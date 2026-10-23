@@ -11833,3 +11833,69 @@ async fn npm_workspace_members_use_the_nearest_locked_dependency_version() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn unrelated_parent_manager_conflicts_do_not_suppress_independent_children() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("frontend")).unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"name":"parent"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("frontend/package.json"), r#"{"name":"frontend"}"#).unwrap();
+    std::fs::write(
+        dir.join("frontend/package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"name":"frontend"}}}"#,
+    )
+    .unwrap();
+    let opts = ScanOptions {
+        scan_mode: ScanMode::Fast,
+        no_cache: true,
+        ..Default::default()
+    };
+    for workspaces in [None, Some(serde_json::json!(["other/*"]))] {
+        let mut parent = serde_json::json!({"name":"parent","packageManager":"pnpm@9.0.0"});
+        if let Some(patterns) = workspaces {
+            parent["workspaces"] = patterns;
+        }
+        std::fs::write(dir.join("package.json"), parent.to_string()).unwrap();
+        let report = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+            .await
+            .unwrap();
+        assert!(
+            report.has_incomplete_projects(),
+            "the parent must remain unsupported"
+        );
+        let child = report
+            .projects
+            .iter()
+            .find(|p| p.manifest_path.ends_with("frontend/package.json"))
+            .unwrap();
+        assert_eq!(
+            child.status,
+            report::ProjectScanStatus::Passed,
+            "an unrelated parent's manager conflict must not claim the frontend: {:?}",
+            report.issues
+        );
+        assert_eq!(child.manager.as_deref(), Some("npm"));
+    }
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"parent","packageManager":"pnpm@9.0.0","workspaces":["frontend"]}"#,
+    )
+    .unwrap();
+    let report = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+        .await
+        .unwrap();
+    assert!(
+        report
+            .projects
+            .iter()
+            .filter(|p| p.status == report::ProjectScanStatus::Unsupported)
+            .count()
+            == 2,
+        "an applicable conflicting workspace must still block both projects"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

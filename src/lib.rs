@@ -4201,6 +4201,24 @@ fn find_js_workspace_root(
         let manifest_path = ancestor_dir.join("package.json");
         if parsers::path_detected(&manifest_path)? {
             let manifest = read_npm_manifest_value(&manifest_path)?;
+            if ancestor_dir != canonical_project_dir {
+                let manifest_patterns = parse_npm_workspaces(&manifest_path, &manifest)?;
+                let pnpm_patterns = parse_pnpm_workspaces(&ancestor_dir)?;
+                let applicable =
+                    manifest_patterns
+                        .iter()
+                        .chain(pnpm_patterns.iter())
+                        .any(|patterns| {
+                            workspace_patterns_match(
+                                &ancestor_dir,
+                                canonical_project_dir,
+                                patterns.iter().map(String::as_str),
+                            )
+                        });
+                if !applicable {
+                    continue;
+                }
+            }
             let manager = detect_js_manager(&ancestor_dir, &manifest_path, &manifest)?;
             let Some(patterns) =
                 parse_js_workspace_patterns(&ancestor_dir, &manifest_path, &manifest, manager)?
