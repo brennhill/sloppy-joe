@@ -15,8 +15,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     for section in ["require", "require-dev"] {
         if let Some(obj) = parsed.get(section).and_then(|v| v.as_object()) {
             for (name, version) in obj {
-                // Skip platform requirements
-                if name == "php" || name.starts_with("ext-") {
+                if is_platform_package(name) {
                     continue;
                 }
                 let version = version.as_str().ok_or_else(|| {
@@ -39,6 +38,26 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(deps)
+}
+
+/// Composer platform packages describe the runtime and are never downloaded
+/// from Packagist. They never contain a vendor `/`, so a real package cannot
+/// hide behind these names.
+fn is_platform_package(name: &str) -> bool {
+    !name.contains('/')
+        && (matches!(
+            name,
+            "php"
+                | "php-64bit"
+                | "php-ipv6"
+                | "php-zts"
+                | "php-debug"
+                | "hhvm"
+                | "composer"
+                | "composer-plugin-api"
+                | "composer-runtime-api"
+        ) || name.starts_with("ext-")
+            || name.starts_with("lib-"))
 }
 
 fn validate_supported_sources(parsed: &serde_json::Value, path: &Path) -> Result<()> {
@@ -94,6 +113,27 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "laravel/framework");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn skip_all_composer_platform_packages() {
+        let dir = setup_dir(
+            r#"{
+            "require": {
+                "php-64bit": "^8.1",
+                "composer-plugin-api": "^2.0",
+                "composer-runtime-api": "^2.2",
+                "composer": "^2.0",
+                "lib-openssl": "*",
+                "lib-icu": ">=60",
+                "laravel/framework": "^10.0"
+            }
+        }"#,
+        );
+        let deps = parse(&dir).unwrap();
+        let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["laravel/framework"]);
         cleanup(&dir);
     }
 

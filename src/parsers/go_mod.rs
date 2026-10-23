@@ -20,6 +20,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     validate_replace_targets(&content, &path)?;
 
     let requirements = parse_requirements(&content);
+    validate_tool_directives(&content, &requirements, &path)?;
     let mut deps = Vec::new();
     for (name, version) in requirements {
         let dep = Dependency {
@@ -54,44 +55,103 @@ fn validate_replace_targets(content: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
-    let mut deps = Vec::new();
-    let mut in_require = false;
+/// Go's modfile syntax allows module paths to be written as interpreted
+/// ("...") or raw (`...`) strings. Strings with escapes are left quoted so
+/// they fail package-name validation instead of being guessed at.
+fn unquote_go_token(token: &str) -> String {
+    for quote in ['"', '`'] {
+        if token.len() >= 2
+            && token.starts_with(quote)
+            && token.ends_with(quote)
+            && !token[1..token.len() - 1].contains(['"', '`', '\\'])
+        {
+            return token[1..token.len() - 1].to_string();
+        }
+    }
+    token.to_string()
+}
+
+/// Collect the argument tokens of every `keyword ...` line and every line of
+/// a `keyword ( ... )` block.
+fn parse_directive(content: &str, keyword: &str) -> Vec<Vec<String>> {
+    let mut entries = Vec::new();
+    let mut in_block = false;
 
     for line in content.lines() {
         let line = line.split_once("//").map_or(line, |(code, _)| code).trim();
-        let requirement = line
-            .strip_prefix("require")
+        let directive = line
+            .strip_prefix(keyword)
             .filter(|rest| rest.starts_with(char::is_whitespace) || rest.starts_with('('));
 
-        if requirement.is_some_and(|rest| rest.trim() == "(") {
-            in_require = true;
+        if directive.is_some_and(|rest| rest.trim() == "(") {
+            in_block = true;
             continue;
         }
         if line == ")" {
-            in_require = false;
+            in_block = false;
             continue;
         }
 
-        if let Some(rest) = requirement {
-            if let Some(name) = rest.split_whitespace().next() {
-                let version = rest.split_whitespace().nth(1).map(String::from);
-                deps.push((name.to_string(), version));
-            }
-            continue;
-        }
-
-        if in_require
-            && !line.is_empty()
-            && !line.starts_with("//")
-            && let Some(name) = line.split_whitespace().next()
-        {
-            let version = line.split_whitespace().nth(1).map(String::from);
-            deps.push((name.to_string(), version));
+        let args = match directive {
+            Some(rest) => rest,
+            None if in_block && !line.is_empty() => line,
+            None => continue,
+        };
+        let tokens: Vec<String> = args.split_whitespace().map(unquote_go_token).collect();
+        if !tokens.is_empty() {
+            entries.push(tokens);
         }
     }
 
-    deps
+    entries
+}
+
+fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
+    parse_directive(content, "require")
+        .into_iter()
+        .map(|mut tokens| {
+            let version = tokens.get(1).cloned();
+            (tokens.swap_remove(0), version)
+        })
+        .collect()
+}
+
+fn module_provides(module: &str, package: &str) -> bool {
+    package == module
+        || package
+            .strip_prefix(module)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Go 1.24 `tool` directives name packages that `go tool` builds and runs.
+/// Each must come from the main module or a required module (which is then
+/// checked like any other requirement); anything else cannot be verified.
+fn validate_tool_directives(
+    content: &str,
+    requirements: &[(String, Option<String>)],
+    path: &Path,
+) -> Result<()> {
+    let main_module = parse_directive(content, "module")
+        .into_iter()
+        .next()
+        .and_then(|tokens| tokens.into_iter().next());
+    for tokens in parse_directive(content, "tool") {
+        let tool = &tokens[0];
+        let provided = main_module
+            .as_deref()
+            .is_some_and(|module| module_provides(module, tool))
+            || requirements
+                .iter()
+                .any(|(module, _)| module_provides(module, tool));
+        if !provided {
+            anyhow::bail!(
+                "Unsupported go.mod tool '{}' in {}: no required module provides this tool package, so its source cannot be verified",
+                crate::report::sanitize_for_terminal(tool),
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn requires_go_sum(content: &str) -> bool {
@@ -421,5 +481,51 @@ replace github.com/acme/lib => ../local-lib
                 .contains("Unsupported local go.mod replace target")
         );
         cleanup(&dir);
+    }
+}
+
+#[cfg(test)]
+mod directive_tests {
+    use super::*;
+    use crate::parsers::test_utils::*;
+
+    #[test]
+    fn accept_quoted_module_and_require_paths() {
+        let dir = setup_test_dir(
+            "gomod",
+            "go.mod",
+            "module \"example.com/app\"\n\ngo 1.22\n\nrequire \"github.com/gin-gonic/gin\" v1.9.1\nrequire (\n\t`golang.org/x/text` v0.14.0 // indirect\n)\n",
+        );
+        let deps = parse(&dir).unwrap();
+        let names: Vec<&str> = deps.iter().map(|dep| dep.name.as_str()).collect();
+        assert_eq!(names, vec!["github.com/gin-gonic/gin", "golang.org/x/text"]);
+        assert_eq!(deps[0].version.as_deref(), Some("v1.9.1"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn tool_directives_must_be_provided_by_required_or_main_modules() {
+        let ok = setup_test_dir(
+            "gomod",
+            "go.mod",
+            "module example.com/app\n\ngo 1.24\n\ntool golang.org/x/tools/cmd/stringer\ntool (\n\texample.com/app/cmd/gen\n\t\"github.com/acme/tool\"\n)\n\nrequire (\n\tgolang.org/x/tools v0.30.0 // indirect\n\tgithub.com/acme/tool v1.0.0\n)\n",
+        );
+        let names: Vec<String> = parse(&ok)
+            .unwrap()
+            .into_iter()
+            .map(|dep| dep.name)
+            .collect();
+        assert_eq!(names, vec!["golang.org/x/tools", "github.com/acme/tool"]);
+        cleanup(&ok);
+
+        for go_mod in [
+            "module example.com/app\n\ntool github.com/evil/tool/cmd/x\n",
+            "module example.com/app\n\ntool (\n\tgithub.com/evil/tool\n)\nrequire github.com/evil/toolkit v1.0.0\n",
+        ] {
+            let dir = setup_test_dir("gomod", "go.mod", go_mod);
+            let err = parse(&dir).expect_err(&format!("unbacked tool must fail closed: {go_mod}"));
+            assert!(err.to_string().contains("tool"), "{err}");
+            cleanup(&dir);
+        }
     }
 }

@@ -30,6 +30,7 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
                 );
             }
         }
+        reject_global_json_msbuild_sdks(ancestor, csproj)?;
     }
 
     for tag in content.split('<').skip(1) {
@@ -38,14 +39,41 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
             .next()
             .unwrap_or_default();
         let local_name = name.rsplit(':').next().unwrap_or_default();
-        if matches!(local_name, "Import" | "PackageDownload")
-            || (local_name == "PackageReference" && name != "PackageReference")
+        if matches!(
+            local_name,
+            "Import" | "PackageDownload" | "DotNetCliToolReference"
+        ) || (local_name == "PackageReference" && name != "PackageReference")
         {
             bail!(
                 "Unsupported MSBuild {} in {}: dependency declarations cannot be verified",
                 name,
                 csproj.display()
             );
+        }
+        let attrs = tag.split('>').next().unwrap_or_default();
+        let attrs = &attrs[name.len().min(attrs.len())..];
+        if local_name == "Project"
+            && let Some(sdks) = extract_attr(attrs, "Sdk")
+        {
+            for sdk in sdks.split(';').map(str::trim).filter(|sdk| !sdk.is_empty()) {
+                let (sdk_name, version) = match sdk.split_once('/') {
+                    Some((sdk_name, version)) => (sdk_name.trim(), Some(version)),
+                    None => (sdk, None),
+                };
+                reject_unbundled_msbuild_sdk(sdk_name, version, csproj)?;
+            }
+        }
+        if local_name == "Sdk" {
+            if name != "Sdk" {
+                bail!(
+                    "Unsupported MSBuild {} in {}: SDK declarations cannot be verified",
+                    name,
+                    csproj.display()
+                );
+            }
+            let sdk_name = extract_attr(attrs, "Name").unwrap_or_default();
+            let version = extract_attr(attrs, "Version");
+            reject_unbundled_msbuild_sdk(sdk_name.trim(), version.as_deref(), csproj)?;
         }
     }
 
@@ -91,6 +119,41 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
     Ok(deps)
 }
 
+/// MSBuild project SDKs other than the ones bundled with the .NET SDK are
+/// NuGet packages restored by the SDK resolver and imported into the build.
+/// They never appear in packages.lock.json, so they cannot be verified and
+/// must fail closed. A version on a bundled SDK name also routes resolution
+/// through NuGet, so it fails closed too.
+fn reject_unbundled_msbuild_sdk(name: &str, version: Option<&str>, csproj: &Path) -> Result<()> {
+    let bundled = name == "Microsoft.NET.Sdk" || name.starts_with("Microsoft.NET.Sdk.");
+    if bundled && version.is_none() {
+        return Ok(());
+    }
+    bail!(
+        "Unsupported MSBuild SDK '{}' in {}: only SDKs bundled with the .NET SDK (Microsoft.NET.Sdk*, without a version) can be trusted; NuGet-resolved project SDKs cannot be verified",
+        crate::report::sanitize_for_terminal(name),
+        csproj.display()
+    )
+}
+
+/// `global.json` `msbuild-sdks` pins NuGet-resolved MSBuild SDKs for every
+/// project below it.
+fn reject_global_json_msbuild_sdks(dir: &Path, csproj: &Path) -> Result<()> {
+    let global_json = dir.join("global.json");
+    if !super::path_detected(&global_json)? {
+        return Ok(());
+    }
+    let content = super::read_file_limited(&global_json, super::MAX_MANIFEST_BYTES)?;
+    if content.to_ascii_lowercase().contains("msbuild-sdks") {
+        bail!(
+            "Unsupported global.json msbuild-sdks in {} (applies to {}): NuGet-resolved MSBuild SDKs cannot be verified",
+            global_json.display(),
+            csproj.display()
+        );
+    }
+    Ok(())
+}
+
 fn strip_xml_comments(content: &str) -> String {
     let mut sanitized = String::with_capacity(content.len());
     let mut index = 0usize;
@@ -125,15 +188,39 @@ fn find_package_reference_start(content: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// SDK-style MSBuild project files that declare NuGet PackageReferences:
+/// C# (.csproj), F# (.fsproj) and Visual Basic (.vbproj).
+pub(crate) fn is_project_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "csproj" | "fsproj" | "vbproj"))
+}
+
+/// Legacy `packages.config` restores NuGet packages without PackageReference
+/// or packages.lock.json, so it cannot be verified and must fail closed.
+pub(crate) fn reject_packages_config(path: &Path) -> Result<()> {
+    bail!(
+        "Unsupported legacy NuGet packages.config at {}: migrate to PackageReference with a packages.lock.json so dependencies can be verified",
+        path.display()
+    )
+}
+
 fn find_csproj_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let packages_config = dir.join("packages.config");
+    if super::path_detected(&packages_config)? {
+        reject_packages_config(&packages_config)?;
+    }
     let mut files = std::fs::read_dir(dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "csproj"))
+        .filter(|path| is_project_file(path))
         .collect::<Vec<_>>();
     files.sort();
     if files.is_empty() {
-        bail!("No .csproj file found in {}", dir.display());
+        bail!(
+            "No .csproj, .fsproj or .vbproj file found in {}",
+            dir.display()
+        );
     }
     Ok(files)
 }
@@ -456,5 +543,67 @@ mod tests {
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "Newtonsoft.Json");
         cleanup(&dir);
+    }
+}
+
+#[cfg(test)]
+mod msbuild_sdk_tests {
+    use super::*;
+    use crate::parsers::test_utils::*;
+
+    #[test]
+    fn reject_third_party_msbuild_sdks_and_cli_tools() {
+        for project in [
+            r#"<Project Sdk="Evil.Sdk/1.0.0"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+            r#"<Project Sdk="Evil.Sdk"></Project>"#,
+            r#"<Project Sdk="Microsoft.NET.Sdk;Evil.Sdk/1.0.0"></Project>"#,
+            r#"<Project Sdk="Microsoft.NET.Sdk/99.0.0"></Project>"#,
+            r#"<Project><Sdk Name="Evil.Sdk" Version="1.0.0" /></Project>"#,
+            r#"<Project><Sdk Name="Microsoft.NET.Sdk" Version="1.0.0" /></Project>"#,
+            r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><DotNetCliToolReference Include="Evil.Tool" Version="1.0.0" /></ItemGroup></Project>"#,
+        ] {
+            let dir = setup_test_dir("csproj", "app.csproj", project);
+            let err = parse(&dir).expect_err(&format!("must fail closed: {project}"));
+            assert!(err.to_string().contains("app.csproj"), "{err}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn accept_builtin_msbuild_sdks() {
+        for project in [
+            r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+            r#"<Project Sdk="Microsoft.NET.Sdk.Web"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+            r#"<Project><Sdk Name="Microsoft.NET.Sdk" /><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+        ] {
+            let dir = setup_test_dir("csproj", "app.csproj", project);
+            let deps = parse(&dir).unwrap_or_else(|err| panic!("{project}: {err}"));
+            assert_eq!(deps.len(), 1);
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_global_json_msbuild_sdks() {
+        let root = empty_test_dir("csproj");
+        std::fs::write(
+            root.join("global.json"),
+            r#"{"sdk":{"version":"8.0.100"},"msbuild-sdks":{"Evil.Sdk":"1.0.0"}}"#,
+        )
+        .unwrap();
+        let project = root.join("app");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("app.csproj"),
+            r#"<Project Sdk="Microsoft.NET.Sdk"></Project>"#,
+        )
+        .unwrap();
+        let err = parse(&project).expect_err("global.json msbuild-sdks must fail closed");
+        assert!(err.to_string().contains("msbuild-sdks"), "{err}");
+
+        // A global.json that only pins the .NET SDK is fine.
+        std::fs::write(root.join("global.json"), r#"{"sdk":{"version":"8.0.100"}}"#).unwrap();
+        assert!(parse(&project).unwrap().is_empty());
+        cleanup(&root);
     }
 }

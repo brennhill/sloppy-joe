@@ -139,7 +139,215 @@ fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
         deps.push(dep);
         remaining = tail;
     }
+
+    // Build-time coordinates: parent POM, build plugins and build extensions
+    // are all downloaded from the repository and executed or inherited by the
+    // build, so they get the same checks as dependencies.
+    for (tag, default_group) in [
+        ("parent", None),
+        ("plugin", Some(MAVEN_DEFAULT_PLUGIN_GROUP)),
+        ("extension", None),
+    ] {
+        for body in maven_element_bodies(&content, tag)? {
+            let children = xml_direct_children(body);
+            let child = |name: &str| {
+                children
+                    .iter()
+                    .find(|(child, _)| child == name)
+                    .map(|(_, value)| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            };
+            let group = child("groupId")
+                .or_else(|| default_group.map(str::to_string))
+                .ok_or_else(|| anyhow::anyhow!("Maven <{tag}> is missing groupId"))?;
+            let artifact = child("artifactId")
+                .ok_or_else(|| anyhow::anyhow!("Maven <{tag}> is missing artifactId"))?;
+            let version = child("version");
+            if tag == "parent"
+                && maven_parent_is_local(
+                    path,
+                    &group,
+                    &artifact,
+                    version.as_deref(),
+                    child("relativePath"),
+                    children.iter().any(|(name, _)| name == "relativePath"),
+                )?
+            {
+                continue;
+            }
+            let dep = Dependency {
+                name: format!("{group}:{artifact}"),
+                version,
+                ecosystem: crate::Ecosystem::Jvm,
+                actual_name: None,
+            };
+            super::validate_dependency(&dep, path)?;
+            deps.push(dep);
+        }
+    }
     Ok(deps)
+}
+
+const MAVEN_DEFAULT_PLUGIN_GROUP: &str = "org.apache.maven.plugins";
+
+/// Return the inner text of every `<tag>...</tag>` element. These elements do
+/// not nest in a POM, so the first closing tag terminates each body.
+fn maven_element_bodies<'a>(content: &'a str, tag: &str) -> Result<Vec<&'a str>> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut bodies = Vec::new();
+    let mut remaining = content;
+    while let Some((_, body)) = remaining.split_once(open.as_str()) {
+        let (body, tail) = body
+            .split_once(close.as_str())
+            .with_context(|| format!("Unterminated Maven <{tag}> declaration"))?;
+        bodies.push(body);
+        remaining = tail;
+    }
+    Ok(bodies)
+}
+
+/// Collect `(name, text)` for the direct child elements of an XML fragment,
+/// ignoring anything nested deeper (plugin `<configuration>`, plugin
+/// `<dependencies>`, ...). Self-closing children yield an empty value.
+fn xml_direct_children(body: &str) -> Vec<(String, String)> {
+    let mut children = Vec::new();
+    let mut depth = 0usize;
+    let mut current: Option<(String, usize)> = None;
+    let mut rest = body;
+    let mut offset = 0usize;
+    while let Some(start) = rest.find('<') {
+        let tag_start = offset + start;
+        let after = &rest[start + 1..];
+        let (inner, skip) = if after.starts_with("!--") {
+            (None, after.find("-->").map(|i| i + 3))
+        } else {
+            match after.find('>') {
+                Some(end) => (Some(&after[..end]), Some(end + 1)),
+                None => (None, None),
+            }
+        };
+        let Some(skip) = skip else {
+            break;
+        };
+        let tag_end = tag_start + 1 + skip;
+        if let Some(inner) = inner {
+            if let Some(name) = inner.strip_prefix('/') {
+                depth = depth.saturating_sub(1);
+                if depth == 0
+                    && let Some((open_name, value_start)) = current.take()
+                    && open_name == name.trim()
+                {
+                    children.push((open_name, body[value_start..tag_start].to_string()));
+                }
+            } else if !inner.starts_with(['?', '!']) {
+                let name = inner
+                    .split(|c: char| c.is_whitespace() || c == '/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if inner.ends_with('/') {
+                    if depth == 0 {
+                        children.push((name, String::new()));
+                    }
+                } else {
+                    if depth == 0 {
+                        current = Some((name, tag_end));
+                    }
+                    depth += 1;
+                }
+            }
+        }
+        offset = tag_end;
+        rest = &body[offset..];
+    }
+    children
+}
+
+/// Inner content of the root `<project ...>` element (attributes allowed).
+fn maven_project_body(content: &str) -> Option<&str> {
+    let mut search = 0usize;
+    while let Some(found) = content[search..].find("<project") {
+        let start = search + found + "<project".len();
+        let next = content[start..].chars().next()?;
+        if next == '>' || next.is_whitespace() {
+            let open_end = start + content[start..].find('>')? + 1;
+            let close = content.rfind("</project>")?;
+            return (close >= open_end).then(|| &content[open_end..close]);
+        }
+        search = start;
+    }
+    None
+}
+
+/// Maven resolves `<parent>` from `relativePath` (default `../pom.xml`) when
+/// the POM found there has the same coordinates; only otherwise is it fetched
+/// from the repository. A local reactor parent is not a registry dependency.
+fn maven_parent_is_local(
+    pom_path: &Path,
+    group: &str,
+    artifact: &str,
+    version: Option<&str>,
+    relative_path: Option<String>,
+    relative_path_declared: bool,
+) -> Result<bool> {
+    let relative = match (relative_path, relative_path_declared) {
+        (Some(relative), _) => relative,
+        // `<relativePath/>` disables local lookup.
+        (None, true) => return Ok(false),
+        (None, false) => "../pom.xml".to_string(),
+    };
+    let base = pom_path.parent().unwrap_or(Path::new("."));
+    let mut candidate = base.join(&relative);
+    if !candidate.is_file() {
+        candidate = candidate.join("pom.xml");
+    }
+    if !super::path_detected(&candidate)? {
+        return Ok(false);
+    }
+    let Ok(candidate) = std::fs::canonicalize(&candidate) else {
+        return Ok(false);
+    };
+    let project_dir = std::fs::canonicalize(base)?;
+    if let Some(root) =
+        crate::config::registry::find_git_root(&project_dir).map_err(anyhow::Error::msg)?
+        && !candidate.starts_with(&root)
+    {
+        return Ok(false);
+    }
+    let Ok(parent_content) = super::read_file_limited(&candidate, super::MAX_MANIFEST_BYTES) else {
+        return Ok(false);
+    };
+    let Some(project_body) = maven_project_body(&parent_content) else {
+        return Ok(false);
+    };
+    let children = xml_direct_children(project_body);
+    let child = |name: &str| {
+        children
+            .iter()
+            .find(|(child, _)| child == name)
+            .map(|(_, value)| value.trim().to_string())
+    };
+    let inherited = children
+        .iter()
+        .find(|(name, _)| name == "parent")
+        .map(|(_, body)| xml_direct_children(body));
+    let inherited_child = |name: &str| {
+        inherited.as_ref().and_then(|children| {
+            children
+                .iter()
+                .find(|(child, _)| child == name)
+                .map(|(_, value)| value.trim().to_string())
+        })
+    };
+    let local_group = child("groupId").or_else(|| inherited_child("groupId"));
+    let local_version = child("version").or_else(|| inherited_child("version"));
+    Ok(local_group.as_deref() == Some(group)
+        && child("artifactId").as_deref() == Some(artifact)
+        && match (version, local_version.as_deref()) {
+            (Some(wanted), Some(found)) => wanted == found,
+            _ => true,
+        })
 }
 
 fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
@@ -273,6 +481,159 @@ fn validate_gradle_dependencies_block(tokens: &[GradleToken], path: &Path) -> Re
     Ok(())
 }
 
+/// Plugins bundled with the Gradle distribution. They are not downloaded from
+/// any repository, so they carry no supply-chain risk for this scanner.
+const GRADLE_CORE_PLUGINS: &[&str] = &[
+    "antlr",
+    "application",
+    "assembler",
+    "base",
+    "build-dashboard",
+    "build-init",
+    "c",
+    "checkstyle",
+    "codenarc",
+    "cpp",
+    "cpp-application",
+    "cpp-library",
+    "cpp-unit-test",
+    "distribution",
+    "ear",
+    "eclipse",
+    "eclipse-wtp",
+    "groovy",
+    "groovy-base",
+    "help-tasks",
+    "idea",
+    "ivy-publish",
+    "jacoco",
+    "jacoco-report-aggregation",
+    "java",
+    "java-base",
+    "java-gradle-plugin",
+    "java-library",
+    "java-library-distribution",
+    "java-platform",
+    "java-test-fixtures",
+    "jvm-test-suite",
+    "maven-publish",
+    "objective-c",
+    "objective-cpp",
+    "pmd",
+    "project-report",
+    "publishing",
+    "reporting-base",
+    "scala",
+    "scala-base",
+    "signing",
+    "swift-application",
+    "swift-library",
+    "test-report-aggregation",
+    "version-catalog",
+    "visual-studio",
+    "war",
+    "windows-resources",
+    "wrapper",
+    "xcode",
+    "xctest",
+];
+
+fn is_gradle_core_plugin(id: &str) -> bool {
+    let short = id.strip_prefix("org.gradle.").unwrap_or(id);
+    GRADLE_CORE_PLUGINS.contains(&short)
+}
+
+fn gradle_literal_value(literal: &str) -> Option<&str> {
+    let quote = literal.chars().next()?;
+    if !matches!(quote, '\'' | '"') || literal.len() < 2 || !literal.ends_with(quote) {
+        return None;
+    }
+    let value = &literal[1..literal.len() - 1];
+    // Interpolation and escapes make the effective plugin id unknowable.
+    (!value.contains(['$', '\\'])).then_some(value)
+}
+
+fn unsupported_gradle_plugin(path: &Path, what: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Unsupported Gradle plugin {} in {}: only plugins bundled with Gradle are allowed; third-party plugins resolve from the Gradle Plugin Portal (or a custom plugin repository) and cannot be verified",
+        what,
+        path.display()
+    )
+}
+
+/// Read `(literal)` or `literal` after a plugin-block keyword, returning the
+/// literal and the index of the next unconsumed token.
+fn gradle_plugin_argument(tokens: &[GradleToken], idx: usize) -> Option<(&str, usize)> {
+    match tokens.get(idx) {
+        Some(GradleToken::Literal(literal)) => Some((literal.as_str(), idx + 1)),
+        Some(GradleToken::Symbol('(')) => match (tokens.get(idx + 1), tokens.get(idx + 2)) {
+            (Some(GradleToken::Literal(literal)), Some(GradleToken::Symbol(')'))) => {
+                Some((literal.as_str(), idx + 3))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Validate a `plugins { }` block (build script, settings, or
+/// `pluginManagement`). Every request must be a Gradle core plugin; anything
+/// else is downloaded from a plugin repository we cannot check, so it fails
+/// closed just like `buildscript { dependencies { classpath ... } }`.
+fn validate_gradle_plugins_block(tokens: &[GradleToken], path: &Path) -> Result<()> {
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        let GradleToken::Ident(name) = &tokens[idx] else {
+            return Err(unsupported_gradle_plugin(path, "declaration"));
+        };
+        match name.as_str() {
+            "id" => {
+                let (literal, next) = gradle_plugin_argument(tokens, idx + 1)
+                    .ok_or_else(|| unsupported_gradle_plugin(path, "declaration"))?;
+                let id = gradle_literal_value(literal)
+                    .ok_or_else(|| unsupported_gradle_plugin(path, "id expression"))?;
+                if !is_gradle_core_plugin(id) {
+                    return Err(unsupported_gradle_plugin(
+                        path,
+                        &format!("'{}'", crate::report::sanitize_for_terminal(id)),
+                    ));
+                }
+                idx = next;
+            }
+            "version" => {
+                let (_, next) = gradle_plugin_argument(tokens, idx + 1)
+                    .ok_or_else(|| unsupported_gradle_plugin(path, "version expression"))?;
+                idx = next;
+            }
+            "apply" => {
+                let parenthesized = matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('(')));
+                let flag_idx = idx + 1 + usize::from(parenthesized);
+                let Some(GradleToken::Ident(flag)) = tokens.get(flag_idx) else {
+                    return Err(unsupported_gradle_plugin(path, "apply expression"));
+                };
+                if !matches!(flag.as_str(), "true" | "false") {
+                    return Err(unsupported_gradle_plugin(path, "apply expression"));
+                }
+                idx = flag_idx + 1;
+                if parenthesized {
+                    if !matches!(tokens.get(idx), Some(GradleToken::Symbol(')'))) {
+                        return Err(unsupported_gradle_plugin(path, "apply expression"));
+                    }
+                    idx += 1;
+                }
+            }
+            bare if is_gradle_core_plugin(bare) => idx += 1,
+            other => {
+                return Err(unsupported_gradle_plugin(
+                    path,
+                    &format!("'{}'", crate::report::sanitize_for_terminal(other)),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
     let tokens = tokenize_gradle(content);
     let mut idx = 0usize;
@@ -287,6 +648,27 @@ fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
                     "Unsupported Gradle dependency expression in {}: dependency mutations outside literal blocks cannot be verified",
                     path.display()
                 );
+            }
+            GradleToken::Ident(name)
+                if name == "resolutionStrategy" || name.starts_with("resolutionStrategy.") =>
+            {
+                bail!(
+                    "Unsupported Gradle resolution rule in {}: resolutionStrategy can substitute or force dependency versions that cannot be verified",
+                    path.display()
+                );
+            }
+            GradleToken::Ident(name)
+                if name == "plugins"
+                    && matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{'))) =>
+            {
+                let end = find_gradle_block_end(&tokens, idx + 1).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Broken Gradle manifest '{}': unclosed 'plugins' block.",
+                        path.display()
+                    )
+                })?;
+                validate_gradle_plugins_block(&tokens[idx + 2..end], path)?;
+                idx = end;
             }
             GradleToken::Ident(name) if matches!(name.as_str(), "apply" | "includeBuild") => {
                 bail!(
@@ -359,17 +741,19 @@ fn xml_contains_open_tag(content: &str, target: &str) -> bool {
 }
 
 fn validate_pom_source_policy(content: &str, path: &Path) -> Result<()> {
-    if content.split('<').skip(1).any(|tag| {
-        let name = tag
-            .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
-            .next()
-            .unwrap_or_default();
-        name.rsplit(':').next() == Some("dependency") && !tag.starts_with("dependency>")
-    }) {
-        bail!(
-            "Unsupported Maven dependency tag in {}: namespaced or attributed dependency elements cannot be verified",
-            path.display()
-        );
+    for element in ["dependency", "parent", "plugin", "extension"] {
+        if content.split('<').skip(1).any(|tag| {
+            let name = tag
+                .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
+                .next()
+                .unwrap_or_default();
+            name.rsplit(':').next() == Some(element) && !tag.starts_with(&format!("{element}>"))
+        }) {
+            bail!(
+                "Unsupported Maven {element} tag in {}: namespaced or attributed {element} elements cannot be verified",
+                path.display()
+            );
+        }
     }
     if [
         "repositories",
@@ -407,6 +791,95 @@ mod tests {
 
     fn setup_pom(content: &str) -> std::path::PathBuf {
         setup_test_dir("jvm", "pom.xml", content)
+    }
+
+    #[test]
+    fn reject_third_party_gradle_plugins_in_build_scripts() {
+        for (file, body) in [
+            (
+                "build.gradle",
+                "plugins {\n    id 'java'\n    id 'com.evil.gradle-plugin' version '1.0.0'\n}\nrepositories { mavenCentral() }\ndependencies { implementation 'com.google.guava:guava:31.1-jre' }",
+            ),
+            (
+                "build.gradle.kts",
+                "plugins {\n    `java-library`\n    id(\"com.evil.gradle-plugin\") version \"1.0.0\"\n}",
+            ),
+            (
+                "build.gradle.kts",
+                "plugins { kotlin(\"jvm\") version \"1.9.0\" }",
+            ),
+            ("build.gradle.kts", "plugins { alias(libs.plugins.evil) }"),
+            ("build.gradle", "plugins { id 'com.evil.gradle-plugin' }"),
+            ("build.gradle", "plugins { id \"${evilPlugin}\" }"),
+        ] {
+            let dir = setup_test_dir("jvm", file, body);
+            let err = parse(&dir).expect_err(&format!(
+                "third-party Gradle plugins must fail closed: {body}"
+            ));
+            assert!(
+                err.to_string().contains("Gradle plugin"),
+                "unexpected error for {body}: {err}"
+            );
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_third_party_gradle_plugins_in_settings() {
+        for (settings, body) in [
+            (
+                "settings.gradle",
+                "pluginManagement { plugins { id 'com.evil.settings' version '1.0.0' } }",
+            ),
+            (
+                "settings.gradle.kts",
+                "plugins { id(\"com.evil.settings\") version \"1.0.0\" }",
+            ),
+            (
+                "settings.gradle",
+                "pluginManagement { resolutionStrategy { eachPlugin { useModule('com.evil:x:1.0.0') } } }",
+            ),
+        ] {
+            let dir = setup_gradle("dependencies { implementation 'com.example:lib:1.0.0' }");
+            std::fs::write(dir.join(settings), body).unwrap();
+            let err = parse(&dir).expect_err(&format!(
+                "settings plugin declarations must fail closed: {body}"
+            ));
+            assert!(err.to_string().contains(settings), "{err}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn accept_core_gradle_plugins() {
+        for (file, body) in [
+            (
+                "build.gradle",
+                "plugins {\n    id 'java'\n    id 'maven-publish'\n    id 'org.gradle.application'\n}\ndependencies { implementation 'com.example:lib:1.0.0' }",
+            ),
+            (
+                "build.gradle.kts",
+                "plugins {\n    `java-library`\n    java\n    id(\"jacoco\") apply false\n}\ndependencies { implementation(\"com.example:lib:1.0.0\") }",
+            ),
+        ] {
+            let dir = setup_test_dir("jvm", file, body);
+            let deps = parse(&dir).unwrap_or_else(|err| panic!("core plugins are built in: {err}"));
+            assert_eq!(deps.len(), 1);
+            assert_eq!(deps[0].name, "com.example:lib");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_gradle_resolution_strategy_overrides() {
+        let dir = setup_gradle(
+            "configurations.all { resolutionStrategy.force 'com.evil:payload:1.0.0' }\ndependencies { implementation 'com.example:lib:1.0.0' }",
+        );
+        assert!(
+            parse(&dir).is_err(),
+            "resolutionStrategy can rewrite resolved versions and must fail closed"
+        );
+        cleanup(&dir);
     }
 
     #[test]
@@ -519,6 +992,148 @@ mod tests {
                 parse(&dir).is_err(),
                 "unmodeled dependency tags must fail closed: {open}"
             );
+            cleanup(&dir);
+        }
+    }
+
+    fn names(deps: &[Dependency]) -> Vec<String> {
+        let mut names: Vec<String> = deps.iter().map(|dep| dep.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn parse_maven_parent_plugins_and_extensions() {
+        let dir = setup_pom(
+            r#"<project>
+  <parent>
+    <groupId>com.evil</groupId>
+    <artifactId>evil-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>com.evil</groupId>
+        <artifactId>evil-maven-plugin</artifactId>
+        <version>1.0.0</version>
+      </plugin>
+    </plugins>
+    <extensions>
+      <extension>
+        <groupId>com.evil</groupId>
+        <artifactId>evil-extension</artifactId>
+        <version>1.0.0</version>
+      </extension>
+    </extensions>
+  </build>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>31.1-jre</version>
+    </dependency>
+  </dependencies>
+</project>"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(
+            names(&deps),
+            vec![
+                "com.evil:evil-extension",
+                "com.evil:evil-maven-plugin",
+                "com.evil:evil-parent",
+                "com.google.guava:guava",
+            ]
+        );
+        let parent = deps
+            .iter()
+            .find(|dep| dep.name == "com.evil:evil-parent")
+            .unwrap();
+        assert_eq!(parent.version.as_deref(), Some("1.0.0"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn maven_plugin_uses_default_group_and_ignores_nested_coordinates() {
+        let dir = setup_pom(
+            r#"<project><build><pluginManagement><plugins>
+  <plugin>
+    <artifactId>maven-dependency-plugin</artifactId>
+    <version>3.6.0</version>
+    <extensions>true</extensions>
+    <configuration>
+      <artifactItems><artifactItem><groupId>com.config</groupId><artifactId>item</artifactId></artifactItem></artifactItems>
+    </configuration>
+    <dependencies>
+      <dependency><groupId>com.nested</groupId><artifactId>plugin-dep</artifactId><version>2.0.0</version></dependency>
+    </dependencies>
+  </plugin>
+</plugins></pluginManagement></build></project>"#,
+        );
+        let deps = parse(&dir).unwrap();
+        assert_eq!(
+            names(&deps),
+            vec![
+                "com.nested:plugin-dep",
+                "org.apache.maven.plugins:maven-dependency-plugin",
+            ]
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn maven_local_reactor_parent_is_not_a_registry_dependency() {
+        let root = empty_test_dir("jvm");
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project><groupId>com.acme</groupId><artifactId>acme-parent</artifactId><version>1.0.0</version><dependencies><dependency><groupId>com.other</groupId><artifactId>x</artifactId></dependency></dependencies></project>",
+        )
+        .unwrap();
+        let child = root.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let child_pom = "<project><parent><groupId>com.acme</groupId><artifactId>acme-parent</artifactId><version>1.0.0</version>{rel}</parent><artifactId>child</artifactId></project>";
+        std::fs::write(child.join("pom.xml"), child_pom.replace("{rel}", "")).unwrap();
+        assert!(
+            parse(&child).unwrap().is_empty(),
+            "parent resolved from ../pom.xml is part of the local reactor"
+        );
+
+        // An explicitly empty relativePath forces repository resolution.
+        std::fs::write(
+            child.join("pom.xml"),
+            child_pom.replace("{rel}", "<relativePath/>"),
+        )
+        .unwrap();
+        assert_eq!(names(&parse(&child).unwrap()), vec!["com.acme:acme-parent"]);
+
+        // A local pom with different coordinates does not satisfy the parent.
+        std::fs::write(
+            child.join("pom.xml"),
+            child_pom
+                .replace("acme-parent", "evil-parent")
+                .replace("{rel}", ""),
+        )
+        .unwrap();
+        assert_eq!(names(&parse(&child).unwrap()), vec!["com.acme:evil-parent"]);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn reject_maven_build_coordinates_without_artifact_or_with_unmodeled_tags() {
+        for body in [
+            "<parent><groupId>com.evil</groupId><version>1</version></parent>",
+            "<parent><artifactId>evil</artifactId><version>1</version></parent>",
+            "<build><extensions><extension><artifactId>evil</artifactId></extension></extensions></build>",
+            "<build><plugins><plugin><groupId>com.evil</groupId></plugin></plugins></build>",
+            "<build><plugins><m:plugin><groupId>com.evil</groupId><artifactId>x</artifactId></m:plugin></plugins></build>",
+            "<build><plugins><plugin combine.self=\"override\"><groupId>com.evil</groupId><artifactId>x</artifactId></plugin></plugins></build>",
+            "<parent xmlns=\"x\"><groupId>com.evil</groupId><artifactId>x</artifactId></parent>",
+        ] {
+            let dir = setup_pom(&format!(
+                "<project xmlns:m=\"http://maven.apache.org/POM/4.0.0\">{body}</project>"
+            ));
+            assert!(parse(&dir).is_err(), "must fail closed: {body}");
             cleanup(&dir);
         }
     }

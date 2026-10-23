@@ -18,12 +18,12 @@ fn search_query(group: &str, artifact: &str, version: Option<&str>) -> String {
     let artifact = escape_solr_term(artifact);
     match version {
         Some(version) => format!(
-            r#"g:"{}"+AND+a:"{}"+AND+v:"{}""#,
+            r#"g:"{}" AND a:"{}" AND v:"{}""#,
             group,
             artifact,
             escape_solr_term(version)
         ),
-        None => format!(r#"g:"{}"+AND+a:"{}""#, group, artifact),
+        None => format!(r#"g:"{}" AND a:"{}""#, group, artifact),
     }
 }
 
@@ -109,7 +109,25 @@ mod tests {
             .find(|(key, _)| key == "q")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        assert_eq!(query, r#"g:"com.example"+AND+a:"demo"+AND+v:"1.2.3""#);
+        assert_eq!(query, r#"g:"com.example" AND a:"demo" AND v:"1.2.3""#);
+    }
+
+    #[test]
+    fn search_url_never_encodes_solr_operators_as_literal_plus() {
+        // Regression: a literal '+' in the query is serialized as %2B, which
+        // Solr rejects with HTTP 400 for every lookup.
+        let url = search_url("com.example", "demo", None);
+        assert!(
+            !url.contains("%2B"),
+            "query must not contain encoded '+': {url}"
+        );
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let query = parsed
+            .query_pairs()
+            .find(|(key, _)| key == "q")
+            .map(|(_, value)| value.into_owned())
+            .unwrap();
+        assert_eq!(query, r#"g:"com.example" AND a:"demo""#);
     }
 
     #[test]
@@ -121,7 +139,7 @@ mod tests {
         );
         assert_eq!(
             query,
-            r#"g:"com.example\\\"group"+AND+a:"demo\"artifact"+AND+v:"1.2\\\"3""#
+            r#"g:"com.example\\\"group" AND a:"demo\"artifact" AND v:"1.2\\\"3""#
         );
     }
 }

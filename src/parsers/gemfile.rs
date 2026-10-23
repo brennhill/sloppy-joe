@@ -175,13 +175,136 @@ fn has_unsupported_gem_source(line: &str) -> bool {
 
 fn extract_gem_spec(line: &str) -> Option<(String, Option<String>)> {
     let args = line.trim_start().strip_prefix("gem")?;
-    let mut arguments = literal_arguments(args)?.into_iter();
+    let mut remaining = args.trim();
+    if let Some(body) = remaining.strip_prefix('(') {
+        remaining = body.strip_suffix(')')?.trim();
+    }
+    let mut positional = Vec::new();
+    while remaining.starts_with(['\'', '"']) {
+        let (literal, rest) = take_string_literal(remaining)?;
+        positional.push(literal);
+        remaining = rest.trim();
+        if remaining.is_empty() {
+            break;
+        }
+        remaining = remaining.strip_prefix(',')?.trim();
+        if remaining.is_empty() {
+            return None;
+        }
+    }
+    if !remaining.is_empty() && !static_gem_options(remaining) {
+        return None;
+    }
+    let mut arguments = positional.into_iter();
     let name = arguments.next()?;
     let version = arguments.next();
     if arguments.next().is_some() {
         return None;
     }
     Some((name, version))
+}
+
+/// Read one quoted literal without escapes or interpolation.
+fn take_string_literal(expression: &str) -> Option<(String, &str)> {
+    let quote = expression.chars().next()?;
+    if !matches!(quote, '\'' | '"') {
+        return None;
+    }
+    let body = &expression[1..];
+    let end = body.find(quote)?;
+    let literal = &body[..end];
+    if literal.contains('\\') || literal.contains("#{") {
+        return None;
+    }
+    Some((literal.to_string(), &body[end + 1..]))
+}
+
+/// Gem options that only affect Bundler's require/group/platform behavior and
+/// carry static literal values. Anything else (sources, lambdas, method
+/// calls, unknown keys) is treated as dynamic and fails closed upstream.
+const STATIC_GEM_OPTION_KEYS: &[&str] = &["require", "group", "groups", "platform", "platforms"];
+
+fn static_gem_options(expression: &str) -> bool {
+    let mut remaining = expression.trim();
+    loop {
+        let key_end = remaining
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(remaining.len());
+        let (key, rest) = if let Some(symbol) = remaining.strip_prefix(':') {
+            // `:key => value`
+            let end = symbol
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(symbol.len());
+            let Some(rest) = symbol[end..].trim_start().strip_prefix("=>") else {
+                return false;
+            };
+            (&symbol[..end], rest)
+        } else if let Some(key) = remaining[..key_end].strip_suffix(':') {
+            // `key: value`
+            (key, &remaining[key_end..])
+        } else {
+            return false;
+        };
+        if !STATIC_GEM_OPTION_KEYS.contains(&key) {
+            return false;
+        }
+        let Some(rest) = take_static_option_value(rest.trim_start()) else {
+            return false;
+        };
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return true;
+        }
+        let Some(rest) = rest.strip_prefix(',') else {
+            return false;
+        };
+        remaining = rest.trim();
+    }
+}
+
+fn is_ruby_word(word: &str) -> bool {
+    !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `true`, `false`, `nil`, `:symbol`, a plain string, `[...]` of symbols or
+/// strings, or `%i[...]` / `%w[...]` word lists.
+fn take_static_option_value(expression: &str) -> Option<&str> {
+    for keyword in ["true", "false", "nil"] {
+        if let Some(rest) = expression.strip_prefix(keyword)
+            && !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Some(rest);
+        }
+    }
+    if let Some(symbol) = expression.strip_prefix(':') {
+        let end = symbol
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(symbol.len());
+        return is_ruby_word(&symbol[..end]).then(|| &symbol[end..]);
+    }
+    if expression.starts_with(['\'', '"']) {
+        return take_string_literal(expression).map(|(_, rest)| rest);
+    }
+    if let Some(list) = expression
+        .strip_prefix("%i[")
+        .or_else(|| expression.strip_prefix("%w["))
+    {
+        let end = list.find(']')?;
+        return list[..end]
+            .split_whitespace()
+            .all(is_ruby_word)
+            .then(|| &list[end + 1..]);
+    }
+    if let Some(list) = expression.strip_prefix('[') {
+        let end = list.find(']')?;
+        let all_static = list[..end].split(',').all(|item| {
+            let item = item.trim();
+            take_static_option_value(item).is_some_and(|rest| rest.trim().is_empty())
+                && !item.starts_with('[')
+        });
+        return all_static.then(|| &list[end + 1..]);
+    }
+    None
 }
 
 fn literal_arguments(expression: &str) -> Option<Vec<String>> {
@@ -502,5 +625,48 @@ gem "rails",
                 .contains("non-registry Gemfile dependency source")
         );
         cleanup(&dir);
+    }
+}
+
+#[cfg(test)]
+mod gem_option_tests {
+    use super::*;
+    use crate::parsers::test_utils::*;
+
+    #[test]
+    fn accept_static_gem_options() {
+        for body in [
+            "gem 'bootsnap', require: false",
+            "gem \"bootsnap\", \"1.18.4\", require: false",
+            "gem 'bootsnap', '1.18.4', require: 'bootsnap/setup'",
+            "gem 'bootsnap', group: :development",
+            "gem 'bootsnap', '1.18.4', groups: [:development, :test], platforms: %i[mri windows]",
+            "gem 'bootsnap', platforms: [:mri, :mingw], require: nil",
+            "gem 'bootsnap', :require => false, :group => :test",
+            "gem('bootsnap', '1.18.4', require: false)",
+            "gem 'bootsnap', '1.18.4',\n  require: false,\n  platform: :ruby",
+        ] {
+            let dir = setup_test_dir("gemfile", "Gemfile", body);
+            let deps = parse(&dir).unwrap_or_else(|err| panic!("{body}: {err}"));
+            assert_eq!(deps.len(), 1, "{body}");
+            assert_eq!(deps[0].name, "bootsnap");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_dynamic_gem_options() {
+        for body in [
+            "gem 'bootsnap', require: ENV['X']",
+            "gem 'bootsnap', install_if: -> { true }",
+            "gem 'bootsnap', require: \"#{name}\"",
+            "gem 'bootsnap', group: some_group",
+            "gem 'bootsnap', require: false, 'extra'",
+            "gem 'bootsnap', unknown_option: true",
+        ] {
+            let dir = setup_test_dir("gemfile", "Gemfile", body);
+            assert!(parse(&dir).is_err(), "must fail closed: {body}");
+            cleanup(&dir);
+        }
     }
 }
