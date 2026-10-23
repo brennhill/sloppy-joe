@@ -10,6 +10,9 @@ fn metadata_from_body(
     body: &serde_json::Value,
     version: Option<&str>,
 ) -> Option<super::PackageMetadata> {
+    if is_unpublished_packument(body) {
+        return None;
+    }
     let time = &body["time"];
     let created = time["created"].as_str().map(|s| s.to_string());
     let repository_url = body["repository"]["url"]
@@ -95,6 +98,13 @@ fn metadata_from_body(
         manifest_inconsistency,
         removed_previous_version,
     })
+}
+
+/// A packument with no installable versions. registry.npmjs.org answers a
+/// fully unpublished package with HTTP 200 and a `time.unpublished` stub; the
+/// name is then free for anyone to claim, so it must not count as existing.
+fn is_unpublished_packument(body: &serde_json::Value) -> bool {
+    body["versions"].as_object().is_none_or(|v| v.is_empty())
 }
 
 /// Find the nearest version published before `selected` that still exists in
@@ -284,7 +294,17 @@ impl super::RegistryExistence for NpmRegistry {
         self.validate_name(package_name)?;
         let url = format!("https://registry.npmjs.org/{}", package_name);
         let resp = super::retry_get(&self.client, &url).await?;
-        super::check_existence_status(resp.status(), "npm registry", package_name)
+        if !super::check_existence_status(resp.status(), "npm registry", package_name)? {
+            return Ok(false);
+        }
+        // A 200 can still be a fully unpublished stub; an unreadable body is
+        // an error (fail closed), never "exists".
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            anyhow::anyhow!(
+                "npm registry returned an unreadable document for '{package_name}': {e}"
+            )
+        })?;
+        Ok(!is_unpublished_packument(&body))
     }
 
     fn ecosystem(&self) -> &str {

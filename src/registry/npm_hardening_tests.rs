@@ -11,6 +11,38 @@ fn body_with_versions(time: serde_json::Value, versions: serde_json::Value) -> s
     })
 }
 
+// ── Finding 9: fully unpublished packages do not exist ──
+
+fn unpublished_body() -> serde_json::Value {
+    // Shape served by registry.npmjs.org (HTTP 200) after a full unpublish.
+    json!({
+        "_id": "gone-pkg",
+        "name": "gone-pkg",
+        "time": {
+            "created": "2020-01-01T00:00:00Z",
+            "modified": "2024-01-01T00:00:00Z",
+            "unpublished": {"time": "2024-01-01T00:00:00Z", "versions": ["1.0.0"]}
+        }
+    })
+}
+
+#[test]
+fn unpublished_packument_is_not_installable() {
+    assert!(is_unpublished_packument(&unpublished_body()));
+    let mut empty_versions = unpublished_body();
+    empty_versions["versions"] = json!({});
+    assert!(is_unpublished_packument(&empty_versions));
+    assert!(!is_unpublished_packument(&json!({
+        "versions": {"1.0.0": {}}, "time": {"1.0.0": "2020-01-01T00:00:00Z"}
+    })));
+}
+
+#[test]
+fn unpublished_packument_yields_no_metadata() {
+    assert!(metadata_from_body(&unpublished_body(), Some("1.0.0")).is_none());
+    assert!(metadata_from_body(&unpublished_body(), None).is_none());
+}
+
 // ── Finding 4: removed intermediate versions ──
 
 #[test]
