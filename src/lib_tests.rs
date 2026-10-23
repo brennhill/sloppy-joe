@@ -10732,3 +10732,40 @@ async fn uv_locked_range_is_verified_against_the_resolved_version() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn uv_locked_ranges_reject_excluded_and_mismatched_versions() {
+    let fixture = ecosystem_fixture_dir("python", "uv-pass");
+    for specifier in [
+        ">=2.0,!=2.32.*",
+        ">=2.0,!=2.032.*",
+        "==2.32.3.4.*",
+        ">=3,<4",
+    ] {
+        let dir = unique_dir();
+        let manifest = std::fs::read_to_string(fixture.join("pyproject.toml"))
+            .unwrap()
+            .replace("==2.32.3", specifier);
+        let locked = std::fs::read_to_string(fixture.join("uv.lock"))
+            .unwrap()
+            .replace("==2.32.3", specifier);
+        std::fs::write(dir.join("pyproject.toml"), manifest).unwrap();
+        std::fs::write(dir.join("uv.lock"), locked).unwrap();
+        let outcome = scan_with_source_full_options(
+            &dir,
+            Some("pypi"),
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(
+            outcome.is_err() || outcome.unwrap().has_errors(),
+            "excluded locked version passed {specifier}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

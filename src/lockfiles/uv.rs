@@ -1239,12 +1239,7 @@ pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str
     {
         if let Some(exact) = clause.strip_prefix("==") {
             if let Some(prefix) = exact.strip_suffix(".*") {
-                if !version
-                    .split('.')
-                    .map(str::trim)
-                    .zip(prefix.split('.').map(str::trim))
-                    .all(|(actual, expected)| actual == expected)
-                {
+                if !matches_uv_wildcard(version, prefix)? {
                     return Ok(false);
                 }
                 continue;
@@ -1255,7 +1250,12 @@ pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str
             continue;
         }
         if let Some(not_equal) = clause.strip_prefix("!=") {
-            if version == not_equal.trim() {
+            let excluded = if let Some(prefix) = not_equal.trim().strip_suffix(".*") {
+                matches_uv_wildcard(version, prefix)?
+            } else {
+                version == not_equal.trim()
+            };
+            if excluded {
                 return Ok(false);
             }
             continue;
@@ -1325,6 +1325,15 @@ pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str
         }
     }
     Ok(true)
+}
+
+fn matches_uv_wildcard(version: &str, prefix: &str) -> Result<bool> {
+    let actual = parse_numeric_release(version)?;
+    let expected = parse_numeric_release(prefix)?;
+    Ok(expected
+        .iter()
+        .enumerate()
+        .all(|(index, part)| actual.get(index).copied().unwrap_or_default() == *part))
 }
 
 fn compare_numeric_release_versions(left: &str, right: &str) -> Result<std::cmp::Ordering> {
