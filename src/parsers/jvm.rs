@@ -15,6 +15,11 @@ pub(crate) struct GradleBuild {
     /// A build or settings script lists `google()`, so dependencies may also
     /// resolve from Google's Maven repository.
     pub uses_google_maven: bool,
+    /// `buildscript { dependencies { classpath } }` artifacts: build tooling
+    /// that runs in the build but never appears in `gradle.lockfile`.
+    pub classpath: Vec<Dependency>,
+    /// The classpath's `buildscript { repositories {} }` lists `google()`.
+    pub classpath_uses_google_maven: bool,
 }
 
 const GRADLE_DEPENDENCY_CONFIGS: &[&str] = &[
@@ -63,6 +68,7 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
         );
     }
     let mut deps = build.deps;
+    deps.extend(build.classpath);
     deps.extend(build.plugins);
     Ok(deps)
 }
@@ -144,6 +150,20 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
             || settings
                 .iter()
                 .any(|(_, settings)| settings.uses_google_maven),
+        classpath: script
+            .classpath
+            .iter()
+            .chain(
+                settings
+                    .iter()
+                    .flat_map(|(_, settings)| &settings.classpath),
+            )
+            .cloned()
+            .collect(),
+        classpath_uses_google_maven: script.buildscript_uses_google
+            || settings
+                .iter()
+                .any(|(_, settings)| settings.buildscript_uses_google),
     })
 }
 
@@ -501,11 +521,8 @@ fn find_gradle_block_end(tokens: &[GradleToken], open_idx: usize) -> Option<usiz
     None
 }
 
-fn validate_gradle_repositories_block(
-    tokens: &[GradleToken],
-    path: &Path,
-    script: &mut gradle_plugins::GradleScript,
-) -> Result<()> {
+fn validate_gradle_repositories_block(tokens: &[GradleToken], path: &Path) -> Result<bool> {
+    let mut google_declared = false;
     for (idx, window) in tokens.windows(2).enumerate() {
         let [GradleToken::Ident(name), GradleToken::Symbol(next)] = window else {
             continue;
@@ -521,7 +538,7 @@ fn validate_gradle_repositories_block(
             && matches!(tokens.get(idx + 2), Some(GradleToken::Symbol(')')))
             && !matches!(tokens.get(idx + 3), Some(GradleToken::Symbol('{')))
         {
-            script.uses_google_maven = true;
+            google_declared = true;
             continue;
         }
         if matches!(
@@ -534,7 +551,65 @@ fn validate_gradle_repositories_block(
             );
         }
     }
-    Ok(())
+    Ok(google_declared)
+}
+
+/// `buildscript { dependencies { classpath 'g:a:v' } }`: build tooling pinned
+/// to literal, exact coordinates. Anything else cannot be verified.
+fn parse_classpath_block(tokens: &[GradleToken], path: &Path) -> Result<Vec<Dependency>> {
+    let mut deps = Vec::new();
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        match &tokens[idx] {
+            GradleToken::Ident(name) if name == "classpath" => {
+                let next = idx
+                    + 1
+                    + usize::from(matches!(
+                        tokens.get(idx + 1),
+                        Some(GradleToken::Symbol('('))
+                    ));
+                let Some(GradleToken::Literal(literal)) = tokens.get(next) else {
+                    bail!(
+                        "Unsupported Gradle buildscript classpath in {}: expected literal coordinates",
+                        path.display()
+                    );
+                };
+                let dep = extract_gradle_dep(literal, path)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Unsupported Gradle buildscript classpath notation in {}",
+                        path.display()
+                    )
+                })?;
+                super::validate_dependency(&dep, path)?;
+                // Gradle's dynamic selectors (`8.+`, `latest.release`) are not literal
+                // releases even though they contain no range brackets.
+                let pinned = dep.version.as_deref().is_some_and(|version| {
+                    !version.is_empty()
+                        && !version.starts_with("latest.")
+                        && version
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                });
+                if !pinned {
+                    bail!(
+                        "Unsupported Gradle buildscript classpath '{}' in {}: buildscript dependencies are not locked, so they must pin an exact version",
+                        crate::report::sanitize_for_terminal(&dep.name),
+                        path.display()
+                    );
+                }
+                deps.push(dep);
+                idx = next;
+            }
+            GradleToken::Symbol(_) | GradleToken::Literal(_) => {}
+            GradleToken::Ident(name) => bail!(
+                "Unsupported Gradle buildscript dependency expression '{}' in {}: only literal classpath coordinates can be verified",
+                crate::report::sanitize_for_terminal(name),
+                path.display()
+            ),
+        }
+        idx += 1;
+    }
+    Ok(deps)
 }
 
 fn validate_gradle_dependencies_block(tokens: &[GradleToken], path: &Path) -> Result<()> {
@@ -634,7 +709,7 @@ fn gradle_literal_value(literal: &str) -> Option<&str> {
 fn scan_gradle_script(content: &str, path: &Path) -> Result<gradle_plugins::GradleScript> {
     let tokens = tokenize_gradle(content);
     let mut script = gradle_plugins::GradleScript::default();
-    walk_gradle_script(&tokens, path, &mut script, false)?;
+    walk_gradle_script(&tokens, path, &mut script, false, false)?;
     Ok(script)
 }
 
@@ -646,6 +721,7 @@ fn walk_gradle_script(
     path: &Path,
     script: &mut gradle_plugins::GradleScript,
     plugin_management: bool,
+    buildscript: bool,
 ) -> Result<()> {
     let block_end = |idx: usize, name: &str| {
         find_gradle_block_end(tokens, idx + 1).ok_or_else(|| {
@@ -700,7 +776,12 @@ fn walk_gradle_script(
             GradleToken::Ident(name) if name == "pluginManagement" && opens_block => {
                 let end = block_end(idx, name)?;
                 script.has_plugin_management = true;
-                walk_gradle_script(&tokens[idx + 2..end], path, script, true)?;
+                walk_gradle_script(&tokens[idx + 2..end], path, script, true, false)?;
+                idx = end;
+            }
+            GradleToken::Ident(name) if name == "buildscript" && opens_block && !buildscript => {
+                let end = block_end(idx, name)?;
+                walk_gradle_script(&tokens[idx + 2..end], path, script, false, true)?;
                 idx = end;
             }
             GradleToken::Ident(name) if name == "plugins" && opens_block => {
@@ -725,7 +806,9 @@ fn walk_gradle_script(
             {
                 let end = block_end(idx, name)?;
                 let block = &tokens[idx + 2..end];
-                if name == "dependencies" {
+                if name == "dependencies" && buildscript {
+                    script.classpath.extend(parse_classpath_block(block, path)?);
+                } else if name == "dependencies" {
                     validate_gradle_dependencies_block(block, path)?;
                 } else if plugin_management {
                     script
@@ -733,7 +816,12 @@ fn walk_gradle_script(
                         .get_or_insert_with(Vec::new)
                         .extend(gradle_plugins::parse_plugin_repositories(block, path)?);
                 } else {
-                    validate_gradle_repositories_block(block, path, script)?;
+                    let google = validate_gradle_repositories_block(block, path)?;
+                    if buildscript {
+                        script.buildscript_uses_google |= google;
+                    } else {
+                        script.uses_google_maven |= google;
+                    }
                 }
                 idx = end;
             }
@@ -1337,6 +1425,62 @@ mod tests {
                 .unwrap()
                 .uses_google_maven
         );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn buildscript_classpath_with_exact_versions_is_scanned() {
+        let dir = setup_gradle(
+            "buildscript {\n    repositories {\n        google()\n        mavenCentral()\n    }\n    dependencies {\n        classpath 'com.android.tools.build:gradle:8.1.0'\n        classpath(\"org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0\")\n    }\n}\nrepositories { mavenCentral() }\ndependencies { implementation 'a.b:c:1.0' }",
+        );
+        let build = parse_gradle_build(&dir.join("build.gradle")).unwrap();
+        let names: Vec<_> = build.classpath.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "com.android.tools.build:gradle",
+                "org.jetbrains.kotlin:kotlin-gradle-plugin"
+            ]
+        );
+        assert!(build.classpath_uses_google_maven);
+        assert!(
+            !build.uses_google_maven,
+            "project repositories are separate"
+        );
+        assert_eq!(build.deps.len(), 1);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn unpinned_or_dynamic_buildscript_classpath_blocks() {
+        for dep in [
+            "classpath 'com.android.tools.build:gradle'",
+            "classpath 'com.android.tools.build:gradle:8.+'",
+            "classpath 'com.android.tools.build:gradle:[8.0,9.0)'",
+            "classpath 'com.android.tools.build:gradle:latest.release'",
+            "classpath 'com.android.tools.build:gradle:+'",
+            "classpath files('x.jar')",
+            "classpath project(':tool')",
+            "classpath platform('a:b:1')",
+            "classpath libs.agp",
+        ] {
+            let dir = setup_gradle(&format!(
+                "buildscript {{\n repositories {{ mavenCentral() }}\n dependencies {{ {dep} }}\n}}"
+            ));
+            assert!(
+                parse_gradle_build(&dir.join("build.gradle")).is_err(),
+                "{dep}"
+            );
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn buildscript_custom_repositories_still_block() {
+        let dir = setup_gradle(
+            "buildscript {\n repositories { maven { url 'https://x.example' } }\n dependencies { classpath 'a:b:1.0' }\n}",
+        );
+        assert!(parse_gradle_build(&dir.join("build.gradle")).is_err());
         cleanup(&dir);
     }
 

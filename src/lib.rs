@@ -6110,10 +6110,19 @@ fn parse_project_inputs_with_options(
             python_root_extras: parsed.python_root_extras,
             unlocked_tooling: false,
         });
-        if !parsed.unlocked_tooling_deps.is_empty() {
+        // Gradle plugin markers and buildscript classpath artifacts resolve from
+        // different repositories, so each group gets its own project.
+        let tooling_groups = if spec.kind == ProjectInputKind::Gradle {
+            let (markers, classpath) =
+                gradle_plugin_scan::split_tooling_deps(parsed.unlocked_tooling_deps);
+            vec![markers, classpath]
+        } else {
+            vec![parsed.unlocked_tooling_deps]
+        };
+        for tooling_deps in tooling_groups.into_iter().filter(|deps| !deps.is_empty()) {
             projects.push(ParsedProject {
                 spec: spec.clone(),
-                deps: parsed.unlocked_tooling_deps,
+                deps: tooling_deps,
                 python_root_extras: PythonRootExtras::new(),
                 unlocked_tooling: true,
             });

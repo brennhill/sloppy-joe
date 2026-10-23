@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Gradle: scan `buildscript { dependencies { classpath '...' } }` artifacts, which run in the build but never appear in `gradle.lockfile`. Each must pin a literal version (no `+`, `latest.*`, ranges, or missing version), is checked for existence and advisories against Maven Central (plus Google's repository when the `buildscript` block lists `google()`), and `classpath files(...)`, `project(...)`, `platform(...)` and version-catalog references still block. Only `mavenCentral()` and `google()` are accepted in `buildscript { repositories {} }`.
 - Gradle: support a plain `google()` repository (Android builds). Dependencies are then checked against Maven Central and Google's Maven repository, which count as existing if either serves them, with publish dates from the POM `Last-Modified` header. `google { }`, `google(...)` with arguments, `maven { }` and other repository forms still block.
 - Gradle: look up OSV advisories for the implementation artifacts a `plugins {}` marker delegates to (read from the marker POM's dependencies), not just the marker. A marker POM that cannot be read, or that names a dependency whose version is missing, a property, or a range, blocks.
 - Config: validate `trusted_registries.jvm` entries. The name must be `gradle-plugins` (the only name sloppy-joe reads) and the source a credential-free https URL, so a typo no longer leaves a repository silently untrusted.

@@ -63,10 +63,14 @@ pub(super) fn parse_gradle_project_input(
         );
         Vec::new()
     };
+    // Buildscript classpath artifacts never reach gradle.lockfile either; they
+    // are scanned as unlocked tooling with exact pins enforced by the parser.
+    let mut tooling = build.classpath;
+    tooling.extend(plugins);
     Ok(ParsedInput {
         deps: build.deps,
         warnings,
-        unlocked_tooling_deps: plugins,
+        unlocked_tooling_deps: tooling,
         ..ParsedInput::default()
     })
 }
@@ -222,21 +226,43 @@ pub(super) fn plugin_registry_for(
     if project.spec.kind != ProjectInputKind::Gradle {
         return Ok(None);
     }
-    if !project.unlocked_tooling {
-        // Dependencies come from Maven Central, plus Google's repository when
-        // the build lists `google()`.
-        let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
-        return Ok(build.uses_google_maven.then(|| {
-            Box::new(registry::google_maven::MavenWithGoogleRegistry::with_client(client))
-                as Box<dyn Registry>
-        }));
-    }
     let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
+    // Dependencies and buildscript classpath artifacts come from Maven Central,
+    // plus Google's repository when the matching `repositories {}` lists it.
+    let maven_with = |google: bool| {
+        google.then(|| {
+            Box::new(registry::google_maven::MavenWithGoogleRegistry::with_client(client.clone()))
+                as Box<dyn Registry>
+        })
+    };
+    if !project.unlocked_tooling {
+        return Ok(maven_with(build.uses_google_maven));
+    }
+    if !is_plugin_marker_project(project) {
+        return Ok(maven_with(build.classpath_uses_google_maven));
+    }
     Ok(Some(Box::new(GradlePluginRegistry::new(
         client,
         &build.plugin_repositories,
         &project.deps,
     )?)))
+}
+
+/// Whether an unlocked-tooling Gradle project holds plugin markers (as opposed
+/// to buildscript classpath artifacts).
+pub(super) fn is_plugin_marker_project(project: &ParsedProject) -> bool {
+    project.unlocked_tooling
+        && project.spec.kind == ProjectInputKind::Gradle
+        && project
+            .deps
+            .iter()
+            .any(|dep| plugin_marker_id(&dep.name).is_some())
+}
+
+/// Splits Gradle tooling dependencies into plugin markers and classpath artifacts.
+pub(super) fn split_tooling_deps(deps: Vec<Dependency>) -> (Vec<Dependency>, Vec<Dependency>) {
+    deps.into_iter()
+        .partition(|dep| plugin_marker_id(&dep.name).is_some())
 }
 
 /// Advisory issues for the implementation artifacts of a Gradle plugin project
@@ -247,7 +273,7 @@ pub(super) async fn project_implementation_issues(
     osv_client: &dyn checks::malicious::OsvClient,
     opts: &ScanOptions<'_>,
 ) -> Result<Vec<Issue>> {
-    if !(project.unlocked_tooling && project.spec.kind == ProjectInputKind::Gradle) {
+    if !is_plugin_marker_project(project) {
         return Ok(Vec::new());
     }
     let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;

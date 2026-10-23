@@ -42,6 +42,10 @@ pub(super) struct GradleScript {
     pub has_plugin_management: bool,
     /// A `repositories {}` block declares `google()`.
     pub uses_google_maven: bool,
+    /// `buildscript { dependencies { classpath ... } }` coordinates.
+    pub classpath: Vec<crate::Dependency>,
+    /// A `buildscript { repositories {} }` block declares `google()`.
+    pub buildscript_uses_google: bool,
     /// The script customizes version catalogs, so `libs` may not be
     /// `gradle/libs.versions.toml`.
     pub custom_catalogs: bool,
