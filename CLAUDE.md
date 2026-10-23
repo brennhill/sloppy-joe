@@ -25,6 +25,12 @@
 - `--deep` enables similarity on transitive deps. Default: existence + metadata + OSV only for transitives.
 - Cache flags: `--no-cache` disables disk cache reads. `--cache-dir` overrides location.
 
+## Architecture guardrails
+- `cargo test --test architecture` enforces layer direction, 800 lines per file, cyclomatic complexity 15 per function, and that `src/lib.rs` does not grow (spec: `docs/specs/architecture-guardrails.md`).
+- Existing violations are listed in `tests/architecture_baseline.txt` and may only shrink. Never baseline a new violation: split the file or function instead.
+- New ecosystem-specific logic goes in its own module, not in `src/lib.rs`.
+- After reducing a violation, tighten the baseline: `UPDATE_ARCH_BASELINE=1 cargo test --test architecture`.
+
 ## Specs
 - All specs live in `docs/specs/` and use the UPFRONT format (Context, Acceptance Criteria, Constraints, Scope Boundaries, I/O Contracts, Context Anchors, Architecture).
 - Before implementing a feature, read its spec. Before building a spec, ask questions about it first.
