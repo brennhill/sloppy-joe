@@ -83,6 +83,10 @@ pub(crate) fn parse_poetry_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
         .ok_or_else(|| anyhow::anyhow!("Poetry metadata missing from {}", path.display()))?;
 
     let mut deps = Vec::new();
+    // Poetry 2 reads PEP 621 `[project]` metadata and PEP 735 groups in addition to
+    // `[tool.poetry.*]`; scan the union so neither declaration style can hide packages.
+    collect_pep621_project_scoped(&parsed, path, &mut deps, Pep621Dynamic::ProvidedByPoetry)?;
+    collect_dependency_groups_scoped(&parsed, path, &mut deps)?;
     let legacy_extras = legacy_poetry_extras(poetry);
     collect_poetry_section_scoped(
         poetry
@@ -398,37 +402,7 @@ pub(crate) fn parse_legacy_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
 
     let mut deps = Vec::new();
 
-    if let Some(project) = parsed.get("project").and_then(|value| value.as_table()) {
-        if project
-            .get("dynamic")
-            .and_then(|value| value.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|value| value.as_str())
-            .any(|value| value == "dependencies" || value == "optional-dependencies")
-        {
-            bail!(
-                "Unsupported dynamic dependency declaration in {}",
-                path.display()
-            );
-        }
-
-        collect_requirement_array_scoped(project.get("dependencies"), path, &mut deps, None, None)?;
-        if let Some(optional) = project
-            .get("optional-dependencies")
-            .and_then(|value| value.as_table())
-        {
-            for (extra, group) in optional {
-                collect_requirement_array_scoped(
-                    Some(group),
-                    path,
-                    &mut deps,
-                    None,
-                    Some(extra.as_str()),
-                )?;
-            }
-        }
-    }
+    collect_pep621_project_scoped(&parsed, path, &mut deps, Pep621Dynamic::Reject)?;
 
     if parsed
         .get("tool")
@@ -445,6 +419,64 @@ pub(crate) fn parse_legacy_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
         );
     }
 
+    collect_dependency_groups_scoped(&parsed, path, &mut deps)?;
+
+    Ok(deps)
+}
+
+/// How `[project] dynamic` dependency declarations are treated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pep621Dynamic {
+    /// The build backend computes dependencies from data sloppy-joe cannot see.
+    Reject,
+    /// Poetry fills dynamic dependencies from `[tool.poetry.dependencies]`, which is parsed
+    /// separately. Declaring the same field both dynamically and statically is still rejected.
+    ProvidedByPoetry,
+}
+
+fn collect_pep621_project_scoped(
+    parsed: &toml::Value,
+    path: &Path,
+    deps: &mut Vec<PythonScopedDependency>,
+    dynamic_mode: Pep621Dynamic,
+) -> Result<()> {
+    let Some(project) = parsed.get("project").and_then(|value| value.as_table()) else {
+        return Ok(());
+    };
+    let dynamic_fields: Vec<&str> = project
+        .get("dynamic")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .filter(|value| *value == "dependencies" || *value == "optional-dependencies")
+        .collect();
+    for field in &dynamic_fields {
+        if dynamic_mode == Pep621Dynamic::Reject || project.contains_key(*field) {
+            bail!(
+                "Unsupported dynamic dependency declaration in {}",
+                path.display()
+            );
+        }
+    }
+
+    collect_requirement_array_scoped(project.get("dependencies"), path, deps, None, None)?;
+    if let Some(optional) = project
+        .get("optional-dependencies")
+        .and_then(|value| value.as_table())
+    {
+        for (extra, group) in optional {
+            collect_requirement_array_scoped(Some(group), path, deps, None, Some(extra.as_str()))?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_dependency_groups_scoped(
+    parsed: &toml::Value,
+    path: &Path,
+    deps: &mut Vec<PythonScopedDependency>,
+) -> Result<()> {
     if let Some(groups) = parsed
         .get("dependency-groups")
         .and_then(|value| value.as_table())
@@ -453,14 +485,13 @@ pub(crate) fn parse_legacy_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
             collect_requirement_array_scoped(
                 Some(group),
                 path,
-                &mut deps,
+                deps,
                 Some(group_name.as_str()),
                 None,
             )?;
         }
     }
-
-    Ok(deps)
+    Ok(())
 }
 
 fn parse_toml(path: &Path) -> Result<toml::Value> {
@@ -781,6 +812,10 @@ fn compose_poetry_requirement(name: &str, spec: Option<&str>) -> String {
         Some(version) => format!("{name}=={version}"),
     }
 }
+
+#[cfg(test)]
+#[path = "pyproject_toml_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
