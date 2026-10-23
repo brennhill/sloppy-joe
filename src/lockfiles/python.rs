@@ -239,6 +239,7 @@ fn poetry_package_nodes(parsed: &toml::Value) -> Result<Vec<PoetryPackageNode>> 
                 normalized_name: normalize_name(name),
                 version: version.to_string(),
                 dependencies: poetry_dependency_edges(pkg)?,
+                has_explicit_source: pkg.get("source").is_some(),
             })
         })
         .collect()
@@ -292,9 +293,12 @@ fn resolve_root_request_version(
         return Ok(Some(version.to_string()));
     }
 
-    let mut matching_versions = nodes
+    let candidates: Vec<&PoetryPackageNode> = nodes
         .iter()
         .filter(|node| node.normalized_name == normalized_name)
+        .collect();
+    let mut matching_versions = candidates
+        .iter()
         .map(|node| node.version.clone())
         .collect::<Vec<_>>();
     matching_versions.sort();
@@ -303,10 +307,17 @@ fn resolve_root_request_version(
     match matching_versions.as_slice() {
         [] => Ok(None),
         [version] => Ok(Some(version.clone())),
-        _ => bail!(
+        // poetry.lock keeps one entry per Python-version split, so several
+        // locked versions are normal and the interpreter picks one at install
+        // time. Leave the version open so every candidate is reachable and
+        // scanned. An open version also authorizes each candidate's own locked
+        // source, so that is only safe when no candidate names a non-default
+        // source; otherwise stay fail closed.
+        _ if candidates.iter().any(|node| node.has_explicit_source) => bail!(
             "Dependency '{}' resolves ambiguously in poetry.lock and cannot be trusted exactly",
             crate::report::sanitize_for_terminal(dep.package_name())
         ),
+        _ => Ok(None),
     }
 }
 
@@ -1183,6 +1194,8 @@ struct PoetryPackageNode {
     normalized_name: String,
     version: String,
     dependencies: Vec<PoetryDependencyEdge>,
+    /// The lock entry names a `[package.source]` (an index other than the default).
+    has_explicit_source: bool,
 }
 
 #[derive(Clone)]

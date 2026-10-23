@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Poetry: scan every locked version when a root dependency has several entries from Python-version splits in `poetry.lock` (for example `platformdirs` 4.12.4 and 4.13.0), instead of rejecting the project as ambiguous. A split where any candidate comes from a non-default source still fails closed.
 - Python: accept PEP 508 version specifiers written in parentheses (`poetry-core (>=2.1.0,<3.0.0)`), which Poetry 2 projects emit, instead of rejecting them as an invalid package name. Unbalanced parentheses are still rejected.
 - Pipenv: check `Pipfile.lock`'s `_meta.hash` against the Pipfile using pipenv's own algorithm (validated against real published locks). A lock generated from a different Pipfile now blocks as out of date, and a missing `_meta.hash` blocks. Pipfiles holding values pipenv's hash cannot reproduce here (floats, datetimes) keep the package-level reconciliation only.
 - Pipenv: read a version with no comparison operator (`version = "26.2.*"`, `requests = "2.32.3"`) as `==`, as pipenv does, instead of rejecting the Pipfile with an invalid package name.

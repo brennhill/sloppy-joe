@@ -21,6 +21,9 @@ mod js_reachability_tests;
 #[cfg(test)]
 mod bun_nested_tests;
 
+#[cfg(test)]
+mod poetry_split_resolution_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
