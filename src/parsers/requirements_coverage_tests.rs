@@ -150,3 +150,83 @@ mod parenthesized_versions {
         assert_eq!(dep.version.as_deref(), Some(">=2.0,<3"));
     }
 }
+
+// `-e .` / `-e .[extras]` is the common "install this project in development
+// mode" line. Its dependencies come from the project's own manifest, which is
+// scanned as a separate project, so the line itself adds nothing to verify. It
+// is only accepted when that manifest sits next to the requirements file.
+mod self_editable_install {
+    use super::super::parse_file;
+    use crate::parsers::test_utils::*;
+
+    fn project(requirements: &str, manifest: Option<&str>) -> std::path::PathBuf {
+        let dir = setup_test_dir("req-self-editable", "requirements.txt", requirements);
+        if let Some(manifest) = manifest {
+            std::fs::write(dir.join(manifest), "").unwrap();
+        }
+        dir
+    }
+
+    fn names(dir: &std::path::Path) -> anyhow::Result<Vec<String>> {
+        Ok(parse_file(&dir.join("requirements.txt"), dir)?
+            .into_iter()
+            .map(|dep| dep.name)
+            .collect())
+    }
+
+    #[test]
+    fn dot_with_a_sibling_pyproject_is_accepted() {
+        for line in [
+            "-e .",
+            "-e .[socks]",
+            "-e .[socks, brotli]",
+            "--editable .",
+            "--editable=.[cli]",
+            "-e=.",
+        ] {
+            let dir = project(
+                &format!("requests==2.32.3\n{line}\n"),
+                Some("pyproject.toml"),
+            );
+            assert_eq!(names(&dir).unwrap(), vec!["requests"], "{line:?}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn setup_py_and_setup_cfg_also_count_as_the_project() {
+        for manifest in ["setup.py", "setup.cfg"] {
+            let dir = project("-e .\nrequests==2.32.3\n", Some(manifest));
+            assert_eq!(names(&dir).unwrap(), vec!["requests"], "{manifest}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn dot_without_a_sibling_manifest_still_blocks() {
+        let dir = project("requests==2.32.3\n-e .\n", None);
+        let err = names(&dir).unwrap_err();
+        assert!(err.to_string().contains("Unsupported"), "{err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn other_editable_targets_still_block() {
+        for line in [
+            "-e ./subdir",
+            "-e ..",
+            "-e ../other",
+            "-e git+https://github.com/example/pkg.git#egg=pkg",
+            "-e https://example.com/pkg.tar.gz",
+            "-e /abs/path",
+            "-e .[unterminated",
+            "-e .[bad extra!]",
+            "-e . --config-settings x=y",
+            "-e",
+        ] {
+            let dir = project(&format!("{line}\n"), Some("pyproject.toml"));
+            assert!(names(&dir).is_err(), "{line:?} must still block");
+            cleanup(&dir);
+        }
+    }
+}

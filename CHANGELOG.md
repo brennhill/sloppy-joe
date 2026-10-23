@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Python: accept `-e .` and `-e .[extras]` (also `--editable`) in requirements files when the project's own `pyproject.toml`, `setup.py` or `setup.cfg` sits next to the file. Its dependencies are scanned from that manifest, so the line adds nothing to verify. Editable paths, URLs and VCS targets still block.
 - Poetry: match lockfile artifact filenames to packages by normalized name, so projects whose files keep the original punctuation (`jaraco.classes-3.4.0-...` for `jaraco-classes`) are no longer downgraded to reduced confidence and flooded with `resolution/no-exact-version` errors. The version must also end exactly where the wheel tag or sdist extension begins, so `requests-1.0.1` no longer counts as `1.0`.
 - Poetry: scan every locked version when a root dependency has several entries from Python-version splits in `poetry.lock` (for example `platformdirs` 4.12.4 and 4.13.0), instead of rejecting the project as ambiguous. A split where any candidate comes from a non-default source still fails closed.
 - Python: accept PEP 508 version specifiers written in parentheses (`poetry-core (>=2.1.0,<3.0.0)`), which Poetry 2 projects emit, instead of rejecting them as an invalid package name. Unbalanced parentheses are still rejected.

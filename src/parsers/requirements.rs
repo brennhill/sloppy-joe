@@ -158,6 +158,10 @@ fn parse_scoped_file_inner(
             continue;
         }
 
+        if is_self_editable_install(line, &normalized_path) {
+            continue;
+        }
+
         if line.starts_with('-') {
             bail!(
                 "Unsupported requirements directive '{}' in {}",
@@ -354,6 +358,43 @@ fn requirement_include_target(line: &str) -> Option<IncludeDirective<'_>> {
         }
     }
     None
+}
+
+/// `-e .` / `--editable .[extras]`: install the project in this directory in
+/// development mode. Its dependencies come from the project's own manifest,
+/// which is scanned as a separate project, so the line adds nothing to verify.
+/// Only accepted when that manifest sits next to the requirements file; any
+/// other editable target (paths, URLs, VCS) cannot be verified.
+fn is_self_editable_install(line: &str, requirements_path: &Path) -> bool {
+    let line = line.trim();
+    let target = line
+        .strip_prefix("--editable")
+        .or_else(|| line.strip_prefix("-e"))
+        .map(|rest| rest.strip_prefix('=').unwrap_or(rest).trim());
+    let Some(target) = target else {
+        return false;
+    };
+    let extras_ok = match target.strip_prefix('.') {
+        Some("") => true,
+        Some(rest) => rest
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .is_some_and(|extras| {
+                !extras.trim().is_empty()
+                    && extras.chars().all(|ch| {
+                        ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ',' | ' ')
+                    })
+            }),
+        None => false,
+    };
+    if !extras_ok {
+        return false;
+    }
+    requirements_path.parent().is_some_and(|dir| {
+        ["pyproject.toml", "setup.py", "setup.cfg"]
+            .iter()
+            .any(|manifest| dir.join(manifest).is_file())
+    })
 }
 
 fn parse_supported_source_directive(
