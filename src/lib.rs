@@ -6618,7 +6618,24 @@ fn project_scan_summary(
         manager: spec
             .js_binding
             .as_ref()
-            .map(|binding| binding.manager.as_str().to_string()),
+            .map(|binding| binding.manager.as_str().to_string())
+            .or_else(|| {
+                let manager = match spec.kind {
+                    ProjectInputKind::Npm => return None,
+                    ProjectInputKind::PyProjectPoetry => "poetry",
+                    ProjectInputKind::PyProjectUv => "uv",
+                    ProjectInputKind::PyPipfile => "pipenv",
+                    ProjectInputKind::Cargo => "cargo",
+                    ProjectInputKind::Go => "go",
+                    ProjectInputKind::Ruby => "bundler",
+                    ProjectInputKind::Php => "composer",
+                    ProjectInputKind::Gradle => "gradle",
+                    ProjectInputKind::Maven => "maven",
+                    ProjectInputKind::Dotnet => "nuget",
+                    _ => "pip",
+                };
+                Some(manager.to_string())
+            }),
         packages_checked,
         status,
     }

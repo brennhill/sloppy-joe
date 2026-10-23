@@ -11609,3 +11609,47 @@ async fn independent_project_runs_continue_after_an_unsupported_dependency_chain
     std::fs::remove_dir_all(dir).unwrap();
     std::fs::remove_dir_all(cache_dir).unwrap();
 }
+
+#[tokio::test]
+async fn repository_reports_separate_node_and_rust_dependency_chains() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("web")).unwrap();
+    std::fs::create_dir_all(dir.join("backend")).unwrap();
+    std::fs::write(
+        dir.join("web/package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("web/package-lock.json"), r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{"react":"18.3.1"}},"node_modules/react":{"version":"18.3.1","resolved":"https://registry.npmjs.org/react/-/react-18.3.1.tgz","integrity":"sha512-demo"}}}"#).unwrap();
+    std::fs::write(
+        dir.join("backend/Cargo.toml"),
+        "[package]\nname = \"backend\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"=1.0.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("backend/Cargo.lock"), "version = 4\n[[package]]\nname = \"backend\"\nversion = \"0.1.0\"\ndependencies = [\"serde\"]\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n").unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        None,
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!report.has_errors(), "{:?}", report.issues);
+    assert_eq!(report.projects.len(), 2);
+    for manager in ["npm", "cargo"] {
+        let project = report
+            .projects
+            .iter()
+            .find(|p| p.manager.as_deref() == Some(manager))
+            .expect("each dependency chain must report its manager");
+        assert_eq!(project.packages_checked, 1);
+        assert!(project.lockfile_path.is_some());
+    }
+    assert_eq!(report.packages_checked, 2);
+    std::fs::remove_dir_all(dir).unwrap();
+}
