@@ -10,6 +10,7 @@
 - Reject future-dated security caches, preserve cache expiry on reuse, and record successful full scans only after passing checks.
 - Enforce version-age policy when publication dates are missing or invalid, and account for timezone offsets.
 - Bound package-name lengths before typo mutation generation.
+- Avoid reporting Cargo hyphen/underscore spellings of the same crate as typosquats.
 - Include legacy Python build and test dependencies.
 - Recognize packaged uv project roots and uv lockfiles without redundant tool metadata.
 - Verify supported uv version ranges against exact locked selections instead of requiring redundant manifest pins, using PEP 440 parsing for prerelease, postrelease, and local versions.

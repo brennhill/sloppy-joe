@@ -396,6 +396,12 @@ pub(crate) async fn check_similarity_with_options(
                     })
                     .or_insert("segment-overlap");
             }
+            if ecosystem == Ecosystem::Cargo {
+                let identity = dep.package_name().replace('-', "_");
+                mutations.retain(|candidate, _| {
+                    !candidate.replace('-', "_").eq_ignore_ascii_case(&identity)
+                });
+            }
             all_mutations.insert(dep.package_name().to_string(), mutations);
         }
     }

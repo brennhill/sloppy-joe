@@ -10809,3 +10809,41 @@ async fn uv_ranges_accept_valid_prerelease_postrelease_and_local_versions() {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[tokio::test]
+async fn cargo_hyphen_alias_is_not_reported_as_a_different_crate() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n[dependencies]\npep440_rs = \"=0.7.3\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("Cargo.lock"), "version = 4\n[[package]]\nname = \"pep440_rs\"\nversion = \"0.7.3\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n").unwrap();
+    let registry = FakeRegistry {
+        existing: vec!["pep440_rs".to_owned(), "pep440-rs".to_owned()],
+    };
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("cargo"),
+        Default::default(),
+        &registry,
+        &FakeOsvClient,
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check.starts_with("similarity/")),
+        "Cargo spellings that identify the same crate are not typosquats: {:?}",
+        report.issues
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
