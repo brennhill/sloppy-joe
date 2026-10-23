@@ -10,6 +10,9 @@ mod ruby;
 pub(crate) mod uv;
 pub(crate) mod yarn;
 
+#[cfg(test)]
+mod redteam_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};

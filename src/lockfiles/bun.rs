@@ -228,19 +228,22 @@ fn importer_dependency_entries(importer: &serde_json::Value) -> Vec<(String, Str
     entries
 }
 
-fn bun_dependency_entries(value: &serde_json::Value) -> Vec<(String, String)> {
+/// Every dependency edge a Bun package entry can install. Optional and peer
+/// edges are installed by Bun just like regular ones, so they must be walked
+/// (matching the pnpm and Yarn walkers).
+pub(crate) fn bun_dependency_entries(value: &serde_json::Value) -> Vec<(String, String)> {
     let mut entries = Vec::new();
-    let Some(deps) = value
-        .as_array()
-        .and_then(|parts| parts.get(2))
-        .and_then(|meta| meta.get("dependencies"))
-        .and_then(|deps| deps.as_object())
-    else {
+    let Some(meta) = value.as_array().and_then(|parts| parts.get(2)) else {
         return entries;
     };
-    for (name, specifier) in deps {
-        if let Some(specifier) = specifier.as_str() {
-            entries.push((name.to_string(), specifier.to_string()));
+    for section in ["dependencies", "optionalDependencies", "peerDependencies"] {
+        let Some(deps) = meta.get(section).and_then(|deps| deps.as_object()) else {
+            continue;
+        };
+        for (name, specifier) in deps {
+            if let Some(specifier) = specifier.as_str() {
+                entries.push((name.to_string(), specifier.to_string()));
+            }
         }
     }
     entries
