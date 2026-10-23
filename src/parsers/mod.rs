@@ -362,7 +362,10 @@ fn first_csproj(dir: &Path) -> Result<Option<std::path::PathBuf>> {
             entries
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .find(|path| path.extension().is_some_and(|ext| ext == "csproj"))
+                .find(|path| {
+                    csproj::is_project_file(path)
+                        || path.file_name() == Some("packages.config".as_ref())
+                })
         })
         .map_err(Into::into)
 }

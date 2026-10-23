@@ -188,15 +188,39 @@ fn find_package_reference_start(content: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// SDK-style MSBuild project files that declare NuGet PackageReferences:
+/// C# (.csproj), F# (.fsproj) and Visual Basic (.vbproj).
+pub(crate) fn is_project_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "csproj" | "fsproj" | "vbproj"))
+}
+
+/// Legacy `packages.config` restores NuGet packages without PackageReference
+/// or packages.lock.json, so it cannot be verified and must fail closed.
+pub(crate) fn reject_packages_config(path: &Path) -> Result<()> {
+    bail!(
+        "Unsupported legacy NuGet packages.config at {}: migrate to PackageReference with a packages.lock.json so dependencies can be verified",
+        path.display()
+    )
+}
+
 fn find_csproj_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let packages_config = dir.join("packages.config");
+    if super::path_detected(&packages_config)? {
+        reject_packages_config(&packages_config)?;
+    }
     let mut files = std::fs::read_dir(dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "csproj"))
+        .filter(|path| is_project_file(path))
         .collect::<Vec<_>>();
     files.sort();
     if files.is_empty() {
-        bail!("No .csproj file found in {}", dir.display());
+        bail!(
+            "No .csproj, .fsproj or .vbproj file found in {}",
+            dir.display()
+        );
     }
     Ok(files)
 }

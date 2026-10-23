@@ -5681,7 +5681,11 @@ fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<Project
         Some("composer.json") => Some(ProjectInputKind::Php),
         Some("build.gradle") | Some("build.gradle.kts") => Some(ProjectInputKind::Gradle),
         Some("pom.xml") => Some(ProjectInputKind::Maven),
-        _ if path.extension().is_some_and(|ext| ext == "csproj") => Some(ProjectInputKind::Dotnet),
+        Some("packages.config") => {
+            parsers::csproj::reject_packages_config(path)?;
+            None
+        }
+        _ if parsers::csproj::is_project_file(path) => Some(ProjectInputKind::Dotnet),
         _ => None,
     })
 }
@@ -7238,3 +7242,7 @@ pub(crate) mod test_helpers {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lib_dotnet_discovery_tests.rs"]
+mod dotnet_discovery_tests;
