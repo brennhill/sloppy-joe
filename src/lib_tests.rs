@@ -12074,7 +12074,10 @@ fn bundler_gems_rb_is_not_silently_skipped() {
     let control = project(None);
     let control_result = preflight_scan_inputs(&control, None);
     let _ = std::fs::remove_dir_all(&control);
-    assert!(control_result.is_ok(), "control project must pass: {control_result:?}");
+    assert!(
+        control_result.is_ok(),
+        "control project must pass: {control_result:?}"
+    );
     for name in ["gems.rb", "gems.locked"] {
         let dir = project(Some(name));
         let result = preflight_scan_inputs(&dir, None);

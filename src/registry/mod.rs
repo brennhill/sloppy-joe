@@ -320,6 +320,35 @@ const RETRY_BASE_DELAY_MS: u64 = 200;
 /// Send a GET request with retry on transient failures (5xx, timeouts, connection errors).
 /// Returns the response on success, or the last error after exhausting retries.
 pub(crate) async fn retry_get(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
+    // A 429 means "slow down", not "failed": wait as the registry asks (bounded) and ask again.
+    // Exhausting the attempts hands the 429 to the caller, which fails closed.
+    for attempt in 0..MAX_RATE_LIMIT_RETRIES {
+        let response = retry_get_once(client, url).await?;
+        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+            || attempt == MAX_RATE_LIMIT_RETRIES - 1
+        {
+            return Ok(response);
+        }
+        let asked = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
+        let wait = asked
+            .unwrap_or_else(|| Duration::from_millis(RATE_LIMIT_BASE_DELAY_MS << attempt))
+            .min(MAX_RATE_LIMIT_WAIT);
+        tokio::time::sleep(wait).await;
+    }
+    unreachable!("the loop returns on its last attempt")
+}
+
+/// Maximum times a rate-limited (HTTP 429) request is repeated.
+const MAX_RATE_LIMIT_RETRIES: u32 = 5;
+const RATE_LIMIT_BASE_DELAY_MS: u64 = 1000;
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(10);
+
+async fn retry_get_once(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
     let mut last_err = None;
     for attempt in 0..MAX_RETRIES {
         match client.get(url).send().await {
@@ -643,5 +672,51 @@ mod tests {
             "Total retry delay exceeds 5s: {}ms",
             total_delay
         );
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn serve(throttled: usize) -> (String, Arc<AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let seen = counter.fetch_add(1, Ordering::SeqCst);
+                let mut buffer = [0u8; 2048];
+                let _ = stream.read(&mut buffer).await;
+                let reply = if seen < throttled {
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                };
+                let _ = stream.write_all(reply.as_bytes()).await;
+            }
+        });
+        (origin, hits)
+    }
+
+    #[tokio::test]
+    async fn rate_limited_requests_are_repeated_until_the_registry_answers() {
+        let (origin, hits) = serve(2).await;
+        let response = retry_get(&http_client(), &origin).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn persistent_rate_limiting_is_handed_back_so_callers_fail_closed() {
+        let (origin, hits) = serve(usize::MAX).await;
+        let response = retry_get(&http_client(), &origin).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(hits.load(Ordering::SeqCst), MAX_RATE_LIMIT_RETRIES as usize);
     }
 }
