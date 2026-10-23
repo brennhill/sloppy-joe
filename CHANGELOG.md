@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Python: check `--index-url`, `-i`, and `--extra-index-url` in every scanned requirements file (not only hash-locked ones), including `-r`/`-c` includes, against `trusted_indexes.pypi`. A non-PyPI index that is not allowlisted now blocks with a `resolution/untrusted-registry-source` error naming the index and the declaring file. Previously an unhashed requirements file could point pip at another index while sloppy-joe vetted the public PyPI package.
 - Ruby: parse `gem` entries with several version requirements (`gem 'x', '~> 1.0', '>= 1.0.2'`) instead of blocking them as unsupported. Every requirement is kept; a malformed or dynamic one still blocks.
 - Python: scan every dependency group and extra by default (Poetry groups, PEP 735 `[dependency-groups]`, uv dev dependencies, optional dependencies; PDM/Hatch environments as unlocked tooling). `--python-groups`/`--python-extras` now narrow the selection and warn about the groups and extras they exclude. Resolve PEP 735 `include-group` entries, blocking on cycles, unknown groups, and malformed include tables.
 - uv.lock: read root `optional-dependencies`, `dev-dependencies`, and `requires-dev`, follow locked package extras transitively, and check lock and manifest in both directions. A locked root dependency/extra/group entry missing from pyproject.toml, or a declared group dependency missing from uv.lock, now blocks.

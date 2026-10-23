@@ -422,6 +422,13 @@ fn preflight_selected_project_inputs(
             | ProjectInputKind::PyPipfile
             | ProjectInputKind::PySetupPy
             | ProjectInputKind::PySetupCfg => {
+                if spec.kind == ProjectInputKind::PyRequirements {
+                    parsers::requirements::ensure_trusted_indexes(
+                        &spec.manifest_path,
+                        scan_root,
+                        config,
+                    )?;
+                }
                 if config.python_enforcement == config::PythonEnforcement::PoetryOnly {
                     anyhow::bail!(
                         "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -635,16 +642,8 @@ fn validate_hash_locked_requirements_provenance(
     spec: &ProjectInputSpec,
     config: &config::SloppyJoeConfig,
 ) -> Result<bool> {
-    let provenance = parsers::requirements::source_provenance(&spec.manifest_path, scan_root)?;
-    for index in provenance.all_indexes() {
-        if !config.is_trusted_index("pypi", index) {
-            anyhow::bail!(
-                "Broken manifest '{}': requirements file declares untrusted Python index '{}'",
-                spec.manifest_path.display(),
-                index
-            );
-        }
-    }
+    let provenance =
+        parsers::requirements::ensure_trusted_indexes(&spec.manifest_path, scan_root, config)?;
     Ok(provenance.primary_index.is_some())
 }
 
@@ -5825,6 +5824,10 @@ mod python_manifest_coverage_tests;
 #[cfg(test)]
 #[path = "python_group_scope_tests.rs"]
 mod python_group_scope_tests;
+
+#[cfg(test)]
+#[path = "requirements_index_allowlist_tests.rs"]
+mod requirements_index_allowlist_tests;
 
 #[cfg(test)]
 #[path = "uv_lock_groups_tests.rs"]
