@@ -55,8 +55,16 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     }
 
     let mut deps = Vec::new();
+    let mut gemspecs = Vec::new();
+    for line in content.lines() {
+        let line = strip_ruby_comments(line);
+        if let Some(statement) = gemspec_statement(line.trim()) {
+            gemspecs.push(statement?);
+        }
+    }
 
     for entry in collect_gem_entries(&content)? {
+        let entry = strip_condition_modifier(&entry);
         if has_unsupported_gem_source(&entry) {
             anyhow::bail!(
                 "Unsupported non-registry Gemfile dependency source in {}",
@@ -81,7 +89,262 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
     }
 
+    for name in gemspecs {
+        deps.extend(parse_gemspec(&project_dir, name.as_deref())?);
+    }
+
     Ok(deps)
+}
+
+/// `gemspec`, `gemspec name: 'x'` or `gemspec :name => 'x'`. `Some(Err)`: a
+/// `gemspec` call with options that could point somewhere else.
+fn gemspec_statement(trimmed: &str) -> Option<Result<Option<String>>> {
+    let rest = trimmed.strip_prefix("gemspec")?;
+    if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let unsupported = || {
+        Some(Err(anyhow::anyhow!(
+            "Unsupported gemspec options '{}': only a plain `gemspec` or `gemspec name: \"x\"` can be verified",
+            crate::report::sanitize_for_terminal(trimmed)
+        )))
+    };
+    let mut rest = rest.trim();
+    if let Some(inner) = rest.strip_prefix('(') {
+        let Some(inner) = inner.strip_suffix(')') else {
+            return unsupported();
+        };
+        rest = inner.trim();
+    }
+    if rest.is_empty() {
+        return Some(Ok(None));
+    }
+    let value = rest
+        .strip_prefix("name:")
+        .or_else(|| {
+            rest.strip_prefix(":name")
+                .and_then(|r| r.trim_start().strip_prefix("=>"))
+        })
+        .map(str::trim);
+    let Some((name, tail)) = value.and_then(take_string_literal) else {
+        return unsupported();
+    };
+    let plain = !name.is_empty()
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !tail.trim().is_empty() || !plain {
+        return unsupported();
+    }
+    Some(Ok(Some(name)))
+}
+
+/// Dependencies a project's own `.gemspec` adds to the bundle. Only literal
+/// `add_dependency "name", "requirement"...` calls are understood.
+fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependency>> {
+    let path = match name {
+        Some(name) => project_dir.join(format!("{name}.gemspec")),
+        None => {
+            let mut found = Vec::new();
+            for entry in std::fs::read_dir(project_dir)? {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().ends_with(".gemspec") {
+                    found.push(entry.path());
+                }
+            }
+            match found.as_slice() {
+                [only] => only.clone(),
+                _ => anyhow::bail!(
+                    "Unsupported `gemspec` in {}: expected exactly one .gemspec file, found {}",
+                    project_dir.display(),
+                    found.len()
+                ),
+            }
+        }
+    };
+    if !super::path_detected(&path)? {
+        anyhow::bail!(
+            "`gemspec` in the Gemfile names missing file {}",
+            path.display()
+        );
+    }
+    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let text: String = content
+        .lines()
+        .map(strip_ruby_comments)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let unsupported = |why: &str| {
+        anyhow::anyhow!(
+            "Unsupported gemspec {}: {why}; dependency declarations cannot be verified",
+            path.display()
+        )
+    };
+    if text.contains(".dependencies")
+        || text
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|w| w.contains("eval"))
+    {
+        return Err(unsupported("it modifies dependencies dynamically"));
+    }
+    let mut deps = Vec::new();
+    let mut offset = 0usize;
+    while let Some(found) = text[offset..].find("add_") {
+        let start = offset + found;
+        offset = start + 4;
+        let after_add = &text[start + 4..];
+        let method_tail = ["runtime_dependency", "development_dependency", "dependency"]
+            .iter()
+            .find_map(|m| after_add.strip_prefix(m));
+        let Some(mut rest) = method_tail else {
+            continue;
+        };
+        if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        rest = rest.trim_start_matches([' ', '\t']);
+        let parenthesized = rest.starts_with('(');
+        if parenthesized {
+            rest = &rest[1..];
+        }
+        let mut literals = Vec::new();
+        let mut after_last = rest;
+        loop {
+            rest = rest.trim_start();
+            let Some((literal, tail)) = take_string_literal(rest) else {
+                return Err(unsupported("a dependency argument is not a plain string"));
+            };
+            if literal.contains('"') {
+                return Err(unsupported("a dependency argument contains a quote"));
+            }
+            literals.push(literal);
+            after_last = tail;
+            rest = tail.trim_start();
+            match rest.strip_prefix(',') {
+                Some(next) => rest = next,
+                None => break,
+            }
+        }
+        rest = after_last;
+        if parenthesized {
+            let Some(next) = rest.trim_start().strip_prefix(')') else {
+                return Err(unsupported("a dependency call is not closed"));
+            };
+            rest = next;
+        }
+        let line_tail = rest.split('\n').next().unwrap_or_default().trim();
+        if !(line_tail.is_empty()
+            || line_tail.starts_with('}')
+            || line_tail.starts_with(';')
+            || line_tail == "end")
+        {
+            return Err(unsupported("a dependency call has trailing expressions"));
+        }
+        let quoted: Vec<String> = literals.iter().map(|l| format!("\"{l}\"")).collect();
+        let Some((name, version)) = extract_gem_spec(&format!("gem {}", quoted.join(", "))) else {
+            return Err(unsupported("a dependency has an unrecognized requirement"));
+        };
+        let dep = Dependency {
+            name,
+            version,
+            ecosystem: crate::Ecosystem::Ruby,
+            actual_name: None,
+        };
+        super::validate_dependency(&dep, &path)?;
+        deps.push(dep);
+    }
+    Ok(deps)
+}
+
+/// A condition guarding gems (`RUBY_VERSION >= "3.4"`, `ENV["CI"]`). Both
+/// branches are scanned, so the condition's value never changes what is
+/// verified; it only has to be unable to declare gems or run commands itself.
+fn simple_condition(condition: &str) -> bool {
+    let condition = condition.trim();
+    if condition.is_empty() || condition.ends_with(['\\', ',']) {
+        return false;
+    }
+    let allowed = |c: char| {
+        c.is_ascii_alphanumeric()
+            || c.is_whitespace()
+            || matches!(
+                c,
+                '_' | '.'
+                    | '\''
+                    | '"'
+                    | '['
+                    | ']'
+                    | '('
+                    | ')'
+                    | '='
+                    | '!'
+                    | '<'
+                    | '>'
+                    | '&'
+                    | '|'
+                    | '~'
+                    | ':'
+                    | '-'
+            )
+    };
+    if !condition.chars().all(allowed) {
+        return false;
+    }
+    const FORBIDDEN: &[&str] = &[
+        "gem",
+        "gemspec",
+        "source",
+        "git",
+        "github",
+        "path",
+        "group",
+        "platforms",
+        "eval",
+        "instance_eval",
+        "system",
+        "exec",
+        "require",
+        "load",
+        "send",
+        "File",
+        "IO",
+        "Kernel",
+        "Dir",
+        "Open3",
+        "Process",
+        "do",
+    ];
+    !condition
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|word| FORBIDDEN.contains(&word))
+}
+
+/// Removes a trailing `if <cond>` / `unless <cond>` modifier from a gem
+/// declaration when the condition is simple (see [`simple_condition`]).
+fn strip_condition_modifier(entry: &str) -> String {
+    let mut quote: Option<char> = None;
+    let bytes: Vec<char> = entry.chars().collect();
+    for (idx, ch) in bytes.iter().enumerate() {
+        match quote {
+            Some(open) if *ch == open => quote = None,
+            Some(_) => {}
+            None if matches!(ch, '\'' | '"') => quote = Some(*ch),
+            None if ch.is_whitespace() => {
+                let rest: String = bytes[idx + 1..].iter().collect();
+                for keyword in ["if ", "unless "] {
+                    if let Some(condition) = rest.strip_prefix(keyword)
+                        && simple_condition(condition)
+                    {
+                        return bytes[..idx].iter().collect();
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+    entry.to_string()
 }
 
 fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
@@ -95,6 +358,10 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
         let trimmed = uncommented.trim();
         if !in_entry {
             if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some(statement) = gemspec_statement(trimmed) {
+                statement?;
                 continue;
             }
             if trimmed.starts_with("gem ")
@@ -120,7 +387,16 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
                             })
                         })
                     });
-                if (method == "source" || trimmed == "end" || literal_runtime || literal_group)
+                let literal_conditional = match method {
+                    "else" => trimmed == "else",
+                    "if" | "unless" | "elsif" => simple_condition(&trimmed[method.len()..]),
+                    _ => false,
+                };
+                if (method == "source"
+                    || trimmed == "end"
+                    || literal_runtime
+                    || literal_group
+                    || literal_conditional)
                     && !trimmed.contains(';')
                 {
                     continue;
@@ -433,6 +709,10 @@ impl RubyExpressionState {
             && !line.trim_end().ends_with(',')
     }
 }
+
+#[cfg(test)]
+#[path = "gemfile_gemspec_tests.rs"]
+mod gemspec_tests;
 
 #[cfg(test)]
 #[path = "gemfile_constraint_tests.rs"]
