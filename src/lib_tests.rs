@@ -11477,6 +11477,30 @@ async fn independent_npm_chains_under_a_pnpm_marker_keep_their_own_locked_versio
             .iter()
             .any(|i| i.check == "resolution/independent-install-root")
     );
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  tools: {}\npackages: {}\n",
+    )
+    .unwrap();
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config::SloppyJoeConfig::default(),
+        &FakeRegistry {
+            existing: vec!["react".into(), "helper".into()],
+        },
+        &RecordingOsvClient {
+            versions: versions.clone(),
+        },
+        &ScanOptions {
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a lockfile for unrelated pnpm projects must not claim the npm chains");
+    assert_eq!(report.packages_checked, 4);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

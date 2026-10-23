@@ -520,7 +520,7 @@ fn preflight_selected_project_inputs(
                 .and_then(|b| b.independent_from_workspace.as_ref())
             {
                 warnings.push(Issue::new(spec.manifest_path.display().to_string(), checks::names::RESOLUTION_INDEPENDENT_INSTALL_ROOT, Severity::Warning)
-                    .message(format!("Scanning '{}' independently with its own lockfile: ancestor workspace '{}' has no authoritative lockfile and no explicit packageManager.", spec.manifest_path.display(), workspace.display()))
+                    .message(format!("Scanning '{}' independently with its own lockfile: ancestor workspace '{}' does not lock this project and has no explicit packageManager.", spec.manifest_path.display(), workspace.display()))
                     .fix("Keep this project's installer and lockfile aligned with CI; remove unused ancestor workspace declarations if appropriate."));
             }
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
@@ -1248,7 +1248,7 @@ fn resolve_js_project_binding(
             )?,
         )?
         .is_some()
-        && js_lockfile_path(&root.project_dir, root.manager)?.is_none()
+        && !js_workspace_records_project(root, &canonical_project_dir)?
     {
         let root_manifest = root.project_dir.join("package.json");
         let explicitly_selected = parsers::path_detected(&root_manifest)?
@@ -1321,6 +1321,39 @@ fn resolve_js_project_binding(
         npm_registries,
         independent_from_workspace,
     })
+}
+
+fn js_workspace_records_project(
+    root: &WorkspaceRoot,
+    project_dir: &std::path::Path,
+) -> Result<bool> {
+    let Some(path) = js_lockfile_path(&root.project_dir, root.manager)? else {
+        return Ok(false);
+    };
+    let key = relative_package_entry_key(&root.project_dir, project_dir)?;
+    let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
+    match root.manager {
+        JsPackageManager::Pnpm => {
+            let value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|error| {
+                anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
+            })?;
+            Ok(value
+                .get("importers")
+                .and_then(|entries| entries.get(&key))
+                .is_some())
+        }
+        JsPackageManager::Npm => {
+            let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+                anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
+            })?;
+            Ok(value
+                .get("packages")
+                .and_then(|entries| entries.get(&key))
+                .is_some())
+        }
+        // Other workspace formats retain their existing ownership checks.
+        JsPackageManager::Yarn | JsPackageManager::Bun => Ok(true),
+    }
 }
 
 fn js_lockfile_path(
