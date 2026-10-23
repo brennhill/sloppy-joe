@@ -31,6 +31,7 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
             }
         }
         reject_global_json_msbuild_sdks(ancestor, csproj)?;
+        reject_untrusted_nuget_config(ancestor, csproj)?;
     }
 
     for tag in content.split('<').skip(1) {
@@ -39,6 +40,19 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
             .next()
             .unwrap_or_default();
         let local_name = name.rsplit(':').next().unwrap_or_default();
+        if matches!(
+            local_name,
+            "RestoreSources"
+                | "RestoreAdditionalProjectSources"
+                | "RestoreFallbackFolders"
+                | "RestoreAdditionalProjectFallbackFolders"
+        ) {
+            bail!(
+                "Unsupported MSBuild {} in {}: restore would fetch packages from sources sloppy-joe cannot verify",
+                name,
+                csproj.display()
+            );
+        }
         if matches!(
             local_name,
             "Import" | "PackageDownload" | "DotNetCliToolReference"
@@ -138,6 +152,64 @@ fn reject_unbundled_msbuild_sdk(name: &str, version: Option<&str>, csproj: &Path
 
 /// `global.json` `msbuild-sdks` pins NuGet-resolved MSBuild SDKs for every
 /// project below it.
+const NUGET_ORG_FEED: &str = "https://api.nuget.org/v3/index.json";
+
+/// `dotnet restore` honors a `nuget.config` in the project directory or any parent, so a
+/// feed other than nuget.org there redirects every package to an unverified source.
+fn reject_untrusted_nuget_config(dir: &Path, csproj: &Path) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("nuget.config")
+        {
+            continue;
+        }
+        let path = entry.path();
+        let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)?;
+        let content = strip_xml_comments(&content);
+        let lowered = content.to_ascii_lowercase();
+        if lowered.contains("<fallbackpackagefolders") {
+            bail!(
+                "Unsupported {} (applies to {}): <fallbackPackageFolders> changes where restore reads packages from",
+                path.display(),
+                csproj.display()
+            );
+        }
+        let mut rest = lowered.as_str();
+        let original = content.as_str();
+        let mut offset = 0;
+        while let Some(start) = rest.find("<packagesources") {
+            let section_start = offset + start;
+            let section_end = lowered[section_start..]
+                .find("</packagesources")
+                .map(|end| section_start + end)
+                .unwrap_or(lowered.len());
+            for tag in original[section_start..section_end].split('<').skip(1) {
+                if !tag.to_ascii_lowercase().starts_with("add") {
+                    continue;
+                }
+                let attrs = tag.split('>').next().unwrap_or_default();
+                let value = extract_attr(attrs, "value").unwrap_or_default();
+                if value.trim() != NUGET_ORG_FEED {
+                    bail!(
+                        "Unsupported package source '{}' in {} (applies to {}): only {NUGET_ORG_FEED} is trusted",
+                        value.trim(),
+                        path.display(),
+                        csproj.display()
+                    );
+                }
+            }
+            offset = section_end;
+            rest = &lowered[offset..];
+        }
+    }
+    Ok(())
+}
+
 fn reject_global_json_msbuild_sdks(dir: &Path, csproj: &Path) -> Result<()> {
     let global_json = dir.join("global.json");
     if !super::path_detected(&global_json)? {
@@ -542,6 +614,42 @@ mod tests {
         let deps = parse(&dir).unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].name, "Newtonsoft.Json");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn reject_restore_source_properties() {
+        for tag in [
+            "RestoreSources",
+            "RestoreAdditionalProjectSources",
+            "RestoreFallbackFolders",
+        ] {
+            let dir = setup_dir(&format!(
+                r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><{tag}>https://feed.example.invalid/v3/index.json</{tag}></PropertyGroup><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>"#
+            ));
+            assert!(parse(&dir).is_err(), "{tag}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_foreign_nuget_config_feeds_but_accept_nuget_org() {
+        let project = r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>"#;
+        let dir = setup_dir(project);
+        std::fs::write(
+            dir.join("NuGet.Config"),
+            r#"<configuration><packageSources><clear /><add key="evil" value="https://feed.example.invalid/v3/index.json" /></packageSources></configuration>"#,
+        )
+        .unwrap();
+        assert!(parse(&dir).is_err());
+        std::fs::write(
+            dir.join("nuget.config"),
+            r#"<configuration><packageSources><clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" /></packageSources></configuration>"#,
+        )
+        .unwrap();
+        // The foreign-feed file is still there on case-sensitive disks; remove it to test the allowed one.
+        let _ = std::fs::remove_file(dir.join("NuGet.Config"));
+        assert!(parse(&dir).is_ok());
         cleanup(&dir);
     }
 }
