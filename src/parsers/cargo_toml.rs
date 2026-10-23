@@ -228,11 +228,21 @@ fn parse_patch_scope(scope: &str) -> CargoPatchScope {
     }
 }
 
+/// Dependency table names Cargo honors, including the deprecated underscore
+/// spellings (`dev_dependencies`, `build_dependencies`) older editions accept.
+const CARGO_DEPENDENCY_TABLES: &[&str] = &[
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+    "dev_dependencies",
+    "build_dependencies",
+];
+
 fn collect_dependency_tables(
     parsed: &toml::Value,
     visitor: &mut impl FnMut(&toml::map::Map<String, toml::Value>),
 ) {
-    for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+    for key in CARGO_DEPENDENCY_TABLES {
         if let Some(table) = parsed.get(key).and_then(|v| v.as_table()) {
             visitor(table);
         }
@@ -242,8 +252,8 @@ fn collect_dependency_tables(
         return;
     };
     for target in targets.values().filter_map(|v| v.as_table()) {
-        for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
-            if let Some(table) = target.get(key).and_then(|v| v.as_table()) {
+        for key in CARGO_DEPENDENCY_TABLES {
+            if let Some(table) = target.get(*key).and_then(|v| v.as_table()) {
                 visitor(table);
             }
         }
@@ -600,6 +610,53 @@ serde = []
         let err = parse_manifest(&dir)
             .expect_err("invalid Cargo dependency value types must fail closed");
         assert!(err.to_string().contains("unsupported dependency value"));
+        cleanup(&dir);
+    }
+}
+
+#[cfg(test)]
+mod underscore_table_tests {
+    use super::*;
+    use crate::parsers::test_utils::*;
+
+    #[test]
+    fn parse_deprecated_underscore_dependency_tables() {
+        let dir = setup_test_dir(
+            "cargo",
+            "Cargo.toml",
+            r#"
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = "=1.0.228"
+
+[dev_dependencies]
+evil-dev-underscore = "1"
+
+[build_dependencies]
+evil-build-underscore = "1"
+
+[target.'cfg(unix)'.dev_dependencies]
+evil-target-underscore = "1"
+
+[target.'cfg(windows)'.build_dependencies]
+evil-target-build-underscore = "1"
+"#,
+        );
+        let mut names: Vec<String> = parse(&dir).unwrap().into_iter().map(|d| d.name).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "evil-build-underscore",
+                "evil-dev-underscore",
+                "evil-target-build-underscore",
+                "evil-target-underscore",
+                "serde",
+            ]
+        );
         cleanup(&dir);
     }
 }
