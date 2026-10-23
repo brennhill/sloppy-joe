@@ -4163,6 +4163,7 @@ fn workspace_manifest_paths(workspace_root: &WorkspaceRoot) -> Result<Vec<std::p
         &mut visited,
         &mut specs,
         false,
+        &[],
     )?;
     Ok(specs
         .into_iter()
@@ -5127,7 +5128,7 @@ fn detected_project_inputs_with_config(
     project_type: Option<&str>,
     config: &config::SloppyJoeConfig,
 ) -> Result<Vec<ProjectInputSpec>> {
-    let mut specs = discover_project_inputs(project_dir)?;
+    let mut specs = discover_project_inputs(project_dir, &config.ignore_dirs)?;
     specs.retain(|spec| match project_type {
         Some("npm") => spec.kind == ProjectInputKind::Npm,
         Some("pypi") => spec.kind.is_python(),
@@ -5261,7 +5262,10 @@ fn expand_cargo_project_inputs(
     Ok(())
 }
 
-fn discover_project_inputs(project_dir: &std::path::Path) -> Result<Vec<ProjectInputSpec>> {
+fn discover_project_inputs(
+    project_dir: &std::path::Path,
+    ignore_dirs: &[String],
+) -> Result<Vec<ProjectInputSpec>> {
     let root = std::fs::canonicalize(project_dir).map_err(|err| {
         anyhow::anyhow!(
             "Failed to inspect {} for project manifests: {}",
@@ -5271,7 +5275,14 @@ fn discover_project_inputs(project_dir: &std::path::Path) -> Result<Vec<ProjectI
     })?;
     let mut visited = std::collections::HashSet::new();
     let mut specs = Vec::new();
-    walk_project_tree(project_dir, &root, &mut visited, &mut specs, false)?;
+    walk_project_tree(
+        project_dir,
+        &root,
+        &mut visited,
+        &mut specs,
+        false,
+        ignore_dirs,
+    )?;
     specs.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
     Ok(specs)
 }
@@ -5282,6 +5293,7 @@ fn walk_project_tree(
     visited: &mut std::collections::HashSet<std::path::PathBuf>,
     specs: &mut Vec<ProjectInputSpec>,
     inside_installed_node_modules: bool,
+    ignore_dirs: &[String],
 ) -> Result<()> {
     let canonical_current = std::fs::canonicalize(current_dir).map_err(|err| {
         anyhow::anyhow!(
@@ -5327,6 +5339,13 @@ fn walk_project_tree(
             .file_type()
             .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", path.display(), err))?;
 
+        if (file_type.is_dir() || file_type.is_symlink())
+            && name
+                .to_str()
+                .is_some_and(|name| ignore_dirs.iter().any(|ignored| ignored == name))
+        {
+            continue;
+        }
         if file_type.is_dir() {
             if name.to_str() == Some(".git") {
                 continue;
@@ -5343,6 +5362,7 @@ fn walk_project_tree(
                 visited,
                 specs,
                 child_inside_installed_node_modules,
+                ignore_dirs,
             )?;
             continue;
         }
@@ -5369,6 +5389,7 @@ fn walk_project_tree(
                     specs,
                     inside_installed_node_modules
                         || resolved_path_inside_installed_node_modules(root, &target),
+                    ignore_dirs,
                 )?;
                 continue;
             }

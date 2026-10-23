@@ -252,6 +252,9 @@ impl BootstrapReview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SloppyJoeConfig {
+    /// Directory names excluded from recursive project discovery.
+    #[serde(default = "default_ignore_dirs")]
+    pub ignore_dirs: Vec<String>,
     #[serde(default)]
     pub canonical: HashMap<String, HashMap<String, Vec<String>>>,
     #[serde(default)]
@@ -290,6 +293,10 @@ pub struct SloppyJoeConfig {
     pub active_local_overlay_relaxations: Vec<String>,
 }
 
+fn default_ignore_dirs() -> Vec<String> {
+    vec![".planning".to_string()]
+}
+
 fn default_min_version_age_hours() -> u64 {
     72
 }
@@ -310,6 +317,7 @@ fn extract_npm_scope(package_or_pattern: &str) -> Option<&str> {
 impl Default for SloppyJoeConfig {
     fn default() -> Self {
         Self {
+            ignore_dirs: default_ignore_dirs(),
             canonical: HashMap::new(),
             internal: HashMap::new(),
             allowed: HashMap::new(),

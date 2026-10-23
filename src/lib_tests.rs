@@ -11245,3 +11245,48 @@ async fn npm_workspace_peer_ranges_resolve_from_the_authoritative_root_lockfile(
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn planning_spikes_are_ignored_by_default_but_application_manifests_are_scanned() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","dependencies":{}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{}}}}"#,
+    )
+    .unwrap();
+    let spike = dir.join(".planning/spikes/camera");
+    std::fs::create_dir_all(&spike).unwrap();
+    std::fs::write(
+        spike.join("package.json"),
+        r#"{"overrides":{"adm-zip":"0.6.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(spike.join("pyproject.toml"), "not valid toml = [").unwrap();
+    let opts = ScanOptions {
+        scan_mode: ScanMode::Fast,
+        no_cache: true,
+        ..Default::default()
+    };
+    let report = scan_with_source_full_options(&dir, None, None, &opts)
+        .await
+        .expect("planning spikes are outside the application scan");
+    assert!(!report.has_errors());
+    let app = dir.join("web");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    let error = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+        .await
+        .expect_err("application packages must still be checked");
+    assert!(error.to_string().contains("web"), "{error}");
+    assert!(!error.to_string().contains(".planning"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
