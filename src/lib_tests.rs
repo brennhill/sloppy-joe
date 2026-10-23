@@ -10700,3 +10700,35 @@ async fn adjacent_uv_lock_selects_uv_without_redundant_tool_metadata() {
     assert!(!report.has_errors());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn uv_locked_range_is_verified_against_the_resolved_version() {
+    let dir = unique_dir();
+    let fixture = ecosystem_fixture_dir("python", "uv-pass");
+    let manifest = std::fs::read_to_string(fixture.join("pyproject.toml"))
+        .unwrap()
+        .replace("==2.32.3", ">=2.32,<3");
+    let locked = std::fs::read_to_string(fixture.join("uv.lock"))
+        .unwrap()
+        .replace("==2.32.3", ">=2.32,<3");
+    std::fs::write(dir.join("pyproject.toml"), manifest).unwrap();
+    std::fs::write(dir.join("uv.lock"), locked).unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("pypi"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report.has_errors(),
+        "a synchronized, uniquely resolved uv range must pass: {:?}",
+        report.issues
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

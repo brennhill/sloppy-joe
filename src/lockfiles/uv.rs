@@ -1,7 +1,6 @@
 use super::{
     ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue,
-    no_trusted_lockfile_sync_issue, out_of_sync_issue,
+    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue, out_of_sync_issue,
 };
 use crate::{
     Dependency,
@@ -149,6 +148,22 @@ pub(crate) fn validate_manifest_consistency(
                     source_path.display(),
                     dep.name,
                     expected_version
+                );
+            }
+        } else if let [candidate] = candidates.as_slice() {
+            let version = candidate
+                .get("version")
+                .and_then(|version| version.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Broken uv.lock: resolved package is missing version")
+                })?;
+            if !version_matches_uv_specifier(version, specifier.as_deref())? {
+                bail!(
+                    "Broken lockfile '{}': '{}' resolved version '{}' is out of sync with '{}'",
+                    source_path.display(),
+                    dep.name,
+                    version,
+                    specifier.as_deref().unwrap_or("")
                 );
             }
         } else if candidates.len() > 1 {
@@ -636,7 +651,22 @@ pub(super) fn resolve_from_value_with_mode_and_profile(
         }
 
         if mode == ResolutionMode::Direct && dep.version.is_some() {
-            result.push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "uv.lock"));
+            let selected = selected_root_version
+                .as_ref()
+                .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
+            match selected {
+                Some(version) if version_matches_uv_specifier(version, dep.version.as_deref())? => {
+                    result.exact_versions.insert(
+                        ResolutionKey::from(dep),
+                        ResolvedVersion {
+                            version: version.clone(),
+                            source: ResolutionSource::Lockfile,
+                        },
+                    );
+                }
+                Some(version) => result.push_issue_for(dep, out_of_sync_issue(dep, version)),
+                None => result.push_issue_for(dep, ambiguous_issue(dep)),
+            }
             continue;
         }
 
