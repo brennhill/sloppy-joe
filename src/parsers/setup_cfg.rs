@@ -32,7 +32,8 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
                     path.display()
                 );
             }
-            section = name.trim().to_string();
+            // setuptools normalizes dashed option and section names to underscores.
+            section = normalize_cfg_name(name);
             index += 1;
             continue;
         }
@@ -40,9 +41,10 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
         match section.as_str() {
             "options"
                 if key_name(trimmed).is_some_and(|key| {
+                    let key = normalize_cfg_name(key);
                     ["install_requires", "setup_requires", "tests_require"]
                         .iter()
-                        .any(|supported| key.eq_ignore_ascii_case(supported))
+                        .any(|supported| key == *supported)
                 }) =>
             {
                 let (entries, next_index) = read_cfg_value_block(&lines, index);
@@ -61,6 +63,10 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(deps)
+}
+
+fn normalize_cfg_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase().replace('-', "_")
 }
 
 fn key_name(line: &str) -> Option<&str> {
@@ -111,6 +117,10 @@ fn collect_dependency_lines(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "setup_cfg_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
