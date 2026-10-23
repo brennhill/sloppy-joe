@@ -1,0 +1,34 @@
+# Supply-chain coverage research for 1.2.0
+
+Research date: 2026-10-23. Scope: primary-source incident reports and package-manager documentation, checked against the current scanner implementation. This is a documentation inventory, not evidence that historical malicious artifacts were successfully replayed through sloppy-joe.
+
+## Add these attack classes to the README
+
+| Class | Primary-source evidence | Actual sloppy-joe coverage and limits |
+| --- | --- | --- |
+| Compromised releases of legitimate packages | The [LiteLLM maintainer incident report](https://github.com/BerriAI/litellm-docs/blob/main/blog/security_update_march_2026/index.md) identifies malicious PyPI versions 1.82.7 and 1.82.8 on March 24, 2026, including credential theft and a Python startup payload. | The configured publication-age gate can block newly published resolved versions before installation. This is a timing policy, not payload detection. Python `.pth` files, secret theft, persistence, and runtime behavior are not inspected. |
+| Malicious transitive dependency injection | The [Axios maintainer postmortem](https://github.com/axios/axios/issues/10636) reports that malicious versions 1.14.1 and 0.30.4 added `plain-crypto-js@4.2.1`, delivering a cross-platform RAT on March 31, 2026. | Supported lockfiles expose transitives to metadata and OSV checks. `--deep` adds transitive name-similarity checks. The publication-age gate is relevant; the dependency-explosion check is not a general detector of a single injected dependency. |
+| Install-time execution and credential-driven propagation | [GitHub's Shai-Hulud analysis](https://github.blog/security/supply-chain-security/strengthening-supply-chain-security-preparing-for-the-next-malware-campaign/) describes compromised maintainer credentials, malicious lifecycle scripts, and propagation through republished packages. | npm install-script metadata is combined with risk signals; publisher-change and publisher/script-history checks provide additional heuristics. The scanner does not execute, sandbox, or deobfuscate package contents and cannot establish that a script is malware. |
+| Dependency confusion and source substitution | [pip's own warning](https://pip.pypa.io/en/stable/cli/pip_install/#examples) explains how `--extra-index-url` can select a public attacker-owned package in place of a private one. | Source/provenance checks constrain supported Cargo and Python workflows. Exact allowlists and manifest/lock consistency matter. Other source configurations may be explicitly unsupported. An `internal` name pattern alone does not prove where an installer will obtain a package. |
+| Lockfile/source tampering and graph omission | [npm's lockfile format](https://docs.npmjs.com/cli/v11/configuring-npm/package-lock-json/) distinguishes the resolved artifact location, integrity metadata, and dependency graph. | Scanner validation checks supported graph structure, declared dependency consistency, and provenance metadata. It does not download every artifact and recompute its integrity digest, authenticate every publisher, or prove that all supported installers behave identically. Describe this as validation of supported lockfile/source policy, not universal tamper-proofing. |
+| Known vulnerable package versions | The [OSV query API](https://google.github.io/osv.dev/post-v1-query/) accepts a package ecosystem/name and optional version. | `malicious/known-vulnerability` reports returned OSV records; exact lockfile versions improve specificity. Advisory coverage and freshness remain external dependencies. An empty lookup is not proof that package content is safe. |
+
+## Corrections to existing claims
+
+- Replace the README's unconditional LiteLLM prevention statement with a conditional inference: a full/CI scan before installation, with a resolved affected version, usable publication metadata, an enabled age gate, and no relevant exemption would reject a version inside the cooldown. The maintainer report supports the incident facts, not a claim that sloppy-joe was historically deployed and stopped it.
+- Remove unsupported competitor capability comparisons rather than treating unchecked competitor features as absent. Remove the unsupported zero-false-positive and fixed attack-count marketing claims. Name similarity, publisher changes, absent repository URLs, and install scripts can also occur in legitimate packages. A publisher-name comparison cannot reliably detect compromise of the same publisher account.
+- Explain each metadata check separately: install-script risk, dependency explosion, maintainer changes, and publisher-plus-script history are currently missing from the numbered attack walkthrough. The implementation requires at least ten additional dependencies for `metadata/dependency-explosion`.
+- Separate scanner findings from unsupported-input errors: unsupported dependency expressions, source configurations, or lockfile shapes stop verification with exit 2; they are not evidence that a package is malicious.
+- State that online checks require `--full` or `--ci`; the default fast scan validates local state and recommends a full scan when freshness or state requires it.
+- Preserve explicit limits: this is a pre-install dependency metadata/policy scanner, not an endpoint malware scanner, runtime monitor, general code auditor, or recovery tool after malicious code has executed.
+
+## Implementation anchors
+
+- `src/checks/signals.rs`: version age, script-risk combinations, ten-dependency threshold, publisher changes, publisher/script history.
+- `src/registry/npm.rs`: version-specific publication dates, lifecycle-script flags, publisher identities, dependency counts, history extraction.
+- `src/lib.rs`: transitive tier classification and scans; source-policy and lockfile checks; full/fast scan behavior.
+- `src/checks/malicious.rs`: package/version OSV queries and bounded-expiry disk cache.
+
+## Research-discovered gap: fixed for 1.2.0
+
+The [OSV pagination contract](https://google.github.io/osv.dev/post-v1-query/#pagination) permits token-only responses. Research reproduced a missed-advisory case in the old client. Version 1.2.0 follows `next_page_token` using `page_token`, retains package/version filters, validates response schemas, and fails closed on repeated tokens or a 100-page safety limit. Local HTTP protocol regressions cover these cases; historical attack artifacts were not replayed.

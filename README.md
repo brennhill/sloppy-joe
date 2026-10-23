@@ -12,9 +12,9 @@
 
 ---
 
-> **The [LiteLLM supply chain attack](https://thehackernews.com/2026/03/teampcp-backdoors-litellm-versions.html) (March 2026) compromised a package with 97M monthly downloads. Attackers stole publishing credentials, pushed malicious versions that harvested SSH keys, cloud credentials, and K8s secrets. sloppy-joe's default 72-hour version age gate would have blocked both poisoned versions — they were discovered within hours, well before the gate would have opened. If you run `sloppy-joe check` in CI, this attack fails.** [Full analysis](docs/blog/2026-03-24-litellm-attack-blocked.md)
+> Compromised releases can use a legitimate package name. The [LiteLLM maintainer report](https://github.com/BerriAI/litellm-docs/blob/main/blog/security_update_march_2026/index.md) identifies malicious versions 1.82.7 and 1.82.8 in March 2026. sloppy-joe's default 72-hour publication-age gate can reject newly published versions when you scan the resolved dependency graph with `--ci` or `--full` **before installation**. This is a timing policy, not inspection of the malicious payload.
 
-AI code generators hallucinate package names [~20% of the time](https://arxiv.org/abs/2406.10279). Attackers register those names and wait. sloppy-joe catches them in CI before `npm install` or `pip install` runs.
+Research documents [package hallucinations in generated code](https://arxiv.org/abs/2406.10279). sloppy-joe checks dependency names and metadata before installation; existence alone cannot establish that a registered package is safe.
 
 Package names are limited to 214 bytes for npm and 1,024 bytes for other ecosystems to bound typo-analysis work. Longer names report `Scan not supported` (exit 2).
 
@@ -87,7 +87,7 @@ nix profile install github:brennhill/sloppy-joe
 - For Python, `sloppy-joe check` evaluates the `runtime` profile by default. If scoped dependencies exist, it warns and tells you to pass explicit `--python-groups`, `--python-extras`, `--python-platform`, and/or `--python-version` flags for CI/build parity.
 - Human-readable plain `sloppy-joe check` output always reminds you to use `--ci` or `--full` for CI and production gating.
 
-**Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking issues found, `2` = runtime error.
+**Exit codes:** `0` = no blocking issues found in the selected mode, `1` = blocking findings, `2` = unsupported scan input or runtime error. Unsupported syntax/configuration is not a malware finding.
 
 **Supports:** JavaScript (`npm`, `pnpm`, `Yarn`, `Bun`), Python, Rust, Go, Ruby, PHP, JVM (Gradle/Maven), and .NET — auto-detected from manifest files.
 
@@ -128,39 +128,11 @@ nix profile install github:brennhill/sloppy-joe
 
 ## Why sloppy-joe?
 
-**Single binary. 8 ecosystems. 16 attack types. Zero false positives on generative checks. Config that AI agents can't tamper with.**
+sloppy-joe combines package existence, name-similarity heuristics, canonical package policy, publication-age gates, metadata risk signals, and OSV advisory queries in one Rust binary.
 
-Most dependency security tools check one or two things — existence, or edit distance. sloppy-joe checks 16 attack vectors in a single pass: hallucinated packages, 10 types of typosquatting (homoglyphs, scope squatting, repeated chars, separator confusion, word reordering, adjacent swaps, omitted chars, confused forms, case variants, version suffixes), canonical enforcement, version age gating, install script amplification, dependency explosion, maintainer changes, and known vulnerabilities via OSV.dev.
+Full and CI scans include metadata and vulnerability checks for supported locked transitive dependencies; `--deep` also checks transitive name similarity. Supported manifest, lockfile, source, and policy-boundary validation runs in fast mode too. Unsupported input stops verification instead of producing a clean scan.
 
-It runs as a single Rust binary with no runtime dependencies. It supports all 8 major package ecosystems. And its config is designed for security: never read from the project directory, loadable from a URL for CI, with clear error messages when something is wrong.
-
-| | sloppy-joe | Socket.dev | GuardDog | Phantom Guard | antislopsquat |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **Existence check** | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :white_check_mark: |
-| **Similarity / typosquat** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
-| **Homoglyph detection** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Scope squatting** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Canonical enforcement** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Version age gate** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Install script amplifier** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
-| **Dependency explosion** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Maintainer change** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
-| **OSV vulnerability check** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
-| **Config security (out-of-repo)** | :white_check_mark: | N/A | :x: | :x: | :x: |
-| **Internal + allowed lists** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **npm** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
-| **PyPI** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| **Cargo** | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: | :x: |
-| **Go** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: | :x: |
-| **Ruby** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: | :x: |
-| **PHP** | :white_check_mark: | :large_orange_diamond: | :x: | :x: | :x: |
-| **JVM (Gradle/Maven)** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
-| **.NET (NuGet)** | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
-| **Single binary** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Open source** | Apache 2.0 | Commercial | Apache 2.0 | MIT | OSS |
-| **Language** | Rust | SaaS | Python | Python | Python |
-
-:large_orange_diamond: = beta/experimental
+Name similarity and metadata signals can flag legitimate packages. Review findings and use narrowly scoped exceptions in trusted configuration. Keep that configuration outside the scanned repository so repository edits cannot directly weaken it.
 
 ---
 
@@ -179,16 +151,13 @@ ERROR ai-json-helper [existence]
  Fix: Remove 'ai-json-helper' from your dependencies.
 ```
 
-### 2. Typosquatting (generative checks + edit distance fallback)
+### 2. Typosquatting (registry-backed mutations)
 
 **The attack:** An attacker registers `expresz` on npm — one character from `express`. AI generates it, or a developer fat-fingers it. The package exists, passes the existence check, and installs malware.
 
-**How sloppy-joe blocks it:** sloppy-joe runs 10 generative checks before falling back to edit distance. Each generative check produces a specific mutation of the dependency name (swap characters, collapse repeats, strip suffixes, reorder words, normalize separators, replace homoglyphs, check scopes) and tests for an exact match against known popular packages. This approach, inspired by the [Rust Foundation's Typomania](https://github.com/rustfoundation/typomania) library, has near-zero false positives because it only fires on exact matches after mutation.
-
-Levenshtein edit distance runs last as a safety net for novel mutations that no specific check anticipated. Together, they cover both known attack patterns (precisely) and unknown ones (broadly).
-
+**How sloppy-joe flags it:** Generates name mutations and checks whether candidate names exist in the registry or the same manifest. Scope/namespace checks use edit distance against known scopes. Segment-overlap rules also use selected popular package roots. These are review signals, not proof of malware; there is no general package-name edit-distance fallback.
 ```
-ERROR expresz [similarity/edit-distance]
+ERROR expresz [similarity/keyboard-proximity]
       'expresz' is 1 character away from 'express'. This could be a typosquat.
  Fix: If you meant 'express', fix the name in your manifest.
 ```
@@ -221,7 +190,7 @@ ERROR socket_io [similarity/separator-confusion]
 
 **The attack:** `parse-json` vs `json-parse`. Levenshtein distance is 8 — invisible to edit-distance checks. But an attacker can register the reordered name.
 
-**How sloppy-joe blocks it:** Splits on separators, generates all permutations of the segments, and checks each against the corpus. `parse-json` → permute → `json-parse` → match.
+**How sloppy-joe blocks it:** Splits on separators, generates all permutations of the segments, and checks each against the registry. `parse-json` → permute → `json-parse` → match.
 
 ```
 ERROR parse-json [similarity/word-reorder]
@@ -233,7 +202,7 @@ ERROR parse-json [similarity/word-reorder]
 
 **The attack:** `reqeust` instead of `request`. Two adjacent characters transposed — a common typo that attackers weaponize.
 
-**How sloppy-joe blocks it:** Generates all adjacent-swap variants of the dependency name and checks each against the corpus.
+**How sloppy-joe blocks it:** Generates all adjacent-swap variants of the dependency name and checks each against the registry.
 
 ```
 ERROR reqeusts [similarity/char-swap]
@@ -341,7 +310,7 @@ ERROR moment [canonical]
 
 **The attack:** An attacker compromises a package maintainer's account (or a maintainer goes rogue) and publishes a malicious patch version. It looks like a normal update. If your CI installs it immediately, you're compromised before anyone notices.
 
-**How sloppy-joe blocks it:** The version age gate blocks any dependency whose version was published less than `min_version_age_hours` ago (default: 72 hours). This gives the community, Socket.dev, and other scanners time to flag malicious versions.
+**How sloppy-joe blocks it:** The version age gate blocks any dependency whose version was published less than `min_version_age_hours` ago (default: 72 hours). This gives maintainers and security researchers time to identify malicious versions. Resolved versions with missing, invalid, or future publication dates fail the enabled age gate; setting `min_version_age_hours` to zero explicitly disables it.
 
 ```
 ERROR react [metadata/version-age]
@@ -365,7 +334,7 @@ ERROR sketchy-lib [metadata/new-package]
 
 ### 16. Low-download packages
 
-**The attack:** A package with 12 downloads that happens to be one character away from `requests`. Almost certainly a typosquat.
+**The attack:** A package with 12 downloads that happens to be one character away from `requests`. This warrants review; download counts alone do not establish malicious intent.
 
 **How sloppy-joe blocks it:** Flags packages with fewer than 100 downloads (where the registry provides download data — currently npm, crates.io, RubyGems).
 
@@ -377,6 +346,21 @@ ERROR requsets [metadata/low-downloads]
 
 ---
 
+## Additional supply-chain coverage
+
+| Attack or failure class | What sloppy-joe checks | Practical limit |
+|---|---|---|
+| Install-time script risk | npm lifecycle-script flags combined with package age, download, name-similarity, or repository signals; publisher/script-history combinations | Reads metadata; does not execute, sandbox, or inspect script contents. |
+| Maintainer or publisher change | Changes in publisher identity between versions where metadata is available | A stolen account can publish under the same identity. Legitimate transfers can also be flagged. |
+| Malicious transitive injection | Supported lockfile graphs expose transitive packages to metadata and OSV checks; `--deep` adds name similarity | A single added dependency is not necessarily a dependency-explosion finding. That heuristic requires at least ten additions. |
+| Known vulnerable versions | Queries OSV by ecosystem, package, and resolved version; follows pagination and fails closed on incomplete results | Depends on published advisories and cache freshness. An empty result is not a clean bill of health. |
+| Dependency confusion or source substitution | Checks supported source/provenance policy, manifest/lock consistency, and exact trusted-index allowlists | Unsupported source configurations stop the scan. An `internal` name pattern does not authenticate the installer source. |
+| Lockfile and scanner bypass attempts | Rejects unsupported dependency expressions, unverifiable graphs, unsafe policy locations, and stale/future cache evidence | Validates supported metadata and policy; does not download every artifact and recompute its integrity digest. |
+
+The [Axios maintainer postmortem](https://github.com/axios/axios/issues/10636) describes malicious releases adding `plain-crypto-js` as a transitive dependency. This illustrates why checking only direct package names is insufficient. [GitHub's Shai-Hulud analysis](https://github.blog/security/supply-chain-security/strengthening-supply-chain-security-preparing-for-the-next-malware-campaign/) describes lifecycle-script execution and stolen publishing credentials. These incidents motivate the checks above; they were not replayed as end-to-end prevention tests.
+
+[pip explicitly warns about dependency confusion with `--extra-index-url`](https://pip.pypa.io/en/stable/cli/pip_install/#examples). Source policy and trusted configuration matter alongside package-name checks. See the [coverage research](docs/research/2026-10-23-supply-chain-coverage.md) for primary sources and implementation limits.
+
 ## Supported Ecosystems
 
 | Ecosystem | Manifest | Lockfile Policy | Existence | Metadata | Age Gate |
@@ -384,12 +368,12 @@ ERROR requsets [metadata/low-downloads]
 | npm | package.json | `package-lock.json` or `npm-shrinkwrap.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | PyPI | `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`, `setup.py` | Poetry is trusted with `poetry.lock`, uv is trusted with `uv.lock`, fully hash-locked pip-tools is trusted only when the committed requirements graph binds `--index-url` and exact allowlisted `--extra-index-url` values, and repo-visible Poetry/uv custom indexes can be trusted only by exact `trusted_indexes.pypi` allowlist; legacy manifests warn every run unless `python_enforcement` is `poetry_only` | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Cargo | Cargo.toml | `Cargo.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Go | go.mod | `go.sum` required for external deps; not required for stdlib-only or all-local `replace` | :white_check_mark: | :x: | :x: |
+| Go | go.mod | `go.sum` required for external deps; local/remote replacements and Go workspaces are unsupported | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Ruby | Gemfile | `Gemfile.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| PHP | composer.json | `composer.lock` required | :white_check_mark: | :x: | :x: |
+| PHP | composer.json | `composer.lock` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | JVM (Gradle) | build.gradle / build.gradle.kts | `gradle.lockfile` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | JVM (Maven) | pom.xml | warning-only: no strict lockfile enforcement | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| .NET | *.csproj | `packages.lock.json` required | :white_check_mark: | :x: | :x: |
+| .NET | *.csproj | `packages.lock.json` required | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 
 All ecosystems get existence + similarity + canonical checks. Metadata and age gate depend on what the registry API exposes. Lockfile support enables transitive dependency scanning and exact version resolution where the ecosystem provides a trustworthy project-local lockfile model.
 
@@ -413,9 +397,9 @@ sloppy-joe check --json
 
 | Code | Meaning |
 |------|---------|
-| `0` | All checks passed |
-| `1` | Issues found |
-| `2` | Runtime error |
+| `0` | No blocking findings in the selected mode |
+| `1` | Blocking findings |
+| `2` | Unsupported scan input or runtime error |
 
 ## Config
 
@@ -521,7 +505,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: brennhill/sloppy-joe@v1.1
+      - uses: brennhill/sloppy-joe@v1.2
         with:
           config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 ```
@@ -542,25 +526,25 @@ jobs:
 
 ```yaml
 # Minimal — CI-oriented scan, auto-detect ecosystem, no config
-- uses: brennhill/sloppy-joe@v1.1
+- uses: brennhill/sloppy-joe@v1.2
 
 # With org config from a URL
-- uses: brennhill/sloppy-joe@v1.1
+- uses: brennhill/sloppy-joe@v1.2
   with:
     config: https://raw.githubusercontent.com/yourorg/configs/main/sloppy-joe.json
 
 # Deep scan with paranoid mode
-- uses: brennhill/sloppy-joe@v1.1
+- uses: brennhill/sloppy-joe@v1.2
   with:
     config: ${{ secrets.SLOPPY_JOE_CONFIG }}
     deep: true
     paranoid: true
 
 # Scan a subdirectory, pin to a specific version
-- uses: brennhill/sloppy-joe@v1.1
+- uses: brennhill/sloppy-joe@v1.2
   with:
     dir: ./packages/api
-    version: '1.1.0'
+    version: '1.2.0'
 ```
 
 ### GitLab CI
@@ -581,7 +565,7 @@ Add it to your `.pre-commit-config.yaml`:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/brennhill/sloppy-joe
-    rev: v1.1.0
+    rev: v1.2.0
     hooks:
       - id: sloppy-joe
 ```
@@ -609,7 +593,7 @@ sloppy-joe uses a **registry-based generative** approach to similarity detection
 ```
 Pipeline (in order):
   1. Canonical check         — flag deps that violate org standards
-  2. Similarity check        — 8 mutation generators + scope squatting
+  2. Similarity check        — name mutation generators + scope squatting
   3. Metadata check          — version age, new package, downloads, install scripts, dep explosion, maintainer change
   4. Existence check         — flag packages that don't exist on the registry
   5. Malicious check         — query OSV.dev for known vulnerabilities
@@ -631,7 +615,7 @@ sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
 **Fail-closed on query errors.** If registry or OSV queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The scan no longer relies on per-ecosystem thresholds or sample-size cutoffs before it blocks.
 
-**Similarity cache.** Mutation existence results are cached for 7 days. After the first scan, most queries are served from cache with zero network calls. Only new dependencies trigger registry queries.
+**Similarity cache.** Mutation existence results are cached for up to seven days, then refreshed. OSV results have a one-hour cache lifetime. `--no-cache` bypasses disk reads; future-dated caches are discarded. Full/CI scans still perform online work beyond similarity-cache hits.
 
 **Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `uv.lock` for uv projects, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges. Fully hash-locked `requirements*.txt` can also provide exact pinned versions, and they become fully trusted when the committed requirements graph binds its own `--index-url` and exact allowlisted `--extra-index-url` values.
 
@@ -650,24 +634,11 @@ cargo test
 - [reqwest](https://crates.io/crates/reqwest) — Async HTTP client with retry for registry queries
 - [OSV.dev](https://osv.dev) — Known vulnerability database for malicious package detection
 
-## How sloppy-joe compares
+## Coverage limits
 
-| Feature | sloppy-joe | Socket.dev | cargo-deny | pip-audit | npm audit |
-|---------|:---:|:---:|:---:|:---:|:---:|
-| **Hallucinated package detection** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Typosquatting detection** | :white_check_mark: 11 generators | Partial | :x: | :x: | :x: |
-| **Canonical name enforcement** | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Known vulnerability scanning** | :white_check_mark: via OSV | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| **Install script analysis** | Basic (flag + no repo) | :white_check_mark: Deep analysis | :x: | :x: | :x: |
-| **License compliance** | OOS: compliance, not security | :white_check_mark: | :white_check_mark: Excellent | OOS: compliance, not security | OOS: compliance, not security |
-| **Multi-ecosystem** | 8 ecosystems | npm, PyPI, Go, Ruby, Java, .NET | Rust only | Python only | npm only |
-| **AI agent safety** (out-of-repo config) | :white_check_mark: | :x: | :x: | :x: | :x: |
-| **Offline/CI friendly** | :white_check_mark: Runs anywhere | Requires Socket platform | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| **Free / open source** | Apache 2.0 | Free tier + paid | Apache 2.0 | Apache 2.0 | Built-in |
+Run `--ci` or `--full` before installing dependencies. The default fast scan validates local dependency state and recommends a fresh full scan; it does not perform the online audit.
 
-**Where others are stronger:** Socket.dev does deep install script analysis with behavioral detection that goes well beyond sloppy-joe's flag-based approach. cargo-deny has best-in-class license compliance checking, but that is intentionally out of scope for sloppy-joe because license policy is a compliance problem rather than a dependency security control. npm audit and pip-audit are zero-install options for single-ecosystem vulnerability scanning.
-
-**Where sloppy-joe is different:** It's the only tool that verifies packages actually exist on registries (catching AI hallucinations), runs 11 typosquatting generators with near-zero false positives, enforces canonical package choices, and keeps its config outside the repo so AI agents can't weaken their own checks.
+sloppy-joe evaluates dependency declarations, supported lockfiles, registry metadata, and advisory records. It does not inspect downloaded package contents, authenticate every publisher, detect arbitrary runtime behavior, or recover a machine after malicious code has run. Metadata heuristics can produce false positives, and unpublished attacks can evade advisory databases. Use reviewed installer/source policy, artifact verification, and runtime controls alongside these checks.
 
 ## License
 

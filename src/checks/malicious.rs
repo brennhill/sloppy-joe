@@ -44,20 +44,38 @@ pub trait OsvClient: Send + Sync {
     ) -> Result<Vec<String>>;
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OsvPage {
+    #[serde(default)]
+    vulns: Vec<OsvVulnerability>,
+    next_page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct OsvVulnerability {
+    id: String,
+}
+
 /// Real OSV client that hits the API.
 pub struct RealOsvClient {
     client: reqwest::Client,
+    endpoint: String,
 }
 
 impl RealOsvClient {
     pub fn new() -> Self {
         Self {
             client: crate::registry::http_client(),
+            endpoint: "https://api.osv.dev/v1/query".to_owned(),
         }
     }
 
     pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            endpoint: "https://api.osv.dev/v1/query".to_owned(),
+        }
     }
 }
 
@@ -87,28 +105,31 @@ impl OsvClient for RealOsvClient {
         if let Some(ver) = version {
             body["version"] = serde_json::Value::String(ver.to_string());
         }
-        let resp = self
-            .client
-            .post("https://api.osv.dev/v1/query")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!("OSV query for '{}' returned HTTP {}", name, resp.status());
+        let mut vuln_ids = Vec::new();
+        let mut seen_tokens = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let resp = self.client.post(&self.endpoint).json(&body).send().await?;
+            if !resp.status().is_success() {
+                anyhow::bail!("OSV query for '{}' returned HTTP {}", name, resp.status());
+            }
+            let page: OsvPage = resp.json().await?;
+            for vulnerability in page.vulns {
+                if vulnerability.id.is_empty() {
+                    anyhow::bail!("OSV returned a vulnerability without an ID");
+                }
+                vuln_ids.push(vulnerability.id);
+            }
+            let Some(token) = page.next_page_token.filter(|token| !token.is_empty()) else {
+                vuln_ids.sort();
+                vuln_ids.dedup();
+                return Ok(vuln_ids);
+            };
+            if !seen_tokens.insert(token.clone()) {
+                anyhow::bail!("OSV repeated a pagination token; advisory retrieval is incomplete");
+            }
+            body["page_token"] = token.into();
         }
-
-        let json: serde_json::Value = resp.json().await?;
-        let vuln_ids = json["vulns"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v["id"].as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(vuln_ids)
+        anyhow::bail!("OSV pagination limit exceeded; advisory retrieval is incomplete")
     }
 }
 
@@ -249,6 +270,98 @@ pub async fn check_malicious_with_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn mock_osv_server(
+        responses: Vec<serde_json::Value>,
+    ) -> (
+        RealOsvClient,
+        tokio::task::JoinHandle<Vec<serde_json::Value>>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/query", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            requests.push(
+                                serde_json::from_slice(&request[end + 4..end + 4 + length])
+                                    .unwrap(),
+                            );
+                            break;
+                        }
+                    }
+                }
+                let body = response.to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (
+            RealOsvClient {
+                client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                endpoint,
+            },
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn osv_query_follows_token_only_pages() {
+        let (client, server) = mock_osv_server(vec![
+            serde_json::json!({"next_page_token":"page-two"}),
+            serde_json::json!({"vulns":[{"id":"GHSA-example"}]}),
+        ])
+        .await;
+        let ids = client.query("example", "npm", Some("1.0.0")).await.unwrap();
+        assert_eq!(ids, vec!["GHSA-example"]);
+        let requests = server.await.unwrap();
+        assert_eq!(requests[1]["page_token"], "page-two");
+        assert_eq!(requests[1]["version"], "1.0.0");
+        assert_eq!(requests[1]["package"]["name"], "example");
+    }
+
+    #[tokio::test]
+    async fn incomplete_osv_responses_fail_closed() {
+        for responses in [
+            vec![serde_json::json!({"vulns":[{"id":null}]})],
+            vec![serde_json::json!({"error":"upstream unavailable"})],
+            vec![serde_json::json!({"vulns":null})],
+            vec![
+                serde_json::json!({"next_page_token":"again"}),
+                serde_json::json!({"next_page_token":"again"}),
+            ],
+            (0..100)
+                .map(|page| serde_json::json!({"next_page_token":page.to_string()}))
+                .collect(),
+        ] {
+            let (client, server) = mock_osv_server(responses).await;
+            assert!(client.query("example", "npm", Some("1.0.0")).await.is_err());
+            server.await.unwrap();
+        }
+    }
 
     struct MockOsvClient {
         responses: HashMap<String, Vec<String>>,
