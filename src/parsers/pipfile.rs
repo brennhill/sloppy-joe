@@ -3,6 +3,9 @@ use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Top-level Pipfile tables that hold settings rather than packages.
+const PIPFILE_RESERVED_TABLES: &[&str] = &["source", "requires", "pipenv", "scripts"];
+
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     parse_file(&project_dir.join("Pipfile"))
 }
@@ -18,10 +21,32 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
         .map(|(name, url)| (name.as_str(), url.as_str()))
         .collect();
 
+    let top_level = parsed
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse {}: expected a table", path.display()))?;
+    // Pipenv treats every top-level table other than its reserved settings tables as a
+    // package category (`pipenv install --categories docs`), so scan them all.
+    let mut sections: Vec<&str> = vec!["packages", "dev-packages"];
+    for key in top_level.keys() {
+        if !PIPFILE_RESERVED_TABLES.contains(&key.as_str())
+            && key != "packages"
+            && key != "dev-packages"
+        {
+            sections.push(key.as_str());
+        }
+    }
+
     let mut deps = Vec::new();
-    for section in ["packages", "dev-packages"] {
-        let Some(table) = parsed.get(section).and_then(|value| value.as_table()) else {
+    for section in sections {
+        let Some(value) = top_level.get(section) else {
             continue;
+        };
+        let Some(table) = value.as_table() else {
+            bail!(
+                "Unsupported Pipfile entry '{}' in {}: expected a package category table",
+                crate::report::sanitize_for_terminal(section),
+                path.display()
+            );
         };
         for (name, value) in table {
             if let Some(dep) =
@@ -146,6 +171,10 @@ fn compose_requirement(name: &str, spec: Option<&str>) -> String {
         Some(version) => format!("{name}{version}"),
     }
 }
+
+#[cfg(test)]
+#[path = "pipfile_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

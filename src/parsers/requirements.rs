@@ -72,6 +72,26 @@ pub(crate) fn source_provenance(
     collect_source_provenance_inner(path, &scan_root, &mut visited)
 }
 
+/// Maximum nesting of `-r` / `-c` includes. pip itself recurses without a limit, so a hostile
+/// chain could otherwise exhaust the stack and abort the scan.
+const MAX_INCLUDE_DEPTH: usize = 64;
+
+/// Push `key` onto the active include stack, rejecting cycles and excessive nesting.
+/// `visited` holds exactly the files on the current include path (callers remove on exit).
+fn enter_include(visited: &mut HashSet<PathBuf>, key: &Path, path: &Path) -> Result<()> {
+    if visited.len() >= MAX_INCLUDE_DEPTH {
+        bail!(
+            "requirements include depth exceeds {} at {}; refusing to scan an unbounded include chain",
+            MAX_INCLUDE_DEPTH,
+            path.display()
+        );
+    }
+    if !visited.insert(key.to_path_buf()) {
+        bail!("requirements include cycle detected at {}", path.display());
+    }
+    Ok(())
+}
+
 fn parse_scoped_file_inner(
     path: &Path,
     scan_root: &Path,
@@ -80,12 +100,7 @@ fn parse_scoped_file_inner(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -138,12 +153,7 @@ fn classify_trust_inner(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -200,12 +210,7 @@ fn collect_source_provenance_inner(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -248,12 +253,7 @@ fn collect_included_paths(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -434,11 +434,17 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Drop a leading UTF-8 byte-order mark, which Windows editors commonly write and which
+/// pip and configparser ignore.
+pub(crate) fn strip_utf8_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
+}
+
 fn logical_requirement_lines(content: &str) -> Vec<String> {
     let mut entries = Vec::new();
     let mut current = String::new();
 
-    for raw_line in content.lines() {
+    for raw_line in strip_utf8_bom(content).lines() {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -464,6 +470,28 @@ fn logical_requirement_lines(content: &str) -> Vec<String> {
     }
 
     entries
+}
+
+/// Whether a file is a pip requirements manifest by naming convention: any `*.txt` whose name
+/// contains `requirements` (`requirements-dev.txt`, `dev-requirements.txt`, ...), or any `*.txt`
+/// inside a `requirements/` directory (`requirements/base.txt`).
+pub(crate) fn is_requirements_manifest_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lowered = name.to_ascii_lowercase();
+    let Some(stem) = lowered.strip_suffix(".txt") else {
+        return false;
+    };
+    stem.contains("requirements") || is_in_requirements_directory(path)
+}
+
+/// Whether a file lives directly inside a directory named `requirements`.
+pub(crate) fn is_in_requirements_directory(path: &Path) -> bool {
+    path.parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("requirements"))
 }
 
 pub(crate) fn requirement_looks_like_local_path(line: &str) -> bool {
@@ -673,7 +701,11 @@ pub(crate) fn parse_scoped_requirement_spec(
     };
 
     if name.is_empty() {
-        return Ok(None);
+        bail!(
+            "Unsupported requirement '{}' in {}: missing a package name",
+            crate::report::sanitize_for_terminal(line),
+            source_path.display()
+        );
     }
 
     let dep = Dependency {
@@ -699,6 +731,10 @@ fn split_requirement_marker(raw: &str) -> (&str, Option<&str>) {
         (raw, None)
     }
 }
+
+#[cfg(test)]
+#[path = "requirements_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
