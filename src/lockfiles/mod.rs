@@ -121,6 +121,7 @@ enum ParsedLockfile {
     Pnpm {
         value: serde_yaml::Value,
         importer_key: String,
+        path: PathBuf,
     },
     Bun {
         value: serde_json::Value,
@@ -235,6 +236,18 @@ impl LockfileData {
         resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive, None)
     }
 
+    /// Treat every registry package the lockfile records as a transitive
+    /// dependency. Used when the manifest declares no roots at all, so nothing
+    /// proves which locked packages are installable (fail closed).
+    pub fn scan_all_locked_packages(&mut self) -> Result<()> {
+        let mut seen = HashSet::new();
+        self.transitive_deps = parse_all_from_parsed(&self.parsed)?
+            .into_iter()
+            .filter(|dep| seen.insert((dep.package_name().to_string(), dep.version.clone())))
+            .collect();
+        Ok(())
+    }
+
     pub fn reduced_confidence_from_manifest(direct_deps: &[Dependency]) -> Self {
         let mut resolution = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut resolution, direct_deps);
@@ -269,6 +282,7 @@ fn read_lockfile(
                 return Ok(ParsedLockfile::Pnpm {
                     value,
                     importer_key,
+                    path: path.to_path_buf(),
                 });
             }
             if lockfile_override.is_some_and(is_bun_lockfile_path) {
@@ -432,6 +446,7 @@ fn resolve_from_parsed(
         ParsedLockfile::Pnpm {
             value,
             importer_key,
+            ..
         } => pnpm::resolve_from_value(value, deps, importer_key),
         ParsedLockfile::Bun {
             value,
@@ -491,15 +506,19 @@ fn parse_all_from_parsed_for_project(
     if let ParsedLockfile::Yarn(parsed) = parsed {
         return yarn::parse_all_from_parsed_for_project(parsed, direct_deps, project_dir);
     }
+    if let ParsedLockfile::Pnpm {
+        value,
+        importer_key,
+        path,
+    } = parsed
+    {
+        return pnpm::parse_for_importer_with_orphans(value, importer_key, path);
+    }
     let deps = match parsed {
         ParsedLockfile::Npm {
             value, project_key, ..
         } => npm::parse_transitive_from_value(value, direct_deps, project_key),
         ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
-        ParsedLockfile::Pnpm {
-            value,
-            importer_key,
-        } => pnpm::parse_all_from_value_for_importer(value, importer_key),
         ParsedLockfile::Bun {
             value,
             importer_key,
@@ -513,6 +532,46 @@ fn parse_all_from_parsed_for_project(
         _ => parse_all_from_parsed(parsed),
     }?;
     Ok((deps, Vec::new()))
+}
+
+const ORPHAN_NAMES_LISTED: usize = 10;
+
+/// Non-blocking warning for lockfile entries that nothing reaches. Only used
+/// when reachability is certain, so the installer never installs them.
+fn stale_orphan_entries_issue(
+    lockfile_path: &Path,
+    mut names: Vec<String>,
+    installer: &str,
+    fix: &str,
+) -> Issue {
+    names.sort();
+    names.dedup();
+    let listed = names
+        .iter()
+        .take(ORPHAN_NAMES_LISTED)
+        .map(|name| crate::report::sanitize_for_terminal(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = names.len().saturating_sub(ORPHAN_NAMES_LISTED);
+    let more = if more > 0 {
+        format!(" (and {more} more)")
+    } else {
+        String::new()
+    };
+    Issue::new(
+        lockfile_path.display().to_string(),
+        yarn::LOCKFILE_ORPHAN_ENTRIES,
+        crate::report::Severity::Warning,
+    )
+    .message(format!(
+        "Lockfile '{}' has {} stale entries that no dependency reaches: {}{}. {} does not install them, so they were not scanned.",
+        lockfile_path.display(),
+        names.len(),
+        listed,
+        more,
+        installer
+    ))
+    .fix(fix)
 }
 
 #[cfg(test)]

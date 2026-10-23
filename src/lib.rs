@@ -234,6 +234,28 @@ impl ProjectInputKind {
         )
     }
 
+    /// The ecosystem this project installs from, known even when the manifest
+    /// declares no dependencies (its lockfile may still list packages).
+    fn ecosystem(self) -> Ecosystem {
+        match self {
+            Self::Npm => Ecosystem::Npm,
+            Self::Cargo => Ecosystem::Cargo,
+            Self::Go => Ecosystem::Go,
+            Self::Ruby => Ecosystem::Ruby,
+            Self::Php => Ecosystem::Php,
+            Self::Gradle | Self::Maven => Ecosystem::Jvm,
+            Self::Dotnet => Ecosystem::Dotnet,
+            Self::PyProjectPoetry
+            | Self::PyProjectUv
+            | Self::PyRequirements
+            | Self::PyRequirementsTrusted
+            | Self::PyProjectLegacy
+            | Self::PyPipfile
+            | Self::PySetupPy
+            | Self::PySetupCfg => Ecosystem::PyPI,
+        }
+    }
+
     fn manifest_label(self) -> &'static str {
         match self {
             Self::Npm => "package.json",
@@ -1178,15 +1200,34 @@ fn lockfile_data_for_scan(
         }
     }
 
-    let python_profile = (project.deps[0].ecosystem == Ecosystem::PyPI)
+    let python_profile = (project.spec.kind.ecosystem() == Ecosystem::PyPI)
         .then(|| active_python_lockfile_profile(opts, &project.python_root_extras));
-    lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+    let mut data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
         project.spec.project_dir(),
         Some(project.spec.kind),
         deps,
         project.spec.lockfile_path_override.as_deref(),
         python_profile.as_ref(),
-    )
+    )?;
+    if project.deps.is_empty() && python_manifest_declares_no_dependencies(&project.spec)? {
+        data.scan_all_locked_packages()?;
+    }
+    Ok(data)
+}
+
+/// Python lockfiles are walked from the manifest's roots. A manifest with no
+/// roots in any scope proves nothing about its lockfile, so callers scan every
+/// locked package instead of none.
+fn python_manifest_declares_no_dependencies(spec: &ProjectInputSpec) -> Result<bool> {
+    Ok(match spec.kind {
+        ProjectInputKind::PyProjectPoetry => {
+            parsers::pyproject_toml::parse_poetry_scoped_file(&spec.manifest_path)?.is_empty()
+        }
+        ProjectInputKind::PyProjectUv => {
+            parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?.is_empty()
+        }
+        _ => false,
+    })
 }
 
 fn validate_supported_js_manager(spec: &ProjectInputSpec) -> Result<()> {
@@ -6798,12 +6839,12 @@ async fn scan_with_config(
     let mut all_review_candidates = Vec::new();
 
     for project in &projects {
-        let result = if let Some(dep) = project.deps.first() {
-            let registry = registry::registry_for_with_client(dep.ecosystem, client.clone())?;
-            scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await
-        } else {
-            Ok(ScanReport::empty())
-        };
+        // A project with no declared dependencies is still scanned: its
+        // lockfile may list installable packages.
+        let registry =
+            registry::registry_for_with_client(project.spec.kind.ecosystem(), client.clone())?;
+        let result =
+            scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await;
         match result {
             Ok(mut report) => {
                 let status = if report.has_errors()
@@ -6968,7 +7009,7 @@ async fn scan_parsed_project(
     osv_client: &dyn OsvClient,
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
-    if project.deps.is_empty() {
+    if project.deps.is_empty() && project.unlocked_tooling {
         return Ok(ScanReport::empty());
     }
     let mut config = config;
@@ -6978,7 +7019,7 @@ async fn scan_parsed_project(
         config.allow_unresolved_versions = true;
     }
 
-    let ecosystem = project.deps[0].ecosystem;
+    let ecosystem = project.spec.kind.ecosystem();
     let registries = project
         .spec
         .js_binding
@@ -6986,6 +7027,12 @@ async fn scan_parsed_project(
         .map(|b| b.npm_registries.clone())
         .unwrap_or_default();
     let mut lockfile_data = lockfile_data_for_scan(project, &project.deps, &config, opts)?;
+    if project.deps.is_empty()
+        && lockfile_data.transitive_deps.is_empty()
+        && lockfile_data.resolution.issues.is_empty()
+    {
+        return Ok(ScanReport::empty());
+    }
     let mut private_issues = Vec::new();
     let mut public_deps = Vec::new();
     let mut private_direct = std::collections::HashSet::new();
@@ -7513,3 +7560,7 @@ mod lockfile_redteam_tests;
 #[cfg(test)]
 #[path = "yarn_orphan_scan_tests.rs"]
 mod yarn_orphan_scan_tests;
+
+#[cfg(test)]
+#[path = "empty_manifest_lockfile_tests.rs"]
+mod empty_manifest_lockfile_tests;

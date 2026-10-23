@@ -159,7 +159,12 @@ pub fn parse_all(lockfile_content: &str) -> Result<Vec<Dependency>> {
 
 /// Parse ALL cargo deps from a pre-parsed TOML value.
 pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependency>> {
-    let Some(packages) = parsed.get("package").and_then(|v| v.as_array()) else {
+    let Some(packages) = parsed.get("package") else {
+        // A lockfile that locks nothing has no package array at all; direct
+        // dependencies missing from it are still reported by resolution.
+        return Ok(Vec::new());
+    };
+    let Some(packages) = packages.as_array() else {
         anyhow::bail!("Cargo.lock has no package array");
     };
 
