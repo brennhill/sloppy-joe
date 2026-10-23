@@ -32,6 +32,7 @@ JSON file with optional top-level keys. The most common policy keys are:
 
 ```json
 {
+  "ignore_dirs": [".planning"],
   "canonical": { ... },
   "internal": { ... },
   "allowed": { ... },
@@ -48,6 +49,20 @@ JSON file with optional top-level keys. The most common policy keys are:
 See [`config.example.json`](config.example.json) for a full working example.
 
 ## Fields
+
+### `ignore_dirs`
+
+Directory names excluded from recursive project discovery. Default: `[".planning"]`.
+
+```json
+{
+  "ignore_dirs": [".planning", "experiments"]
+}
+```
+
+The list replaces the default. Names match whole directory names at any depth, including symlink targets; paths and glob patterns are rejected. Use `"ignore_dirs": []` to include planning directories. A directory explicitly selected with `--dir` is still scanned, even if its own name appears in the list. `.git` remains excluded.
+
+Exclusions prevent discovery of standalone projects; packages present in an included application's lockfile still receive dependency checks. Keep application/build directories out of the exclusion list. The setting follows the normal external-config policy and participates in scan-cache invalidation. `init --from-current` also skips `.planning` by default.
 
 ### `canonical`
 

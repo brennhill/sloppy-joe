@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ignore `.planning` during recursive project discovery by default; add the external-policy `ignore_dirs` setting for custom directory exclusions.
+
 - Support default and scoped HTTPS npm registry routing in project-local `.npmrc` for npm and pnpm.
 - Report private/custom-registry packages as unvetted with non-blocking warnings; retain public package checks and local lockfile/source validation.
 - Keep private identities and authentication values out of public registry/advisory requests, and redact rejected registry source credentials.

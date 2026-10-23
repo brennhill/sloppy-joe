@@ -1,4 +1,5 @@
 {
+  "ignore_dirs": [".planning"],
   "canonical": {
     "npm": {
       "lodash": ["underscore", "ramda", "lazy.js"],

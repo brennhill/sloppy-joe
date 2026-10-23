@@ -2085,6 +2085,13 @@ packages:
     )
     .unwrap();
 
+    std::fs::create_dir_all(dir.join(".planning/spikes")).unwrap();
+    std::fs::write(
+        dir.join(".planning/spikes/pyproject.toml"),
+        "invalid toml = [",
+    )
+    .unwrap();
+
     let warnings = preflight_scan_inputs(&dir.join("apps/web"), Some("npm"))
         .expect("pnpm workspace children should bind to the root pnpm-lock.yaml");
     assert!(warnings.is_empty());

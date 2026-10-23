@@ -532,6 +532,7 @@ fn preflight_project_inputs_with_options(
                         manifest,
                         &lockfile,
                         &npm_index,
+                        &config.ignore_dirs,
                     )?;
                 }
                 JsPackageManager::Bun => {
@@ -543,12 +544,19 @@ fn preflight_project_inputs_with_options(
                         manifest,
                         &lockfile,
                         &npm_index,
+                        &config.ignore_dirs,
                     )?;
                 }
                 JsPackageManager::Yarn => {
                     let lockfile = read_validated_yarn_lockfile(spec, manifest)?;
                     let yarn_scope_root = npm_trusted_scope_root(&canonical_root, spec)?;
-                    validate_local_yarn_dependencies(&yarn_scope_root, spec, manifest, &lockfile)?;
+                    validate_local_yarn_dependencies(
+                        &yarn_scope_root,
+                        spec,
+                        manifest,
+                        &lockfile,
+                        &config.ignore_dirs,
+                    )?;
                 }
             }
         } else {
@@ -1547,6 +1555,7 @@ fn validate_local_pnpm_dependencies(
     manifest: &serde_json::Value,
     lockfile: &serde_yaml::Value,
     npm_index: &NpmProjectIndex,
+    ignore_dirs: &[String],
 ) -> Result<()> {
     let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
         anyhow::anyhow!(
@@ -1563,7 +1572,13 @@ fn validate_local_pnpm_dependencies(
         })
     {
         let expected_target = if local_spec.starts_with("workspace:") {
-            validate_workspace_pnpm_dependency(trusted_root, spec, &name, &canonical_project_dir)?
+            validate_workspace_pnpm_dependency(
+                trusted_root,
+                spec,
+                &name,
+                &canonical_project_dir,
+                ignore_dirs,
+            )?
         } else {
             let canonical_target = resolve_local_npm_target(
                 trusted_root,
@@ -1613,6 +1628,7 @@ fn validate_local_bun_dependencies(
     manifest: &serde_json::Value,
     lockfile: &serde_json::Value,
     npm_index: &NpmProjectIndex,
+    ignore_dirs: &[String],
 ) -> Result<()> {
     let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
         anyhow::anyhow!(
@@ -1629,7 +1645,13 @@ fn validate_local_bun_dependencies(
         })
     {
         let expected_target = if local_spec.starts_with("workspace:") {
-            validate_workspace_bun_dependency(trusted_root, spec, &name, &canonical_project_dir)?
+            validate_workspace_bun_dependency(
+                trusted_root,
+                spec,
+                &name,
+                &canonical_project_dir,
+                ignore_dirs,
+            )?
         } else {
             let canonical_target = resolve_local_npm_target(
                 trusted_root,
@@ -1678,6 +1700,7 @@ fn validate_local_yarn_dependencies(
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
     lockfile: &crate::lockfiles::yarn::ParsedYarnLock,
+    ignore_dirs: &[String],
 ) -> Result<()> {
     let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
         anyhow::anyhow!(
@@ -1702,8 +1725,13 @@ fn validate_local_yarn_dependencies(
             );
         }
 
-        let expected_target =
-            validate_workspace_yarn_dependency(trusted_root, spec, &name, &canonical_project_dir)?;
+        let expected_target = validate_workspace_yarn_dependency(
+            trusted_root,
+            spec,
+            &name,
+            &canonical_project_dir,
+            ignore_dirs,
+        )?;
         let relative_target = if expected_target == *trusted_root {
             ".".to_string()
         } else {
@@ -3862,6 +3890,7 @@ fn validate_workspace_pnpm_dependency(
     spec: &ProjectInputSpec,
     dep_name: &str,
     canonical_project_dir: &std::path::Path,
+    ignore_dirs: &[String],
 ) -> Result<std::path::PathBuf> {
     let Some(workspace_root) = find_pnpm_workspace_root(scan_root, canonical_project_dir)? else {
         anyhow::bail!(
@@ -3871,7 +3900,7 @@ fn validate_workspace_pnpm_dependency(
         );
     };
 
-    let matching_dirs = workspace_manifest_paths(&workspace_root)?
+    let matching_dirs = workspace_manifest_paths(&workspace_root, ignore_dirs)?
         .into_iter()
         .filter_map(|manifest_path| {
             let project_dir = manifest_path.parent()?.to_path_buf();
@@ -3913,6 +3942,7 @@ fn validate_workspace_bun_dependency(
     spec: &ProjectInputSpec,
     dep_name: &str,
     canonical_project_dir: &std::path::Path,
+    ignore_dirs: &[String],
 ) -> Result<std::path::PathBuf> {
     let Some(workspace_root) = find_bun_workspace_root(scan_root, canonical_project_dir)? else {
         anyhow::bail!(
@@ -3922,7 +3952,7 @@ fn validate_workspace_bun_dependency(
         );
     };
 
-    let matching_dirs = workspace_manifest_paths(&workspace_root)?
+    let matching_dirs = workspace_manifest_paths(&workspace_root, ignore_dirs)?
         .into_iter()
         .filter_map(|manifest_path| {
             let project_dir = manifest_path.parent()?.to_path_buf();
@@ -3958,6 +3988,7 @@ fn validate_workspace_yarn_dependency(
     spec: &ProjectInputSpec,
     dep_name: &str,
     canonical_project_dir: &std::path::Path,
+    ignore_dirs: &[String],
 ) -> Result<std::path::PathBuf> {
     let Some(workspace_root) = find_yarn_workspace_root(scan_root, canonical_project_dir)? else {
         anyhow::bail!(
@@ -3967,7 +3998,7 @@ fn validate_workspace_yarn_dependency(
         );
     };
 
-    let matching_dirs = workspace_manifest_paths(&workspace_root)?
+    let matching_dirs = workspace_manifest_paths(&workspace_root, ignore_dirs)?
         .into_iter()
         .filter_map(|manifest_path| {
             let project_dir = manifest_path.parent()?.to_path_buf();
@@ -4147,7 +4178,10 @@ fn parse_pnpm_workspaces(workspace_dir: &std::path::Path) -> Result<Option<Vec<S
     Ok(Some(patterns))
 }
 
-fn workspace_manifest_paths(workspace_root: &WorkspaceRoot) -> Result<Vec<std::path::PathBuf>> {
+fn workspace_manifest_paths(
+    workspace_root: &WorkspaceRoot,
+    ignore_dirs: &[String],
+) -> Result<Vec<std::path::PathBuf>> {
     let root = std::fs::canonicalize(&workspace_root.project_dir).map_err(|err| {
         anyhow::anyhow!(
             "Failed to inspect {}: {}",
@@ -4163,7 +4197,7 @@ fn workspace_manifest_paths(workspace_root: &WorkspaceRoot) -> Result<Vec<std::p
         &mut visited,
         &mut specs,
         false,
-        &[],
+        ignore_dirs,
     )?;
     Ok(specs
         .into_iter()
