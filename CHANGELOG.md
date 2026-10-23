@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Python: accept PEP 508 version specifiers written in parentheses (`poetry-core (>=2.1.0,<3.0.0)`), which Poetry 2 projects emit, instead of rejecting them as an invalid package name. Unbalanced parentheses are still rejected.
 - Pipenv: check `Pipfile.lock`'s `_meta.hash` against the Pipfile using pipenv's own algorithm (validated against real published locks). A lock generated from a different Pipfile now blocks as out of date, and a missing `_meta.hash` blocks. Pipfiles holding values pipenv's hash cannot reproduce here (floats, datetimes) keep the package-level reconciliation only.
 - Pipenv: read a version with no comparison operator (`version = "26.2.*"`, `requests = "2.32.3"`) as `==`, as pipenv does, instead of rejecting the Pipfile with an invalid package name.
 - Go: verify the contents of `go.sum`, not just its presence. Every `require`d module version needs a well-formed `<version>/go.mod` checksum, conflicting duplicate hashes and malformed lines block, and a PR can no longer add a requirement without a recorded checksum. Vendored projects (`vendor/modules.txt`) are exempt because Go ignores `go.sum` there.

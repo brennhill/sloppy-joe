@@ -102,3 +102,51 @@ fn moderate_include_chains_still_parse() {
     assert_eq!(deps[0].dependency.name, "requests");
     cleanup(&dir);
 }
+
+// PEP 508 allows the version specifier in parentheses; Poetry 2 projects emit
+// it (`poetry-core (>=2.1.0,<3.0.0)`), so it must parse instead of being
+// mistaken for part of the package name.
+mod parenthesized_versions {
+    use super::super::parse_requirement_spec;
+    use std::path::Path;
+
+    fn spec(raw: &str) -> anyhow::Result<Option<crate::Dependency>> {
+        parse_requirement_spec(raw, Path::new("pyproject.toml"))
+    }
+
+    #[test]
+    fn parenthesized_range_parses() {
+        let dep = spec("poetry-core (>=2.1.0,<3.0.0)").unwrap().unwrap();
+        assert_eq!(dep.name, "poetry-core");
+        assert_eq!(dep.version.as_deref(), Some(">=2.1.0,<3.0.0"));
+    }
+
+    #[test]
+    fn parenthesized_exact_pin_parses() {
+        let dep = spec("requests(==2.32.3)").unwrap().unwrap();
+        assert_eq!(dep.name, "requests");
+        assert_eq!(dep.version.as_deref(), Some("==2.32.3"));
+    }
+
+    #[test]
+    fn parenthesized_version_with_extras_and_marker_parses() {
+        let dep = spec("httpx[http2] (>=0.27) ; python_version >= '3.9'")
+            .unwrap()
+            .unwrap();
+        assert_eq!(dep.name, "httpx");
+        assert_eq!(dep.version.as_deref(), Some(">=0.27"));
+    }
+
+    #[test]
+    fn unbalanced_parentheses_are_rejected() {
+        for raw in ["poetry-core (>=2.1.0", "poetry-core >=2.1.0)", "(>=1.0)"] {
+            assert!(spec(raw).is_err(), "{raw:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn plain_specifiers_are_unchanged() {
+        let dep = spec("requests>=2.0,<3").unwrap().unwrap();
+        assert_eq!(dep.version.as_deref(), Some(">=2.0,<3"));
+    }
+}

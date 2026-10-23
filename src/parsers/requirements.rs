@@ -733,8 +733,27 @@ pub(crate) fn parse_scoped_requirement_spec(
     let (name, requested_extras, version) = if let Some(pos) =
         line.find(['=', '>', '<', '~', '!', '^'])
     {
-        let (name, requested_extras) = parse_distribution_name_and_requested_extras(&line[..pos]);
+        // PEP 508 also allows the specifier in parentheses: `name (>=1.0,<2)`.
+        let unbalanced = || {
+            anyhow::anyhow!(
+                "Unsupported requirement '{}' in {}: unbalanced parentheses in the version specifier",
+                crate::report::sanitize_for_terminal(line),
+                source_path.display()
+            )
+        };
+        let name_part = line[..pos].trim_end();
         let version_part = line[pos..].trim();
+        let (name_part, version_part) = match name_part.strip_suffix('(') {
+            Some(stripped) => {
+                let inner = version_part.strip_suffix(')').ok_or_else(unbalanced)?;
+                (stripped.trim_end(), inner.trim())
+            }
+            None => (name_part, version_part),
+        };
+        if version_part.contains(['(', ')']) {
+            return Err(unbalanced());
+        }
+        let (name, requested_extras) = parse_distribution_name_and_requested_extras(name_part);
         (name, requested_extras, Some(version_part.to_string()))
     } else {
         let (name, requested_extras) = parse_distribution_name_and_requested_extras(line);
