@@ -10668,3 +10668,35 @@ async fn uv_packaged_editable_root_is_scanned_as_the_local_project() {
     assert!(!report.has_errors());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn adjacent_uv_lock_selects_uv_without_redundant_tool_metadata() {
+    let dir = unique_dir();
+    let fixture = ecosystem_fixture_dir("python", "uv-pass");
+    let manifest = std::fs::read_to_string(fixture.join("pyproject.toml"))
+        .unwrap()
+        .replace("[tool.uv]", "");
+    std::fs::write(dir.join("pyproject.toml"), manifest).unwrap();
+    std::fs::copy(fixture.join("uv.lock"), dir.join("uv.lock")).unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("pypi"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.check == "resolution/python-legacy-manifest"),
+        "a real uv lockfile must not be treated as legacy Python"
+    );
+    assert!(!report.has_errors());
+    std::fs::remove_dir_all(dir).unwrap();
+}

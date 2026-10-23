@@ -50,7 +50,8 @@ pub(crate) fn classify_manifest(path: &Path) -> Result<PyprojectKind> {
         .get("tool")
         .and_then(|tool| tool.get("poetry"))
         .is_some();
-    let has_uv = parsed.get("tool").and_then(|tool| tool.get("uv")).is_some();
+    let has_uv = parsed.get("tool").and_then(|tool| tool.get("uv")).is_some()
+        || (!has_poetry && super::path_detected(&path.with_file_name("uv.lock"))?);
     if has_poetry && has_uv {
         bail!(
             "Ambiguous Python project metadata in {}: both [tool.poetry] and [tool.uv] are present",
@@ -258,14 +259,12 @@ pub(crate) fn parse_poetry_source_intents_scoped(
 
 pub(crate) fn parse_uv_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
     let parsed = parse_toml(path)?;
-    let tool = parsed
-        .get("tool")
-        .and_then(|tool| tool.as_table())
-        .ok_or_else(|| anyhow::anyhow!("Missing [tool] table in {}", path.display()))?;
-    let uv = tool
-        .get("uv")
-        .and_then(|value| value.as_table())
-        .ok_or_else(|| anyhow::anyhow!("uv metadata missing from {}", path.display()))?;
+    let Some(uv) = parsed.get("tool").and_then(|tool| tool.get("uv")) else {
+        return Ok(Vec::new());
+    };
+    let uv = uv
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("Invalid uv metadata in {}", path.display()))?;
 
     let mut sources = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
@@ -352,14 +351,12 @@ pub(crate) fn parse_uv_source_intents_scoped(
     path: &Path,
 ) -> Result<Vec<PythonScopedDependencySourceIntent>> {
     let parsed = parse_toml(path)?;
-    let tool = parsed
-        .get("tool")
-        .and_then(|value| value.as_table())
-        .ok_or_else(|| anyhow::anyhow!("Missing [tool] table in {}", path.display()))?;
-    let uv = tool
-        .get("uv")
-        .and_then(|value| value.as_table())
-        .ok_or_else(|| anyhow::anyhow!("uv metadata missing from {}", path.display()))?;
+    let Some(uv) = parsed.get("tool").and_then(|tool| tool.get("uv")) else {
+        return Ok(Vec::new());
+    };
+    let uv = uv
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("Invalid uv metadata in {}", path.display()))?;
     let source_map = declared_source_map(&parse_uv_sources(path)?);
     let mut intents = Vec::new();
 

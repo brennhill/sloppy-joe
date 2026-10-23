@@ -37,6 +37,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
   - statically readable `setup.py`
 - Poetry projects require `poetry.lock` and use it for exact version resolution plus trusted transitive coverage.
 - uv projects require `uv.lock` and use it for exact version resolution plus trusted transitive coverage.
+- An adjacent `uv.lock` identifies a uv project without requiring an otherwise empty `[tool.uv]` section. Both virtual roots and packaged `editable = "."` roots are supported; external editable paths remain unsupported.
 - Fully hash-locked pip-tools requirements provide exact pinned versions only when every installable requirement is exact-pinned and fully hash-covered, including recursively included requirement files.
 - pip-tools reaches exact source provenance only when the committed requirements graph binds its own primary `--index-url` and any `--extra-index-url` values with supported HTTP(S) URLs. If the primary index is not explicitly file-bound, sloppy-joe downgrades pip-tools to reduced-confidence mode.
 - Trusted Poetry and uv inputs are evaluated against one concrete Python install profile at a time instead of flattening dev/groups/extras/markers into unconditional direct dependencies.
