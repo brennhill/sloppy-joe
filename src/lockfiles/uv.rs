@@ -49,11 +49,49 @@ pub(crate) fn validate_schema(parsed: &toml::Value, source_path: &Path) -> Resul
     Ok(())
 }
 
+/// Which part of the project a uv.lock root entry belongs to. uv records project dependencies
+/// under `dependencies` / `metadata.requires-dist`, extras under `optional-dependencies`
+/// (`requires-dist` entries carry an `extra == ...` marker), and dependency groups (including
+/// `[tool.uv] dev-dependencies`, recorded as `dev`) under `dev-dependencies` /
+/// `metadata.requires-dev`. Names are normalized.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum UvRootScope {
+    Main,
+    Extra(String),
+    Group(String),
+}
+
+impl UvRootScope {
+    fn in_profile(&self, profile: &PythonProfile) -> bool {
+        match self {
+            Self::Main => true,
+            Self::Extra(extra) => profile.includes_extra(extra),
+            Self::Group(group) => profile.includes_group(group),
+        }
+    }
+
+    fn resolved_section(&self) -> String {
+        match self {
+            Self::Main => "dependencies".to_string(),
+            Self::Extra(extra) => format!("optional-dependencies.{extra}"),
+            Self::Group(group) => format!("dev-dependencies.{group}"),
+        }
+    }
+
+    fn metadata_section(&self) -> String {
+        match self {
+            Self::Main | Self::Extra(_) => "metadata.requires-dist".to_string(),
+            Self::Group(group) => format!("metadata.requires-dev.{group}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct UvRootRequiresEntry {
     normalized_name: String,
     specifier: Option<String>,
     marker: Option<String>,
+    scope: UvRootScope,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +100,16 @@ struct UvRootDependencyEntry {
     version: Option<String>,
     requested_extras: BTreeSet<String>,
     marker: Option<String>,
+    scope: UvRootScope,
+}
+
+/// How a manifest dependency's specifier relates to the in-scope uv.lock root metadata.
+enum UvRootSpecifierMatch {
+    /// No in-scope requires-dist / requires-dev entry names the package.
+    Missing,
+    Matched,
+    /// The package is recorded, but with a different specifier.
+    Mismatch(Option<String>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -88,20 +136,25 @@ pub(crate) fn validate_manifest_consistency(
 
     for dep in deps {
         let normalized = normalize_name(&dep.name);
-        let Some(specifier) = select_root_specifier(&root_requires, &normalized, &profile)? else {
-            bail!(
-                "Broken lockfile '{}': '{}' is missing from root requires-dist metadata",
+        match match_root_specifier(
+            &root_requires,
+            &normalized,
+            &profile,
+            dep.version.as_deref(),
+        )? {
+            UvRootSpecifierMatch::Matched => {}
+            UvRootSpecifierMatch::Missing => bail!(
+                "Broken lockfile '{}': '{}' is missing from the root requires-dist / requires-dev metadata. Run `uv lock` so every declared dependency group and extra is locked",
                 source_path.display(),
-                dep.name
-            );
-        };
-        if dep.version.as_deref() != specifier.as_deref() {
-            bail!(
+                crate::report::sanitize_for_terminal(&dep.name)
+            ),
+            UvRootSpecifierMatch::Mismatch(_) => bail!(
                 "Broken lockfile '{}': '{}' is out of sync with pyproject.toml",
                 source_path.display(),
-                dep.name
-            );
+                crate::report::sanitize_for_terminal(&dep.name)
+            ),
         }
+        let specifier = dep.version.clone();
 
         let selected_root = select_root_dependency(&root_dependencies, &normalized, &profile)?;
         if let Some(root_version) = selected_root
@@ -181,6 +234,78 @@ pub(crate) fn validate_manifest_consistency(
     Ok(())
 }
 
+/// The reverse of [`validate_manifest_consistency`]: every package the uv.lock root installs or
+/// records (main dependencies, extras, dependency groups) must be declared in the same section
+/// of pyproject.toml. A lock-only entry means the lockfile is stale or was modified, and the
+/// package would otherwise be installed without ever being scanned. All manifest declarations are
+/// considered, so narrowing the scanned groups cannot hide drift in the groups left out.
+pub(crate) fn validate_root_declarations_are_declared(
+    parsed: &toml::Value,
+    declared: &[crate::parsers::python_scope::PythonScopedDependency],
+    source_path: &Path,
+) -> Result<()> {
+    let declared: Vec<_> = declared
+        .iter()
+        .filter(|dep| !dep.unlocked_tool_env)
+        .map(|dep| {
+            (
+                normalize_name(dep.dependency.package_name()),
+                dep.dependency.version.as_deref(),
+                dep.groups
+                    .iter()
+                    .map(|group| normalize_name(group))
+                    .collect::<BTreeSet<_>>(),
+                dep.extras
+                    .iter()
+                    .map(|extra| normalize_name(extra))
+                    .collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect();
+    let in_section =
+        |groups: &BTreeSet<String>, extras: &BTreeSet<String>, scope: &UvRootScope| match scope {
+            UvRootScope::Main => groups.is_empty() && extras.is_empty(),
+            UvRootScope::Extra(extra) => extras.contains(extra),
+            UvRootScope::Group(group) => groups.contains(group),
+        };
+
+    for entry in extract_root_dependency_entries(parsed)?.unwrap_or_default() {
+        let is_declared = declared.iter().any(|(name, _, groups, extras)| {
+            *name == entry.normalized_name && in_section(groups, extras, &entry.scope)
+        });
+        if !is_declared {
+            bail!(
+                "Broken lockfile '{}': '{}' is locked in the root package's {} but is not declared in the matching pyproject.toml section. The lockfile is stale or was modified; run `uv lock` and review the diff",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(&entry.normalized_name),
+                crate::report::sanitize_for_terminal(&entry.scope.resolved_section())
+            );
+        }
+    }
+
+    for entry in extract_root_requires_entries(parsed)?.unwrap_or_default() {
+        let is_declared = declared.iter().any(|(name, version, groups, extras)| {
+            *name == entry.normalized_name
+                && *version == entry.specifier.as_deref()
+                && match &entry.scope {
+                    // requires-dist holds the main dependencies and every extra.
+                    UvRootScope::Main | UvRootScope::Extra(_) => groups.is_empty(),
+                    scope => in_section(groups, extras, scope),
+                }
+        });
+        if !is_declared {
+            bail!(
+                "Broken lockfile '{}': '{}{}' is recorded in the root {} but is not declared that way in pyproject.toml. The lockfile is stale or was modified; run `uv lock` and review the diff",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(&entry.normalized_name),
+                crate::report::sanitize_for_terminal(entry.specifier.as_deref().unwrap_or("")),
+                crate::report::sanitize_for_terminal(&entry.scope.metadata_section())
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_provenance(parsed: &toml::Value, source_path: &Path) -> Result<()> {
     for pkg in package_entries(parsed) {
         let name = pkg
@@ -206,6 +331,9 @@ pub(crate) fn validate_provenance(parsed: &toml::Value, source_path: &Path) -> R
         if is_local_root_package(pkg) {
             continue;
         }
+        reject_non_root_dev_dependencies(pkg, name).map_err(|err| {
+            anyhow::anyhow!("Broken lockfile '{}': {}", source_path.display(), err)
+        })?;
 
         let source = pkg
             .get("source")
@@ -583,20 +711,19 @@ pub(super) fn resolve_from_value_with_mode_and_profile(
 ) -> Result<ResolutionResult> {
     let packages = extract_packages(parsed);
     let profile = effective_python_profile(lock_profile);
-    let root_requires = extract_root_requires(parsed).unwrap_or_default();
     let root_requires_entries = extract_root_requires_entries(parsed)?.unwrap_or_default();
     let root_dependencies = extract_root_dependency_entries(parsed)?.unwrap_or_default();
     let mut result = ResolutionResult::default();
 
     for dep in deps {
         let normalized = normalize_name(&dep.name);
-        let profile_specifier = if lock_profile.is_some() {
-            select_root_specifier(&root_requires_entries, &normalized, &profile)?
-        } else {
-            root_requires.get(&normalized).cloned()
-        };
-        match profile_specifier {
-            Some(specifier) if dep.version.as_deref() != specifier.as_deref() => {
+        match match_root_specifier(
+            &root_requires_entries,
+            &normalized,
+            &profile,
+            dep.version.as_deref(),
+        )? {
+            UvRootSpecifierMatch::Mismatch(specifier) => {
                 result.push_issue_for(
                     dep,
                     out_of_sync_issue(dep, specifier.as_deref().unwrap_or("")),
@@ -604,7 +731,7 @@ pub(super) fn resolve_from_value_with_mode_and_profile(
                 add_manifest_exact_fallback(&mut result, dep);
                 continue;
             }
-            None if mode == ResolutionMode::Direct => {
+            UvRootSpecifierMatch::Missing if mode == ResolutionMode::Direct => {
                 result.push_issue_for(dep, missing_entry_issue(dep, "uv.lock"));
                 add_manifest_exact_fallback(&mut result, dep);
                 continue;
@@ -831,6 +958,8 @@ fn uv_package_nodes(parsed: &toml::Value) -> Result<Vec<UvPackageNode>> {
                         crate::report::sanitize_for_terminal(name)
                     )
                 })?;
+            reject_non_root_dev_dependencies(pkg, name)
+                .map_err(|err| anyhow::anyhow!("Broken uv.lock: {err}"))?;
             Ok(UvPackageNode {
                 normalized_name: normalize_name(name),
                 version: version.to_string(),
@@ -953,6 +1082,9 @@ struct UvPackageNode {
 struct UvDependencyEdge {
     request: PythonPackageRequest,
     marker: Option<String>,
+    /// Set for edges from `[package.optional-dependencies.<extra>]`: the edge applies only when
+    /// the package itself was requested with that (normalized) extra.
+    extra: Option<String>,
 }
 
 impl UvDependencyEdge {
@@ -961,6 +1093,11 @@ impl UvDependencyEdge {
         profile: &PythonProfile,
         active_extras: &BTreeSet<String>,
     ) -> Result<bool> {
+        if let Some(extra) = &self.extra
+            && !active_extras.contains(extra)
+        {
+            return Ok(false);
+        }
         match &self.marker {
             Some(marker) => evaluate_marker_for_extras(marker, profile, active_extras),
             None => Ok(true),
@@ -968,35 +1105,83 @@ impl UvDependencyEdge {
     }
 }
 
-fn uv_dependency_edges(pkg: &toml::value::Table) -> Result<Vec<UvDependencyEdge>> {
-    let Some(entries) = pkg.get("dependencies").and_then(|value| value.as_array()) else {
-        return Ok(Vec::new());
-    };
-    let mut deps = Vec::new();
-    for entry in entries {
-        let Some(table) = entry.as_table() else {
-            continue;
-        };
-        let Some(name) = table.get("name").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let mut request = PythonPackageRequest::new(normalize_name(name));
-        request.version = table
-            .get("version")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        request
-            .requested_extras
-            .extend(python_lock_dependency_extras(table)?);
-        deps.push(UvDependencyEdge {
-            request,
-            marker: table
-                .get("marker")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
-        });
+/// uv records dependency groups only for the project root (and workspace members, which are
+/// unsupported). A registry package claiming dev-dependencies is not something uv writes, and
+/// installing from it would hide packages from the root graph, so it fails closed.
+fn reject_non_root_dev_dependencies(pkg: &toml::value::Table, name: &str) -> Result<()> {
+    if pkg.contains_key("dev-dependencies") {
+        bail!(
+            "package '{}' declares dev-dependencies, which uv only records for the project root; the lockfile was modified",
+            crate::report::sanitize_for_terminal(name)
+        );
     }
-    Ok(deps)
+    Ok(())
+}
+
+fn uv_dependency_edges(pkg: &toml::value::Table) -> Result<Vec<UvDependencyEdge>> {
+    let mut edges = Vec::new();
+    if let Some(entries) = pkg.get("dependencies") {
+        for table in lock_dependency_tables(entries, "dependencies")? {
+            edges.push(uv_dependency_edge(table, None)?);
+        }
+    }
+    if let Some(optional) = pkg.get("optional-dependencies") {
+        let optional = optional.as_table().ok_or_else(|| {
+            anyhow::anyhow!("Broken uv.lock: optional-dependencies must be a table of extras")
+        })?;
+        for (extra, entries) in optional {
+            let extra = normalize_name(extra);
+            for table in lock_dependency_tables(entries, "optional-dependencies")? {
+                edges.push(uv_dependency_edge(table, Some(extra.clone()))?);
+            }
+        }
+    }
+    Ok(edges)
+}
+
+fn uv_dependency_edge(
+    table: &toml::value::Table,
+    extra: Option<String>,
+) -> Result<UvDependencyEdge> {
+    let name = table
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Broken uv.lock: dependency entry missing name"))?;
+    let mut request = PythonPackageRequest::new(normalize_name(name));
+    request.version = table
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    request
+        .requested_extras
+        .extend(python_lock_dependency_extras(table)?);
+    Ok(UvDependencyEdge {
+        request,
+        marker: table
+            .get("marker")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        extra,
+    })
+}
+
+/// A uv.lock dependency list: an array of inline tables. Anything else fails closed instead of
+/// silently dropping edges.
+fn lock_dependency_tables<'a>(
+    value: &'a toml::Value,
+    label: &str,
+) -> Result<Vec<&'a toml::value::Table>> {
+    let entries = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Broken uv.lock: {label} must be an array of tables"))?;
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .as_table()
+                .ok_or_else(|| anyhow::anyhow!("Broken uv.lock: {label} entries must be tables"))
+        })
+        .collect()
 }
 
 fn python_lock_dependency_extras(table: &toml::value::Table) -> Result<BTreeSet<String>> {
@@ -1075,28 +1260,53 @@ fn merge_selected_scalar(
     }
 }
 
-fn select_root_specifier(
+/// Compare a manifest specifier with the in-scope root metadata. `requires-dist` (main
+/// dependencies and extras) and each selected `requires-dev` group are merged separately, so a
+/// package may legitimately carry a different specifier in a dependency group than in the main
+/// dependencies; the manifest specifier must equal one of them.
+fn match_root_specifier(
     entries: &[UvRootRequiresEntry],
     normalized_name: &str,
     profile: &PythonProfile,
-) -> Result<Option<Option<String>>> {
-    let mut selected = false;
-    let mut specifier = None;
+    wanted: Option<&str>,
+) -> Result<UvRootSpecifierMatch> {
+    let mut by_section: std::collections::BTreeMap<UvRootScope, Option<String>> =
+        std::collections::BTreeMap::new();
     for entry in entries {
         if entry.normalized_name != normalized_name
+            || !entry.scope.in_profile(profile)
             || !root_marker_matches_profile(entry.marker.as_deref(), profile)?
         {
             continue;
         }
-        selected = true;
+        let section = match &entry.scope {
+            UvRootScope::Extra(_) => UvRootScope::Main,
+            scope => scope.clone(),
+        };
+        let field = if section == UvRootScope::Main {
+            "requires-dist"
+        } else {
+            "requires-dev"
+        };
         merge_selected_scalar(
-            &mut specifier,
+            by_section.entry(section).or_default(),
             entry.specifier.as_deref(),
             normalized_name,
-            "requires-dist",
+            field,
         )?;
     }
-    Ok(selected.then_some(specifier))
+    if by_section.is_empty() {
+        return Ok(UvRootSpecifierMatch::Missing);
+    }
+    if by_section
+        .values()
+        .any(|specifier| specifier.as_deref() == wanted)
+    {
+        return Ok(UvRootSpecifierMatch::Matched);
+    }
+    Ok(UvRootSpecifierMatch::Mismatch(
+        by_section.into_values().next().flatten(),
+    ))
 }
 
 fn select_root_dependency(
@@ -1109,6 +1319,7 @@ fn select_root_dependency(
     let mut requested_extras = BTreeSet::new();
     for entry in entries {
         if entry.normalized_name != normalized_name
+            || !entry.scope.in_profile(profile)
             || !root_marker_matches_profile(entry.marker.as_deref(), profile)?
         {
             continue;
@@ -1128,31 +1339,69 @@ fn select_root_dependency(
     }))
 }
 
-fn extract_root_requires_entries(parsed: &toml::Value) -> Result<Option<Vec<UvRootRequiresEntry>>> {
-    let Some(root) = package_entries(parsed)
+fn root_package(parsed: &toml::Value) -> Option<&toml::value::Table> {
+    package_entries(parsed)
         .into_iter()
         .find(|pkg| is_local_root_package(pkg))
-    else {
+}
+
+/// A table of named dependency lists (`optional-dependencies`, `dev-dependencies`,
+/// `metadata.requires-dev`), each scoped by its normalized key.
+fn scoped_root_lists<'a>(
+    value: Option<&'a toml::Value>,
+    label: &str,
+    scope: fn(String) -> UvRootScope,
+) -> Result<Vec<(UvRootScope, &'a toml::value::Table)>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let table = value
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("Broken uv.lock: root {label} must be a table"))?;
+    let mut lists = Vec::new();
+    for (key, entries) in table {
+        for entry in lock_dependency_tables(entries, &format!("root {label}"))? {
+            lists.push((scope(normalize_name(key)), entry));
+        }
+    }
+    Ok(lists)
+}
+
+fn extract_root_requires_entries(parsed: &toml::Value) -> Result<Option<Vec<UvRootRequiresEntry>>> {
+    let Some(root) = root_package(parsed) else {
         return Ok(None);
     };
-    let Some(requires) = root
-        .get("metadata")
-        .and_then(|value| value.as_table())
-        .and_then(|table| table.get("requires-dist"))
-        .and_then(|value| value.as_array())
-    else {
+    let Some(metadata) = root.get("metadata") else {
         return Ok(None);
     };
+    let metadata = metadata
+        .as_table()
+        .ok_or_else(|| anyhow::anyhow!("Broken uv.lock: root metadata must be a table"))?;
+    let mut lists: Vec<(UvRootScope, &toml::value::Table)> = Vec::new();
+    match metadata.get("requires-dist") {
+        Some(requires) => {
+            for entry in lock_dependency_tables(requires, "root requires-dist")? {
+                lists.push((UvRootScope::Main, entry));
+            }
+        }
+        // uv omits requires-dist for a project without dependencies, but a root that records
+        // neither requires-dist nor requires-dev is not lock metadata sloppy-joe can trust.
+        None if metadata.contains_key("requires-dev") => {}
+        None => return Ok(None),
+    }
+    lists.extend(scoped_root_lists(
+        metadata.get("requires-dev"),
+        "requires-dev",
+        UvRootScope::Group,
+    )?);
+
     let mut entries = Vec::new();
-    for entry in requires {
-        let table = entry.as_table().ok_or_else(|| {
-            anyhow::anyhow!("Broken uv.lock: root requires-dist entries must be tables")
-        })?;
+    for (scope, table) in lists {
         let name = table
             .get("name")
             .and_then(|value| value.as_str())
             .ok_or_else(|| {
-                anyhow::anyhow!("Broken uv.lock: root requires-dist entry missing name")
+                anyhow::anyhow!("Broken uv.lock: root requirement entry missing name")
             })?;
         entries.push(UvRootRequiresEntry {
             normalized_name: normalize_name(name),
@@ -1164,6 +1413,7 @@ fn extract_root_requires_entries(parsed: &toml::Value) -> Result<Option<Vec<UvRo
                 .get("marker")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
+            scope,
         });
     }
     Ok(Some(entries))
@@ -1172,20 +1422,28 @@ fn extract_root_requires_entries(parsed: &toml::Value) -> Result<Option<Vec<UvRo
 fn extract_root_dependency_entries(
     parsed: &toml::Value,
 ) -> Result<Option<Vec<UvRootDependencyEntry>>> {
-    let Some(root) = package_entries(parsed)
-        .into_iter()
-        .find(|pkg| is_local_root_package(pkg))
-    else {
+    let Some(root) = root_package(parsed) else {
         return Ok(None);
     };
-    let Some(dependencies) = root.get("dependencies").and_then(|value| value.as_array()) else {
-        return Ok(None);
-    };
+    let mut lists: Vec<(UvRootScope, &toml::value::Table)> = Vec::new();
+    if let Some(dependencies) = root.get("dependencies") {
+        for entry in lock_dependency_tables(dependencies, "root dependencies")? {
+            lists.push((UvRootScope::Main, entry));
+        }
+    }
+    lists.extend(scoped_root_lists(
+        root.get("optional-dependencies"),
+        "optional-dependencies",
+        UvRootScope::Extra,
+    )?);
+    lists.extend(scoped_root_lists(
+        root.get("dev-dependencies"),
+        "dev-dependencies",
+        UvRootScope::Group,
+    )?);
+
     let mut entries = Vec::new();
-    for dependency in dependencies {
-        let table = dependency.as_table().ok_or_else(|| {
-            anyhow::anyhow!("Broken uv.lock: root dependency entries must be tables")
-        })?;
+    for (scope, table) in lists {
         let name = table
             .get("name")
             .and_then(|value| value.as_str())
@@ -1201,31 +1459,10 @@ fn extract_root_dependency_entries(
                 .get("marker")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
+            scope,
         });
     }
     Ok(Some(entries))
-}
-
-fn extract_root_requires(parsed: &toml::Value) -> Option<HashMap<String, Option<String>>> {
-    let root = package_entries(parsed)
-        .into_iter()
-        .find(|pkg| is_local_root_package(pkg))?;
-    let requires = root
-        .get("metadata")
-        .and_then(|value| value.as_table())?
-        .get("requires-dist")
-        .and_then(|value| value.as_array())?;
-    let mut map = HashMap::new();
-    for entry in requires {
-        let table = entry.as_table()?;
-        let name = normalize_name(table.get("name")?.as_str()?);
-        let specifier = table
-            .get("specifier")
-            .and_then(|value| value.as_str())
-            .map(str::to_string);
-        map.insert(name, specifier);
-    }
-    Some(map)
 }
 
 pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str>) -> Result<bool> {

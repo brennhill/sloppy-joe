@@ -36,7 +36,8 @@ Legacy Python manifests still scan by default, but they are not the trusted path
   - `setup.cfg`
   - statically readable `setup.py`
 - Poetry projects require `poetry.lock` and use it for exact version resolution plus trusted transitive coverage. Every scanned group dependency must have a resolved package in `poetry.lock`; a missing one blocks.
-- uv projects require `uv.lock` and use it for exact version resolution plus trusted transitive coverage.
+- uv projects require `uv.lock` and use it for exact version resolution plus trusted transitive coverage. sloppy-joe reads the root package's `dependencies`, `optional-dependencies`, and `dev-dependencies` (dependency groups, including `[tool.uv] dev-dependencies` recorded as `dev`) together with `metadata.requires-dist` / `metadata.requires-dev`, and follows locked package extras (`[package.optional-dependencies]`) transitively.
+- uv.lock consistency is checked in both directions: every scanned manifest dependency must be locked with the same specifier, and every root entry in uv.lock (main, extra, or group) must be declared in the matching pyproject.toml section, whether or not that group was selected for scanning.
 - Supported uv version ranges are trusted only when lock metadata matches the manifest and the selected version satisfies the range; ambiguous or stale selections fail.
 - An adjacent `uv.lock` identifies a uv project without requiring an otherwise empty `[tool.uv]` section. Both virtual roots and packaged `editable = "."` roots are supported; external editable paths remain unsupported.
 - Fully hash-locked pip-tools requirements provide exact pinned versions only when every installable requirement is exact-pinned and fully hash-covered, including recursively included requirement files.
@@ -62,6 +63,8 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - uv projects without a readable `uv.lock`.
 - Malformed Poetry lockfiles.
 - Malformed, stale, or unsupported `uv.lock` files.
+- A dependency declared in a scanned group or extra that is missing from `poetry.lock` or `uv.lock`.
+- A `uv.lock` root dependency, extra, or group entry (resolved or in `requires-dev`) that pyproject.toml does not declare in that section, and registry packages in `uv.lock` that claim `dev-dependencies`.
 - Mixed Poetry and uv project metadata in the same `pyproject.toml`.
 - Poetry or uv projects whose locked graph resolves from a non-PyPI source that is not allowlisted exactly in `trusted_indexes.pypi`.
 - Poetry or uv dependencies whose declared source intent disagrees with the resolved source in the lockfile.

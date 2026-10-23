@@ -1111,6 +1111,9 @@ fn read_validated_uv_lockfile(
         &path,
         Some(&lock_profile),
     )?;
+    // Bidirectional: every locked root dependency, extra, and group entry must be declared.
+    let declared = parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?;
+    crate::lockfiles::uv::validate_root_declarations_are_declared(&lockfile, &declared, &path)?;
     crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
     let declared_sources = parsers::pyproject_toml::parse_uv_sources(&spec.manifest_path)?;
     let profile = active_python_profile(opts);
@@ -5822,6 +5825,10 @@ mod python_manifest_coverage_tests;
 #[cfg(test)]
 #[path = "python_group_scope_tests.rs"]
 mod python_group_scope_tests;
+
+#[cfg(test)]
+#[path = "uv_lock_groups_tests.rs"]
+mod uv_lock_groups_tests;
 
 fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<ProjectInputKind>> {
     Ok(match path.file_name().and_then(|name| name.to_str()) {
