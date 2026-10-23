@@ -10464,11 +10464,12 @@ async fn full_scan_cannot_skip_age_gate_without_a_valid_publish_date() {
         )
         .unwrap();
     }
-    for date in [
-        None,
-        Some("not-a-date"),
-        Some("2999-01-01T00:00:00Z"),
-        Some("999999999999-01-01T00:00:00Z"),
+    for (date, date_is_valid) in [
+        (None, false),
+        (Some("not-a-date"), false),
+        (Some("2999-01-01T00:00:00Z"), false),
+        (Some("999999999999-01-01T00:00:00Z"), false),
+        (Some("2020-01-01T00:00:00"), true),
     ] {
         for omit_metadata in [false, true] {
             for min_age in [72, 0] {
@@ -10504,7 +10505,7 @@ async fn full_scan_cannot_skip_age_gate_without_a_valid_publish_date() {
                         .iter()
                         .any(|issue| issue.check == "metadata/version-age"
                             && issue.severity == Severity::Error),
-                    min_age > 0,
+                    min_age > 0 && (omit_metadata || !date_is_valid),
                     "unverifiable publication date {date:?} passed the age gate"
                 );
             }

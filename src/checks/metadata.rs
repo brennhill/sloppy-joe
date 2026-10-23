@@ -15,8 +15,10 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     let date_str = date_str.trim();
     let (cleaned, offset_seconds) = if let Some(utc) = date_str.strip_suffix('Z') {
         (utc, 0)
-    } else {
-        let offset_start = date_str.rfind(['+', '-'])?;
+    } else if let Some(offset_start) = date_str
+        .rfind(['+', '-'])
+        .filter(|index| date_str[..*index].contains('T'))
+    {
         let (local, offset) = date_str.split_at(offset_start);
         let (hours, minutes) = offset[1..].split_once(':')?;
         if hours.len() != 2 || minutes.len() != 2 {
@@ -36,6 +38,9 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
                 seconds
             },
         )
+    } else {
+        // Legacy registry timestamps such as PyPI upload_time represent UTC without a suffix.
+        (date_str, 0)
     };
     // Try parsing with chrono-like manual parsing (avoid adding chrono dep)
     // Format: YYYY-MM-DDTHH:MM:SS
