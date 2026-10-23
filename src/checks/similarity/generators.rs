@@ -46,11 +46,13 @@ impl MutationGenerator for SeparatorSwapGen {
         "separator-swap"
     }
     fn generate(&self, name: &str, ecosystem: Ecosystem) -> Vec<String> {
+        // Missing-separator squats (crossenv -> cross-env) apply everywhere,
+        // including PyPI where -, _ and . are otherwise equivalent.
+        let mut results = separator_insertions(name, ecosystem);
         if ecosystem == Ecosystem::PyPI {
-            return vec![];
+            return results;
         }
         let lower = name.to_lowercase();
-        let mut results = Vec::new();
         let stripped = normalize_separators(&lower);
         if stripped != lower {
             results.push(stripped);
@@ -470,6 +472,70 @@ pub(super) fn extract_scope(name: &str, ecosystem: Ecosystem) -> Option<String> 
 }
 
 // -- Generative checks ------------------------------------------------------
+
+/// Upper bound on single-separator insertion candidates per name, to keep
+/// registry request volume bounded for very long names.
+pub(super) const MAX_SEPARATOR_INSERTIONS: usize = 48;
+
+/// Candidates that re-insert a separator the dependency name may have dropped
+/// ("crossenv" -> "cross-env", "reactrouterdom" -> "react-router-dom").
+///
+/// Two sources, both bounded:
+/// 1. one separator inserted at each interior boundary between two
+///    alphanumerics of the package part (scope/group/path prefix untouched),
+///    capped at `MAX_SEPARATOR_INSERTIONS`;
+/// 2. popular packages whose separator-stripped form equals the dependency's
+///    separator-stripped form (catches multiple dropped separators).
+pub(crate) fn separator_insertions(name: &str, ecosystem: Ecosystem) -> Vec<String> {
+    let lower = name.to_lowercase();
+    let split_at = lower.rfind(['/', ':']).map_or(0, |i| i + 1);
+    let (prefix, tail) = lower.split_at(split_at);
+    let chars: Vec<char> = tail.chars().collect();
+    let separators: &[char] = match ecosystem {
+        Ecosystem::Dotnet => &['.', '-'],
+        _ => &['-'],
+    };
+
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+    'outer: for i in 1..chars.len() {
+        if !(chars[i - 1].is_ascii_alphanumeric() && chars[i].is_ascii_alphanumeric()) {
+            continue;
+        }
+        for &sep in separators {
+            if results.len() >= MAX_SEPARATOR_INSERTIONS {
+                break 'outer;
+            }
+            let mut candidate = String::with_capacity(lower.len() + 1);
+            candidate.push_str(prefix);
+            candidate.extend(&chars[..i]);
+            candidate.push(sep);
+            candidate.extend(&chars[i..]);
+            if seen.insert(candidate.clone()) {
+                results.push(candidate);
+            }
+        }
+    }
+
+    let stripped = normalize_separators(&lower);
+    // PyPI treats -, _ and . as the same name (PEP 503): never offer the
+    // dependency's own canonical form as a squat target.
+    let pypi_canonical = |s: &str| s.replace(['_', '.'], "-");
+    for popular in super::popular::top_packages(ecosystem) {
+        let popular_lower = popular.to_lowercase();
+        if ecosystem == Ecosystem::PyPI && pypi_canonical(&popular_lower) == pypi_canonical(&lower)
+        {
+            continue;
+        }
+        if popular_lower != lower
+            && normalize_separators(&popular_lower) == stripped
+            && seen.insert(popular_lower.clone())
+        {
+            results.push(popular_lower);
+        }
+    }
+    results
+}
 
 /// Normalize separators: strip `-`, `_`, `.` for comparison.
 pub(super) fn normalize_separators(name: &str) -> String {

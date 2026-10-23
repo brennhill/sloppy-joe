@@ -32,7 +32,10 @@ struct SimilarityCache {
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum SimilarityCacheEntry {
-    Timed { exists: bool, checked_at: u64 },
+    Timed {
+        exists: bool,
+        checked_at: u64,
+    },
     /// Pre-per-entry format: a bare bool aged by the file timestamp.
     Legacy(bool),
 }
@@ -51,10 +54,8 @@ impl SimilarityCache {
                     SimilarityCacheEntry::Legacy(exists) => (exists, file_ts),
                 };
                 let age = now.checked_sub(checked_at)?;
-                (age < ttl_secs).then_some((
-                    name,
-                    SimilarityCacheEntry::Timed { exists, checked_at },
-                ))
+                (age < ttl_secs)
+                    .then_some((name, SimilarityCacheEntry::Timed { exists, checked_at }))
             })
             .collect();
         self

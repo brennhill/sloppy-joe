@@ -43,10 +43,13 @@ impl RegistryMetadata for FakeRegistry {
         package_name: &str,
         _version: Option<&str>,
     ) -> Result<Option<PackageMetadata>> {
-        Ok(self.existing.contains(package_name).then(|| PackageMetadata {
-            downloads: Some(5),
-            ..Default::default()
-        }))
+        Ok(self
+            .existing
+            .contains(package_name)
+            .then(|| PackageMetadata {
+                downloads: Some(5),
+                ..Default::default()
+            }))
     }
 }
 
@@ -84,12 +87,22 @@ async fn stale_negative_entry_is_requeried_even_when_file_was_recently_rewritten
 
     let registry = FakeRegistry::with(&["express"]);
     let deps = vec![dep("expresss", Ecosystem::Npm)];
-    let issues =
-        check_similarity_with_cache(&registry, &deps, Ecosystem::Npm, Some(&dir), false, false, None)
-            .await
-            .unwrap();
+    let issues = check_similarity_with_cache(
+        &registry,
+        &deps,
+        Ecosystem::Npm,
+        Some(&dir),
+        false,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
 
-    assert!(registry.was_queried("express"), "expired entry must be re-queried");
+    assert!(
+        registry.was_queried("express"),
+        "expired entry must be re-queried"
+    );
     assert!(
         issues.iter().any(|i| i.package == "expresss"),
         "typosquat of newly-registered target must be detected: {:?}",
@@ -111,10 +124,21 @@ async fn writing_new_results_preserves_age_of_existing_entries() {
     cache::atomic_write_json(&cp, &raw);
 
     let registry = FakeRegistry::with(&["express"]);
-    let deps = vec![dep("expresss", Ecosystem::Npm), dep("lodashh", Ecosystem::Npm)];
-    check_similarity_with_cache(&registry, &deps, Ecosystem::Npm, Some(&dir), false, false, None)
-        .await
-        .unwrap();
+    let deps = vec![
+        dep("expresss", Ecosystem::Npm),
+        dep("lodashh", Ecosystem::Npm),
+    ];
+    check_similarity_with_cache(
+        &registry,
+        &deps,
+        Ecosystem::Npm,
+        Some(&dir),
+        false,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
 
     // Legacy entry is still within TTL, so it is served from cache this run...
     assert!(!registry.was_queried("express"));
@@ -122,17 +146,28 @@ async fn writing_new_results_preserves_age_of_existing_entries() {
     let saved = read_raw_cache(&cp);
     let entry = &saved["entries"]["express"];
     assert_eq!(entry["exists"], serde_json::json!(false), "saved: {saved}");
-    assert_eq!(entry["checked_at"], serde_json::json!(old_ts), "saved: {saved}");
+    assert_eq!(
+        entry["checked_at"],
+        serde_json::json!(old_ts),
+        "saved: {saved}"
+    );
 
     // A day later (simulated by aging the saved entry) it must be re-queried.
     let mut aged = saved.clone();
     aged["entries"]["express"]["checked_at"] = serde_json::json!(old_ts - 2 * DAY);
     cache::atomic_write_json(&cp, &aged);
     let registry = FakeRegistry::with(&["express"]);
-    let issues =
-        check_similarity_with_cache(&registry, &deps, Ecosystem::Npm, Some(&dir), false, false, None)
-            .await
-            .unwrap();
+    let issues = check_similarity_with_cache(
+        &registry,
+        &deps,
+        Ecosystem::Npm,
+        Some(&dir),
+        false,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(registry.was_queried("express"));
     assert!(issues.iter().any(|i| i.package == "expresss"));
     crate::parsers::test_utils::cleanup(&dir);
@@ -150,11 +185,77 @@ async fn fresh_per_entry_cache_is_still_served() {
     cache::atomic_write_json(&cp, &raw);
     let registry = FakeRegistry::with(&[]);
     let deps = vec![dep("expresss", Ecosystem::Npm)];
-    let issues =
-        check_similarity_with_cache(&registry, &deps, Ecosystem::Npm, Some(&dir), false, false, None)
-            .await
-            .unwrap();
+    let issues = check_similarity_with_cache(
+        &registry,
+        &deps,
+        Ecosystem::Npm,
+        Some(&dir),
+        false,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(!registry.was_queried("express"));
     assert!(issues.iter().any(|i| i.package == "expresss"));
     crate::parsers::test_utils::cleanup(&dir);
+}
+
+// ── Finding 2: missing-separator typosquats ──
+
+#[tokio::test]
+async fn missing_separator_typosquats_are_detected() {
+    // 2017 npm attack names: crossenv (cross-env), babelcli (babel-cli).
+    let registry = FakeRegistry::with(&["cross-env", "babel-cli", "react-dom", "python-dateutil"]);
+    for (eco, name, target) in [
+        (Ecosystem::Npm, "crossenv", "cross-env"),
+        (Ecosystem::Npm, "babelcli", "babel-cli"),
+        (Ecosystem::Npm, "reactdom", "react-dom"),
+        (Ecosystem::PyPI, "pythondateutil", "python-dateutil"),
+    ] {
+        let issues = check_similarity(&registry, &[dep(name, eco)], eco)
+            .await
+            .unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.package == name && i.suggestion.as_deref() == Some(target)),
+            "{name} should be flagged as a squat of {target}: {issues:?}"
+        );
+    }
+}
+
+#[test]
+fn separator_insertion_covers_every_interior_boundary() {
+    let m = generate_mutations("crossenv", Ecosystem::Npm);
+    for candidate in ["c-rossenv", "cross-env", "crossen-v"] {
+        assert_eq!(m.get(candidate), Some(&"separator-swap"), "{candidate}");
+    }
+    // Scoped npm names: only the package part gets separators.
+    let m = generate_mutations("@babel/presetenv", Ecosystem::Npm);
+    assert!(m.contains_key("@babel/preset-env"));
+    assert!(!m.keys().any(|k| k.starts_with("@ba-bel")));
+}
+
+#[test]
+fn separator_insertion_matches_multi_separator_popular_names() {
+    let m = generate_mutations("reactrouterdom", Ecosystem::Npm);
+    assert!(
+        m.contains_key("react-router-dom"),
+        "{:?}",
+        m.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pypi_separator_insertion_never_targets_the_same_normalized_name() {
+    let m = generate_mutations("python_dateutil", Ecosystem::PyPI);
+    assert!(!m.contains_key("python-dateutil"));
+}
+
+#[test]
+fn separator_insertion_is_bounded() {
+    let long = "a".repeat(200);
+    let insertions = generators::separator_insertions(&long, Ecosystem::Npm);
+    assert!(insertions.len() <= generators::MAX_SEPARATOR_INSERTIONS);
 }
