@@ -44,6 +44,9 @@ Once projects are identified, binding, preflight, and scan errors are isolated p
   - configured private npm/pnpm tarballs must stay within their declared HTTPS registry origin and path; their contents and identity remain unvetted
 - Alias dependencies are preserved under their real published identity instead of being flattened into the alias name.
 - `yarn.lock` entries that no dependency reaches are not installed, so they are not scanned. A standalone Yarn project reports them as a non-blocking `lockfile/orphan-entries` warning; run `yarn install` to prune them. When reachability cannot be proven (a workspace root, a dependency edge or direct dependency missing from the lockfile, or an entry sloppy-joe cannot attribute), those entries are scanned instead of reported.
+- `pnpm-lock.yaml` packages no importer reaches follow the same rule: a standalone lockfile reports them as `lockfile/orphan-entries`; the root importer of a workspace, or any importer when there is no root importer or the graph has unresolved edges, scans them.
+- `bun.lock` dependencies resolve the way Bun installs them: a nested entry (`parent/child`, or `member/child` for a workspace member) shadows the top-level copy for that parent, and nested entries are scanned. Entries no workspace reaches are scanned by the root workspace, or by every workspace when the lockfile has no root workspace.
+- A project whose manifest declares no dependencies still has its lockfile validated and scanned (or its stale entries flagged).
 - Lockfile entries with invalid package names, and `yarn.lock` selectors repeated across entries, block the scan.
 - JavaScript transitives get similarity coverage in the trusted path, because JS typosquats often hide below the direct dependency layer.
 

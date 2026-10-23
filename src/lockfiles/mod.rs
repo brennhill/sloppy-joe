@@ -17,6 +17,9 @@ mod redteam_tests;
 #[cfg(test)]
 mod js_reachability_tests;
 
+#[cfg(test)]
+mod bun_nested_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
