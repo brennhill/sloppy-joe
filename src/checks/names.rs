@@ -17,6 +17,9 @@ pub const METADATA_MAINTAINER_CHANGE: &str = "metadata/maintainer-change";
 pub const METADATA_PUBLISHER_SCRIPT_COMBO: &str = "metadata/publisher-script-combo";
 pub const METADATA_PARSE_FAILED: &str = "metadata/parse-failed";
 pub const METADATA_NO_REPOSITORY: &str = "metadata/no-repository";
+pub const METADATA_DOWNLOADS_UNAVAILABLE: &str = "metadata/downloads-unavailable";
+pub const METADATA_MANIFEST_INCONSISTENCY: &str = "metadata/manifest-inconsistency";
+pub const METADATA_REMOVED_PREVIOUS_VERSION: &str = "metadata/removed-previous-version";
 
 // -- Similarity --
 pub const SIMILARITY_REGISTRY_UNREACHABLE: &str = "similarity/registry-unreachable";
@@ -109,6 +112,9 @@ mod tests {
             METADATA_PUBLISHER_SCRIPT_COMBO,
             METADATA_PARSE_FAILED,
             METADATA_NO_REPOSITORY,
+            METADATA_DOWNLOADS_UNAVAILABLE,
+            METADATA_MANIFEST_INCONSISTENCY,
+            METADATA_REMOVED_PREVIOUS_VERSION,
             SIMILARITY_REGISTRY_UNREACHABLE,
             SIMILARITY_SCOPE_SQUATTING,
             SIMILARITY_CASE_VARIANT,

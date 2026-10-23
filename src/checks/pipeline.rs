@@ -29,6 +29,20 @@ impl Check for CanonicalCheck {
     }
 }
 
+/// Fetch registry metadata for all non-internal deps once and store it in the
+/// accumulator. Similarity needs download counts (download-disparity
+/// evidence) and runs before MetadataCheck, which needs similarity results;
+/// both share this single fetch.
+async fn ensure_metadata_lookups(ctx: &CheckContext<'_>, acc: &mut ScanAccumulator) {
+    if acc.metadata_lookups.is_some() {
+        return;
+    }
+    let (lookups, fetch_issues) =
+        super::metadata::fetch_metadata(ctx.registry, ctx.non_internal_deps, ctx.resolution).await;
+    acc.issues.extend(fetch_issues);
+    acc.metadata_lookups = Some(lookups);
+}
+
 /// Similarity check: generates mutations and queries registry.
 /// Populates acc.similarity_flagged for downstream checks.
 pub struct SimilarityCheck;
@@ -44,6 +58,7 @@ impl Check for SimilarityCheck {
         acc: &'a mut ScanAccumulator,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
+            ensure_metadata_lookups(ctx, acc).await;
             let results = super::similarity::check_similarity_with_options(
                 ctx.registry,
                 ctx.checkable_deps,
@@ -95,14 +110,10 @@ impl Check for MetadataCheck {
             // For non-metadata ecosystems (go, php, dotnet), metadata() returns
             // None immediately and exists() is called once as fallback.
             // Either way, ExistenceCheck reads from acc.metadata_lookups
-            // instead of making redundant registry calls.
-            let (lookups, fetch_issues) = super::metadata::fetch_metadata(
-                ctx.registry,
-                ctx.non_internal_deps,
-                ctx.resolution,
-            )
-            .await;
-            acc.issues.extend(fetch_issues);
+            // instead of making redundant registry calls. SimilarityCheck may
+            // already have fetched them (see ensure_metadata_lookups).
+            ensure_metadata_lookups(ctx, acc).await;
+            let lookups = acc.metadata_lookups.take().unwrap_or_default();
             acc.issues.extend(super::metadata::issues_from_lookups(
                 &lookups,
                 ctx.config,
@@ -210,6 +221,10 @@ pub fn default_pipeline() -> Vec<Box<dyn Check>> {
         Box::new(MaliciousCheck),
     ]
 }
+
+#[cfg(test)]
+#[path = "pipeline_hardening_tests.rs"]
+mod hardening_tests;
 
 #[cfg(test)]
 mod tests {

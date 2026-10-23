@@ -238,6 +238,9 @@ pub(crate) fn issues_from_lookups(
         issues.extend(maintainer_issue);
         issues.extend(signals::check_publisher_script_combo(lookup, meta));
         issues.extend(signals::check_no_repository(lookup, meta, &ctx));
+        issues.extend(signals::check_downloads_unavailable(lookup, meta));
+        issues.extend(signals::check_manifest_inconsistency(lookup, meta));
+        issues.extend(signals::check_removed_previous_version(lookup, meta));
     }
 
     issues

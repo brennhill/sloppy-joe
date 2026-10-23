@@ -51,6 +51,16 @@ pub struct PackageMetadata {
     /// Chronologically ordered (oldest first). Only versions within
     /// the last 12 months are included.
     pub version_history: Vec<VersionRecord>,
+    /// Why download counts are unavailable when the registry's downloads
+    /// source failed (non-2xx, transport error, malformed body). `None`
+    /// when downloads were fetched or the ecosystem has no downloads source.
+    pub downloads_unavailable: Option<String>,
+    /// Description of an internal inconsistency in the registry manifest
+    /// (e.g. npm `hasInstallScript` disagrees with the declared `scripts`).
+    pub manifest_inconsistency: Option<String>,
+    /// A version published immediately before the selected one that has
+    /// since been removed from the registry (still listed in publish times).
+    pub removed_previous_version: Option<String>,
 }
 
 #[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
