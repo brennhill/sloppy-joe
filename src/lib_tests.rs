@@ -10847,3 +10847,59 @@ async fn cargo_hyphen_alias_is_not_reported_as_a_different_crate() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn generated_scoped_npm_names_do_not_cause_registry_outage_findings() {
+    struct ValidatingRegistry(FakeRegistry);
+    #[async_trait]
+    impl RegistryExistence for ValidatingRegistry {
+        async fn exists(&self, name: &str) -> Result<bool> {
+            self.validate_name(name)?;
+            self.0.exists(name).await
+        }
+        fn ecosystem(&self) -> &str {
+            "npm"
+        }
+    }
+    #[async_trait]
+    impl RegistryMetadata for ValidatingRegistry {
+        async fn metadata(
+            &self,
+            name: &str,
+            version: Option<&str>,
+        ) -> Result<Option<PackageMetadata>> {
+            self.0.metadata(name, version).await
+        }
+    }
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","dependencies":{"@types/node":"22.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("package-lock.json"), r#"{"name":"demo","lockfileVersion":3,"packages":{"":{"name":"demo","dependencies":{"@types/node":"22.0.0"}},"node_modules/@types/node":{"version":"22.0.0","resolved":"https://registry.npmjs.org/@types/node/-/node-22.0.0.tgz","integrity":"sha512-demo"}}}"#).unwrap();
+    let registry = ValidatingRegistry(FakeRegistry {
+        existing: vec!["@types/node".to_owned()],
+    });
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        Default::default(),
+        &registry,
+        &FakeOsvClient,
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report.has_errors(),
+        "invalid generated candidates must be discarded before registry queries: {:?}",
+        report.issues
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

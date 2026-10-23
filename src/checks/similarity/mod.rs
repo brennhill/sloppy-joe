@@ -402,6 +402,9 @@ pub(crate) async fn check_similarity_with_options(
                     !candidate.replace('-', "_").eq_ignore_ascii_case(&identity)
                 });
             }
+            mutations.retain(|candidate, _| {
+                crate::registry::validate_package_name_for_ecosystem(candidate, ecosystem)
+            });
             all_mutations.insert(dep.package_name().to_string(), mutations);
         }
     }
