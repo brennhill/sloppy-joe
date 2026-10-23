@@ -82,7 +82,61 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<serde_json::Val
     let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
     let parsed = serde_json::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
+    validate_provenance(&parsed, &path)?;
     Ok(Some(parsed))
+}
+
+/// Hosts a `composer.lock` may fetch package archives and sources from.
+const TRUSTED_COMPOSER_HOSTS: &[&str] = &[
+    "repo.packagist.org",
+    "packagist.org",
+    "api.github.com",
+    "github.com",
+    "codeload.github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "api.bitbucket.org",
+];
+
+/// `composer install` downloads from each entry's `dist.url` / `source.url`, not from
+/// the registry, so a committed lock could point any package at an attacker's archive.
+pub(crate) fn validate_provenance(parsed: &serde_json::Value, lockfile_path: &Path) -> Result<()> {
+    for section in ["packages", "packages-dev"] {
+        let Some(entries) = parsed.get(section).and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for entry in entries {
+            let name = entry
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<unnamed>");
+            for field in ["dist", "source"] {
+                let Some(location) = entry.get(field).filter(|value| !value.is_null()) else {
+                    continue;
+                };
+                let url = location.get("url").and_then(|value| value.as_str());
+                let trusted = url.is_some_and(|url| {
+                    url.strip_prefix("https://")
+                        .and_then(|rest| rest.split(['/', '?', '#']).next())
+                        .is_some_and(|authority| {
+                            !authority.contains('@')
+                                && !authority.contains(':')
+                                && TRUSTED_COMPOSER_HOSTS
+                                    .contains(&authority.to_ascii_lowercase().as_str())
+                        })
+                });
+                if !trusted {
+                    anyhow::bail!(
+                        "Untrusted composer.lock {field} for '{name}' in '{}': '{}' is not an https URL on a known package host ({}). composer install downloads from it instead of Packagist. Fix: regenerate composer.lock from Packagist.",
+                        lockfile_path.display(),
+                        url.unwrap_or("<missing>"),
+                        TRUSTED_COMPOSER_HOSTS.join(", ")
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -118,4 +172,42 @@ fn extract_packages(parsed: &serde_json::Value) -> std::collections::HashMap<Str
     }
 
     packages
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    fn lock(dist_url: &str, source_url: &str) -> serde_json::Value {
+        serde_json::json!({"packages": [{
+            "name": "monolog/monolog", "version": "3.0.0",
+            "source": {"type": "git", "url": source_url, "reference": "abc"},
+            "dist": {"type": "zip", "url": dist_url, "reference": "abc"}
+        }]})
+    }
+
+    #[test]
+    fn known_hosts_are_accepted() {
+        let parsed = lock(
+            "https://api.github.com/repos/Seldaek/monolog/zipball/abc",
+            "https://github.com/Seldaek/monolog.git",
+        );
+        validate_provenance(&parsed, Path::new("composer.lock")).unwrap();
+    }
+
+    #[test]
+    fn foreign_dist_or_source_hosts_block() {
+        for (dist, source) in [
+            ("https://mirror.example.invalid/monolog.zip", "https://github.com/a/b.git"),
+            ("https://api.github.com/x", "https://evil.example/a.git"),
+            ("http://api.github.com/x", "https://github.com/a/b.git"),
+            ("https://github.com@evil.example/x", "https://github.com/a/b.git"),
+            ("../local", "https://github.com/a/b.git"),
+        ] {
+            assert!(
+                validate_provenance(&lock(dist, source), Path::new("composer.lock")).is_err(),
+                "{dist} {source}"
+            );
+        }
+    }
 }
