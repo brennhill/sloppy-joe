@@ -7513,3 +7513,7 @@ mod lockfile_redteam_tests;
 #[cfg(test)]
 #[path = "yarn_orphan_scan_tests.rs"]
 mod yarn_orphan_scan_tests;
+
+#[cfg(test)]
+#[path = "lockfile_integrity_scan_tests.rs"]
+mod lockfile_integrity_scan_tests;

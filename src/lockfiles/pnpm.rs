@@ -432,7 +432,7 @@ fn split_npm_package_and_spec(spec: &str) -> Option<(&str, &str)> {
     Some((name, version.trim_start_matches('@')))
 }
 
-fn pnpm_package_key_parts(key: &str) -> Option<(&str, &str)> {
+pub(super) fn pnpm_package_key_parts(key: &str) -> Option<(&str, &str)> {
     let base = key.split('(').next().unwrap_or(key).trim();
     if base.is_empty() || base.starts_with("link:") || base.starts_with("file:") {
         return None;

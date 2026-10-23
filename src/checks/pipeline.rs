@@ -126,6 +126,12 @@ impl Check for MetadataCheck {
                 )
                 .await,
             );
+            acc.issues
+                .extend(super::lockfile_integrity::check_lockfile_integrity(
+                    &lookups,
+                    ctx.non_internal_deps,
+                    ctx.resolution,
+                ));
             acc.issues.extend(super::metadata::issues_from_lookups(
                 &lookups,
                 ctx.config,

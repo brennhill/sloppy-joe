@@ -262,6 +262,44 @@ fn registry_dependency(name: String, version: String) -> Dependency {
     }
 }
 
+/// One Yarn classic registry entry: what `lockfiles::integrity` compares.
+pub(crate) struct YarnClassicRegistryEntry {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) location: String,
+    pub(crate) integrity: Option<String>,
+    pub(crate) resolved: Option<String>,
+}
+
+impl ParsedYarnLock {
+    /// Registry entries of a Yarn classic lockfile. `None` for Yarn Berry,
+    /// whose `checksum` hashes Yarn's own zip archive, not the tarball.
+    pub(crate) fn classic_registry_entries(&self) -> Option<Vec<YarnClassicRegistryEntry>> {
+        let berry = self.entries.iter().any(|entry| {
+            entry.resolution.is_some()
+                || (entry.selectors.len() == 1 && entry.selectors[0] == "__metadata")
+        });
+        if berry {
+            return None;
+        }
+        Some(
+            self.entries
+                .iter()
+                .filter_map(|entry| {
+                    let (name, version) = registry_package(entry, &self.path).ok().flatten()?;
+                    Some(YarnClassicRegistryEntry {
+                        name,
+                        version,
+                        location: entry.selectors.join(", "),
+                        integrity: entry.integrity.clone(),
+                        resolved: entry.resolved.clone(),
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
 pub(super) fn parse_all_from_parsed(parsed: &ParsedYarnLock) -> Result<Vec<Dependency>> {
     let mut deps = Vec::new();
     for entry in &parsed.entries {

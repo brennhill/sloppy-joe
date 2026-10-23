@@ -1,5 +1,6 @@
 pub mod canonical;
 pub mod existence;
+pub(crate) mod lockfile_integrity;
 pub mod malicious;
 pub mod metadata;
 pub mod names;

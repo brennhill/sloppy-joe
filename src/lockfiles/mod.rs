@@ -3,6 +3,7 @@ mod cargo;
 mod composer;
 mod dotnet;
 mod gradle;
+pub(crate) mod integrity;
 pub(crate) mod npm;
 pub(crate) mod pnpm;
 pub(crate) mod python;
@@ -74,6 +75,8 @@ pub struct ResolutionResult {
     pub exact_versions: HashMap<ResolutionKey, ResolvedVersion>,
     pub issues: Vec<Issue>,
     issue_keys: HashSet<(String, ResolutionKey)>,
+    /// Integrity recorded by an npm-family lockfile, per package version.
+    pub(crate) npm_integrity: Option<std::sync::Arc<integrity::NpmLockfileIntegrity>>,
 }
 
 impl ResolutionResult {
@@ -147,6 +150,7 @@ pub struct LockfileData {
     pub transitive_deps: Vec<Dependency>,
     /// Retained parsed lockfile for re-resolution of transitive deps without re-reading disk.
     parsed: ParsedLockfile,
+    npm_integrity: Option<std::sync::Arc<integrity::NpmLockfileIntegrity>>,
 }
 
 impl LockfileData {
@@ -196,6 +200,8 @@ impl LockfileData {
         // Resolve direct dep versions from the parsed data
         let mut resolution =
             resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct, python_profile)?;
+        let npm_integrity = integrity::collect(&parsed).map(std::sync::Arc::new);
+        resolution.npm_integrity = npm_integrity.clone();
 
         let (all_deps, lockfile_issues) =
             parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir, python_profile)?;
@@ -226,13 +232,17 @@ impl LockfileData {
             resolution,
             transitive_deps: transitive,
             parsed,
+            npm_integrity,
         })
     }
 
     /// Resolve versions for transitive deps from the already-parsed lockfile.
     /// Eliminates the redundant disk read that `resolve_versions()` would do.
     pub fn resolve_transitive(&self, deps: &[Dependency]) -> Result<ResolutionResult> {
-        resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive, None)
+        let mut resolution =
+            resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive, None)?;
+        resolution.npm_integrity = self.npm_integrity.clone();
+        Ok(resolution)
     }
 
     pub fn reduced_confidence_from_manifest(direct_deps: &[Dependency]) -> Self {
@@ -242,6 +252,7 @@ impl LockfileData {
             resolution,
             transitive_deps: Vec::new(),
             parsed: ParsedLockfile::None,
+            npm_integrity: None,
         }
     }
 }

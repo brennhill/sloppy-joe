@@ -42,6 +42,7 @@ Once projects are identified, binding, preflight, and scan errors are isolated p
   - integrity metadata is required where the manager exposes it
   - public tarball URLs must match the locked package identity and version exactly
   - configured private npm/pnpm tarballs must stay within their declared HTTPS registry origin and path; their contents and identity remain unvetted
+  - the recorded integrity must match the registry packument's `dist.integrity`/`dist.shasum` for that exact version (npm, pnpm, Bun, Yarn classic; same-algorithm comparison only). A different hash blocks with `metadata/lockfile-integrity-mismatch`; a missing hash or no shared algorithm blocks with `metadata/lockfile-integrity-unverified`. Yarn Berry `checksum` values hash Yarn's own zip archive and are not compared.
 - Alias dependencies are preserved under their real published identity instead of being flattened into the alias name.
 - `yarn.lock` entries that no dependency reaches are not installed, so they are not scanned. A standalone Yarn project reports them as a non-blocking `lockfile/orphan-entries` warning; run `yarn install` to prune them. When reachability cannot be proven (a workspace root, a dependency edge or direct dependency missing from the lockfile, or an entry sloppy-joe cannot attribute), those entries are scanned instead of reported.
 - Lockfile entries with invalid package names, and `yarn.lock` selectors repeated across entries, block the scan.

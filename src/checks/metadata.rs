@@ -369,6 +369,9 @@ pub async fn check_metadata(
         )
         .await,
     );
+    issues.extend(super::lockfile_integrity::check_lockfile_integrity(
+        &lookups, deps, resolution,
+    ));
     issues.extend(issues_from_lookups(&lookups, config, similarity_flagged));
     Ok(issues)
 }
