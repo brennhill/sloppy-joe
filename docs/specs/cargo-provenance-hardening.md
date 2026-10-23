@@ -103,8 +103,9 @@ The goal of this spec is to make Cargo support precise:
 - **Given** a Cargo workspace where crate `app` depends on `serde` via
   `workspace = true`, **When** the nearest in-scope workspace root defines
   `serde = "1.0"` under `[workspace.dependencies]` and `Cargo.lock` contains exactly
-  one matching crates.io candidate, **Then** the scan emits
-  `resolution/no-trusted-lockfile-sync` rather than trusting the exact locked version.
+  one crates.io candidate that satisfies it, **Then** the scan trusts that locked
+  version. (Amended: this previously emitted `resolution/no-trusted-lockfile-sync`; a
+  locked version that satisfies the requirement is the version Cargo installs.)
 - **Given** the current manifest is itself the workspace root and uses
   `[workspace.dependencies]`, **When** a member dependency declares `workspace = true`,
   **Then** sloppy-joe treats the current manifest as the authoritative workspace root.
@@ -532,7 +533,7 @@ Rewrite features are handled as effective source edges, not as exemptions.
 | Cargo source type | Required evidence | Default | Weak mode | Failure mode |
 | --- | --- | --- | --- | --- |
 | crates.io with exact manifest version | exact `Cargo.lock` package entry with raw source `registry+https://github.com/rust-lang/crates.io-index` and matching exact version | pass | n/a | block on missing, malformed, or mismatched lockfile evidence |
-| crates.io with non-exact manifest requirement | exact `Cargo.lock` package entry with raw source `registry+https://github.com/rust-lang/crates.io-index` | block exact-version trust | n/a | `resolution/no-trusted-lockfile-sync` |
+| crates.io with non-exact manifest requirement | exact `Cargo.lock` package entry with raw source `registry+https://github.com/rust-lang/crates.io-index` whose version satisfies the requirement | pass (trust the locked version) | n/a | `resolution/lockfile-out-of-sync` when the locked version does not satisfy the requirement; `resolution/no-trusted-lockfile-sync` when the requirement or locked version is not valid semver |
 | workspace-inherited dependency | nearest in-scope `[workspace.dependencies]` entry plus the evidence required by that inherited source type | pass when inherited source is trusted | n/a | block if inherited entry is missing, unsupported, or untrusted |
 | path local crate under scan root | canonical path under scan root plus valid local Cargo crate target | pass | n/a | block on traversal, symlink escape, or invalid target |
 | path local crate outside scan root | exact allowlisted canonical path plus valid local Cargo crate target | block | pass | block if not exactly allowlisted |
@@ -548,9 +549,11 @@ Rewrite features are handled as effective source edges, not as exemptions.
 | --- | --- | --- |
 | exact manifest version + exactly one matching lockfile candidate at same version | trust lockfile exact version | none |
 | exact manifest version + matching source but different exact locked version | block | `resolution/lockfile-out-of-sync` |
-| non-exact manifest requirement + exactly one matching lockfile candidate | block exact-version trust | `resolution/no-trusted-lockfile-sync` |
+| non-exact manifest requirement + exactly one lockfile candidate that satisfies it | trust the locked version | none |
+| non-exact manifest requirement + lockfile candidates, none satisfying it | block | `resolution/lockfile-out-of-sync` |
+| non-exact manifest requirement that is not valid Cargo semver, or an unparseable locked version | block | `resolution/no-trusted-lockfile-sync` |
 | any manifest requirement + multiple matching candidates + exact manifest version disambiguates one | trust disambiguated exact version | none |
-| any manifest requirement + multiple matching candidates + no exact manifest version disambiguates one | block | `resolution/ambiguous` |
+| any manifest requirement + several candidates satisfy it and no exact manifest version disambiguates one | block | `resolution/ambiguous` |
 | authoritative lockfile exists but direct dependency has no matching source candidate entry | block | `resolution/missing-lockfile-entry` |
 | authoritative lockfile missing or unreadable | block | `resolution/no-trusted-lockfile` |
 | matching source candidate present but lockfile malformed | block | `resolution/parse-failed` |
@@ -570,7 +573,7 @@ Rewrite features are handled as effective source edges, not as exemptions.
 | manifest or repo-local rewrite whose effective target cannot be trusted exactly | `resolution/blocked-provenance-rewrite` |
 | hidden host-local Cargo config without explicit local-only opt-in | `resolution/blocked-provenance-rewrite` |
 | exact manifest version disagrees with exact `Cargo.lock` version | `resolution/lockfile-out-of-sync` |
-| non-exact direct registry dependency whose locked exact version is present but not trusted as synchronized authoritative evidence | `resolution/no-trusted-lockfile-sync` |
+| non-exact direct registry dependency whose requirement or locked version is not valid semver | `resolution/no-trusted-lockfile-sync` |
 | multiple matching lockfile candidates without exact manifest disambiguation | `resolution/ambiguous` |
 
 ---

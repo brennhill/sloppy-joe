@@ -7413,7 +7413,7 @@ fn scan_hash_ignores_shadowed_package_lock_when_shrinkwrap_exists() {
 }
 
 #[test]
-fn cargo_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
+fn cargo_lockfile_trusts_non_exact_direct_deps_only_when_the_locked_version_satisfies_them() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("Cargo.toml"),
@@ -7441,14 +7441,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     let deps = parsers::cargo_toml::parse(&dir).unwrap();
     let data = lockfiles::LockfileData::parse(&dir, &deps).unwrap();
 
-    assert!(
-        data.resolution.exact_version(&deps[0]).is_none(),
-        "non-exact Cargo direct deps must not be trusted from Cargo.lock without sync proof"
+    assert_eq!(
+        data.resolution.exact_version(&deps[0]),
+        Some("1.0.228"),
+        "the one locked version satisfies serde = \"1.0\", so Cargo.lock decides it"
     );
-    assert!(data.resolution.issues.iter().any(|issue| {
-        issue.check == checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
-            && issue.package == "serde"
-    }));
+    assert!(data.resolution.issues.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

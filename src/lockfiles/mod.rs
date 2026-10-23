@@ -27,6 +27,9 @@ mod poetry_split_resolution_tests;
 #[cfg(test)]
 mod pnpm_multidoc_tests;
 
+#[cfg(test)]
+mod cargo_range_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
@@ -1480,7 +1483,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             cargo_dep("serde", "1.0.228"),
             Dependency {
                 name: "rand".to_string(),
-                version: Some("0.8".to_string()),
+                version: Some("0.8 || 0.9".to_string()),
                 ecosystem: Ecosystem::Cargo,
                 actual_name: None,
             },

@@ -107,8 +107,20 @@ pub(super) fn resolve_from_value_with_mode(
                 && dep.version.is_some()
                 && dep.exact_version().is_none()
             {
-                result.push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "Cargo.lock"));
-                continue;
+                // A requirement the lock's only version satisfies is the version
+                // Cargo installs. One it contradicts means the lock is stale.
+                match requirement_matches(dep, version) {
+                    Some(true) => {}
+                    Some(false) => {
+                        result.push_issue_for(dep, out_of_sync_issue(dep, version));
+                        continue;
+                    }
+                    None => {
+                        result
+                            .push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "Cargo.lock"));
+                        continue;
+                    }
+                }
             }
             result.exact_versions.insert(
                 ResolutionKey::from(dep),
@@ -141,12 +153,52 @@ pub(super) fn resolve_from_value_with_mode(
             result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
             add_manifest_exact_fallback(&mut result, dep);
             let _ = exact_manifest; // used for the branch condition
+        } else if mode == ResolutionMode::Direct
+            && dep.version.is_some()
+            && dep.exact_version().is_none()
+            && let Some(satisfying) = satisfying_versions(dep, versions)
+        {
+            match satisfying.as_slice() {
+                [only] => {
+                    result.exact_versions.insert(
+                        ResolutionKey::from(dep),
+                        ResolvedVersion {
+                            version: (*only).clone(),
+                            source: ResolutionSource::Lockfile,
+                        },
+                    );
+                }
+                [] => {
+                    result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
+                }
+                _ => result.push_issue_for(dep, ambiguous_issue(dep)),
+            }
         } else {
             result.push_issue_for(dep, ambiguous_issue(dep));
         }
     }
 
     Ok(result)
+}
+
+/// Whether `locked` satisfies the dependency's Cargo requirement. `None` when
+/// either side is not valid semver, so nothing can be concluded.
+fn requirement_matches(dep: &Dependency, locked: &str) -> Option<bool> {
+    let requirement = semver::VersionReq::parse(dep.version.as_deref()?.trim()).ok()?;
+    let locked = semver::Version::parse(locked).ok()?;
+    Some(requirement.matches(&locked))
+}
+
+/// The locked versions that satisfy the requirement; `None` if any of them
+/// cannot be compared.
+fn satisfying_versions<'a>(dep: &Dependency, versions: &'a [String]) -> Option<Vec<&'a String>> {
+    let mut satisfying = Vec::new();
+    for version in versions {
+        if requirement_matches(dep, version)? {
+            satisfying.push(version);
+        }
+    }
+    Some(satisfying)
 }
 
 /// Parse ALL cargo deps from a lockfile string (for tests).
