@@ -415,3 +415,60 @@ fn poetry_requires_plugins_must_be_a_table() {
     assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
     cleanup(&dir);
 }
+
+#[test]
+fn non_array_pep621_dependencies_fail_closed() {
+    for (label, content) in [
+        (
+            "dependencies",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = \"evil-string\"\n",
+        ),
+        (
+            "optional-dependencies group",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[project.optional-dependencies]\ndocs = \"evil-string2\"\n",
+        ),
+        (
+            "optional-dependencies table",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\noptional-dependencies = [\"evil\"]\n",
+        ),
+        (
+            "dependency-groups table",
+            "dependency-groups = 1\n[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "dependency-groups group",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[dependency-groups]\ndev = \"evil\"\n",
+        ),
+    ] {
+        let dir = setup_test_dir("pyproject-non-array", "pyproject.toml", content);
+        let path = dir.join("pyproject.toml");
+        assert!(
+            parse_legacy_scoped_file(&path).is_err(),
+            "{label} with a non-array value must fail closed"
+        );
+        cleanup(&dir);
+    }
+}
+
+#[test]
+fn malformed_poetry_dependency_tables_fail_closed() {
+    for (label, content) in [
+        ("dependencies", "[tool.poetry]\ndependencies = \"evil\"\n"),
+        (
+            "dev-dependencies",
+            "[tool.poetry]\ndev-dependencies = [\"evil\"]\n",
+        ),
+        ("group", "[tool.poetry]\ngroup = \"evil\"\n"),
+        (
+            "group dependencies",
+            "[tool.poetry.group.dev]\ndependencies = [\"evil\"]\n",
+        ),
+    ] {
+        let dir = setup_test_dir("pyproject-poetry-non-table", "pyproject.toml", content);
+        assert!(
+            parse_poetry_scoped_file(&dir.join("pyproject.toml")).is_err(),
+            "Poetry {label} with a non-table value must fail closed"
+        );
+        cleanup(&dir);
+    }
+}

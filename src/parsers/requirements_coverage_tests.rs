@@ -32,6 +32,20 @@ fn deep_include_chains_fail_closed_instead_of_overflowing_the_stack() {
 }
 
 #[test]
+fn nameless_requirement_lines_fail_closed() {
+    for line in ["==1.0", "[extra]", ">=2", "[extra]==1.0"] {
+        let dir = setup_test_dir(
+            "req-nameless",
+            "requirements.txt",
+            &format!("requests==2.31\n{line}\n"),
+        );
+        let err = parse(&dir).expect_err(line);
+        assert!(err.to_string().contains("missing a package name"), "{err}");
+        cleanup(&dir);
+    }
+}
+
+#[test]
 fn moderate_include_chains_still_parse() {
     let dir = empty_test_dir("req-chain-ok");
     write_include_chain(&dir, 32);

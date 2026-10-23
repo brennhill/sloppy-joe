@@ -356,27 +356,37 @@ pub(crate) fn parse_poetry_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
     collect_tool_dev_dependencies_scoped(&parsed, path, &mut deps)?;
     let legacy_extras = legacy_poetry_extras(poetry);
     collect_poetry_section_scoped(
-        poetry
-            .get("dependencies")
-            .and_then(|value| value.as_table()),
+        optional_table(
+            poetry.get("dependencies"),
+            "[tool.poetry.dependencies]",
+            path,
+        )?,
         path,
         &mut deps,
         None,
         &legacy_extras,
     )?;
     collect_poetry_section_scoped(
-        poetry
-            .get("dev-dependencies")
-            .and_then(|value| value.as_table()),
+        optional_table(
+            poetry.get("dev-dependencies"),
+            "[tool.poetry.dev-dependencies]",
+            path,
+        )?,
         path,
         &mut deps,
         Some("dev"),
         &legacy_extras,
     )?;
-    if let Some(groups) = poetry.get("group").and_then(|value| value.as_table()) {
+    if let Some(groups) = optional_table(poetry.get("group"), "[tool.poetry.group]", path)? {
         for (group_name, group) in groups {
+            let group = optional_table(Some(group), "[tool.poetry.group.*]", path)?
+                .expect("value is present");
             collect_poetry_section_scoped(
-                group.get("dependencies").and_then(|value| value.as_table()),
+                optional_table(
+                    group.get("dependencies"),
+                    "[tool.poetry.group.*.dependencies]",
+                    path,
+                )?,
                 path,
                 &mut deps,
                 Some(group_name.as_str()),
@@ -386,6 +396,24 @@ pub(crate) fn parse_poetry_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
     }
 
     Ok(deps)
+}
+
+/// A table-valued manifest field that may be absent. Present-but-wrong-type values are
+/// rejected instead of being treated as "no dependencies".
+fn optional_table<'a>(
+    value: Option<&'a toml::Value>,
+    label: &str,
+    path: &Path,
+) -> Result<Option<&'a toml::value::Table>> {
+    match value {
+        None => Ok(None),
+        Some(toml::Value::Table(table)) => Ok(Some(table)),
+        Some(_) => bail!(
+            "Unsupported {} in {}: expected a table",
+            label,
+            path.display()
+        ),
+    }
 }
 
 pub(crate) fn parse_poetry_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
@@ -731,10 +759,11 @@ fn collect_pep621_project_scoped(
     }
 
     collect_requirement_array_scoped(project.get("dependencies"), path, deps, None, None)?;
-    if let Some(optional) = project
-        .get("optional-dependencies")
-        .and_then(|value| value.as_table())
-    {
+    if let Some(optional) = optional_table(
+        project.get("optional-dependencies"),
+        "[project.optional-dependencies]",
+        path,
+    )? {
         for (extra, group) in optional {
             collect_requirement_array_scoped(Some(group), path, deps, None, Some(extra.as_str()))?;
         }
@@ -747,9 +776,8 @@ fn collect_dependency_groups_scoped(
     path: &Path,
     deps: &mut Vec<PythonScopedDependency>,
 ) -> Result<()> {
-    if let Some(groups) = parsed
-        .get("dependency-groups")
-        .and_then(|value| value.as_table())
+    if let Some(groups) =
+        optional_table(parsed.get("dependency-groups"), "[dependency-groups]", path)?
     {
         for (group_name, group) in groups {
             collect_requirement_array_scoped(
@@ -1042,9 +1070,15 @@ fn collect_requirement_array_scoped(
     group: Option<&str>,
     extra: Option<&str>,
 ) -> Result<()> {
-    let Some(entries) = value.and_then(|value| value.as_array()) else {
+    let Some(value) = value else {
         return Ok(());
     };
+    let entries = value.as_array().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unsupported dependency declaration in {}: expected an array of requirement strings",
+            source_path.display()
+        )
+    })?;
 
     for entry in entries {
         let spec = entry.as_str().ok_or_else(|| {

@@ -695,7 +695,11 @@ pub(crate) fn parse_scoped_requirement_spec(
     };
 
     if name.is_empty() {
-        return Ok(None);
+        bail!(
+            "Unsupported requirement '{}' in {}: missing a package name",
+            crate::report::sanitize_for_terminal(line),
+            source_path.display()
+        );
     }
 
     let dep = Dependency {
