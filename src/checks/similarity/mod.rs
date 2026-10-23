@@ -17,10 +17,56 @@ use generators::{extract_scope, known_scopes};
 
 const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
 
+/// On-disk similarity existence cache.
+///
+/// Each entry carries its own `checked_at` so that rewriting the file with new
+/// results never renews the lifetime of older entries (a stale negative entry
+/// would otherwise hide a typosquat target registered after the first scan).
+/// The file-level `timestamp` records the last write.
 #[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
 struct SimilarityCache {
     timestamp: u64,
-    entries: HashMap<String, bool>,
+    entries: HashMap<String, SimilarityCacheEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum SimilarityCacheEntry {
+    Timed { exists: bool, checked_at: u64 },
+    /// Pre-per-entry format: a bare bool aged by the file timestamp.
+    Legacy(bool),
+}
+
+impl SimilarityCache {
+    /// Normalize legacy entries to the file timestamp and drop every entry
+    /// older than the TTL (or dated in the future).
+    fn normalize_and_expire(mut self, now: u64, ttl_secs: u64) -> Self {
+        let file_ts = self.timestamp;
+        self.entries = self
+            .entries
+            .into_iter()
+            .filter_map(|(name, entry)| {
+                let (exists, checked_at) = match entry {
+                    SimilarityCacheEntry::Timed { exists, checked_at } => (exists, checked_at),
+                    SimilarityCacheEntry::Legacy(exists) => (exists, file_ts),
+                };
+                let age = now.checked_sub(checked_at)?;
+                (age < ttl_secs).then_some((
+                    name,
+                    SimilarityCacheEntry::Timed { exists, checked_at },
+                ))
+            })
+            .collect();
+        self
+    }
+
+    fn get(&self, name: &str) -> Option<bool> {
+        self.entries.get(name).map(|entry| match *entry {
+            SimilarityCacheEntry::Timed { exists, .. } | SimilarityCacheEntry::Legacy(exists) => {
+                exists
+            }
+        })
+    }
 }
 
 pub(crate) struct SimilarityRunOptions<'a> {
@@ -472,6 +518,7 @@ pub(crate) async fn check_similarity_with_options(
         cache::read_json_cache(&cp, SIMILARITY_CACHE_TTL_SECS, |c: &SimilarityCache| {
             c.timestamp
         })
+        .map(|c| c.normalize_and_expire(cache::now_epoch(), SIMILARITY_CACHE_TTL_SECS))
         .unwrap_or_default()
     };
 
@@ -479,7 +526,7 @@ pub(crate) async fn check_similarity_with_options(
     let mut cached_matches: Vec<(String, String)> = Vec::new();
     let mut uncached: Vec<(String, String)> = Vec::new();
     for (dep_name, candidate) in queries {
-        if let Some(&exists) = cache.entries.get(&candidate) {
+        if let Some(exists) = cache.get(&candidate) {
             if exists {
                 cached_matches.push((dep_name, candidate));
             }
@@ -505,10 +552,17 @@ pub(crate) async fn check_similarity_with_options(
     let mut error_count = 0usize;
 
     // Update cache with fresh results (only cache successes)
+    let checked_at = cache::now_epoch();
     for (_, candidate, result) in &fresh_results {
         match result {
             Ok(exists) => {
-                cache.entries.insert(candidate.clone(), *exists);
+                cache.entries.insert(
+                    candidate.clone(),
+                    SimilarityCacheEntry::Timed {
+                        exists: *exists,
+                        checked_at,
+                    },
+                );
             }
             Err(_) => {
                 error_count += 1;
@@ -721,6 +775,9 @@ fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix
     .fix(fix)
     .suggestion(popular)
 }
+
+#[cfg(test)]
+mod hardening_tests;
 
 #[cfg(test)]
 mod tests {
