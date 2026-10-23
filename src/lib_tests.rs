@@ -11040,3 +11040,146 @@ async fn pnpm_private_registry_routing_is_unvetted_with_integrity_still_required
     assert!(error.to_string().contains("integrity"));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn private_npm_routes_preserve_public_direct_and_transitive_vulnerability_checks() {
+    let dir = unique_dir();
+    for name in ["package.json", "package-lock.json"] {
+        std::fs::copy(
+            fixture_dir("transitive-typosquat").join(name),
+            dir.join(name),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join(".npmrc"),
+        "@company:registry=https://registry.example/\n",
+    )
+    .unwrap();
+    let manifest_path = dir.join("package.json");
+    let lock_path = dir.join("package-lock.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let mut lock: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+    manifest["dependencies"]["@company/client"] = serde_json::json!("1.0.0");
+    lock["packages"][""]["dependencies"]["@company/client"] = serde_json::json!("1.0.0");
+    lock["packages"]["node_modules/@company/client"] = serde_json::json!({"version":"1.0.0","resolved":"https://registry.example/client.tgz","integrity":"sha512-demo"});
+    std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+    std::fs::write(&lock_path, lock.to_string()).unwrap();
+    let report = scan_fixture_with_fake_services(
+        &dir,
+        Some("npm"),
+        config::SloppyJoeConfig::default(),
+        &FakeRegistry {
+            existing: vec!["react".into(), "expresss".into()],
+        },
+        &VulnOsvClient {
+            vulnerable: vec!["react".into(), "expresss".into(), "@company/client".into()],
+        },
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            no_cache: true,
+            disable_osv_disk_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    for (package, source) in [("react", "direct"), ("expresss", "transitive")] {
+        assert!(
+            report.issues.iter().any(|i| i.package == package
+                && i.check == "malicious/known-vulnerability"
+                && i.severity == Severity::Error
+                && i.source.as_deref() == Some(source)),
+            "{:?}",
+            report.issues
+        );
+    }
+    let private: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|i| i.package == "@company/client")
+        .collect();
+    assert_eq!(private.len(), 1);
+    assert_eq!(private[0].check, "resolution/private-registry-unvetted");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn npm_default_registry_overrides_and_cache_changes_remain_visible() {
+    let dir = unique_dir();
+    for name in ["package.json", "package-lock.json"] {
+        std::fs::copy(
+            fixture_dir("transitive-typosquat").join(name),
+            dir.join(name),
+        )
+        .unwrap();
+    }
+    let cache_dir = unique_dir();
+    let npmrc = dir.join(".npmrc");
+    std::fs::write(&npmrc, "registry=\"https://registry.example/\"\n").unwrap();
+    let full = ScanOptions {
+        scan_mode: ScanMode::Ci,
+        cache_dir: Some(&cache_dir),
+        ..Default::default()
+    };
+    let report = scan_with_source_full_options(&dir, Some("npm"), None, &full)
+        .await
+        .unwrap();
+    assert!(!report.has_errors(), "{:?}", report.issues);
+    assert_eq!(report.issues.len(), 2);
+    std::fs::write(&npmrc, "registry=https://registry.npmjs.org/\n").unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            cache_dir: Some(&cache_dir),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|i| i.check == "resolution/private-registry-unvetted")
+    );
+    assert!(
+        report
+            .full_scan_reasons
+            .contains(&report::FullScanRecommendationReason::DependencyStateChanged)
+    );
+    assert!(
+        report
+            .full_scan_reasons
+            .contains(&report::FullScanRecommendationReason::ManagerBindingChanged)
+    );
+    for invalid in [
+        "registry=https://user:secret-must-not-appear@registry.example/",
+        "registry=https://${REGISTRY_HOST}/",
+        "registry=http://registry.example/",
+        "overrides=secret-must-not-appear",
+        "@invalid/scope:registry=https://registry.example/",
+    ] {
+        std::fs::write(&npmrc, invalid).unwrap();
+        let error = scan_with_source_full_options(
+            &dir,
+            Some("npm"),
+            None,
+            &ScanOptions {
+                scan_mode: ScanMode::Fast,
+                no_cache: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("unmodeled config must fail explicitly");
+        assert!(!error.to_string().contains("secret-must-not-appear"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(cache_dir).unwrap();
+}

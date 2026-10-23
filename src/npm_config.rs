@@ -44,6 +44,8 @@ impl NpmRegistries {
                 ""
             } else if let Some(scope) = key.strip_suffix(":registry") {
                 if !scope.starts_with('@')
+                    || scope.len() == 1
+                    || scope.contains('/')
                     || !crate::registry::validate_package_name(&format!("{scope}/package"))
                 {
                     return Err(invalid());
