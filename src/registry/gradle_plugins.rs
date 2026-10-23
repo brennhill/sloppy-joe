@@ -116,6 +116,35 @@ impl GradlePluginRegistry {
         Ok(Some(published))
     }
 
+    /// The implementation artifacts the marker POM for `version` depends on, as
+    /// `(group, artifact, version)`. `Ok(None)`: no repository serves the
+    /// marker. A dependency whose version is missing, a property, or a range
+    /// cannot be pinned for an advisory lookup, so it is an error (fail closed).
+    pub(crate) async fn implementation_artifacts(
+        &self,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Option<Vec<(String, String, String)>>> {
+        use super::RegistryExistence as _;
+        self.validate_name(package_name)?;
+        let Some(id) = plugin_marker_id(package_name) else {
+            return Ok(None);
+        };
+        if !safe_version_segment(version) {
+            bail!("invalid Gradle plugin version '{version}' for '{id}'");
+        }
+        for base in &self.base_urls {
+            let url = Self::pom_url(base, id, version);
+            let resp = super::retry_get(&self.client, &url).await?;
+            if !super::check_existence_status(resp.status(), "Gradle plugin repository", id)? {
+                continue;
+            }
+            let body = resp.text().await?;
+            return parse_pom_dependencies(&body, id).map(Some);
+        }
+        Ok(None)
+    }
+
     /// Versions and `lastUpdated` from `maven-metadata.xml`. `Ok(None)`: no
     /// such plugin in this repository.
     async fn fetch_versions(
@@ -161,6 +190,44 @@ impl GradlePluginRegistry {
 }
 
 /// The plugin id of a marker coordinate `<id>:<id>.gradle.plugin`.
+fn xml_child<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(&format!("</{tag}>"))? + start;
+    Some(block[start..end].trim())
+}
+
+fn parse_pom_dependencies(pom: &str, id: &str) -> Result<Vec<(String, String, String)>> {
+    let mut artifacts = Vec::new();
+    let mut rest = pom;
+    while let Some(start) = rest.find("<dependency>") {
+        let after = &rest[start + "<dependency>".len()..];
+        let Some(end) = after.find("</dependency>") else {
+            bail!("marker POM for '{id}' has an unterminated <dependency>");
+        };
+        let block = &after[..end];
+        rest = &after[end..];
+        let (Some(group), Some(artifact), Some(version)) = (
+            xml_child(block, "groupId"),
+            xml_child(block, "artifactId"),
+            xml_child(block, "version"),
+        ) else {
+            bail!("marker POM for '{id}' has a dependency without a group, artifact, and version");
+        };
+        let plain = |value: &str| {
+            !value.is_empty()
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+        };
+        if !plain(group) || !plain(artifact) || !safe_version_segment(version) {
+            bail!("marker POM for '{id}' has a dependency that cannot be pinned exactly");
+        }
+        artifacts.push((group.to_string(), artifact.to_string(), version.to_string()));
+    }
+    Ok(artifacts)
+}
+
 pub(crate) fn plugin_marker_id(name: &str) -> Option<&str> {
     let (group, artifact) = name.split_once(':')?;
     (artifact.strip_suffix(".gradle.plugin") == Some(group)

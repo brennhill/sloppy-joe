@@ -6883,6 +6883,20 @@ async fn scan_with_config(
         };
         let result =
             scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await;
+        let result = match result {
+            Ok(mut report) => gradle_plugin_scan::project_implementation_issues(
+                project,
+                client.clone(),
+                &osv_client,
+                opts,
+            )
+            .await
+            .map(|issues| {
+                report.issues.extend(issues);
+                report
+            }),
+            Err(error) => Err(error),
+        };
         match result {
             Ok(mut report) => {
                 let status = if report.has_errors()

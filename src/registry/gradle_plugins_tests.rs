@@ -352,3 +352,138 @@ fn http_dates_and_maven_timestamps_convert_to_iso8601() {
     );
     assert_eq!(maven_timestamp_to_iso8601("2026102109430"), None);
 }
+
+fn marker_pom(dependencies: &str) -> String {
+    format!(
+        "<project><modelVersion>4.0.0</modelVersion><groupId>com.example.demo</groupId><artifactId>com.example.demo.gradle.plugin</artifactId><version>1.0.0</version><packaging>pom</packaging><dependencies>{dependencies}</dependencies></project>"
+    )
+}
+
+fn routes_with_pom(pom: &str) -> HashMap<String, Route> {
+    HashMap::from([(
+        format!("{BASE}/1.0.0/com.example.demo.gradle.plugin-1.0.0.pom"),
+        ok(pom, vec![]),
+    )])
+}
+
+#[tokio::test]
+async fn marker_pom_names_the_implementation_artifacts() {
+    let pom = marker_pom(
+        "<dependency><groupId>com.example</groupId><artifactId>demo-gradle-plugin</artifactId><version>1.0.0</version></dependency><dependency><groupId>org.x</groupId><artifactId>helper</artifactId><version>2.1</version><scope>runtime</scope></dependency>",
+    );
+    let server = mock_server(routes_with_pom(&pom)).await;
+    let artifacts = registry(&[&server], "1.0.0")
+        .implementation_artifacts(MARKER, "1.0.0")
+        .await
+        .unwrap()
+        .expect("marker is published");
+    assert_eq!(
+        artifacts,
+        vec![
+            (
+                "com.example".to_string(),
+                "demo-gradle-plugin".to_string(),
+                "1.0.0".to_string()
+            ),
+            ("org.x".to_string(), "helper".to_string(), "2.1".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn unresolvable_marker_dependency_versions_fail_closed() {
+    for dependency in [
+        "<dependency><groupId>com.example</groupId><artifactId>impl</artifactId><version>${impl.version}</version></dependency>",
+        "<dependency><groupId>com.example</groupId><artifactId>impl</artifactId></dependency>",
+        "<dependency><groupId>com.example</groupId><artifactId>impl</artifactId><version>[1.0,2.0)</version></dependency>",
+    ] {
+        let server = mock_server(routes_with_pom(&marker_pom(dependency))).await;
+        let result = registry(&[&server], "1.0.0")
+            .implementation_artifacts(MARKER, "1.0.0")
+            .await;
+        assert!(result.is_err(), "{dependency}");
+    }
+}
+
+#[tokio::test]
+async fn marker_missing_from_every_repository_has_no_artifacts() {
+    let server = mock_server(HashMap::new()).await;
+    let artifacts = registry(&[&server], "1.0.0")
+        .implementation_artifacts(MARKER, "1.0.0")
+        .await
+        .unwrap();
+    assert!(artifacts.is_none());
+}
+
+struct FakeOsv(Vec<&'static str>);
+
+#[async_trait::async_trait]
+impl crate::checks::malicious::OsvClient for FakeOsv {
+    async fn query(
+        &self,
+        name: &str,
+        ecosystem: &str,
+        _version: Option<&str>,
+    ) -> anyhow::Result<Vec<String>> {
+        assert_eq!(ecosystem, "jvm");
+        Ok(self
+            .0
+            .iter()
+            .filter(|vulnerable| **vulnerable == name)
+            .map(|_| "GHSA-test".to_string())
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn vulnerable_implementation_artifact_is_reported() {
+    let pom = marker_pom(
+        "<dependency><groupId>com.example</groupId><artifactId>demo-gradle-plugin</artifactId><version>1.0.0</version></dependency>",
+    );
+    let server = mock_server(routes_with_pom(&pom)).await;
+    let registry = registry(&[&server], "1.0.0");
+    let issues = crate::gradle_plugin_scan::implementation_advisory_issues(
+        &registry,
+        &requested("1.0.0"),
+        &FakeOsv(vec!["com.example:demo-gradle-plugin"]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0].package, "com.example:demo-gradle-plugin");
+    assert_eq!(issues[0].check, "malicious/known-vulnerability");
+}
+
+#[tokio::test]
+async fn clean_implementation_artifact_has_no_issues() {
+    let pom = marker_pom(
+        "<dependency><groupId>com.example</groupId><artifactId>demo-gradle-plugin</artifactId><version>1.0.0</version></dependency>",
+    );
+    let server = mock_server(routes_with_pom(&pom)).await;
+    let registry = registry(&[&server], "1.0.0");
+    let issues = crate::gradle_plugin_scan::implementation_advisory_issues(
+        &registry,
+        &requested("1.0.0"),
+        &FakeOsv(vec![]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(issues.is_empty(), "{issues:?}");
+}
+
+#[tokio::test]
+async fn unreadable_marker_blocks() {
+    let server = mock_server(HashMap::new()).await;
+    let registry = registry(&[&server], "1.0.0");
+    let issues = crate::gradle_plugin_scan::implementation_advisory_issues(
+        &registry,
+        &requested("1.0.0"),
+        &FakeOsv(vec![]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(issues.len(), 1);
+}

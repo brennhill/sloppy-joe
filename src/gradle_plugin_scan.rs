@@ -230,6 +230,93 @@ pub(super) fn plugin_registry_for(
     )?)))
 }
 
+/// Advisory issues for the implementation artifacts of a Gradle plugin project
+/// (empty for any other project).
+pub(super) async fn project_implementation_issues(
+    project: &ParsedProject,
+    client: reqwest::Client,
+    osv_client: &dyn checks::malicious::OsvClient,
+    opts: &ScanOptions<'_>,
+) -> Result<Vec<Issue>> {
+    if !(project.unlocked_tooling && project.spec.kind == ProjectInputKind::Gradle) {
+        return Ok(Vec::new());
+    }
+    let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
+    let registry = GradlePluginRegistry::new(client, &build.plugin_repositories, &project.deps)?;
+    let cache_path = if opts.disable_osv_disk_cache || opts.no_cache {
+        None
+    } else {
+        opts.cache_dir.map(|dir| dir.join("osv-cache.json"))
+    };
+    implementation_advisory_issues(&registry, &project.deps, osv_client, cache_path.as_deref())
+        .await
+}
+
+/// OSV advisory check of the artifacts a plugin marker delegates to.
+///
+/// A marker POM only redirects to the plugin's implementation artifacts, which
+/// are what actually run in the build, so advisories are looked up for them
+/// (Maven coordinates), not for the marker. A marker that cannot be read or
+/// names an artifact that cannot be pinned blocks.
+pub(crate) async fn implementation_advisory_issues(
+    registry: &GradlePluginRegistry,
+    plugins: &[Dependency],
+    osv_client: &dyn checks::malicious::OsvClient,
+    cache_path: Option<&std::path::Path>,
+) -> Result<Vec<Issue>> {
+    let mut issues = Vec::new();
+    let mut artifacts: Vec<Dependency> = Vec::new();
+    for plugin in plugins {
+        let Some(version) = plugin
+            .version
+            .as_deref()
+            .filter(|_| plugin.exact_version().is_some())
+        else {
+            continue;
+        };
+        match registry.implementation_artifacts(&plugin.name, version).await? {
+            Some(found) => {
+                for (group, artifact, artifact_version) in found {
+                    let dep = Dependency {
+                        name: format!("{group}:{artifact}"),
+                        version: Some(artifact_version),
+                        ecosystem: Ecosystem::Jvm,
+                        actual_name: None,
+                    };
+                    if !artifacts.iter().any(|seen| seen.name == dep.name && seen.version == dep.version) {
+                        artifacts.push(dep);
+                    }
+                }
+            }
+            None => issues.push(
+                Issue::new(&plugin.name, checks::names::EXISTENCE, Severity::Error)
+                    .message(format!(
+                        "Gradle plugin marker '{}' at {} could not be read to find its implementation artifacts.",
+                        plugin.name, version
+                    ))
+                    .fix("Check the plugin id and version, then rerun sloppy-joe."),
+            ),
+        }
+    }
+    if artifacts.is_empty() {
+        return Ok(issues);
+    }
+    let resolution =
+        lockfiles::LockfileData::reduced_confidence_from_manifest(&artifacts).resolution;
+    let mut found = checks::malicious::check_malicious_with_cache(
+        osv_client,
+        &artifacts,
+        &resolution,
+        cache_path,
+    )
+    .await?;
+    for issue in &mut found {
+        issue.source = Some("direct".to_string());
+    }
+    issues.extend(found);
+    Ok(issues)
+}
+
 #[cfg(test)]
 #[path = "gradle_plugin_scan_tests.rs"]
 mod tests;
