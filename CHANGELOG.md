@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- pnpm: read multi-document `pnpm-lock.yaml` files, which pnpm writes when it manages its own version (`packageManagerDependencies`). The last document is the project lockfile; the packages of earlier documents must be plain registry entries with integrity hashes and are scanned as transitives of the root. More than four documents, a malformed document, or a non-registry env package blocks.
+- pnpm: resolve transitive packages by their locked `name@version` instead of demanding an importer entry, which wrongly reported `resolution/missing-lockfile-entry` for every transitive in a full scan.
 - Python: accept `-e .` and `-e .[extras]` (also `--editable`) in requirements files when the project's own `pyproject.toml`, `setup.py` or `setup.cfg` sits next to the file. Its dependencies are scanned from that manifest, so the line adds nothing to verify. Editable paths, URLs and VCS targets still block.
 - Poetry: match lockfile artifact filenames to packages by normalized name, so projects whose files keep the original punctuation (`jaraco.classes-3.4.0-...` for `jaraco-classes`) are no longer downgraded to reduced confidence and flooded with `resolution/no-exact-version` errors. The version must also end exactly where the wheel tag or sdist extension begins, so `requests-1.0.1` no longer counts as `1.0`.
 - Poetry: scan every locked version when a root dependency has several entries from Python-version splits in `poetry.lock` (for example `platformdirs` 4.12.4 and 4.13.0), instead of rejecting the project as ambiguous. A split where any candidate comes from a non-default source still fails closed.

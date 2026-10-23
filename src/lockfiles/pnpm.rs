@@ -4,7 +4,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 use super::{
-    ResolutionKey, ResolutionResult, ResolutionSource, ResolvedVersion,
+    ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
     add_manifest_exact_fallback, add_manifest_exact_fallbacks, missing_entry_issue,
     out_of_sync_issue, parse_failed_issue,
 };
@@ -13,6 +13,7 @@ pub(super) fn resolve_from_value(
     parsed: &serde_yaml::Value,
     deps: &[Dependency],
     importer_key: &str,
+    mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
     let Some(importers) = parsed.get("importers").and_then(|value| value.as_mapping()) else {
         let mut result = ResolutionResult::default();
@@ -34,7 +35,29 @@ pub(super) fn resolve_from_value(
     };
 
     let mut result = ResolutionResult::default();
+    // Transitives are not importer entries; they are proven by the lockfile
+    // recording exactly that name@version.
+    let locked = match mode {
+        ResolutionMode::Transitive => {
+            let mut locked = locked_package_identities(parsed)?.0;
+            locked.extend(env_package_identities(parsed));
+            locked
+        }
+        ResolutionMode::Direct => HashSet::new(),
+    };
     for dep in deps {
+        if let Some(version) = dep.version.as_deref()
+            && locked.contains(&(dep.name.clone(), version.to_string()))
+        {
+            result.exact_versions.insert(
+                ResolutionKey::from(dep),
+                ResolvedVersion {
+                    version: version.to_string(),
+                    source: ResolutionSource::Lockfile,
+                },
+            );
+            continue;
+        }
         let Some(reference) = importer_dependency_reference(importer, &dep.name) else {
             result.push_issue_for(dep, missing_entry_issue(dep, "pnpm-lock.yaml"));
             add_manifest_exact_fallback(&mut result, dep);
@@ -65,10 +88,10 @@ pub(super) fn resolve_from_value(
 }
 
 pub(super) fn parse_all_from_value(parsed: &serde_yaml::Value) -> Result<Vec<Dependency>> {
+    let mut deps = dependencies_for(env_package_identities(parsed));
     let Some(packages) = parsed.get("packages").and_then(|value| value.as_mapping()) else {
-        return Ok(vec![]);
+        return Ok(deps);
     };
-    let mut deps = Vec::new();
     for (key, _value) in packages {
         let Some(key) = key.as_str() else {
             continue;
@@ -154,6 +177,9 @@ pub(crate) fn parse_for_importer_with_orphans(
         && !unattributable;
 
     let mut scan = own.reachable;
+    // pnpm's own locked packages (earlier lockfile documents) are installed for
+    // the whole workspace, so the root owns them.
+    scan.extend(env_package_identities(parsed));
     let mut issues = Vec::new();
     if !orphans.is_empty() {
         if certain {
@@ -171,6 +197,20 @@ pub(crate) fn parse_for_importer_with_orphans(
         }
     }
     Ok((dependencies_for(scan), issues))
+}
+
+/// Packages of pnpm's own lockfile documents, carried by
+/// [`super::PNPM_ENV_PACKAGES_KEY`] (already validated as registry packages).
+fn env_package_identities(parsed: &serde_yaml::Value) -> HashSet<(String, String)> {
+    parsed
+        .get(super::PNPM_ENV_PACKAGES_KEY)
+        .and_then(|value| value.as_sequence())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str())
+        .filter_map(pnpm_package_key_parts)
+        .map(|(name, version)| (name.to_string(), version.to_string()))
+        .collect()
 }
 
 struct PnpmWalk {

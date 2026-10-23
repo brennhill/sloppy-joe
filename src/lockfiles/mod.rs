@@ -24,6 +24,9 @@ mod bun_nested_tests;
 #[cfg(test)]
 mod poetry_split_resolution_tests;
 
+#[cfg(test)]
+mod pnpm_multidoc_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
@@ -295,7 +298,7 @@ fn read_lockfile(
                 let path = lockfile_override.expect("checked above");
                 let content =
                     crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                let value: serde_yaml::Value = parse_yaml_guarded(&content)
+                let value: serde_yaml::Value = parse_pnpm_lock_guarded(&content)
                     .map_err(|err| anyhow::anyhow!("Failed to parse pnpm-lock.yaml: {}", err))?;
                 let importer_key = pnpm_importer_key(project_dir, path)?;
                 return Ok(ParsedLockfile::Pnpm {
@@ -469,7 +472,7 @@ fn resolve_from_parsed(
             value,
             importer_key,
             ..
-        } => pnpm::resolve_from_value(value, deps, importer_key),
+        } => pnpm::resolve_from_value(value, deps, importer_key, mode),
         ParsedLockfile::Bun {
             value,
             importer_key,
@@ -634,6 +637,113 @@ pub(crate) fn parse_json5_guarded(content: &str) -> Result<serde_json::Value> {
 
 /// Parse a YAML lockfile or workspace file after rejecting pathological flow
 /// nesting that makes the YAML scanner burn minutes of CPU.
+/// Key under which the packages of pnpm's own (earlier) lockfile documents ride
+/// along with the project document. Not a pnpm key.
+pub(crate) const PNPM_ENV_PACKAGES_KEY: &str = "x-sloppy-joe-env-packages";
+
+/// A pnpm lockfile has one project document; pnpm that manages its own version
+/// writes earlier "environment" documents locking pnpm itself. Allow a handful.
+const MAX_PNPM_LOCK_DOCUMENTS: usize = 4;
+
+/// Parse a `pnpm-lock.yaml`. The last YAML document is the project lockfile and
+/// is returned as before. The packages of any earlier environment documents
+/// (pnpm and its config dependencies, which are installed and run too) are
+/// checked to be plain registry packages and carried along under
+/// [`PNPM_ENV_PACKAGES_KEY`] so they are scanned with the root importer.
+pub(crate) fn parse_pnpm_lock_guarded(content: &str) -> Result<serde_yaml::Value> {
+    use serde::Deserialize;
+
+    ensure_nesting_depth(content, NestingSyntax::Yaml)?;
+    let mut documents = serde_yaml::Deserializer::from_str(content)
+        .map(serde_yaml::Value::deserialize)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if documents.len() <= 1 {
+        return Ok(serde_yaml::from_str(content)?);
+    }
+    if documents.len() > MAX_PNPM_LOCK_DOCUMENTS {
+        anyhow::bail!(
+            "pnpm-lock.yaml has {} YAML documents; at most {} are supported",
+            documents.len(),
+            MAX_PNPM_LOCK_DOCUMENTS
+        );
+    }
+
+    let mut project = documents.pop().expect("more than one document");
+    let has_importers = project
+        .get("importers")
+        .is_some_and(serde_yaml::Value::is_mapping);
+    if !has_importers {
+        anyhow::bail!(
+            "the last YAML document of pnpm-lock.yaml is the project lockfile and must have an importers table"
+        );
+    }
+
+    let mut env_packages = std::collections::BTreeSet::new();
+    for document in &documents {
+        if !document.is_mapping() || document.get("lockfileVersion").is_none() {
+            anyhow::bail!(
+                "an earlier YAML document of pnpm-lock.yaml is not a pnpm lockfile (it needs a lockfileVersion)"
+            );
+        }
+        let Some(packages) = document
+            .get("packages")
+            .and_then(|value| value.as_mapping())
+        else {
+            continue;
+        };
+        for (key, value) in packages {
+            let key = key.as_str().ok_or_else(|| {
+                anyhow::anyhow!("an environment package key in pnpm-lock.yaml is not a string")
+            })?;
+            let Some((name, version)) = pnpm::pnpm_package_key_parts(key) else {
+                anyhow::bail!(
+                    "environment package '{}' in pnpm-lock.yaml has an unrecognized key",
+                    crate::report::sanitize_for_terminal(key)
+                );
+            };
+            if !crate::registry::validate_package_name_for_ecosystem(name, Ecosystem::Npm) {
+                anyhow::bail!(
+                    "environment package '{}' in pnpm-lock.yaml has an invalid package name",
+                    crate::report::sanitize_for_terminal(key)
+                );
+            }
+            // Only plain registry packages can be vetted: an integrity hash and
+            // no tarball, directory or git override.
+            let registry_only = value
+                .get("resolution")
+                .and_then(|resolution| resolution.as_mapping())
+                .is_some_and(|resolution| {
+                    resolution.len() == 1
+                        && resolution
+                            .get("integrity")
+                            .is_some_and(serde_yaml::Value::is_string)
+                });
+            if !registry_only {
+                anyhow::bail!(
+                    "environment package '{}' in pnpm-lock.yaml does not resolve to a plain registry package with an integrity hash",
+                    crate::report::sanitize_for_terminal(key)
+                );
+            }
+            env_packages.insert(format!("{name}@{version}"));
+        }
+    }
+
+    if !env_packages.is_empty()
+        && let Some(mapping) = project.as_mapping_mut()
+    {
+        mapping.insert(
+            serde_yaml::Value::String(PNPM_ENV_PACKAGES_KEY.to_string()),
+            serde_yaml::Value::Sequence(
+                env_packages
+                    .into_iter()
+                    .map(serde_yaml::Value::String)
+                    .collect(),
+            ),
+        );
+    }
+    Ok(project)
+}
+
 pub(crate) fn parse_yaml_guarded(content: &str) -> Result<serde_yaml::Value> {
     ensure_nesting_depth(content, NestingSyntax::Yaml)?;
     Ok(serde_yaml::from_str(content)?)

@@ -956,7 +956,7 @@ fn read_validated_pnpm_lockfile(
                 err
             )
         })?;
-    let lockfile: serde_yaml::Value = crate::lockfiles::parse_yaml_guarded(&content)
+    let lockfile: serde_yaml::Value = crate::lockfiles::parse_pnpm_lock_guarded(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::pnpm::validate_provenance(
@@ -1474,8 +1474,8 @@ fn js_workspace_records_project(
     let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
     match root.manager {
         JsPackageManager::Pnpm => {
-            let value: serde_yaml::Value =
-                crate::lockfiles::parse_yaml_guarded(&content).map_err(|error| {
+            let value: serde_yaml::Value = crate::lockfiles::parse_pnpm_lock_guarded(&content)
+                .map_err(|error| {
                     anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
                 })?;
             Ok(value
