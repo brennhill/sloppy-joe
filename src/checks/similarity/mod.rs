@@ -250,6 +250,9 @@ fn is_suppressed(
     config.is_similarity_exception(ecosystem.as_str(), package, candidate, generator)
 }
 
+/// Longest package name that is expanded into lookalike variants (npm's own limit is 214).
+const MAX_SIMILARITY_NAME_CHARS: usize = 214;
+
 /// Main entry point. Registry-based similarity checking.
 ///
 /// Phase 0: Scope squatting (no registry)
@@ -351,6 +354,25 @@ pub(crate) async fn check_similarity_with_options(
     let case_insensitive = is_case_insensitive(ecosystem);
     let mut issues = Vec::new();
     let mut flagged: HashSet<String> = HashSet::new();
+    // Every name is expanded into thousands of registry probes, so absurdly long names
+    // would multiply requests. Skipping them silently would be a gap, so they block.
+    for dep in deps {
+        if dep.package_name().chars().count() > MAX_SIMILARITY_NAME_CHARS
+            && flagged.insert(dep.package_name().to_string())
+        {
+            issues.push(
+                Issue::new(
+                    dep.package_name().chars().take(64).collect::<String>() + "...",
+                    crate::checks::names::SIMILARITY_NAME_TOO_LONG,
+                    Severity::Error,
+                )
+                .message(format!(
+                    "Package name is longer than {MAX_SIMILARITY_NAME_CHARS} characters, so its lookalike variants cannot be checked without an unbounded number of registry requests."
+                ))
+                .fix("Verify the dependency manually and replace it with a package that has a conventional name."),
+            );
+        }
+    }
 
     // Build a set of all dep names for intra-manifest comparison
     let dep_names: HashSet<String> = deps

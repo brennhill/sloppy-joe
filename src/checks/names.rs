@@ -27,6 +27,7 @@ pub const METADATA_LOCKFILE_INTEGRITY_UNVERIFIED: &str = "metadata/lockfile-inte
 
 // -- Similarity --
 pub const SIMILARITY_REGISTRY_UNREACHABLE: &str = "similarity/registry-unreachable";
+pub const SIMILARITY_NAME_TOO_LONG: &str = "similarity/name-too-long";
 pub const SIMILARITY_SCOPE_SQUATTING: &str = "similarity/scope-squatting";
 pub const SIMILARITY_CASE_VARIANT: &str = "similarity/case-variant";
 pub const SIMILARITY_SEPARATOR_SWAP: &str = "similarity/separator-swap";

@@ -324,3 +324,25 @@ async fn npm_case_variant_is_checked() {
 fn npm_is_not_treated_as_case_insensitive() {
     assert!(!Ecosystem::Npm.is_case_insensitive());
 }
+
+#[tokio::test]
+async fn overlong_names_block_instead_of_fanning_out_into_registry_probes() {
+    let registry = FakeRegistry::with(&[]);
+    let name = "a".repeat(1000);
+    let deps = vec![Dependency {
+        name: name.clone(),
+        version: Some("==1.0.0".to_string()),
+        ecosystem: Ecosystem::PyPI,
+        actual_name: None,
+    }];
+    let issues = check_similarity(&registry, &deps, Ecosystem::PyPI)
+        .await
+        .unwrap();
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.check == "similarity/name-too-long"),
+        "{issues:?}"
+    );
+    assert!(registry.queried.lock().unwrap().is_empty());
+}
