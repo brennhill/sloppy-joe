@@ -120,10 +120,10 @@ jobs:
           install -m 0644 Cargo.lock /tmp/sloppy-joe-self-check/Cargo.lock
 
       - name: Check own dependencies with released action
-        uses: brennhill/sloppy-joe@v1.1
+        uses: brennhill/sloppy-joe@v1.2
         with:
           config: /tmp/sloppy-joe-self-check.json
           dir: /tmp/sloppy-joe-self-check
           type: cargo
-          version: 1.1.0
+          version: 1.2.0
           args: --no-cache
