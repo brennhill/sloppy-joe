@@ -3,21 +3,53 @@ use std::path::{Path, PathBuf};
 
 /// Return the platform-appropriate user cache directory.
 pub fn user_cache_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
+    user_cache_dir_from(|name| std::env::var_os(name))
+}
+
+/// Relative or empty environment values are ignored (as the XDG spec requires):
+/// they would resolve against the working directory, which is often the
+/// scanned repository.
+pub(crate) fn user_cache_dir_from(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+    let env = |name: &str| env(name).filter(|value| Path::new(value).is_absolute());
+    if let Some(path) = env("XDG_CACHE_HOME") {
         return path.into();
     }
     #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = env("HOME") {
         return Path::new(&home).join("Library").join("Caches");
     }
     #[cfg(target_os = "windows")]
-    if let Some(path) = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) {
+    if let Some(path) = env("LOCALAPPDATA").or_else(|| env("APPDATA")) {
         return path.into();
     }
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = env("HOME") {
         return Path::new(&home).join(".cache");
     }
     std::env::temp_dir()
+}
+
+/// Reject a cache directory inside the scanned project's git root (or the scan
+/// root when there is no git root). Committed files there could forge cached
+/// OSV, similarity, and scan-state results.
+pub fn ensure_cache_dir_outside_project(cache_dir: &Path, project_dir: &Path) -> Result<()> {
+    let boundary = match crate::config::registry::find_git_root(project_dir)
+        .map_err(|e| anyhow::anyhow!(e))?
+    {
+        Some(root) => root,
+        None => std::fs::canonicalize(project_dir)?,
+    };
+    let resolved = crate::config::registry::canonicalize_with_existing_ancestors(cache_dir)
+        .map_err(|e| {
+            anyhow::anyhow!("Could not resolve cache directory for security validation: {e}")
+        })?;
+    if resolved.starts_with(&boundary) {
+        anyhow::bail!(
+            "Cache directory must live outside the project directory.\n  Cache: {}\n  Project: {}\n  Fix: Pass --cache-dir with a path outside the repository, or set XDG_CACHE_HOME to an absolute path outside it.",
+            resolved.display(),
+            boundary.display()
+        );
+    }
+    Ok(())
 }
 
 /// Current time as seconds since Unix epoch.

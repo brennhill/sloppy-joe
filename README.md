@@ -623,7 +623,7 @@ sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
 **Fail-closed on query errors.** If registry or OSV queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The scan no longer relies on per-ecosystem thresholds or sample-size cutoffs before it blocks.
 
-**Similarity cache.** Mutation existence results are cached for up to seven days, then refreshed. OSV results have a one-hour cache lifetime. `--no-cache` bypasses disk reads; future-dated caches are discarded. Full/CI scans still perform online work beyond similarity-cache hits.
+**Similarity cache.** Mutation existence results are cached for up to seven days, then refreshed. OSV results have a one-hour cache lifetime. `--no-cache` bypasses disk reads; future-dated caches are discarded. The cache directory (`--cache-dir`, or the user cache directory) must be outside the scanned repository's git root, or the scan root when there is no git root; otherwise the scan stops with an error, because committed files could forge cached results. A relative `XDG_CACHE_HOME` is ignored. Full/CI scans still perform online work beyond similarity-cache hits.
 
 **Lockfile-aware resolution.** When a supported lockfile is present and trustworthy (`package-lock.json`, `npm-shrinkwrap.json`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock` for Poetry projects, `uv.lock` for uv projects, `composer.lock`, `gradle.lockfile`, `packages.lock.json`), sloppy-joe resolves exact versions from it instead of guessing from ranges. Fully hash-locked `requirements*.txt` can also provide exact pinned versions, and they become fully trusted when the committed requirements graph binds its own `--index-url` and exact allowlisted `--extra-index-url` values.
 

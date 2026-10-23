@@ -6484,6 +6484,7 @@ async fn scan_with_config(
         .cache_dir
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
+    cache::ensure_cache_dir_outside_project(&cache_base, project_dir)?;
     let mut specs = unbound_project_inputs_with_config(project_dir, project_type, &config)?;
     let mut binding_errors = std::collections::HashMap::new();
     for spec in &mut specs {
@@ -7299,3 +7300,7 @@ mod tests;
 #[cfg(test)]
 #[path = "npm_registry_redirect_tests.rs"]
 mod npm_registry_redirect_tests;
+
+#[cfg(test)]
+#[path = "cache_boundary_tests.rs"]
+mod cache_boundary_tests;
