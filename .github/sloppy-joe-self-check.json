@@ -2,6 +2,12 @@
   "similarity_exceptions": {
     "cargo": [
       {
+        "package": "strsim",
+        "candidate": "str-sim",
+        "generator": "separator-swap",
+        "reason": "strsim is the intended string-similarity crate; str-sim is an unrelated package."
+      },
+      {
         "package": "serde_json",
         "candidate": "serde",
         "generator": "segment-overlap",
