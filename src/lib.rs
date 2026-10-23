@@ -1206,6 +1206,7 @@ struct NpmProjectIndex {
     by_name: std::collections::HashMap<String, std::collections::HashSet<std::path::PathBuf>>,
 }
 
+#[cfg(test)]
 fn bind_js_project_inputs(
     scan_root: &std::path::Path,
     specs: &mut [ProjectInputSpec],
@@ -5210,7 +5211,18 @@ fn detected_project_inputs(
     )
 }
 
+#[cfg(test)]
 fn detected_project_inputs_with_config(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config: &config::SloppyJoeConfig,
+) -> Result<Vec<ProjectInputSpec>> {
+    let mut specs = unbound_project_inputs_with_config(project_dir, project_type, config)?;
+    bind_js_project_inputs(project_dir, &mut specs)?;
+    Ok(specs)
+}
+
+fn unbound_project_inputs_with_config(
     project_dir: &std::path::Path,
     project_type: Option<&str>,
     config: &config::SloppyJoeConfig,
@@ -5236,7 +5248,6 @@ fn detected_project_inputs_with_config(
     prune_included_requirement_specs(project_dir, &mut specs)?;
     reject_ambiguous_python_project_inputs(&specs)?;
     prefer_trusted_python_project_inputs(&mut specs);
-    bind_js_project_inputs(project_dir, &mut specs)?;
 
     if specs.is_empty() {
         match project_type {
@@ -6377,15 +6388,38 @@ async fn scan_with_config(
         .cache_dir
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-    let specs = detected_project_inputs_with_config(project_dir, project_type, &config)?;
+    let mut specs = unbound_project_inputs_with_config(project_dir, project_type, &config)?;
+    let mut binding_errors = std::collections::HashMap::new();
+    for spec in &mut specs {
+        if spec.kind != ProjectInputKind::Npm {
+            continue;
+        }
+        match resolve_js_project_binding(project_dir, spec) {
+            Ok(binding) => {
+                spec.lockfile_path_override = binding.lockfile_path.clone();
+                spec.js_binding = Some(binding);
+            }
+            Err(error) => {
+                binding_errors.insert(spec.manifest_path.clone(), error);
+            }
+        }
+    }
+    let usable_specs: Vec<_> = specs
+        .iter()
+        .filter(|spec| !binding_errors.contains_key(&spec.manifest_path))
+        .cloned()
+        .collect();
     let mut preflight_warnings = local_overlay_relaxation_issues(&config);
     let mut projects = Vec::new();
     let mut project_runs = Vec::new();
     for spec in &specs {
         let prepared = (|| -> Result<Vec<ParsedProject>> {
+            if let Some(error) = binding_errors.remove(&spec.manifest_path) {
+                return Err(error);
+            }
             let warnings = preflight_selected_project_inputs(
                 project_dir,
-                &specs,
+                &usable_specs,
                 std::slice::from_ref(spec),
                 &config,
                 opts,

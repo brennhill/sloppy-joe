@@ -11562,6 +11562,26 @@ async fn independent_project_runs_continue_after_an_unsupported_dependency_chain
         "partial scans must not be cached as successful full scans"
     );
     assert!(report.render_human().contains("z-private"));
+    std::fs::write(
+        dir.join("a-unsupported/.npmrc"),
+        "unsupported-rewrite=true\n",
+    )
+    .unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Ci,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("manager-binding failures must also be isolated from independent project runs");
+    assert_eq!(report.packages_checked, 1);
+    assert!(report.has_incomplete_projects());
+    assert_eq!(report.projects.len(), 2);
     std::fs::remove_dir_all(dir).unwrap();
     std::fs::remove_dir_all(cache_dir).unwrap();
 }
