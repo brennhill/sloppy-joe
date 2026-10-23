@@ -197,11 +197,36 @@ fn extract_gem_spec(line: &str) -> Option<(String, Option<String>)> {
     }
     let mut arguments = positional.into_iter();
     let name = arguments.next()?;
-    let version = arguments.next();
-    if arguments.next().is_some() {
-        return None;
-    }
+    let constraints: Vec<String> = arguments.collect();
+    let version = match constraints.as_slice() {
+        [] => None,
+        [single] => Some(single.clone()),
+        // Bundler accepts any number of requirement strings and ANDs them.
+        // Keep all of them, in Gemfile.lock's `a, b` notation; a comma-joined
+        // requirement is never treated as an exact pin.
+        many => {
+            if !many.iter().all(|c| is_gem_requirement(c)) {
+                return None;
+            }
+            Some(many.iter().map(|c| c.trim()).collect::<Vec<_>>().join(", "))
+        }
+    };
     Some((name, version))
+}
+
+/// One `Gem::Requirement` clause: an optional operator followed by a
+/// `Gem::Version`. Anything else would be rejected by Bundler, so it fails
+/// closed here instead of being guessed at.
+fn is_gem_requirement(constraint: &str) -> bool {
+    let constraint = constraint.trim();
+    let version = ["~>", ">=", "<=", "!=", "=", ">", "<"]
+        .iter()
+        .find_map(|op| constraint.strip_prefix(op))
+        .unwrap_or(constraint)
+        .trim();
+    let mut chars = version.chars();
+    chars.next().is_some_and(|c| c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
 }
 
 /// Read one quoted literal without escapes or interpolation.
@@ -408,6 +433,10 @@ impl RubyExpressionState {
             && !line.trim_end().ends_with(',')
     }
 }
+
+#[cfg(test)]
+#[path = "gemfile_constraint_tests.rs"]
+mod constraint_tests;
 
 #[cfg(test)]
 mod tests {

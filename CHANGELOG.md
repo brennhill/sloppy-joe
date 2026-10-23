@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ruby: parse `gem` entries with several version requirements (`gem 'x', '~> 1.0', '>= 1.0.2'`) instead of blocking them as unsupported. Every requirement is kept; a malformed or dynamic one still blocks.
 - Python: scan every dependency group and extra by default (Poetry groups, PEP 735 `[dependency-groups]`, uv dev dependencies, optional dependencies; PDM/Hatch environments as unlocked tooling). `--python-groups`/`--python-extras` now narrow the selection and warn about the groups and extras they exclude. Resolve PEP 735 `include-group` entries, blocking on cycles, unknown groups, and malformed include tables.
 - uv.lock: read root `optional-dependencies`, `dev-dependencies`, and `requires-dev`, follow locked package extras transitively, and check lock and manifest in both directions. A locked root dependency/extra/group entry missing from pyproject.toml, or a declared group dependency missing from uv.lock, now blocks.
 - Verify npm tarballs against registry metadata for new, recent, low-download and flagged versions (all versions with `--paranoid`): hash-check the tarball, read its `package.json` under size limits, and block when its install scripts or dependencies differ from the registry metadata. Download, hash and limit failures for a selected version block instead of being skipped.

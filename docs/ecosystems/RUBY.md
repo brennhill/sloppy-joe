@@ -31,6 +31,7 @@ sloppy-joe check
 
 - `Gemfile` and `Gemfile.lock` are both required.
 - Literal `gem` declarations are parsed across lines, with indentation, parentheses, and comments.
+- A gem may list several version requirements (`gem 'rails', '~> 7.0', '>= 7.0.2'`); all of them are kept, and each must be a literal `Gem::Requirement` clause.
 - Literal group/platform blocks and Ruby runtime declarations are supported; dependency expressions must remain literal.
 - Registry-backed gem dependencies are scanned with lockfile-backed exact version and transitive coverage from `Gemfile.lock`.
 
@@ -38,7 +39,7 @@ sloppy-joe check
 
 - Missing, empty, or unreadable `Gemfile.lock`.
 - Git/path/custom-source blocks and repository-local `.bundle/config` files.
-- Executable or dynamic declarations, `gemspec`, `eval_gemfile`, argument expressions, and unsupported gem options; these cannot silently produce an empty scan.
+- Executable or dynamic declarations, `gemspec`, `eval_gemfile`, argument expressions, malformed requirement strings in a multi-requirement gem, and unsupported gem options; these cannot silently produce an empty scan.
 - Non-registry Gem sources in `Gemfile`, including:
   - `git:`
   - `github:`
