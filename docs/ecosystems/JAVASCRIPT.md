@@ -30,7 +30,8 @@ If the project is a workspace or monorepo, scan the workspace root when possible
 - Registry entries are provenance-checked:
   - lockfile entries must carry the expected identity
   - integrity metadata is required where the manager exposes it
-  - tarball URLs must match the locked package identity and version exactly
+  - public tarball URLs must match the locked package identity and version exactly
+  - configured private npm/pnpm tarballs must stay within their declared HTTPS registry origin and path; their contents and identity remain unvetted
 - Alias dependencies are preserved under their real published identity instead of being flattened into the alias name.
 - JavaScript transitives get similarity coverage in the trusted path, because JS typosquats often hide below the direct dependency layer.
 
@@ -44,7 +45,7 @@ If the project is a workspace or monorepo, scan the workspace root when possible
 - Manager-specific unsupported trust surfaces, including:
   - npm `overrides`, Yarn `resolutions`, and package-local `pnpm` settings
   - pnpm workspace configuration beyond `packages` membership
-  - repository-local `.npmrc`, plus manager-specific `.yarnrc`, `.yarnrc.yml`, `.pnpmfile.cjs`, and `bunfig.toml` configuration
+  - unsupported `.npmrc` keys, plus manager-specific `.yarnrc`, `.yarnrc.yml`, `.pnpmfile.cjs`, and `bunfig.toml` configuration
   - bundled npm payloads (`bundled` / `inBundle`)
   - legacy npm `lockfileVersion: 1` by default
   - Bun binary lockfiles (`bun.lockb`)
@@ -52,7 +53,7 @@ If the project is a workspace or monorepo, scan the workspace root when possible
 
 ## Current limitations
 
-- Private or non-standard JavaScript registry tarball sources currently fail closed instead of being modeled as a separate trusted-registry surface.
+- Custom registry routing in `.npmrc` is supported for npm and pnpm with explicit unvetted warnings. Private routing for Yarn/Bun and other manager configuration formats remains unsupported.
 - npm `overrides` are not trusted yet because they rewrite the resolved graph.
 - Bundled npm payloads are not trusted from lockfile metadata alone.
 - `bun.lockb` is not supported; commit the text `bun.lock` instead.
@@ -65,4 +66,21 @@ If the project is a workspace or monorepo, scan the workspace root when possible
 - Use `sloppy-joe check` as the fast local guardrail and `sloppy-joe check --ci` in CI.
 - If you are on legacy npm v5/v6 and must keep `lockfileVersion: 1`, turn on `allow_legacy_npm_v1_lockfile: true` only temporarily and expect reduced-confidence warnings.
 
-A repository with scoped private-registry routing in `.npmrc` currently reports an unsupported scan. Marking a package `internal` or `allowed` does not add private-registry provenance support. For CI, scan a clean checkout and preserve the installer's actual source configuration; removing `.npmrc` just to obtain a passing result changes the graph being verified.
+## Private registries
+
+npm and pnpm projects can retain their project-local `.npmrc` with default or scoped HTTPS registry routes:
+
+```ini
+@company:registry=https://gitlab.example/api/v4/projects/${PROJECT_ID}/packages/npm/
+//gitlab.example/:_authToken=${PACKAGE_TOKEN}
+```
+
+Supported routing follows [npm's default and scoped registry syntax](https://docs.npmjs.com/cli/v11/configuring-npm/npmrc/). Ancestor settings are applied before child settings; a scope-specific route wins over the default registry. A `${NAME}` placeholder can occupy an entire registry path segment, such as a CI project ID. Hostname placeholders and other interpolation forms report an unsupported scan. The scanner does not read user/global npm configuration or model installer command-line/environment registry overrides; CI must keep effective install routing consistent with committed project configuration.
+
+Credentials are ignored without environment expansion and are never used for network requests. Registry URLs with embedded credentials, HTTP routes, unsupported configuration keys, and mismatched lockfile sources report errors with values redacted. The parser also accepts comments, quoted registry values, registry-scoped authentication settings, and the non-routing keys `always-auth`, `strict-ssl`, `audit`, `fund`, `ignore-scripts`, `save-exact`, and `engine-strict`.
+
+Each direct or transitive package routed to a non-default registry produces a non-blocking `resolution/private-registry-unvetted` warning. This applies to private registries and public-registry mirrors alike: the scanner cannot establish that a mirror serves the same package contents. CI can pass with these warnings. Public package checks continue, including checks on public dependencies pulled in by private packages.
+
+Private identities are not queried against public npm or OSV. Existence, name similarity, metadata, publication age, publisher changes, and vulnerability coverage for those packages are unvetted. Lockfile consistency, required integrity metadata, and declared source origin/path checks remain active. An integrity field is not proof that the payload is safe, and private hosting does not guarantee an uncompromised release. Review registry access and package provenance separately.
+
+For CI, scan a clean checkout and preserve the installer's actual source configuration. Do not remove `.npmrc` or add broad `internal` rules to manufacture a passing result. npm `overrides` and other unsupported graph rewrites remain unsupported even when private registry routing is accepted.

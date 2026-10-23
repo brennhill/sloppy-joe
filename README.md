@@ -119,6 +119,8 @@ The flake on `main` pins the published binary release and its checksums.
 | JVM / Maven | `pom.xml` | warning-only: no trusted project-local lockfile path yet |
 | .NET / NuGet | `.csproj` | `packages.lock.json` |
 
+**Private npm registries (npm and pnpm):** project-local `.npmrc` default and scoped HTTPS registry routes are supported. Packages routed to a custom registry produce non-blocking `resolution/private-registry-unvetted` warnings in human and JSON output. Public packages, including public dependencies of private packages, keep their normal checks. Private package identities are not sent to public registries or OSV; their existence, typo similarity, release age, publisher history, and vulnerabilities are unvetted. Lockfile consistency, integrity metadata, and declared registry source boundaries still apply. The scanner never expands or sends registry credentials. See the [JavaScript guide](docs/ecosystems/JAVASCRIPT.md#private-registries).
+
 **Config sources:** local file path, HTTPS URL, or `SLOPPY_JOE_CONFIG` env var. Config is never read from the project directory (see [CONFIG.md](CONFIG.md) for why).
 
 **Onboarding:** use the bootstrap mode that matches the repo:

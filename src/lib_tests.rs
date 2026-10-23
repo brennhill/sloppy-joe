@@ -10971,6 +10971,7 @@ async fn private_npm_registry_source_mismatches_block_without_leaking_credential
         "https://attacker.example/private/client.tgz",
         "https://registry.example/private-other/client.tgz",
         "http://registry.example/private/client.tgz",
+        "https://registry.npmjs.org/@company/client/-/client-1.0.0.tgz?token=secret-must-not-appear",
     ] {
         std::fs::write(dir.join("package-lock.json"), serde_json::json!({
             "lockfileVersion":3,"packages": {
@@ -11027,6 +11028,26 @@ async fn pnpm_private_registry_routing_is_unvetted_with_integrity_still_required
         "resolution/private-registry-unvetted"
     );
     let path = dir.join("pnpm-lock.yaml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    for tarball in [
+        "https://user:secret-must-not-appear@registry.example/private/client.tgz",
+        "https://attacker.example/client.tgz",
+        "https://registry.npmjs.org/@company/client/-/client-1.0.0.tgz?token=secret-must-not-appear",
+    ] {
+        std::fs::write(
+            &path,
+            original.replace("https://registry.example/private/client.tgz", tarball),
+        )
+        .unwrap();
+        let error = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+            .await
+            .expect_err("pnpm private source must match routing");
+        assert!(
+            !error.to_string().contains("secret-must-not-appear"),
+            "credential leaked: {error}"
+        );
+    }
+    std::fs::write(&path, &original).unwrap();
     std::fs::write(
         &path,
         std::fs::read_to_string(&path)

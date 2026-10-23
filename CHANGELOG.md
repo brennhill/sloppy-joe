@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Support default and scoped HTTPS npm registry routing in project-local `.npmrc` for npm and pnpm.
+- Report private/custom-registry packages as unvetted with non-blocking warnings; retain public package checks and local lockfile/source validation.
+- Keep private identities and authentication values out of public registry/advisory requests, and redact rejected registry source credentials.
+- Invalidate scan guidance when effective registry routing changes.
+- Resolve npm workspace dependency ranges from the authoritative root lockfile.
+
 ## 1.2.0
 
 ### Security and correctness

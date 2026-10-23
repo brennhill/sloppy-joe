@@ -4324,7 +4324,7 @@ fn validate_npm_resolved_identity(
             "Required lockfile '{}' entry '{}' has untrusted resolved source '{}'. sloppy-joe only trusts npm registry tarball URLs in package-lock.json and npm-shrinkwrap.json.",
             lockfile_path.display(),
             package_name,
-            crate::report::sanitize_for_terminal(resolved)
+            crate::config::redact_url_for_display(resolved)
         );
     };
 
@@ -4336,7 +4336,7 @@ fn validate_npm_resolved_identity(
             "Required lockfile '{}' entry '{}' resolves to '{}', which does not match the locked package identity '{}' at version '{}'.",
             lockfile_path.display(),
             package_name,
-            crate::report::sanitize_for_terminal(resolved),
+            crate::config::redact_url_for_display(resolved),
             package_name,
             version
         );

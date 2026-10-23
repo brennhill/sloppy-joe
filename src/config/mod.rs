@@ -899,7 +899,7 @@ async fn fetch_config_from_url(url: &str) -> Result<SloppyJoeConfig, String> {
     parse_config_content(&content, &display_url)
 }
 
-fn redact_url_for_display(url: &str) -> String {
+pub(crate) fn redact_url_for_display(url: &str) -> String {
     let Ok(mut parsed) = reqwest::Url::parse(url) else {
         return url.to_string();
     };

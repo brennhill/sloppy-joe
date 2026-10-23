@@ -359,7 +359,7 @@ fn validate_pnpm_tarball_identity(
             "Required lockfile '{}' package '{}' has untrusted tarball source '{}'. sloppy-joe only trusts npm registry tarball URLs in pnpm-lock.yaml.",
             lockfile_path.display(),
             package_name,
-            crate::report::sanitize_for_terminal(tarball)
+            crate::config::redact_url_for_display(tarball)
         );
     };
 
@@ -371,7 +371,7 @@ fn validate_pnpm_tarball_identity(
             "Required lockfile '{}' package '{}' resolves to '{}', which does not match the locked package identity '{}' at version '{}'.",
             lockfile_path.display(),
             package_name,
-            crate::report::sanitize_for_terminal(tarball),
+            crate::config::redact_url_for_display(tarball),
             package_name,
             version
         );
