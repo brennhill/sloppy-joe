@@ -353,7 +353,22 @@ pub async fn check_metadata(
     similarity_flagged: &HashSet<String>,
     resolution: &ResolutionResult,
 ) -> Result<Vec<Issue>> {
-    let (lookups, mut issues) = fetch_metadata(registry, deps, resolution).await;
+    let (mut lookups, mut issues) = fetch_metadata(registry, deps, resolution).await;
+    issues.extend(
+        super::tarball_verification::verify_npm_tarballs(
+            registry,
+            &mut lookups,
+            config,
+            similarity_flagged,
+            &super::tarball_verification::TarballVerificationOptions {
+                cache_dir: None,
+                no_cache: true,
+                verify_all: false,
+                max_fetches: super::tarball_verification::DEFAULT_MAX_TARBALL_FETCHES,
+            },
+        )
+        .await,
+    );
     issues.extend(issues_from_lookups(&lookups, config, similarity_flagged));
     Ok(issues)
 }

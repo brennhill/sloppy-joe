@@ -29,6 +29,10 @@ async-trait = "=0.1.89"
 libc = "=0.2.183"
 sha2 = "=0.10.9"
 pep440_rs = "=0.7.3"
+# npm tarball verification (manifest-confusion check). Pure-Rust gzip backend,
+# no xattr support: tarballs are only read in memory, never extracted.
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+tar = { version = "=0.4.46", default-features = false }
 
 # The profile that 'dist' will build with
 [profile.dist]

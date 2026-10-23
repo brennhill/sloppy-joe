@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Verify npm tarballs against registry metadata for new, recent, low-download and flagged versions (all versions with `--paranoid`): hash-check the tarball, read its `package.json` under size limits, and block when its install scripts or dependencies differ from the registry metadata. Download, hash and limit failures for a selected version block instead of being skipped.
+- Mark a typosquat finding HIGH CONFIDENCE only when the dependency has few downloads and the package it resembles has many; the reverse is noted as LOW CONFIDENCE without lowering severity.
+
 - GitHub Action: download and extract the release in a fresh temp directory, verify the archive against its published `.sha256`, and never install or put on PATH files from the PR checkout.
 
 - Reject unknown and duplicate keys in sloppy-joe config and local overlay files instead of silently ignoring them.

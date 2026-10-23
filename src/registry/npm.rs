@@ -4,7 +4,79 @@ use async_trait::async_trait;
 
 use super::strip_version_prefix;
 
-super::registry_struct!(NpmRegistry);
+use super::npm_tarball::{self, NpmManifestFacts, NpmTarballRef, TarballLimits};
+
+/// The public npm registry. Packument and tarball URLs must use this origin.
+const NPM_REGISTRY_ORIGIN: &str = "https://registry.npmjs.org";
+const NPM_DOWNLOADS_BASE: &str = "https://api.npmjs.org/downloads/point/last-month";
+
+pub struct NpmRegistry {
+    client: reqwest::Client,
+    /// Separate client for tarballs: never follows redirects, HTTPS only.
+    tarball_client: reqwest::Client,
+    origin: reqwest::Url,
+    downloads_base: String,
+    tarball_limits: TarballLimits,
+}
+
+impl NpmRegistry {
+    pub fn new() -> Self {
+        Self::with_client(super::http_client())
+    }
+
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self {
+            client,
+            tarball_client: tarball_http_client(),
+            origin: reqwest::Url::parse(NPM_REGISTRY_ORIGIN).expect("valid registry origin"),
+            downloads_base: NPM_DOWNLOADS_BASE.to_string(),
+            tarball_limits: TarballLimits::default(),
+        }
+    }
+
+    /// Registry rooted at a local test server (plain HTTP, no proxy).
+    #[cfg(test)]
+    pub(crate) fn for_test(origin: &str, tarball_limits: TarballLimits) -> Self {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        Self {
+            client: client.clone(),
+            tarball_client: client,
+            origin: reqwest::Url::parse(origin).unwrap(),
+            downloads_base: format!("{origin}/downloads"),
+            tarball_limits,
+        }
+    }
+}
+
+impl NpmRegistry {
+    fn packument_url(&self, package_name: &str) -> String {
+        format!(
+            "{}/{package_name}",
+            self.origin.as_str().trim_end_matches('/')
+        )
+    }
+}
+
+impl Default for NpmRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn tarball_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
+        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
+        .build()
+        .expect("failed to build HTTP client")
+}
 
 fn metadata_from_body(
     body: &serde_json::Value,
@@ -59,15 +131,16 @@ fn metadata_from_body(
     let has_install_scripts = install.has_install_scripts;
     let manifest_inconsistency = install.inconsistency;
 
-    let dependency_count = body["versions"][selected_ver.as_str()]["dependencies"]
-        .as_object()
-        .map(|obj| obj.len() as u64);
+    let dependency_count = runtime_dependency_count(&body["versions"][selected_ver.as_str()]);
 
-    let previous_dependency_count = previous_ver.as_ref().and_then(|pv| {
-        body["versions"][pv.as_str()]["dependencies"]
-            .as_object()
-            .map(|obj| obj.len() as u64)
-    });
+    let previous_dependency_count = previous_ver
+        .as_ref()
+        .and_then(|pv| runtime_dependency_count(&body["versions"][pv.as_str()]));
+
+    let npm_tarball = Some(npm_tarball::tarball_ref_from_version(
+        &selected_ver,
+        &body["versions"][selected_ver.as_str()],
+    ));
 
     let current_publisher = body["versions"][selected_ver.as_str()]["_npmUser"]["name"]
         .as_str()
@@ -97,7 +170,25 @@ fn metadata_from_body(
         downloads_unavailable: None,
         manifest_inconsistency,
         removed_previous_version,
+        npm_tarball,
     })
+}
+
+/// Runtime dependency count: names in `dependencies` and
+/// `optionalDependencies` (npm's publish normalisation moves names between
+/// them, and the tarball check compares the same union). `None` when the
+/// version declares neither section.
+fn runtime_dependency_count(version_obj: &serde_json::Value) -> Option<u64> {
+    let sections: Vec<_> = ["dependencies", "optionalDependencies"]
+        .iter()
+        .filter_map(|section| version_obj[*section].as_object())
+        .collect();
+    if sections.is_empty() {
+        return None;
+    }
+    let names: std::collections::BTreeSet<&String> =
+        sections.iter().flat_map(|deps| deps.keys()).collect();
+    Some(names.len() as u64)
 }
 
 /// A packument with no installable versions. registry.npmjs.org answers a
@@ -269,11 +360,12 @@ fn build_version_history(
 /// Fetch last-month download count from the npm downloads API.
 /// Any failure (transport, non-2xx, malformed body) is an error so callers
 /// can surface it rather than silently dropping download-based signals.
-async fn fetch_downloads(client: &reqwest::Client, package_name: &str) -> Result<u64> {
-    let url = format!(
-        "https://api.npmjs.org/downloads/point/last-month/{}",
-        package_name
-    );
+async fn fetch_downloads(
+    client: &reqwest::Client,
+    downloads_base: &str,
+    package_name: &str,
+) -> Result<u64> {
+    let url = format!("{downloads_base}/{package_name}");
     let resp = super::retry_get(client, &url)
         .await
         .map_err(|e| anyhow::anyhow!("npm downloads API request failed: {e}"))?;
@@ -292,7 +384,7 @@ async fn fetch_downloads(client: &reqwest::Client, package_name: &str) -> Result
 impl super::RegistryExistence for NpmRegistry {
     async fn exists(&self, package_name: &str) -> Result<bool> {
         self.validate_name(package_name)?;
-        let url = format!("https://registry.npmjs.org/{}", package_name);
+        let url = self.packument_url(package_name);
         let resp = super::retry_get(&self.client, &url).await?;
         if !super::check_existence_status(resp.status(), "npm registry", package_name)? {
             return Ok(false);
@@ -320,12 +412,12 @@ impl super::RegistryMetadata for NpmRegistry {
         version: Option<&str>,
     ) -> Result<Option<super::PackageMetadata>> {
         self.validate_name(package_name)?;
-        let url = format!("https://registry.npmjs.org/{}", package_name);
+        let url = self.packument_url(package_name);
 
         // Fetch registry doc and download counts concurrently
         let (registry_resp, downloads_result) = tokio::join!(
             super::retry_get(&self.client, &url),
-            fetch_downloads(&self.client, package_name)
+            fetch_downloads(&self.client, &self.downloads_base, package_name)
         );
 
         let resp = registry_resp?;
@@ -342,11 +434,32 @@ impl super::RegistryMetadata for NpmRegistry {
 
         Ok(Some(meta))
     }
+
+    async fn verify_npm_tarball(
+        &self,
+        package_name: &str,
+        tarball: &NpmTarballRef,
+    ) -> Result<Option<NpmManifestFacts>> {
+        self.validate_name(package_name)?;
+        npm_tarball::fetch_and_verify(
+            &self.tarball_client,
+            &self.origin,
+            package_name,
+            tarball,
+            self.tarball_limits,
+        )
+        .await
+        .map(Some)
+    }
 }
 
 #[cfg(test)]
 #[path = "npm_hardening_tests.rs"]
 mod hardening_tests;
+
+#[cfg(test)]
+#[path = "npm_tarball_tests.rs"]
+mod tarball_tests;
 
 #[cfg(test)]
 mod tests {

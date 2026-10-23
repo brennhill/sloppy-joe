@@ -113,7 +113,19 @@ impl Check for MetadataCheck {
             // instead of making redundant registry calls. SimilarityCheck may
             // already have fetched them (see ensure_metadata_lookups).
             ensure_metadata_lookups(ctx, acc).await;
-            let lookups = acc.metadata_lookups.take().unwrap_or_default();
+            let mut lookups = acc.metadata_lookups.take().unwrap_or_default();
+            // Replace forgeable packument install/dependency facts with the
+            // tarball's before any signal reads them.
+            acc.issues.extend(
+                super::tarball_verification::verify_npm_tarballs(
+                    ctx.registry,
+                    &mut lookups,
+                    ctx.config,
+                    &acc.similarity_flagged,
+                    &super::tarball_verification::TarballVerificationOptions::from_scan(ctx.opts),
+                )
+                .await,
+            );
             acc.issues.extend(super::metadata::issues_from_lookups(
                 &lookups,
                 ctx.config,
