@@ -27,6 +27,7 @@ futures = "=0.3.32"
 toml = "=0.8.23"
 async-trait = "=0.1.89"
 libc = "=0.2.183"
+sha1 = { version = "=0.10.6", default-features = false }
 sha2 = "=0.10.9"
 pep440_rs = "=0.7.3"
 # npm tarball verification (manifest-confusion check). Pure-Rust gzip backend,
