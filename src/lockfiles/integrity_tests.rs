@@ -143,6 +143,7 @@ packages:
     let parsed = ParsedLockfile::Pnpm {
         value,
         importer_key: ".".into(),
+        path: std::path::PathBuf::from("pnpm-lock.yaml"),
     };
     let collected = collect(&parsed).unwrap();
     assert_eq!(collected.lockfile, "pnpm-lock.yaml");
