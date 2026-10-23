@@ -820,13 +820,12 @@ fn read_validated_npm_lockfile(
             .unwrap_or_default(),
     )?;
 
-    let warnings = if npm_lockfile_version(&lockfile, &path)? == 1
-        && config.allow_legacy_npm_v1_lockfile
-    {
-        legacy_npm_v1_warnings(&path)
-    } else {
-        Vec::new()
-    };
+    let warnings =
+        if npm_lockfile_version(&lockfile, &path)? == 1 && config.allow_legacy_npm_v1_lockfile {
+            legacy_npm_v1_warnings(&path)
+        } else {
+            Vec::new()
+        };
 
     Ok((lockfile, warnings))
 }
@@ -845,7 +844,7 @@ fn read_validated_pnpm_lockfile(
                 err
             )
         })?;
-    let lockfile: serde_yaml::Value = serde_yaml::from_str(&content)
+    let lockfile: serde_yaml::Value = crate::lockfiles::parse_yaml_guarded(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::pnpm::validate_provenance(
@@ -884,7 +883,7 @@ fn read_validated_bun_lockfile(
                 err
             )
         })?;
-    let lockfile: serde_json::Value = json5::from_str(&content)
+    let lockfile: serde_json::Value = crate::lockfiles::parse_json5_guarded(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_bun_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::bun::validate_provenance(&lockfile, &path)?;
@@ -1336,9 +1335,10 @@ fn js_workspace_records_project(
     let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
     match root.manager {
         JsPackageManager::Pnpm => {
-            let value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|error| {
-                anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
-            })?;
+            let value: serde_yaml::Value =
+                crate::lockfiles::parse_yaml_guarded(&content).map_err(|error| {
+                    anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
+                })?;
             Ok(value
                 .get("importers")
                 .and_then(|entries| entries.get(&key))
@@ -4341,13 +4341,14 @@ fn parse_pnpm_workspaces(workspace_dir: &std::path::Path) -> Result<Option<Vec<S
         return Ok(None);
     }
     let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-    let value: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|err| {
-        anyhow::anyhow!(
-            "Broken manifest '{}': failed to parse YAML: {}",
-            path.display(),
-            err
-        )
-    })?;
+    let value: serde_yaml::Value =
+        crate::lockfiles::parse_yaml_guarded(&content).map_err(|err| {
+            anyhow::anyhow!(
+                "Broken manifest '{}': failed to parse YAML: {}",
+                path.display(),
+                err
+            )
+        })?;
     if value
         .as_mapping()
         .is_some_and(|mapping| mapping.keys().any(|key| key.as_str() != Some("packages")))

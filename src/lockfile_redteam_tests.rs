@@ -21,6 +21,48 @@ fn write_bun_project(dir: &std::path::Path, lockfile: &str) {
     std::fs::write(dir.join("bun.lock"), lockfile).unwrap();
 }
 
+#[test]
+fn deeply_nested_bun_lock_blocks_instead_of_overflowing() {
+    let dir = unique_dir();
+    write_bun_project(
+        &dir,
+        &format!(
+            r#"{{"lockfileVersion":1,"workspaces":{{"":{{"name":"app","dependencies":{{"lodash":"^4.17.21"}}}}}},"packages":{{"lodash":["lodash@4.17.21","",{{}},"sha512-x"]}},"x":{}{}}}"#,
+            "[".repeat(200_000),
+            "]".repeat(200_000)
+        ),
+    );
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("pathologically nested bun.lock must block");
+    assert!(err.to_string().contains("nest"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deeply_nested_pnpm_lock_blocks_quickly() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","packageManager":"pnpm@9.0.0","dependencies":{"lodash":"^4.17.21"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        format!(
+            "lockfileVersion: \"9.0\"\nimporters:\n  .:\n    dependencies:\n      lodash:\n        specifier: ^4.17.21\n        version: 4.17.21\npackages:\n  lodash@4.17.21:\n    resolution: {{integrity: sha512-x}}\nx: {}{}\n",
+            "[".repeat(200_000),
+            "]".repeat(200_000)
+        ),
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    let err = preflight_scan_inputs(&dir, Some("npm"))
+        .expect_err("pathologically nested pnpm-lock.yaml must block");
+    assert!(err.to_string().contains("nest"), "{err}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn write_npm_project(dir: &std::path::Path, lockfile_version: &str) {
     std::fs::write(
         dir.join("package.json"),
@@ -141,8 +183,8 @@ fn npm_entries_without_version_still_get_provenance_checks() {
     ] {
         let dir = unique_dir();
         write_npm_project_with_extra_entry(&dir, entry);
-        let err = preflight_scan_inputs(&dir, Some("npm"))
-            .expect_err(&format!("{label} must block"));
+        let err =
+            preflight_scan_inputs(&dir, Some("npm")).expect_err(&format!("{label} must block"));
         assert!(
             err.to_string().contains(expected),
             "{label}: unexpected error {err}"

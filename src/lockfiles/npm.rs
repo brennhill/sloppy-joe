@@ -17,9 +17,7 @@ use super::{
 /// changing how the number is spelled.
 pub(crate) fn lockfile_version(parsed: &serde_json::Value) -> Result<u64> {
     let Some(raw) = parsed.get("lockfileVersion") else {
-        anyhow::bail!(
-            "npm lockfile is missing lockfileVersion. Regenerate it with a modern npm."
-        );
+        anyhow::bail!("npm lockfile is missing lockfileVersion. Regenerate it with a modern npm.");
     };
     match raw.as_u64() {
         Some(version @ 1..=3) if raw.is_u64() => Ok(version),

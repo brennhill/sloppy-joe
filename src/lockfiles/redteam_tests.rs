@@ -83,8 +83,8 @@ fn yarn_classic_scoped_selector_with_multibyte_leaf_does_not_panic() {
   integrity sha512-abc
 "#;
     let dir = unique_dir();
-    let parsed = yarn::parse_lockfile(content, dir.join("yarn.lock"), &dir)
-        .expect("yarn.lock should parse");
+    let parsed =
+        yarn::parse_lockfile(content, dir.join("yarn.lock"), &dir).expect("yarn.lock should parse");
     yarn::validate_provenance(&parsed).expect("registry entries should validate cleanly");
     let names = yarn::parse_all_from_parsed(&parsed)
         .unwrap()
@@ -107,13 +107,107 @@ fn yarn_entries_with_unparseable_selectors_block_provenance() {
   integrity sha512-abc
 "#;
     let dir = unique_dir();
-    let parsed = yarn::parse_lockfile(content, dir.join("yarn.lock"), &dir)
-        .expect("yarn.lock should parse");
+    let parsed =
+        yarn::parse_lockfile(content, dir.join("yarn.lock"), &dir).expect("yarn.lock should parse");
     assert!(
         yarn::validate_provenance(&parsed).is_err(),
         "entries whose selectors cannot be attributed must not be skipped"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn deep(open: &str, close: &str, depth: usize) -> String {
+    format!("{}{}", open.repeat(depth), close.repeat(depth))
+}
+
+#[test]
+fn json5_depth_guard_blocks_deep_nesting_without_overflowing() {
+    let content = format!(
+        r#"{{"lockfileVersion": 1, "x": {}}}"#,
+        deep("[", "]", 200_000)
+    );
+    let err = parse_json5_guarded(&content).expect_err("deep nesting must be rejected");
+    assert!(err.to_string().contains("nest"), "{err}");
+
+    let mixed = format!(r#"{{"x": {}}}"#, deep(r#"{"a":"#, "}", 5_000));
+    assert!(parse_json5_guarded(&mixed).is_err());
+}
+
+#[test]
+fn json5_depth_guard_accepts_realistic_bun_lock_and_ignores_strings_and_comments() {
+    let content = r#"{
+  // comment with brackets [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+  /* block comment {{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{ */
+  "lockfileVersion": 1,
+  "note": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ \" [[[[",
+  'single': '{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{ \' {{',
+  "workspaces": { "": { "name": "app", "dependencies": { "react": "^18.0.0" } } },
+  "packages": {
+    "react": ["react@18.3.1", "", { "dependencies": { "loose-envify": "^1.1.0" } }, "sha512-react"],
+  },
+}"#;
+    let value = parse_json5_guarded(content).expect("realistic bun.lock should parse");
+    assert!(value.get("packages").is_some());
+
+    let nested_ok = format!(r#"{{"x": {}}}"#, deep("[", "]", 60));
+    parse_json5_guarded(&nested_ok).expect("moderate nesting should parse");
+}
+
+#[test]
+fn json5_depth_guard_cannot_be_evaded_with_closers_inside_strings() {
+    let mut content = String::from(r#"{"x": "#);
+    for _ in 0..50 {
+        content.push_str(r#"[[[[[[[[[[ "]]]]]]]]]]", "#);
+    }
+    content.push_str(&"]".repeat(500));
+    content.push('}');
+    assert!(parse_json5_guarded(&content).is_err());
+}
+
+#[test]
+fn yaml_depth_guard_blocks_deep_flow_nesting_quickly() {
+    let content = format!(
+        "lockfileVersion: '9.0'\npackages:\n  lodash@4.17.21:\n    resolution: {{integrity: sha512-x}}\nx: {}\n",
+        deep("[", "]", 200_000)
+    );
+    let start = std::time::Instant::now();
+    let err = parse_yaml_guarded(&content).expect_err("deep YAML nesting must be rejected");
+    assert!(err.to_string().contains("nest"), "{err}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+
+    let mut evasive = String::from("x: ");
+    for _ in 0..50 {
+        evasive.push_str("[[[[[[[[[[ \"]]]]]]]]]]\", ");
+    }
+    evasive.push_str(&"]".repeat(500));
+    assert!(parse_yaml_guarded(&evasive).is_err());
+}
+
+#[test]
+fn yaml_depth_guard_accepts_realistic_pnpm_lock() {
+    let content = r#"lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+importers:
+  .:
+    dependencies:
+      '@babel/core':
+        specifier: ^7.0.0
+        version: 7.24.0(supports-color@5.5.0)
+
+packages:
+  '@babel/core@7.24.0':
+    resolution: {integrity: sha512-abc==}
+    engines: {node: '>=6.9.0'}
+    cpu: [x64, arm64]
+  it's-plain: "not [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ a flow"
+  other: 'also [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[ it''s quoted'
+  # comment [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[
+"#;
+    let value = parse_yaml_guarded(content).expect("realistic pnpm lock should parse");
+    assert!(value.get("packages").is_some());
 }
 
 #[test]
