@@ -5191,6 +5191,7 @@ fn validate_npm_lockfile_package_entry(
         .map(|(_, name)| name)
         .unwrap_or(key);
     let locked_name = entry.get("name").and_then(|value| value.as_str());
+    ensure_valid_npm_lockfile_names(key, expected_name, locked_name, lockfile_path)?;
     let allowed_alias_target = allowed_alias_targets.get(expected_name).map(String::as_str);
     if let Some(locked_name) = locked_name
         && locked_name != expected_name
@@ -5211,6 +5212,27 @@ fn validate_npm_lockfile_package_entry(
     )
 }
 
+/// Lockfile entries whose installed or declared name cannot be scanned must
+/// block instead of being silently dropped from the transitive set.
+fn ensure_valid_npm_lockfile_names(
+    key: &str,
+    installed_name: &str,
+    locked_name: Option<&str>,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    for candidate in std::iter::once(installed_name).chain(locked_name) {
+        if !crate::registry::validate_package_name(candidate) {
+            anyhow::bail!(
+                "Required lockfile '{}' entry '{}' has an invalid package name '{}'.",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(key),
+                crate::report::sanitize_for_terminal(candidate)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_npm_lockfile_dependency_entries(
     dependencies: &serde_json::Map<String, serde_json::Value>,
     lockfile_path: &std::path::Path,
@@ -5226,6 +5248,7 @@ fn validate_npm_lockfile_dependency_entries(
             );
         };
         let locked_name = entry.get("name").and_then(|value| value.as_str());
+        ensure_valid_npm_lockfile_names(name, name, locked_name, lockfile_path)?;
         let allowed_alias_target = allowed_alias_targets.get(name).map(String::as_str);
         if let Some(locked_name) = locked_name
             && locked_name != name

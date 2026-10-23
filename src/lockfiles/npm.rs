@@ -231,16 +231,23 @@ fn parse_dependencies_from_value(
             {
                 continue;
             }
+            let installed_name = key
+                .rsplit_once("node_modules/")
+                .map(|(_, name)| name)
+                .unwrap_or(key);
             let name = entry
                 .get("name")
                 .and_then(|value| value.as_str())
-                .or_else(|| key.rsplit_once("node_modules/").map(|(_, name)| name))
-                .unwrap_or(key);
-            if name.is_empty() {
-                continue;
-            }
-            if !crate::registry::validate_package_name(name) {
-                continue;
+                .unwrap_or(installed_name);
+            // Never silently drop an entry: an unscannable name is a blocking error.
+            for candidate in [installed_name, name] {
+                if !crate::registry::validate_package_name(candidate) {
+                    anyhow::bail!(
+                        "npm lockfile entry '{}' has an invalid package name '{}'.",
+                        crate::report::sanitize_for_terminal(key),
+                        crate::report::sanitize_for_terminal(candidate)
+                    );
+                }
             }
             let version = entry
                 .get("version")
@@ -254,7 +261,7 @@ fn parse_dependencies_from_value(
             });
         }
     } else if let Some(dependencies) = parsed.get("dependencies").and_then(|v| v.as_object()) {
-        collect_v1_dependencies(dependencies, direct_root_paths, 0, &mut deps);
+        collect_v1_dependencies(dependencies, direct_root_paths, 0, &mut deps)?;
     } else {
         anyhow::bail!("npm lockfile has no packages or dependencies section");
     }
@@ -267,8 +274,21 @@ fn collect_v1_dependencies(
     direct_root_paths: Option<&std::collections::HashSet<String>>,
     depth: usize,
     deps: &mut Vec<Dependency>,
-) {
+) -> Result<()> {
     for (name, entry) in dependencies {
+        let package_name = entry
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or(name);
+        for candidate in [name.as_str(), package_name] {
+            if !crate::registry::validate_package_name(candidate) {
+                anyhow::bail!(
+                    "npm lockfile dependency entry '{}' has an invalid package name '{}'.",
+                    crate::report::sanitize_for_terminal(name),
+                    crate::report::sanitize_for_terminal(candidate)
+                );
+            }
+        }
         let is_direct_root = depth == 0
             && direct_root_paths
                 .is_some_and(|paths| paths.contains(&format!("node_modules/{name}")));
@@ -278,11 +298,7 @@ fn collect_v1_dependencies(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             deps.push(Dependency {
-                name: entry
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(name)
-                    .to_string(),
+                name: package_name.to_string(),
                 version,
                 ecosystem: crate::Ecosystem::Npm,
                 actual_name: None,
@@ -293,9 +309,10 @@ fn collect_v1_dependencies(
             .get("dependencies")
             .and_then(|value| value.as_object())
         {
-            collect_v1_dependencies(nested, None, depth + 1, deps);
+            collect_v1_dependencies(nested, None, depth + 1, deps)?;
         }
     }
+    Ok(())
 }
 
 fn entry_matches_dependency(
@@ -318,28 +335,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_all_skips_invalid_package_names() {
+    fn parse_all_rejects_invalid_package_names() {
+        for bad_key in [
+            "node_modules/../etc/passwd",
+            "node_modules/evil\\u0000pkg",
+            "node_modules/",
+        ] {
+            let lockfile = format!(
+                r#"{{
+                "packages": {{
+                    "": {{ "name": "root" }},
+                    "node_modules/react": {{ "version": "18.2.0" }},
+                    "{bad_key}": {{ "version": "1.0.0" }},
+                    "node_modules/good-pkg": {{ "version": "2.0.0" }}
+                }}
+            }}"#
+            );
+            assert!(
+                parse_all(&lockfile).is_err(),
+                "{bad_key} must be rejected, not silently dropped"
+            );
+        }
+
         let lockfile = r#"{
             "packages": {
                 "": { "name": "root" },
                 "node_modules/react": { "version": "18.2.0" },
-                "node_modules/../etc/passwd": { "version": "1.0.0" },
-                "node_modules/evil\u0000pkg": { "version": "1.0.0" },
                 "node_modules/good-pkg": { "version": "2.0.0" }
             }
         }"#;
         let deps = parse_all(lockfile).unwrap();
         let names: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
         assert!(names.contains(&"react"));
         assert!(names.contains(&"good-pkg"));
-        assert!(
-            !names.iter().any(|n| n.contains("..")),
-            "path traversal name should be filtered"
-        );
-        assert!(
-            !names.iter().any(|n| n.contains('\0')),
-            "null byte name should be filtered"
-        );
-        assert_eq!(deps.len(), 2);
     }
 }

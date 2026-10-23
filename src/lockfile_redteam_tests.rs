@@ -194,6 +194,34 @@ fn npm_entries_without_version_still_get_provenance_checks() {
 }
 
 #[test]
+fn npm_entries_with_invalid_package_names_block() {
+    for (label, entry) in [
+        (
+            "percent-encoded key",
+            r#""node_modules/evil%2Fpkg": {"version":"1.0.0","resolved":"https://registry.npmjs.org/evil%2Fpkg/-/evil%2Fpkg-1.0.0.tgz","integrity":"sha512-deadbeef"}"#,
+        ),
+        (
+            "traversal key",
+            r#""node_modules/../etc": {"version":"1.0.0","resolved":"https://registry.npmjs.org/etc/-/etc-1.0.0.tgz","integrity":"sha512-deadbeef"}"#,
+        ),
+        (
+            "invalid name field",
+            r#""node_modules/okpkg": {"name":"bad%name","version":"1.0.0","resolved":"https://registry.npmjs.org/okpkg/-/okpkg-1.0.0.tgz","integrity":"sha512-deadbeef"}"#,
+        ),
+    ] {
+        let dir = unique_dir();
+        write_npm_project_with_extra_entry(&dir, entry);
+        let err =
+            preflight_scan_inputs(&dir, Some("npm")).expect_err(&format!("{label} must block"));
+        assert!(
+            err.to_string().contains("invalid package name"),
+            "{label}: unexpected error {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
 fn bun_transitive_file_descriptor_outside_scan_root_blocks() {
     let dir = unique_dir();
     let project = dir.join("project");

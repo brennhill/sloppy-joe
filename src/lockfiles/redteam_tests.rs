@@ -22,6 +22,27 @@ fn npm_dep(name: &str, version: &str) -> Dependency {
 }
 
 #[test]
+fn npm_transitive_parse_rejects_invalid_package_names() {
+    let packages = serde_json::json!({
+        "lockfileVersion": 3,
+        "packages": {
+            "": { "name": "root" },
+            "node_modules/react": { "version": "18.2.0" },
+            "node_modules/evil%2Fpkg": { "version": "1.0.0" }
+        }
+    });
+    assert!(npm::parse_all_from_value(&packages).is_err());
+
+    let legacy = serde_json::json!({
+        "lockfileVersion": 1,
+        "dependencies": {
+            "react": { "version": "18.2.0", "dependencies": { "../etc": { "version": "1.0.0" } } }
+        }
+    });
+    assert!(npm::parse_all_from_value(&legacy).is_err());
+}
+
+#[test]
 fn npm_lockfile_version_parsing_is_strict() {
     for ok in [1u64, 2, 3] {
         let value = serde_json::json!({ "lockfileVersion": ok });
