@@ -74,3 +74,19 @@ fn monorepo_discovery_fails_closed_on_legacy_packages_config() {
     assert!(err.to_string().contains("packages.config"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn npm_manifest_with_utf8_bom_is_read() {
+    let root = unique_dir();
+    let manifest = root.join("package.json");
+    std::fs::write(
+        &manifest,
+        "\u{feff}{\"name\":\"t0\",\"dependencies\":{\"left-pad\":\"^1.3.0\"}}",
+    )
+    .unwrap();
+    let value = read_npm_manifest_value(&manifest).unwrap();
+    assert_eq!(value["name"], "t0");
+    let deps = parsers::package_json::parse(&root).unwrap();
+    assert_eq!(deps[0].name, "left-pad");
+    let _ = std::fs::remove_dir_all(&root);
+}

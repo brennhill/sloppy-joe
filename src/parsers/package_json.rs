@@ -7,9 +7,14 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read package.json")?;
     let parsed: serde_json::Value =
-        serde_json::from_str(&content).context("Failed to parse package.json")?;
+        parse_manifest_json(&content).context("Failed to parse package.json")?;
 
     parse_manifest_value(&path, &parsed)
+}
+
+/// Parse package.json text the way npm does, tolerating a leading UTF-8 BOM.
+pub(crate) fn parse_manifest_json(content: &str) -> serde_json::Result<serde_json::Value> {
+    serde_json::from_str(content.strip_prefix('\u{feff}').unwrap_or(content))
 }
 
 pub(crate) fn parse_manifest_value(
