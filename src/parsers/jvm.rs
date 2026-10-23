@@ -3,6 +3,18 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 mod gradle_plugins;
+pub(crate) mod maven_model;
+
+/// Fill in the versions Maven derives from properties, management sections,
+/// imported BOMs and the parent chain (see [`maven_model`]).
+pub(crate) async fn resolve_maven_versions(
+    pom_path: &Path,
+    deps: Vec<Dependency>,
+    client: reqwest::Client,
+) -> Result<Vec<Dependency>> {
+    maven_model::resolve_pom_versions(pom_path, deps, &maven_model::CentralPomSource::new(client))
+        .await
+}
 
 /// A parsed Gradle build script: regular dependencies, the plugin marker
 /// artifacts its `plugins {}` requests resolve to, and the repositories Gradle
@@ -366,18 +378,18 @@ fn maven_project_body(content: &str) -> Option<&str> {
 /// Maven resolves `<parent>` from `relativePath` (default `../pom.xml`) when
 /// the POM found there has the same coordinates; only otherwise is it fetched
 /// from the repository. A local reactor parent is not a registry dependency.
-fn maven_parent_is_local(
+pub(crate) fn maven_local_parent(
     pom_path: &Path,
     group: &str,
     artifact: &str,
     version: Option<&str>,
     relative_path: Option<String>,
     relative_path_declared: bool,
-) -> Result<bool> {
+) -> Result<Option<(std::path::PathBuf, String)>> {
     let relative = match (relative_path, relative_path_declared) {
         (Some(relative), _) => relative,
         // `<relativePath/>` disables local lookup.
-        (None, true) => return Ok(false),
+        (None, true) => return Ok(None),
         (None, false) => "../pom.xml".to_string(),
     };
     let base = pom_path.parent().unwrap_or(Path::new("."));
@@ -386,23 +398,23 @@ fn maven_parent_is_local(
         candidate = candidate.join("pom.xml");
     }
     if !super::path_detected(&candidate)? {
-        return Ok(false);
+        return Ok(None);
     }
     let Ok(candidate) = std::fs::canonicalize(&candidate) else {
-        return Ok(false);
+        return Ok(None);
     };
     let project_dir = std::fs::canonicalize(base)?;
     if let Some(root) =
         crate::config::registry::find_git_root(&project_dir).map_err(anyhow::Error::msg)?
         && !candidate.starts_with(&root)
     {
-        return Ok(false);
+        return Ok(None);
     }
     let Ok(parent_content) = super::read_file_limited(&candidate, super::MAX_MANIFEST_BYTES) else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(project_body) = maven_project_body(&parent_content) else {
-        return Ok(false);
+        return Ok(None);
     };
     let children = xml_direct_children(project_body);
     let child = |name: &str| {
@@ -425,12 +437,32 @@ fn maven_parent_is_local(
     };
     let local_group = child("groupId").or_else(|| inherited_child("groupId"));
     let local_version = child("version").or_else(|| inherited_child("version"));
-    Ok(local_group.as_deref() == Some(group)
+    let matches = local_group.as_deref() == Some(group)
         && child("artifactId").as_deref() == Some(artifact)
         && match (version, local_version.as_deref()) {
             (Some(wanted), Some(found)) => wanted == found,
             _ => true,
-        })
+        };
+    Ok(matches.then_some((candidate, parent_content)))
+}
+
+fn maven_parent_is_local(
+    pom_path: &Path,
+    group: &str,
+    artifact: &str,
+    version: Option<&str>,
+    relative_path: Option<String>,
+    relative_path_declared: bool,
+) -> Result<bool> {
+    Ok(maven_local_parent(
+        pom_path,
+        group,
+        artifact,
+        version,
+        relative_path,
+        relative_path_declared,
+    )?
+    .is_some())
 }
 
 fn extract_xml_value(line: &str, tag: &str) -> Option<String> {

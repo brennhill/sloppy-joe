@@ -6882,6 +6882,40 @@ async fn scan_with_config(
     let mut all_review_candidates = Vec::new();
 
     for project in &projects {
+        // Maven versions come from properties, management sections, BOMs and
+        // the parent chain, not only from the declarations themselves.
+        let resolved_project;
+        let project = if project.spec.kind == ProjectInputKind::Maven && !project.unlocked_tooling {
+            match parsers::jvm::resolve_maven_versions(
+                &project.spec.manifest_path,
+                project.deps.clone(),
+                client.clone(),
+            )
+            .await
+            {
+                Ok(deps) => {
+                    resolved_project = ParsedProject {
+                        deps,
+                        ..project.clone()
+                    };
+                    &resolved_project
+                }
+                Err(error) => {
+                    if specs.len() == 1 {
+                        return Err(error);
+                    }
+                    all_issues.push(incomplete_project_issue(&project.spec, &error));
+                    project_runs.push(project_scan_summary(
+                        &project.spec,
+                        0,
+                        report::ProjectScanStatus::Unsupported,
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            project
+        };
         // A project with no declared dependencies is still scanned: its
         // lockfile may list installable packages.
         let registry = match gradle_plugin_scan::plugin_registry_for(project, client.clone())? {
