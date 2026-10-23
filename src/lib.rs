@@ -5,6 +5,7 @@ pub mod checks;
 pub mod ecosystem;
 pub use ecosystem::Ecosystem;
 pub mod config;
+mod gradle_plugin_scan;
 pub(crate) mod lockfiles;
 mod npm_config;
 pub mod parsers;
@@ -6068,6 +6069,7 @@ fn parse_project_input_with_config(
         | ProjectInputKind::PyProjectLegacy => {
             parse_python_project_dependencies(scan_root, spec, opts)
         }
+        ProjectInputKind::Gradle => gradle_plugin_scan::parse_gradle_project_input(spec, config),
         _ => Ok(ParsedInput {
             deps: parse_project_input(scan_root, spec)?,
             ..ParsedInput::default()
@@ -6799,7 +6801,10 @@ async fn scan_with_config(
 
     for project in &projects {
         let result = if let Some(dep) = project.deps.first() {
-            let registry = registry::registry_for_with_client(dep.ecosystem, client.clone())?;
+            let registry = match gradle_plugin_scan::plugin_registry_for(project, client.clone())? {
+                Some(registry) => registry,
+                None => registry::registry_for_with_client(dep.ecosystem, client.clone())?,
+            };
             scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await
         } else {
             Ok(ScanReport::empty())

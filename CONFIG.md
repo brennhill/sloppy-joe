@@ -171,6 +171,22 @@ Exact allowlist of project `.npmrc` registry routes. A route is named `default` 
 
 **What it does:** `.npmrc` lives in the scanned repository, so its routes are repository-controlled. In `--ci` mode, every package routed through a route that is not allowlisted here is a blocking `resolution/untrusted-registry-source` error. Routed packages are private either way: their names are never sent to the public registry or OSV, so allowlisting a route here is what lets CI accept packages that skip those checks. See the [JavaScript guide](docs/ecosystems/JAVASCRIPT.md#private-registries).
 
+### `trusted_registries.jvm`
+
+Exact allowlist of Gradle plugin repositories declared in `pluginManagement { repositories { maven { url = "..." } } }`. Each entry uses the name `gradle-plugins` and one exact repository URL (trailing slashes and host case are normalized).
+
+```json
+{
+  "trusted_registries": {
+    "jvm": [
+      { "name": "gradle-plugins", "source": "https://plugins.company.example/m2" }
+    ]
+  }
+}
+```
+
+**What it does:** the settings script is repository-controlled, so a custom plugin repository that is not allowlisted here blocks the Gradle project. When every custom plugin repository of a build is allowlisted, its plugins are reported as `resolution/private-registry-unvetted` warnings instead of being checked against the Gradle Plugin Portal. See the [JVM guide](docs/ecosystems/JVM.md#gradle-plugins).
+
 ### Python profile selection
 
 Trusted Python modes evaluate one concrete install profile at a time.
