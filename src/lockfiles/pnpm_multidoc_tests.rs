@@ -210,3 +210,70 @@ fn transitive_absent_from_the_lockfile_still_blocks() {
             .any(|c| c == "resolution/missing-lockfile-entry")
     );
 }
+
+const DIRECTORY_DOC: &str = r#"---
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      '@scope/local-dep':
+        specifier: file:./local-dep
+        version: file:local-dep
+      left-pad:
+        specifier: ^1.3.0
+        version: 1.3.0
+
+packages:
+
+  '@scope/local-dep@file:local-dep':
+    resolution: {directory: local-dep, type: directory}
+
+  left-pad@1.3.0:
+    resolution: {integrity: sha512-CCCC}
+
+snapshots:
+
+  '@scope/local-dep@file:local-dep': {}
+
+  left-pad@1.3.0: {}
+"#;
+
+#[test]
+fn directory_packages_are_local_and_not_scanned_as_registry_packages() {
+    let parsed = parse_pnpm_lock_guarded(DIRECTORY_DOC).unwrap();
+    pnpm::validate_provenance(
+        &parsed,
+        Path::new("pnpm-lock.yaml"),
+        &crate::npm_config::NpmRegistries::default(),
+    )
+    .expect("an in-repo directory package needs no registry integrity");
+    assert_eq!(scanned(DIRECTORY_DOC, "."), vec!["left-pad@1.3.0"]);
+}
+
+#[test]
+fn directory_packages_that_leave_the_repo_or_mismatch_the_key_block() {
+    for (directory, key_path) in [
+        ("../outside", "../outside"),
+        ("/etc/evil", "/etc/evil"),
+        ("local-dep", "other-dir"),
+    ] {
+        let doc = DIRECTORY_DOC
+            .replace(
+                "{directory: local-dep, type: directory}",
+                &format!("{{directory: {directory}, type: directory}}"),
+            )
+            .replace("@file:local-dep'", &format!("@file:{key_path}'"));
+        let parsed = parse_pnpm_lock_guarded(&doc).unwrap();
+        assert!(
+            pnpm::validate_provenance(
+                &parsed,
+                Path::new("pnpm-lock.yaml"),
+                &crate::npm_config::NpmRegistries::default(),
+            )
+            .is_err(),
+            "{directory} / {key_path}"
+        );
+    }
+}

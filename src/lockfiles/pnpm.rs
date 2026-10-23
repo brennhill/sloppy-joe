@@ -292,7 +292,11 @@ fn locked_package_identities(
 }
 
 fn dependencies_for(identities: HashSet<(String, String)>) -> Vec<Dependency> {
-    let mut ordered = identities.into_iter().collect::<Vec<_>>();
+    // Local `file:` / `link:` packages are repository source, not registry packages.
+    let mut ordered = identities
+        .into_iter()
+        .filter(|(_, version)| !version.starts_with("file:") && !version.starts_with("link:"))
+        .collect::<Vec<_>>();
     ordered.sort();
     ordered
         .into_iter()
@@ -482,6 +486,22 @@ pub(crate) fn validate_provenance(
             );
         };
 
+        // An in-repo directory package (`name@file:dir`, `type: directory`) is
+        // source in this repository, not a registry artifact: it has no
+        // integrity hash and is scanned as the project it is.
+        if let Some(directory) = local_directory_resolution(resolution) {
+            let key_matches = version.strip_prefix("file:") == Some(directory);
+            if !key_matches {
+                anyhow::bail!(
+                    "Required lockfile '{}' package '{}' is a local directory package whose path '{}' does not match its lockfile key.",
+                    lockfile_path.display(),
+                    key,
+                    crate::report::sanitize_for_terminal(directory)
+                );
+            }
+            continue;
+        }
+
         let integrity = resolution
             .get("integrity")
             .and_then(|value| value.as_str())
@@ -515,6 +535,21 @@ pub(crate) fn validate_provenance(
     }
 
     Ok(())
+}
+
+/// `{directory: <relative path>, type: directory}` with a path that stays
+/// inside the repository.
+fn local_directory_resolution(resolution: &serde_yaml::Mapping) -> Option<&str> {
+    if resolution.get("type").and_then(|value| value.as_str()) != Some("directory") {
+        return None;
+    }
+    let directory = resolution
+        .get("directory")
+        .and_then(|value| value.as_str())?;
+    let escapes = directory.starts_with('/')
+        || directory.contains('\\')
+        || directory.split('/').any(|part| part == "..");
+    (!directory.is_empty() && !escapes).then_some(directory)
 }
 
 fn validate_pnpm_tarball_identity(
