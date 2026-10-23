@@ -301,7 +301,7 @@ pub async fn check_similarity_with_config(
 
 /// Check similarity with configurable cache and generator selection.
 /// `dep_metadata` provides download counts for the original dependencies,
-/// enabling download disparity detection (HIGH CONFIDENCE on large gaps).
+/// enabling download disparity evidence (see `download_disparity_note`).
 pub async fn check_similarity_with_cache(
     registry: &dyn Registry,
     deps: &[Dependency],
@@ -668,17 +668,13 @@ pub(crate) async fn check_similarity_with_options(
                     evidence_parts.push(format!("was first published {}", created));
                 }
 
-                // Download disparity: if original dep has >10K downloads and
-                // candidate has <1000, this is high confidence typosquatting
-                if let Some(candidate_downloads) = meta.downloads
-                    && let Some(orig_dl) = dep_downloads.get(&dep_name).copied()
-                    && orig_dl > 10_000
-                    && candidate_downloads < 1_000
-                {
-                    evidence_parts.push(format!(
-                        "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}'",
-                        dep_name, orig_dl, candidate_downloads, candidate
-                    ));
+                if let Some(note) = download_disparity_note(
+                    &dep_name,
+                    dep_downloads.get(&dep_name).copied(),
+                    &candidate,
+                    meta.downloads,
+                ) {
+                    evidence_parts.push(note);
                 }
 
                 if !evidence_parts.is_empty() {
@@ -770,6 +766,43 @@ pub(crate) async fn check_similarity_with_options(
     Ok(issues)
 }
 
+/// Download counts at or below this are "obscure" for disparity evidence.
+const DISPARITY_OBSCURE_MAX: u64 = 1_000;
+/// Download counts above this are "popular" for disparity evidence.
+const DISPARITY_POPULAR_MIN: u64 = 10_000;
+
+/// Download-disparity evidence for a similarity match, where `dep_name` (from
+/// the manifest) is flagged as a possible typosquat of `candidate`.
+///
+/// - Dependency obscure, candidate popular: classic typosquat shape, so the
+///   finding is HIGH CONFIDENCE.
+/// - Dependency popular, candidate obscure: evidence *against* the dependency
+///   being the squat (the candidate is more likely the imitation). This is
+///   noted as LOW CONFIDENCE but the severity is not lowered, because download
+///   counts are cheap to inflate and must never clear a finding on their own.
+/// - Either count missing, or no large gap: no confidence claim.
+pub(crate) fn download_disparity_note(
+    dep_name: &str,
+    dep_downloads: Option<u64>,
+    candidate: &str,
+    candidate_downloads: Option<u64>,
+) -> Option<String> {
+    let (dep_dl, candidate_dl) = (dep_downloads?, candidate_downloads?);
+    if dep_dl < DISPARITY_OBSCURE_MAX && candidate_dl > DISPARITY_POPULAR_MIN {
+        return Some(format!(
+            "HIGH CONFIDENCE: '{}' has {} downloads vs {} for '{}', the far more popular package it resembles",
+            dep_name, dep_dl, candidate_dl, candidate
+        ));
+    }
+    if dep_dl > DISPARITY_POPULAR_MIN && candidate_dl < DISPARITY_OBSCURE_MAX {
+        return Some(format!(
+            "LOW CONFIDENCE: '{}' has {} downloads vs {} for '{}', so '{}' is more likely the lookalike; confirm '{}' is the name you intend (download counts can be inflated)",
+            dep_name, dep_dl, candidate_dl, candidate, candidate, dep_name
+        ));
+    }
+    None
+}
+
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
     Issue::new(
         package,
@@ -783,6 +816,9 @@ fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix
 
 #[cfg(test)]
 mod hardening_tests;
+
+#[cfg(test)]
+mod download_disparity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1420,7 +1456,7 @@ mod tests {
     // -- Download disparity --
 
     #[tokio::test]
-    async fn high_confidence_on_download_disparity() {
+    async fn popular_dependency_with_obscure_lookalike_is_not_high_confidence() {
         use crate::checks::metadata::MetadataLookup;
         let registry = FakeRegistry::with(&["express"]);
         let deps = vec![dep("expresss")];
@@ -1452,13 +1488,18 @@ mod tests {
         .unwrap();
 
         assert!(!issues.is_empty());
-        // The candidate "express" has 50K downloads (from FakeRegistry metadata),
-        // original "expresss" has 50M — should show HIGH CONFIDENCE
-        let has_high_confidence = issues.iter().any(|i| i.message.contains("HIGH CONFIDENCE"));
+        // The candidate "express" has 500 downloads (from FakeRegistry metadata)
+        // while the dependency "expresss" has 50M. That is evidence the
+        // candidate is the lookalike, not that the dependency is a squat.
+        let messages: Vec<_> = issues.iter().map(|i| &i.message).collect();
         assert!(
-            has_high_confidence,
-            "Expected HIGH CONFIDENCE in message when download disparity is large. Messages: {:?}",
-            issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+            !issues.iter().any(|i| i.message.contains("HIGH CONFIDENCE")),
+            "A popular dependency must not be called a high-confidence squat: {messages:?}"
         );
+        assert!(
+            issues.iter().any(|i| i.message.contains("LOW CONFIDENCE")),
+            "Reverse disparity should be noted: {messages:?}"
+        );
+        assert!(issues.iter().all(|i| i.severity == Severity::Error));
     }
 }

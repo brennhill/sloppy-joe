@@ -20,6 +20,8 @@ pub const METADATA_NO_REPOSITORY: &str = "metadata/no-repository";
 pub const METADATA_DOWNLOADS_UNAVAILABLE: &str = "metadata/downloads-unavailable";
 pub const METADATA_MANIFEST_INCONSISTENCY: &str = "metadata/manifest-inconsistency";
 pub const METADATA_REMOVED_PREVIOUS_VERSION: &str = "metadata/removed-previous-version";
+pub const METADATA_TARBALL_UNVERIFIED: &str = "metadata/tarball-unverified";
+pub const METADATA_TARBALL_INTEGRITY: &str = "metadata/tarball-integrity-mismatch";
 
 // -- Similarity --
 pub const SIMILARITY_REGISTRY_UNREACHABLE: &str = "similarity/registry-unreachable";
@@ -116,6 +118,8 @@ mod tests {
             METADATA_DOWNLOADS_UNAVAILABLE,
             METADATA_MANIFEST_INCONSISTENCY,
             METADATA_REMOVED_PREVIOUS_VERSION,
+            METADATA_TARBALL_UNVERIFIED,
+            METADATA_TARBALL_INTEGRITY,
             SIMILARITY_REGISTRY_UNREACHABLE,
             SIMILARITY_SCOPE_SQUATTING,
             SIMILARITY_CASE_VARIANT,

@@ -2,6 +2,7 @@ pub mod crates_io;
 pub mod go;
 pub mod maven;
 pub mod npm;
+pub mod npm_tarball;
 pub mod nuget;
 pub mod packagist;
 pub mod pypi;
@@ -61,6 +62,10 @@ pub struct PackageMetadata {
     /// A version published immediately before the selected one that has
     /// since been removed from the registry (still listed in publish times).
     pub removed_previous_version: Option<String>,
+    /// npm only: where the selected version's tarball lives, its expected
+    /// hash, and the install/dependency facts the packument declares for it.
+    /// Used to verify the packument against the tarball (manifest confusion).
+    pub npm_tarball: Option<npm_tarball::NpmTarballRef>,
 }
 
 #[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
@@ -109,6 +114,20 @@ pub trait RegistryMetadata: Send + Sync {
     ) -> Result<Option<PackageMetadata>> {
         let _ = package_name;
         let _ = version;
+        Ok(None)
+    }
+
+    /// Download the npm tarball described by `tarball` (from this registry's
+    /// own `metadata()`), verify it against the packument hash, and return the
+    /// facts read from its `package.json`. `Ok(None)` means this registry
+    /// cannot verify tarballs; callers that need verification fail closed.
+    async fn verify_npm_tarball(
+        &self,
+        package_name: &str,
+        tarball: &npm_tarball::NpmTarballRef,
+    ) -> Result<Option<npm_tarball::NpmManifestFacts>> {
+        let _ = package_name;
+        let _ = tarball;
         Ok(None)
     }
 
