@@ -12010,3 +12010,44 @@ async fn unrelated_parent_manager_conflicts_do_not_suppress_independent_children
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn pnpm_workspace_members_that_discovery_cannot_bind_block_the_scan() {
+    for (member_dir, manifest) in [
+        ("packages/tools", "package.yaml"),
+        (".planning/tools", "package.json"),
+    ] {
+        let dir = unique_dir();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(member_dir)).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"root","packageManager":"pnpm@9.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n  - '.planning/*'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("pnpm-lock.yaml"),
+            format!("lockfileVersion: '9.0'\nimporters:\n  .: {{}}\n  {member_dir}:\n    dependencies:\n      evil-pkg:\n        specifier: 6.6.6\n        version: 6.6.6\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(member_dir).join(manifest),
+            r#"{"name":"tools","dependencies":{"evil-pkg":"6.6.6"}}"#,
+        )
+        .unwrap();
+        let blocked = match scan_with_source(&dir, Some("npm"), None, false).await {
+            Err(error) => error.to_string().contains("not a scanned project"),
+            Ok(report) => report
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("not a scanned project")),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(blocked, "{member_dir}/{manifest} must not be silently unscanned");
+    }
+}

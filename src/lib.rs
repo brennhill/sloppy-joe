@@ -1463,6 +1463,76 @@ fn resolve_js_project_binding(
     })
 }
 
+/// A workspace member that project discovery never binds (its manifest is
+/// `package.yaml` / `package.json5`, or it sits under an ignored directory) is still
+/// installed by the package manager from the workspace lockfile, so nothing would scan it.
+fn ensure_js_workspace_members_scanned(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    scanned: &std::collections::HashSet<std::path::PathBuf>,
+) -> Result<()> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir())?;
+    let canonical_scan_root = std::fs::canonicalize(scan_root)?;
+    let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
+    let Some(root) = find_js_workspace_root(&ancestry_root, &canonical_project_dir)? else {
+        return Ok(());
+    };
+    if root.project_dir != canonical_project_dir || !root.project_dir.starts_with(&canonical_scan_root)
+    {
+        return Ok(());
+    }
+    let mut hidden = Vec::new();
+    collect_unscanned_workspace_members(&root, &root.project_dir, scanned, &mut hidden, 0)?;
+    if let Some(first) = hidden.first() {
+        anyhow::bail!(
+            "Workspace member '{}' is declared by '{}' but is not a scanned project (its manifest is not package.json, or it is inside an ignored directory). The package manager installs it from the workspace lockfile, so sloppy-joe would not check its dependencies. Fix: use a package.json manifest and remove the directory from ignore_dirs.",
+            first.display(),
+            root.manifest_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn collect_unscanned_workspace_members(
+    root: &WorkspaceRoot,
+    dir: &std::path::Path,
+    scanned: &std::collections::HashSet<std::path::PathBuf>,
+    hidden: &mut Vec<std::path::PathBuf>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 16 || !hidden.is_empty() {
+        return Ok(());
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<std::result::Result<_, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name();
+        if matches!(name.to_str(), Some("node_modules" | ".git")) {
+            continue;
+        }
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if workspace_patterns_match(
+            &root.project_dir,
+            &canonical,
+            root.patterns.iter().map(String::as_str),
+        ) && ["package.json", "package.yaml", "package.json5"]
+            .iter()
+            .any(|manifest| path.join(manifest).is_file())
+            && !scanned.contains(&canonical)
+        {
+            hidden.push(canonical.clone());
+        }
+        collect_unscanned_workspace_members(root, &path, scanned, hidden, depth + 1)?;
+    }
+    Ok(())
+}
+
 fn js_workspace_records_project(
     root: &WorkspaceRoot,
     project_dir: &std::path::Path,
@@ -6800,6 +6870,20 @@ async fn scan_with_config(
             Err(error) => {
                 binding_errors.insert(spec.manifest_path.clone(), error);
             }
+        }
+    }
+    let scanned_js_dirs: std::collections::HashSet<std::path::PathBuf> = specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::Npm)
+        .filter_map(|spec| std::fs::canonicalize(spec.project_dir()).ok())
+        .collect();
+    for spec in &specs {
+        if spec.kind != ProjectInputKind::Npm || binding_errors.contains_key(&spec.manifest_path) {
+            continue;
+        }
+        if let Err(error) = ensure_js_workspace_members_scanned(project_dir, spec, &scanned_js_dirs)
+        {
+            binding_errors.insert(spec.manifest_path.clone(), error);
         }
     }
     let usable_specs: Vec<_> = specs
