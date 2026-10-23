@@ -115,3 +115,88 @@ requests = "*"
     assert_eq!(scoped_names(&deps), vec!["requests".to_string()]);
     cleanup(&dir);
 }
+
+fn names(deps: &[Dependency]) -> Vec<String> {
+    deps.iter().map(|dep| dep.name.clone()).collect()
+}
+
+#[test]
+fn build_system_requires_are_reported_as_unlocked_tooling() {
+    let dir = setup_test_dir(
+        "pyproject-build-system",
+        "pyproject.toml",
+        r#"[build-system]
+requires = ["evil-backend>=1", "setuptools"]
+build-backend = "evil_backend.api"
+
+[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["requests"]
+"#,
+    );
+    let path = dir.join("pyproject.toml");
+    let tooling = parse_unlocked_tooling_file(&path).unwrap();
+    assert_eq!(
+        names(&tooling),
+        vec!["evil-backend".to_string(), "setuptools".to_string()]
+    );
+    assert_eq!(tooling[0].version.as_deref(), Some(">=1"));
+
+    // Locked/scoped project dependencies stay separate from build tooling.
+    let scoped = parse_legacy_scoped_file(&path).unwrap();
+    assert_eq!(scoped_names(&scoped), vec!["requests".to_string()]);
+
+    // The public, unscoped parser reports everything that gets installed.
+    let all = parse_legacy_file(&path).unwrap();
+    assert!(names(&all).contains(&"evil-backend".to_string()));
+    assert!(names(&all).contains(&"requests".to_string()));
+    cleanup(&dir);
+}
+
+#[test]
+fn build_system_requires_are_reported_for_poetry_projects() {
+    let dir = setup_test_dir(
+        "pyproject-build-system-poetry",
+        "pyproject.toml",
+        r#"[build-system]
+requires = ["poetry-core>=2.0", "evil-backend==1.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.dependencies]
+requests = "*"
+"#,
+    );
+    let path = dir.join("pyproject.toml");
+    let tooling = parse_unlocked_tooling_file(&path).unwrap();
+    assert!(names(&tooling).contains(&"evil-backend".to_string()));
+    assert!(names(&parse_poetry_file(&path).unwrap()).contains(&"evil-backend".to_string()));
+    assert!(
+        !scoped_names(&parse_poetry_scoped_file(&path).unwrap())
+            .contains(&"evil-backend".to_string())
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn build_system_requires_must_be_an_array_of_strings() {
+    let dir = setup_test_dir(
+        "pyproject-build-system-string",
+        "pyproject.toml",
+        "[build-system]\nrequires = \"evil-backend\"\n",
+    );
+    let err = parse_unlocked_tooling_file(&dir.join("pyproject.toml")).unwrap_err();
+    assert!(err.to_string().contains("build-system"), "{err}");
+    cleanup(&dir);
+}
+
+#[test]
+fn build_system_requires_reject_direct_references() {
+    let dir = setup_test_dir(
+        "pyproject-build-system-url",
+        "pyproject.toml",
+        "[build-system]\nrequires = [\"evil @ https://evil.example/evil.whl\"]\n",
+    );
+    assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
+    cleanup(&dir);
+}

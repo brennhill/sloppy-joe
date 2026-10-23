@@ -68,10 +68,70 @@ pub(crate) fn classify_manifest(path: &Path) -> Result<PyprojectKind> {
 }
 
 pub(crate) fn parse_poetry_file(path: &Path) -> Result<Vec<Dependency>> {
-    Ok(parse_poetry_scoped_file(path)?
+    let mut deps: Vec<Dependency> = parse_poetry_scoped_file(path)?
         .into_iter()
         .map(|dep| dep.dependency)
-        .collect())
+        .collect();
+    deps.extend(parse_unlocked_tooling_file(path)?);
+    Ok(deps)
+}
+
+/// Packages that build frontends or package managers install for this project even though
+/// the project lockfile does not record them: PEP 518 `[build-system] requires`.
+///
+/// These are kept separate from the scoped project dependencies because lockfile
+/// reconciliation would (correctly) report them as missing from poetry.lock / uv.lock.
+pub(crate) fn parse_unlocked_tooling_file(path: &Path) -> Result<Vec<Dependency>> {
+    let parsed = parse_toml(path)?;
+    let mut deps = Vec::new();
+
+    if let Some(build_system) = parsed.get("build-system") {
+        let build_system = build_system.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported [build-system] declaration in {}: expected a table",
+                path.display()
+            )
+        })?;
+        collect_tooling_requirement_array(
+            build_system.get("requires"),
+            "[build-system] requires",
+            path,
+            &mut deps,
+        )?;
+    }
+
+    Ok(deps)
+}
+
+fn collect_tooling_requirement_array(
+    value: Option<&toml::Value>,
+    label: &str,
+    path: &Path,
+    deps: &mut Vec<Dependency>,
+) -> Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let entries = value.as_array().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unsupported {} in {}: expected an array of requirement strings",
+            label,
+            path.display()
+        )
+    })?;
+    for entry in entries {
+        let spec = entry.as_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported {} entry in {}: expected a string requirement",
+                label,
+                path.display()
+            )
+        })?;
+        if let Some(dep) = super::requirements::parse_requirement_spec(spec, path)? {
+            deps.push(dep);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn parse_poetry_scoped_file(path: &Path) -> Result<Vec<PythonScopedDependency>> {
@@ -381,10 +441,12 @@ pub(crate) fn parse_uv_source_intents_scoped(
 }
 
 pub(crate) fn parse_legacy_file(path: &Path) -> Result<Vec<Dependency>> {
-    Ok(parse_legacy_scoped_file(path)?
+    let mut deps: Vec<Dependency> = parse_legacy_scoped_file(path)?
         .into_iter()
         .map(|dep| dep.dependency)
-        .collect())
+        .collect();
+    deps.extend(parse_unlocked_tooling_file(path)?);
+    Ok(deps)
 }
 
 pub(crate) fn parse_legacy_scoped_file(path: &Path) -> Result<Vec<PythonScopedDependency>> {

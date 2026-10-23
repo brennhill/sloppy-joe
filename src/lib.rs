@@ -162,6 +162,9 @@ struct ParsedProject {
     spec: ProjectInputSpec,
     deps: Vec<Dependency>,
     python_root_extras: PythonRootExtras,
+    /// Build/tooling packages (e.g. `[build-system] requires`) that no lockfile records.
+    /// Scanned without lockfile reconciliation; unresolved ranges are reported as warnings.
+    unlocked_tooling: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -169,6 +172,7 @@ struct ParsedInput {
     deps: Vec<Dependency>,
     warnings: Vec<Issue>,
     python_root_extras: PythonRootExtras,
+    unlocked_tooling_deps: Vec<Dependency>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1091,6 +1095,11 @@ fn lockfile_data_for_scan(
     config: &config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> Result<lockfiles::LockfileData> {
+    if project.unlocked_tooling {
+        return Ok(lockfiles::LockfileData::reduced_confidence_from_manifest(
+            deps,
+        ));
+    }
     if project.spec.kind == ProjectInputKind::PyProjectPoetry {
         let validated = read_validated_poetry_lockfile(
             &project.spec,
@@ -5660,6 +5669,10 @@ fn project_input_from_path(
     }))
 }
 
+#[cfg(test)]
+#[path = "python_manifest_coverage_tests.rs"]
+mod python_manifest_coverage_tests;
+
 fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<ProjectInputKind>> {
     Ok(match path.file_name().and_then(|name| name.to_str()) {
         Some("package.json") => Some(ProjectInputKind::Npm),
@@ -5854,7 +5867,16 @@ fn parse_project_inputs_with_options(
             spec: spec.clone(),
             deps: parsed.deps,
             python_root_extras: parsed.python_root_extras,
+            unlocked_tooling: false,
         });
+        if !parsed.unlocked_tooling_deps.is_empty() {
+            projects.push(ParsedProject {
+                spec: spec.clone(),
+                deps: parsed.unlocked_tooling_deps,
+                python_root_extras: PythonRootExtras::new(),
+                unlocked_tooling: true,
+            });
+        }
     }
     Ok(projects)
 }
@@ -6004,10 +6026,19 @@ fn parse_python_project_dependencies(
             dep.actual_name.clone(),
         ))
     });
+    let unlocked_tooling_deps = match spec.kind {
+        ProjectInputKind::PyProjectPoetry
+        | ProjectInputKind::PyProjectUv
+        | ProjectInputKind::PyProjectLegacy => {
+            parsers::pyproject_toml::parse_unlocked_tooling_file(&spec.manifest_path)?
+        }
+        _ => Vec::new(),
+    };
     Ok(ParsedInput {
         deps,
         warnings,
         python_root_extras: root_extras,
+        unlocked_tooling_deps,
     })
 }
 
@@ -6729,6 +6760,12 @@ async fn scan_parsed_project(
 ) -> Result<ScanReport> {
     if project.deps.is_empty() {
         return Ok(ScanReport::empty());
+    }
+    let mut config = config;
+    if project.unlocked_tooling {
+        // No lockfile can pin build tooling, so version-sensitive checks are reported as
+        // skipped (warnings) while name-level checks still run and block.
+        config.allow_unresolved_versions = true;
     }
 
     let ecosystem = project.deps[0].ecosystem;
