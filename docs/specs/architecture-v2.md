@@ -57,7 +57,7 @@ This refactor restructures the internals without changing any external behavior 
       async fn run(&self, ctx: &CheckContext) -> Result<Vec<Issue>>;
   }
   ```
-  where `CheckContext` provides deps, config, registry, resolution, cache, and error budget.
+  where `CheckContext` provides deps, config, registry, resolution, and cache. Registry errors are tracked on the accumulator and any one blocks the scan.
 
 ### 2. Single lockfile parse
 
@@ -88,20 +88,11 @@ This refactor restructures the internals without changing any external behavior 
   **When** it uses `InMemoryCacheService`,
   **Then** no disk I/O occurs and the test runs deterministically.
 
-### 4. Global error budget
+### 4. Registry errors fail closed
 
-> **Superseded.** This design was not built. The shipped behavior is stricter: any registry
-> error blocks the scan (`has_query_errors` in `src/checks/mod.rs`). There is no `ErrorBudget`
-> and no error-rate threshold. The criteria below are kept as design history only.
-
-- **Given** the `ErrorBudget` struct,
-  **Then** it tracks total errors and total queries across all checks.
-- **Given** registry errors from similarity, existence, and metadata checks,
-  **When** the combined error count exceeds the threshold (>5 errors OR >10% rate),
-  **Then** the scan emits a single blocking `scan/registry-unreachable` issue and
-  stops further registry-dependent checks.
-- **Given** the error budget is not exceeded,
-  **Then** individual check errors are counted but do not independently block.
+- **Given** any registry query error from similarity, existence, or metadata checks,
+  **Then** the scan blocks (`has_query_errors` in `src/checks/mod.rs`). There is no error-rate
+  threshold or shared error-budget struct.
 
 ### 5. Composable mutation generators
 
@@ -156,7 +147,6 @@ This refactor restructures the internals without changing any external behavior 
 - Restructure `scan_with_services_inner` into a pipeline of `Check` impls.
 - Unify lockfile parsing into a single-pass `LockfileData` struct.
 - Extract `CacheService` trait + `DiskCacheService` + `InMemoryCacheService`.
-- Extract `ErrorBudget` struct shared across checks.
 - Extract mutation generators into `MutationGenerator` trait impls.
 - Split `Registry` into `RegistryExistence` + `RegistryMetadata`.
 
@@ -183,7 +173,6 @@ struct CheckContext<'a> {
     registry_meta: &'a dyn RegistryMetadata,
     lockfile: &'a LockfileData,
     cache: &'a dyn CacheService,
-    error_budget: &'a ErrorBudget,
     ecosystem: &'a str,
     opts: &'a ScanOptions<'a>,
     similarity_flagged: &'a HashSet<String>,
@@ -196,22 +185,6 @@ struct CheckContext<'a> {
 struct LockfileData {
     resolution: ResolutionResult,
     transitive_deps: Vec<Dependency>,
-}
-```
-
-### ErrorBudget (shared error tracking)
-
-```rust
-struct ErrorBudget {
-    errors: AtomicUsize,
-    queries: AtomicUsize,
-}
-
-impl ErrorBudget {
-    fn record_success(&self);
-    fn record_error(&self);
-    fn is_exceeded(&self) -> bool; // >5 errors OR >10% rate
-    fn summary(&self) -> (usize, usize); // (errors, total)
 }
 ```
 
@@ -239,15 +212,14 @@ impl ErrorBudget {
 1. Parse:     parse_dependencies() -> Vec<Dependency>
 2. Lockfile:  LockfileData::parse() -> { resolution, transitive_deps }
 3. Classify:  partition into internal / allowed / checkable
-4. Budget:    ErrorBudget::new()
-5. Checks:    for check in checks { check.run(&ctx) }
+4. Checks:    for check in checks { check.run(&ctx) }
               - CanonicalCheck (sync, no registry)
               - SimilarityCheck (async, RegistryExistence + cache)
               - ExistenceCheck (async, RegistryExistence via metadata)
               - MetadataCheck (async, RegistryMetadata)
               - MaliciousCheck (async, OsvClient)
-6. Budget:    if error_budget.is_exceeded() { emit blocking issue }
-7. Transitive: repeat steps 5-6 for transitive deps (per opts.deep)
+5. Errors:    any registry query error emits a blocking issue
+6. Transitive: repeat steps 4-5 for transitive deps (per opts.deep)
 8. Report:    mark sources, build ScanReport
 ```
 
