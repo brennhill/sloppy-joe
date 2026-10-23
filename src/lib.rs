@@ -2515,6 +2515,7 @@ fn find_in_scope_cargo_workspace_root(
     let canonical_manifest_dir = std::fs::canonicalize(manifest_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", manifest_dir.display(), err))?;
     let trusted_root = cargo_trusted_scope_root(scan_root, manifest_path, config)?;
+    ensure_no_cargo_workspace_above_scan_root(manifest_path, &canonical_manifest_dir, &trusted_root)?;
 
     for ancestor in ancestor_dirs_inclusive(&canonical_manifest_dir, &trusted_root)? {
         let candidate = ancestor.join("Cargo.toml");
@@ -2530,6 +2531,45 @@ fn find_in_scope_cargo_workspace_root(
     }
 
     Ok(None)
+}
+
+/// Cargo resolves a member against the workspace root above it, using that root's
+/// `Cargo.lock` and `.cargo/config.toml`. Scanning only the member directory would check a
+/// different graph than cargo installs, so that layout is refused.
+fn ensure_no_cargo_workspace_above_scan_root(
+    manifest_path: &std::path::Path,
+    canonical_manifest_dir: &std::path::Path,
+    trusted_root: &std::path::Path,
+) -> Result<()> {
+    if parsers::cargo_toml::parse_manifest_file(manifest_path)?.has_workspace {
+        return Ok(());
+    }
+    let Some(git_root) = crate::config::registry::find_git_root(trusted_root)
+        .map_err(anyhow::Error::msg)?
+    else {
+        return Ok(());
+    };
+    if git_root == trusted_root || !trusted_root.starts_with(&git_root) {
+        return Ok(());
+    }
+    let Some(start) = trusted_root.parent() else {
+        return Ok(());
+    };
+    for ancestor in ancestor_dirs_inclusive(start, &git_root)? {
+        let candidate = ancestor.join("Cargo.toml");
+        if !parsers::path_detected(&candidate)? {
+            continue;
+        }
+        let manifest = parsers::cargo_toml::parse_manifest_file(&candidate)?;
+        if manifest.has_workspace && cargo_workspace_contains_manifest(&manifest, canonical_manifest_dir)? {
+            anyhow::bail!(
+                "Cargo manifest '{}' belongs to the workspace at '{}', which is above the scan root. Cargo uses that workspace's Cargo.lock and .cargo/config.toml, so scanning only this directory would check a different dependency graph than cargo installs. Fix: scan the workspace root.",
+                manifest_path.display(),
+                candidate.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn cargo_workspace_contains_manifest(
@@ -5989,6 +6029,12 @@ fn project_input_kind_from_path(path: &std::path::Path) -> Result<Option<Project
         Some("Cargo.toml") => Some(ProjectInputKind::Cargo),
         Some("go.mod") => Some(ProjectInputKind::Go),
         Some("Gemfile") => Some(ProjectInputKind::Ruby),
+        // Bundler 2 prefers these over Gemfile / Gemfile.lock, so a scan that only reads
+        // the old names would miss the dependencies Bundler actually installs.
+        Some(name @ ("gems.rb" | "gems.locked")) => anyhow::bail!(
+            "Unsupported Bundler file '{name}' at '{}': sloppy-joe reads Gemfile and Gemfile.lock only, so these dependencies would go unchecked. Fix: rename to Gemfile / Gemfile.lock.",
+            path.display()
+        ),
         Some("composer.json") => Some(ProjectInputKind::Php),
         Some("build.gradle") | Some("build.gradle.kts") => Some(ProjectInputKind::Gradle),
         Some("pom.xml") => Some(ProjectInputKind::Maven),

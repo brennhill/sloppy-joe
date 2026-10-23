@@ -12051,3 +12051,38 @@ async fn pnpm_workspace_members_that_discovery_cannot_bind_block_the_scan() {
         assert!(blocked, "{member_dir}/{manifest} must not be silently unscanned");
     }
 }
+
+#[test]
+fn bundler_gems_rb_is_not_silently_skipped() {
+    for name in ["gems.rb", "gems.locked"] {
+        let dir = unique_dir();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("package.json"), r#"{"name":"app"}"#).unwrap();
+        std::fs::write(dir.join(name), "source \"https://rubygems.org\"\n").unwrap();
+        let result = preflight_scan_inputs(&dir, None);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err(), "{name} must fail closed");
+    }
+}
+
+#[test]
+fn cargo_member_scans_refuse_a_workspace_root_above_the_scan_root() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("svc/src")).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"svc\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("svc/Cargo.toml"),
+        "[package]\nname = \"svc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("svc/src/lib.rs"), "").unwrap();
+    let result = preflight_scan_inputs(&dir.join("svc"), Some("cargo"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let error = result.expect_err("a member below a workspace root must not be scanned alone");
+    assert!(error.to_string().contains("above the scan root"), "{error}");
+}
