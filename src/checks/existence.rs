@@ -95,26 +95,36 @@ pub(crate) fn check_existence_from_metadata(
 
     let mut issues = Vec::new();
     for dep in deps {
-        let exists = lookup_map
+        let known = lookup_map
             .get(&(dep.package_name().to_string(), dep.version.clone()))
-            .copied()
-            .unwrap_or(false);
-        if !exists {
-            let url = registry_url(ecosystem, dep.package_name());
-            issues.push(
-                Issue::new(dep.package_name(), super::names::EXISTENCE, Severity::Error)
-                    .message(format!(
-                        "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
-                        dep.package_name(),
-                        ecosystem
-                    ))
-                    .fix(format!(
-                        "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
-                        dep.package_name()
-                    ))
-                    .registry_url(url),
-            );
+            .copied();
+        if known == Some(true) {
+            continue;
         }
+        let url = registry_url(ecosystem, dep.package_name());
+        let issue = if known == Some(false) {
+            Issue::new(dep.package_name(), super::names::EXISTENCE, Severity::Error)
+                .message(format!(
+                    "Package '{}' does not exist on the {} registry. It may be hallucinated by an AI code generator, or it may be a private package that needs to be added to the 'allowed' list in your config.",
+                    dep.package_name(),
+                    ecosystem
+                ))
+                .fix(format!(
+                    "Remove '{}' from your dependencies, or if this is a private/internal package, add it to the 'allowed' list in your sloppy-joe config.",
+                    dep.package_name()
+                ))
+        } else {
+            // The lookup itself failed (rate limit, timeout, server error): the package is
+            // unverified, not known to be missing. It still blocks.
+            Issue::new(dep.package_name(), super::names::EXISTENCE, Severity::Error)
+                .message(format!(
+                    "Could not verify that package '{}' exists on the {} registry because its registry lookup failed. This is a registry or network problem, not evidence that the package is missing.",
+                    dep.package_name(),
+                    ecosystem
+                ))
+                .fix("Retry the scan. If it keeps failing, check connectivity to the registry or rate limiting.")
+        };
+        issues.push(issue.registry_url(url));
     }
 
     issues
@@ -231,5 +241,47 @@ mod tests {
                 .any(|i| i.check.contains("registry-unreachable")),
             "Any existence lookup failure should trigger fail-closed"
         );
+    }
+}
+
+#[cfg(test)]
+mod lookup_failure_message_tests {
+    use super::*;
+
+    fn dep() -> Dependency {
+        Dependency {
+            name: "anyhow".into(),
+            version: Some("1.0.0".into()),
+            ecosystem: Ecosystem::Cargo,
+            actual_name: None,
+        }
+    }
+
+    #[test]
+    fn a_failed_lookup_blocks_without_claiming_the_package_is_missing() {
+        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(
+            issues[0].message.contains("Could not verify"),
+            "{}",
+            issues[0].message
+        );
+        assert!(!issues[0].message.contains("hallucinated"));
+    }
+
+    #[test]
+    fn a_confirmed_missing_package_still_reports_non_existence() {
+        let lookup = MetadataLookup {
+            package: "anyhow".into(),
+            ecosystem: Ecosystem::Cargo,
+            version: Some("1.0.0".into()),
+            resolved_version: None,
+            unresolved_version: false,
+            exists: false,
+            metadata: None,
+        };
+        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[lookup]);
+        assert!(issues[0].message.contains("does not exist"));
     }
 }

@@ -344,9 +344,9 @@ pub(crate) async fn retry_get(client: &reqwest::Client, url: &str) -> Result<req
 }
 
 /// Maximum times a rate-limited (HTTP 429) request is repeated.
-const MAX_RATE_LIMIT_RETRIES: u32 = 5;
+const MAX_RATE_LIMIT_RETRIES: u32 = 8;
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 1000;
-const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(10);
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(15);
 
 async fn retry_get_once(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
     let mut last_err = None;
