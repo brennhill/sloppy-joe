@@ -102,7 +102,7 @@ jobs:
         run: ${{ github.workspace }}/target/release/sloppy-joe check --ci --no-cache --type cargo --config /tmp/sloppy-joe-self-check.json
 
   sloppy-joe-released-action:
-    name: sloppy-joe self-check (released action)
+    name: sloppy-joe self-check (this checkout's action, released binary)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -119,8 +119,10 @@ jobs:
           install -m 0644 Cargo.toml /tmp/sloppy-joe-self-check/Cargo.toml
           install -m 0644 Cargo.lock /tmp/sloppy-joe-self-check/Cargo.lock
 
-      - name: Check own dependencies with released action
-        uses: brennhill/sloppy-joe@v1.2
+      # Runs this checkout's action.yml and install script against the published
+      # 1.2.0 binary, so changes to the install path are exercised before a release.
+      - name: Check own dependencies with the checked-out action
+        uses: ./
         with:
           config: /tmp/sloppy-joe-self-check.json
           dir: /tmp/sloppy-joe-self-check
