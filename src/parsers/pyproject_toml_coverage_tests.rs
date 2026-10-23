@@ -359,3 +359,59 @@ fn pdm_override_urls_fail_closed() {
     assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
     cleanup(&dir);
 }
+
+#[test]
+fn poetry_requires_plugins_are_unlocked_tooling() {
+    let dir = setup_test_dir(
+        "pyproject-poetry-plugins",
+        "pyproject.toml",
+        r#"[project]
+name = "demo"
+version = "0.1.0"
+dynamic = ["dependencies"]
+
+[tool.poetry]
+requires-plugins = { "evil-poetry-plugin" = ">=1", "poetry-plugin-export" = { version = "1.8.0" } }
+
+[tool.poetry.dependencies]
+requests = "*"
+"#,
+    );
+    let path = dir.join("pyproject.toml");
+    let tooling = parse_unlocked_tooling_file(&path).unwrap();
+    assert_eq!(
+        names(&tooling),
+        vec![
+            "evil-poetry-plugin".to_string(),
+            "poetry-plugin-export".to_string()
+        ]
+    );
+    assert_eq!(tooling[1].version.as_deref(), Some("==1.8.0"));
+    assert!(
+        !scoped_names(&parse_poetry_scoped_file(&path).unwrap())
+            .contains(&"evil-poetry-plugin".to_string())
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn poetry_requires_plugins_reject_git_sources() {
+    let dir = setup_test_dir(
+        "pyproject-poetry-plugins-git",
+        "pyproject.toml",
+        "[tool.poetry.requires-plugins]\nevil = { git = \"https://evil.example/evil.git\" }\n",
+    );
+    assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
+    cleanup(&dir);
+}
+
+#[test]
+fn poetry_requires_plugins_must_be_a_table() {
+    let dir = setup_test_dir(
+        "pyproject-poetry-plugins-array",
+        "pyproject.toml",
+        "[tool.poetry]\nrequires-plugins = [\"evil\"]\n",
+    );
+    assert!(parse_unlocked_tooling_file(&dir.join("pyproject.toml")).is_err());
+    cleanup(&dir);
+}

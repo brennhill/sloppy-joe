@@ -101,6 +101,23 @@ pub(crate) fn parse_unlocked_tooling_file(path: &Path) -> Result<Vec<Dependency>
     }
 
     let tool = parsed.get("tool");
+    if let Some(plugins) = tool
+        .and_then(|tool| tool.get("poetry"))
+        .and_then(|poetry| poetry.get("requires-plugins"))
+    {
+        // Poetry 2 installs these into Poetry's own environment before running any command.
+        let plugins = plugins.as_table().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported [tool.poetry.requires-plugins] in {}: expected a table",
+                path.display()
+            )
+        })?;
+        for (name, value) in plugins {
+            if let Some(dep) = parse_poetry_dependency_scoped(name, value, path)? {
+                deps.push(dep.dependency);
+            }
+        }
+    }
     if let Some(uv) = tool.and_then(|tool| tool.get("uv")) {
         // Constraints/overrides steer resolution of packages that uv.lock records under
         // [manifest], not as project roots. Validate them and scan the named packages.
