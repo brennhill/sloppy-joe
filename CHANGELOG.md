@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reject transitive npm links to external, unscanned, or incorrectly named local targets before a full scan can pass or save a success fingerprint.
+- Resolve npm workspace dependencies from the member directory upward, preserve nested versions in vulnerability checks, and use the same lookup for aliases and local links.
+- Check ancestor workspace membership before validating manager conflicts, so unrelated parent errors do not suppress independent child scans.
+
 - Scan independent install roots in mixed-manager repositories without treating an incomplete ancestor npm/pnpm workspace declaration as authoritative.
 - Report each project and its lockfile separately, retain completed sibling results when another project is unsupported, and return exit 2 for incomplete repository scans.
 - Keep registry routing scoped to the selected install root and preserve each chain's direct and transitive version selections.

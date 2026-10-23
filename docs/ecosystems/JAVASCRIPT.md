@@ -35,8 +35,8 @@ Once projects are identified, binding, preflight, and scan errors are isolated p
 
 - `package.json` is required.
 - `sloppy-joe` binds each project to the authoritative JavaScript manager and root lockfile instead of trusting per-package shadow lockfiles.
-- Exact direct and transitive versions are resolved from the authoritative manager lockfile when that lockfile is trusted.
-- Local `workspace:`, `file:`, and `link:` dependencies are validated against real in-repo package directories and the lockfile’s recorded local target.
+- Exact direct and transitive versions are resolved from the authoritative manager lockfile when that lockfile is trusted. npm workspace members resolve dependencies from their own location upward, so nested installed versions take precedence over hoisted copies.
+- Local `workspace:`, `file:`, and `link:` dependencies are validated against real in-repo package directories and the lockfile’s recorded local target. Every npm `link: true` entry is checked, including transitive links; external, unscanned, or incorrectly named targets make the scan unsupported.
 - Registry entries are provenance-checked:
   - lockfile entries must carry the expected identity
   - integrity metadata is required where the manager exposes it
