@@ -72,6 +72,26 @@ pub(crate) fn source_provenance(
     collect_source_provenance_inner(path, &scan_root, &mut visited)
 }
 
+/// Maximum nesting of `-r` / `-c` includes. pip itself recurses without a limit, so a hostile
+/// chain could otherwise exhaust the stack and abort the scan.
+const MAX_INCLUDE_DEPTH: usize = 64;
+
+/// Push `key` onto the active include stack, rejecting cycles and excessive nesting.
+/// `visited` holds exactly the files on the current include path (callers remove on exit).
+fn enter_include(visited: &mut HashSet<PathBuf>, key: &Path, path: &Path) -> Result<()> {
+    if visited.len() >= MAX_INCLUDE_DEPTH {
+        bail!(
+            "requirements include depth exceeds {} at {}; refusing to scan an unbounded include chain",
+            MAX_INCLUDE_DEPTH,
+            path.display()
+        );
+    }
+    if !visited.insert(key.to_path_buf()) {
+        bail!("requirements include cycle detected at {}", path.display());
+    }
+    Ok(())
+}
+
 fn parse_scoped_file_inner(
     path: &Path,
     scan_root: &Path,
@@ -80,12 +100,7 @@ fn parse_scoped_file_inner(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -138,12 +153,7 @@ fn classify_trust_inner(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -200,12 +210,7 @@ fn collect_source_provenance_inner(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -248,12 +253,7 @@ fn collect_included_paths(
     let normalized_path = normalize_path(path);
     let visited_key =
         std::fs::canonicalize(&normalized_path).unwrap_or_else(|_| normalized_path.clone());
-    if !visited.insert(visited_key.clone()) {
-        bail!(
-            "requirements include cycle detected at {}",
-            normalized_path.display()
-        );
-    }
+    enter_include(visited, &visited_key, &normalized_path)?;
 
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
@@ -721,6 +721,10 @@ fn split_requirement_marker(raw: &str) -> (&str, Option<&str>) {
         (raw, None)
     }
 }
+
+#[cfg(test)]
+#[path = "requirements_coverage_tests.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
