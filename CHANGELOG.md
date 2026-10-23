@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Config: validate `trusted_registries.jvm` entries. The name must be `gradle-plugins` (the only name sloppy-joe reads) and the source a credential-free https URL, so a typo no longer leaves a repository silently untrusted.
 - pnpm: read multi-document `pnpm-lock.yaml` files, which pnpm writes when it manages its own version (`packageManagerDependencies`). The last document is the project lockfile; the packages of earlier documents must be plain registry entries with integrity hashes and are scanned as transitives of the root. More than four documents, a malformed document, or a non-registry env package blocks.
 - pnpm: resolve transitive packages by their locked `name@version` instead of demanding an importer entry, which wrongly reported `resolution/missing-lockfile-entry` for every transitive in a full scan.
 - Python: accept `-e .` and `-e .[extras]` (also `--editable`) in requirements files when the project's own `pyproject.toml`, `setup.py` or `setup.cfg` sits next to the file. Its dependencies are scanned from that manifest, so the line adds nothing to verify. Editable paths, URLs and VCS targets still block.

@@ -725,6 +725,14 @@ impl SloppyJoeConfig {
                         "Invalid trusted registry in npm: name must be \"{}\" or an @scope, and source must be a credential-free https:// registry URL",
                         crate::npm_config::DEFAULT_ROUTE
                     ));
+                } else if eco == "jvm"
+                    && (rule.name != crate::gradle_plugin_scan::TRUSTED_PLUGIN_REPOSITORY_NAME
+                        || crate::npm_config::normalize_registry_url(rule.source.trim()).is_none())
+                {
+                    errors.push(format!(
+                        "Invalid trusted registry in jvm: name must be \"{}\", and source must be a credential-free https:// repository URL",
+                        crate::gradle_plugin_scan::TRUSTED_PLUGIN_REPOSITORY_NAME
+                    ));
                 }
             }
         }
@@ -2363,6 +2371,38 @@ version = "0.1.0"
         let errors = config.validate();
         assert!(!errors.is_empty());
         assert!(errors[0].contains("*"));
+    }
+
+    fn jvm_registry_config(name: &str, source: &str) -> SloppyJoeConfig {
+        SloppyJoeConfig {
+            trusted_registries: HashMap::from([(
+                "jvm".to_string(),
+                vec![TrustedRegistry {
+                    name: name.to_string(),
+                    source: source.to_string(),
+                }],
+            )]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn validate_checks_jvm_trusted_registries() {
+        let ok = jvm_registry_config("gradle-plugins", "https://plugins.example.com/maven");
+        assert!(ok.validate().is_empty(), "{:?}", ok.validate());
+        for (name, source) in [
+            ("typo-plugins", "https://plugins.example.com/maven"),
+            ("gradle-plugins", "http://plugins.example.com/maven"),
+            (
+                "gradle-plugins",
+                "https://user:pw@plugins.example.com/maven",
+            ),
+            ("gradle-plugins", "not a url"),
+        ] {
+            let errors = jvm_registry_config(name, source).validate();
+            assert_eq!(errors.len(), 1, "{name} {source}: {errors:?}");
+            assert!(errors[0].contains("jvm"));
+        }
     }
 
     #[test]
