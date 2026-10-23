@@ -1477,7 +1477,8 @@ fn ensure_js_workspace_members_scanned(
     let Some(root) = find_js_workspace_root(&ancestry_root, &canonical_project_dir)? else {
         return Ok(());
     };
-    if root.project_dir != canonical_project_dir || !root.project_dir.starts_with(&canonical_scan_root)
+    if root.project_dir != canonical_project_dir
+        || !root.project_dir.starts_with(&canonical_scan_root)
     {
         return Ok(());
     }
@@ -2515,7 +2516,11 @@ fn find_in_scope_cargo_workspace_root(
     let canonical_manifest_dir = std::fs::canonicalize(manifest_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", manifest_dir.display(), err))?;
     let trusted_root = cargo_trusted_scope_root(scan_root, manifest_path, config)?;
-    ensure_no_cargo_workspace_above_scan_root(manifest_path, &canonical_manifest_dir, &trusted_root)?;
+    ensure_no_cargo_workspace_above_scan_root(
+        manifest_path,
+        &canonical_manifest_dir,
+        &trusted_root,
+    )?;
 
     for ancestor in ancestor_dirs_inclusive(&canonical_manifest_dir, &trusted_root)? {
         let candidate = ancestor.join("Cargo.toml");
@@ -2544,8 +2549,8 @@ fn ensure_no_cargo_workspace_above_scan_root(
     if parsers::cargo_toml::parse_manifest_file(manifest_path)?.has_workspace {
         return Ok(());
     }
-    let Some(git_root) = crate::config::registry::find_git_root(trusted_root)
-        .map_err(anyhow::Error::msg)?
+    let Some(git_root) =
+        crate::config::registry::find_git_root(trusted_root).map_err(anyhow::Error::msg)?
     else {
         return Ok(());
     };
@@ -2561,7 +2566,9 @@ fn ensure_no_cargo_workspace_above_scan_root(
             continue;
         }
         let manifest = parsers::cargo_toml::parse_manifest_file(&candidate)?;
-        if manifest.has_workspace && cargo_workspace_contains_manifest(&manifest, canonical_manifest_dir)? {
+        if manifest.has_workspace
+            && cargo_workspace_contains_manifest(&manifest, canonical_manifest_dir)?
+        {
             anyhow::bail!(
                 "Cargo manifest '{}' belongs to the workspace at '{}', which is above the scan root. Cargo uses that workspace's Cargo.lock and .cargo/config.toml, so scanning only this directory would check a different dependency graph than cargo installs. Fix: scan the workspace root.",
                 manifest_path.display(),

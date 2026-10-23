@@ -298,11 +298,19 @@ fn exclusion_versions_never_shadow_the_dependency_version() {
     let dir = setup_test_dir(
         "jvm-model-exclusion",
         "pom.xml",
-        &pom("", &format!("<dependencies>{DEP}<exclusions><exclusion><groupId>x</groupId><artifactId>y</artifactId><version>9.9</version></exclusion></exclusions><version>3.2.1</version></dependency></dependencies>")),
+        &pom(
+            "",
+            &format!(
+                "<dependencies>{DEP}<exclusions><exclusion><groupId>x</groupId><artifactId>y</artifactId><version>9.9</version></exclusion></exclusions><version>3.2.1</version></dependency></dependencies>"
+            ),
+        ),
     );
     let deps = parse_pom(&dir.join("pom.xml")).unwrap();
     cleanup(&dir);
-    let guava = deps.iter().find(|d| d.name == "com.google.guava:guava").unwrap();
+    let guava = deps
+        .iter()
+        .find(|d| d.name == "com.google.guava:guava")
+        .unwrap();
     assert_eq!(guava.version.as_deref(), Some("3.2.1"));
 }
 
@@ -311,7 +319,10 @@ fn exclusions_listed_first_never_rename_the_dependency() {
     let dir = setup_test_dir(
         "jvm-model-exclusion-first",
         "pom.xml",
-        &pom("", "<dependencies><dependency><exclusions><exclusion><groupId>decoy</groupId><artifactId>decoy</artifactId></exclusion></exclusions><groupId>real</groupId><artifactId>lib</artifactId><version>1.0</version></dependency></dependencies>"),
+        &pom(
+            "",
+            "<dependencies><dependency><exclusions><exclusion><groupId>decoy</groupId><artifactId>decoy</artifactId></exclusion></exclusions><groupId>real</groupId><artifactId>lib</artifactId><version>1.0</version></dependency></dependencies>",
+        ),
     );
     let deps = parse_pom(&dir.join("pom.xml")).unwrap();
     cleanup(&dir);
@@ -323,10 +334,18 @@ fn exclusions_listed_first_never_rename_the_dependency() {
 async fn commented_out_xml_is_ignored() {
     let body = format!(
         "<!-- <project><properties><guava.version>3.2.2</guava.version></properties></project> -->{}",
-        pom("", &format!("<properties><guava.version>3.2.1</guava.version></properties><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"))
+        pom(
+            "",
+            &format!(
+                "<properties><guava.version>3.2.1</guava.version></properties><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"
+            )
+        )
     );
     let resolved = resolve(&body, &FakeSource::new(&[])).await.unwrap();
-    assert_eq!(version_of(&resolved, "com.google.guava:guava").as_deref(), Some("3.2.1"));
+    assert_eq!(
+        version_of(&resolved, "com.google.guava:guava").as_deref(),
+        Some("3.2.1")
+    );
 }
 
 #[tokio::test]
@@ -337,15 +356,44 @@ async fn duplicate_sections_block_instead_of_picking_one() {
         "<build/><build/>",
     ] {
         let content = pom("", section);
-        assert!(resolve(&content, &FakeSource::new(&[])).await.is_err(), "{section}");
+        assert!(
+            resolve(&content, &FakeSource::new(&[])).await.is_err(),
+            "{section}"
+        );
     }
 }
 
 #[tokio::test]
-async fn profile_properties_that_differ_leave_the_version_unset() {
+async fn profile_properties_that_differ_are_scanned_as_alternatives() {
     let content = pom(
         "",
-        &format!("<properties><guava.version>3.2.2</guava.version></properties><profiles><profile><id>p</id><activation><activeByDefault>true</activeByDefault></activation><properties><guava.version>3.2.1</guava.version></properties></profile></profiles><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"),
+        &format!(
+            "<properties><guava.version>3.2.2</guava.version></properties><profiles><profile><id>p</id><activation><activeByDefault>true</activeByDefault></activation><properties><guava.version>3.2.1</guava.version></properties></profile></profiles><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"
+        ),
+    );
+    let resolved = resolve(&content, &FakeSource::new(&[])).await.unwrap();
+    let versions: Vec<_> = resolved
+        .iter()
+        .filter(|(n, _)| n == "com.google.guava:guava")
+        .map(|(_, v)| v.clone())
+        .collect();
+    assert!(
+        versions.contains(&Some("3.2.1".to_string())),
+        "{versions:?}"
+    );
+    assert!(
+        versions.contains(&Some("3.2.2".to_string())),
+        "{versions:?}"
+    );
+}
+
+#[tokio::test]
+async fn profile_only_properties_leave_the_version_unset() {
+    let content = pom(
+        "",
+        &format!(
+            "<profiles><profile><id>p</id><properties><guava.version>3.2.1</guava.version></properties></profile></profiles><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"
+        ),
     );
     let resolved = resolve(&content, &FakeSource::new(&[])).await.unwrap();
     assert_eq!(version_of(&resolved, "com.google.guava:guava"), None);
@@ -355,24 +403,39 @@ async fn profile_properties_that_differ_leave_the_version_unset() {
 async fn profile_properties_that_agree_are_harmless() {
     let content = pom(
         "",
-        &format!("<properties><guava.version>3.2.2</guava.version></properties><profiles><profile><id>p</id><properties><guava.version>3.2.2</guava.version></properties></profile></profiles><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"),
+        &format!(
+            "<properties><guava.version>3.2.2</guava.version></properties><profiles><profile><id>p</id><properties><guava.version>3.2.2</guava.version></properties></profile></profiles><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"
+        ),
     );
     let resolved = resolve(&content, &FakeSource::new(&[])).await.unwrap();
-    assert_eq!(version_of(&resolved, "com.google.guava:guava").as_deref(), Some("3.2.2"));
+    assert_eq!(
+        version_of(&resolved, "com.google.guava:guava").as_deref(),
+        Some("3.2.2")
+    );
 }
 
 #[tokio::test]
-async fn profile_management_that_differs_leaves_the_version_unset() {
+async fn profile_management_that_differs_is_scanned_as_an_alternative() {
     let content = pom(
         "",
-        &format!("<dependencyManagement><dependencies>{DEP}<version>3.2.2</version></dependency></dependencies></dependencyManagement><profiles><profile><id>p</id><dependencyManagement><dependencies>{DEP}<version>3.2.1</version></dependency></dependencies></dependencyManagement></profile></profiles><dependencies>{DEP}</dependency></dependencies>"),
+        &format!(
+            "<dependencyManagement><dependencies>{DEP}<version>3.2.2</version></dependency></dependencies></dependencyManagement><profiles><profile><id>p</id><dependencyManagement><dependencies>{DEP}<version>3.2.1</version></dependency></dependencies></dependencyManagement></profile></profiles><dependencies>{DEP}</dependency></dependencies>"
+        ),
     );
     let resolved = resolve(&content, &FakeSource::new(&[])).await.unwrap();
-    let unmanaged: Vec<_> = resolved
+    let versions: Vec<_> = resolved
         .iter()
-        .filter(|(n, v)| n == "com.google.guava:guava" && v.is_none())
+        .filter(|(n, _)| n == "com.google.guava:guava")
+        .map(|(_, v)| v.clone())
         .collect();
-    assert!(!unmanaged.is_empty(), "{resolved:?}");
+    assert!(
+        versions.contains(&Some("3.2.1".to_string())),
+        "{versions:?}"
+    );
+    assert!(
+        versions.contains(&Some("3.2.2".to_string())),
+        "{versions:?}"
+    );
 }
 
 #[tokio::test]
@@ -380,15 +443,25 @@ async fn maven_config_defines_leave_the_property_unset() {
     let dir = setup_test_dir(
         "jvm-model-mvnconfig",
         "pom.xml",
-        &pom("", &format!("<properties><guava.version>3.2.2</guava.version></properties><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>")),
+        &pom(
+            "",
+            &format!(
+                "<properties><guava.version>3.2.2</guava.version></properties><dependencies>{DEP}<version>${{guava.version}}</version></dependency></dependencies>"
+            ),
+        ),
     );
     std::fs::create_dir_all(dir.join(".mvn")).unwrap();
     std::fs::write(dir.join(".mvn/maven.config"), "-Dguava.version=3.2.1\n-B\n").unwrap();
     let path = dir.join("pom.xml");
     let deps = parse_pom(&path).unwrap();
-    let resolved = resolve_pom_versions(&path, deps, &FakeSource::new(&[])).await.unwrap();
+    let resolved = resolve_pom_versions(&path, deps, &FakeSource::new(&[]))
+        .await
+        .unwrap();
     cleanup(&dir);
-    let guava = resolved.iter().find(|d| d.name == "com.google.guava:guava").unwrap();
+    let guava = resolved
+        .iter()
+        .find(|d| d.name == "com.google.guava:guava")
+        .unwrap();
     assert_eq!(guava.version, None);
 }
 
@@ -409,14 +482,25 @@ async fn inherited_dependencies_of_a_local_parent_are_scanned() {
     .unwrap();
     let path = dir.join("pom.xml");
     let deps = parse_pom(&path).unwrap();
-    let resolved = resolve_pom_versions(&path, deps, &FakeSource::new(&[])).await.unwrap();
+    let resolved = resolve_pom_versions(&path, deps, &FakeSource::new(&[]))
+        .await
+        .unwrap();
     cleanup(&dir);
     let names: Vec<_> = resolved
         .iter()
         .map(|d| (d.name.as_str(), d.version.as_deref()))
         .collect();
-    assert!(names.contains(&("commons-collections:commons-collections", Some("3.2.1"))), "{names:?}");
-    assert!(names.contains(&("org.apache.maven.plugins:maven-antrun-plugin", Some("3.1.0"))), "{names:?}");
+    assert!(
+        names.contains(&("commons-collections:commons-collections", Some("3.2.1"))),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&(
+            "org.apache.maven.plugins:maven-antrun-plugin",
+            Some("3.1.0")
+        )),
+        "{names:?}"
+    );
 }
 
 #[tokio::test]
@@ -437,17 +521,25 @@ async fn inherited_dependencies_of_a_remote_parent_are_scanned() {
 async fn plugin_management_never_fills_a_dependency_and_vice_versa() {
     let content = pom(
         "",
-        &format!("<build><pluginManagement><plugins><plugin><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>9.9</version></plugin></plugins></pluginManagement><plugins><plugin><artifactId>maven-javadoc-plugin</artifactId></plugin></plugins></build><dependencyManagement><dependencies><dependency><groupId>org.apache.maven.plugins</groupId><artifactId>maven-javadoc-plugin</artifactId><version>8.8</version></dependency></dependencies></dependencyManagement><dependencies>{DEP}</dependency></dependencies>"),
+        &format!(
+            "<build><pluginManagement><plugins><plugin><groupId>com.google.guava</groupId><artifactId>guava</artifactId><version>9.9</version></plugin></plugins></pluginManagement><plugins><plugin><artifactId>maven-javadoc-plugin</artifactId></plugin></plugins></build><dependencyManagement><dependencies><dependency><groupId>org.apache.maven.plugins</groupId><artifactId>maven-javadoc-plugin</artifactId><version>8.8</version></dependency></dependencies></dependencyManagement><dependencies>{DEP}</dependency></dependencies>"
+        ),
     );
     let resolved = resolve(&content, &FakeSource::new(&[])).await.unwrap();
     let guava_unmanaged = resolved
         .iter()
         .any(|(n, v)| n == "com.google.guava:guava" && v.is_none());
-    assert!(guava_unmanaged, "a plugin entry must not version a dependency: {resolved:?}");
+    assert!(
+        guava_unmanaged,
+        "a plugin entry must not version a dependency: {resolved:?}"
+    );
     let javadoc = resolved
         .iter()
         .find(|(n, v)| n == "org.apache.maven.plugins:maven-javadoc-plugin" && v.is_none());
-    assert!(javadoc.is_some(), "a dependency entry must not version a plugin: {resolved:?}");
+    assert!(
+        javadoc.is_some(),
+        "a dependency entry must not version a plugin: {resolved:?}"
+    );
 }
 
 #[tokio::test]
@@ -455,7 +547,9 @@ async fn classifier_management_does_not_shadow_the_plain_entry() {
     let source = FakeSource::new(&[("org.example", "parent", "7", PARENT)]);
     let content = pom(
         &parent_ref("org.example", "parent", "7"),
-        &format!("<dependencyManagement><dependencies>{DEP}<version>31.0</version><classifier>tests</classifier></dependency></dependencies></dependencyManagement><dependencies>{DEP}</dependency></dependencies>"),
+        &format!(
+            "<dependencyManagement><dependencies>{DEP}<version>31.0</version><classifier>tests</classifier></dependency></dependencies></dependencyManagement><dependencies>{DEP}</dependency></dependencies>"
+        ),
     );
     let resolved = resolve(&content, &source).await.unwrap();
     let versions: Vec<_> = resolved
@@ -463,5 +557,8 @@ async fn classifier_management_does_not_shadow_the_plain_entry() {
         .filter(|(n, _)| n == "com.google.guava:guava")
         .map(|(_, v)| v.clone())
         .collect();
-    assert!(versions.contains(&Some("30.0-jre".to_string())), "inherited plain entry must apply: {versions:?}");
+    assert!(
+        versions.contains(&Some("30.0-jre".to_string())),
+        "inherited plain entry must apply: {versions:?}"
+    );
 }

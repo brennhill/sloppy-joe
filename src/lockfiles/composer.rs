@@ -198,10 +198,16 @@ mod provenance_tests {
     #[test]
     fn foreign_dist_or_source_hosts_block() {
         for (dist, source) in [
-            ("https://mirror.example.invalid/monolog.zip", "https://github.com/a/b.git"),
+            (
+                "https://mirror.example.invalid/monolog.zip",
+                "https://github.com/a/b.git",
+            ),
             ("https://api.github.com/x", "https://evil.example/a.git"),
             ("http://api.github.com/x", "https://github.com/a/b.git"),
-            ("https://github.com@evil.example/x", "https://github.com/a/b.git"),
+            (
+                "https://github.com@evil.example/x",
+                "https://github.com/a/b.git",
+            ),
             ("../local", "https://github.com/a/b.git"),
         ] {
             assert!(

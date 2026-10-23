@@ -12048,7 +12048,10 @@ async fn pnpm_workspace_members_that_discovery_cannot_bind_block_the_scan() {
                 .any(|issue| issue.message.contains("not a scanned project")),
         };
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(blocked, "{member_dir}/{manifest} must not be silently unscanned");
+        assert!(
+            blocked,
+            "{member_dir}/{manifest} must not be silently unscanned"
+        );
     }
 }
 

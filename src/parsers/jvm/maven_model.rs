@@ -275,6 +275,20 @@ fn collect_declared(children: &[(String, String)], level: &mut PomLevel) -> Resu
             }
         }
     }
+    if let Some(reporting) = body_of(children, "reporting")
+        && let Some(plugins) = body_of(&xml_direct_children(reporting), "plugins")
+    {
+        for body in maven_element_bodies(plugins, "plugin")? {
+            let entry = xml_direct_children(body);
+            if let Some(artifact) = text_of(&entry, "artifactId") {
+                level.declared.push(Declared {
+                    name: format!("{}:{artifact}", plugin_group(&entry)),
+                    version: text_of(&entry, "version"),
+                    plugin: true,
+                });
+            }
+        }
+    }
     if let Some(build) = body_of(children, "build") {
         let build = xml_direct_children(build);
         for (section, element, default_group) in [
@@ -312,7 +326,9 @@ fn collect_profiles(children: &[(String, String)], level: &mut PomLevel) -> Resu
         let profile = xml_direct_children(body);
         if let Some(properties) = body_of(&profile, "properties") {
             for (name, value) in xml_direct_children(properties) {
-                level.profile_properties.push((name, value.trim().to_string()));
+                level
+                    .profile_properties
+                    .push((name, value.trim().to_string()));
             }
         }
         if let Some(management) = body_of(&profile, "dependencyManagement")
@@ -366,6 +382,51 @@ fn interpolate(value: &str, properties: &HashMap<String, String>) -> Option<Stri
         );
     }
     None
+}
+
+/// Every value `value` can take once its `${name}` references are substituted, counting
+/// the alternatives a profile may select. `None` when a reference is undefined, the
+/// substitution does not settle, or there are too many combinations to enumerate.
+fn candidate_values(
+    value: &str,
+    properties: &HashMap<String, String>,
+    alternatives: &HashMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
+    fn expand(
+        current: String,
+        properties: &HashMap<String, String>,
+        alternatives: &HashMap<String, Vec<String>>,
+        depth: usize,
+        out: &mut Vec<String>,
+    ) -> Option<()> {
+        let Some(start) = current.find("${") else {
+            if !out.contains(&current) {
+                out.push(current);
+            }
+            return (out.len() <= 32).then_some(());
+        };
+        if depth > 16 {
+            return None;
+        }
+        let end = start + current[start..].find('}')?;
+        let name = &current[start + 2..end];
+        let base = properties.get(name)?;
+        let choices = std::iter::once(base).chain(alternatives.get(name).into_iter().flatten());
+        for choice in choices {
+            let next = format!("{}{}{}", &current[..start], choice, &current[end + 1..]);
+            expand(next, properties, alternatives, depth + 1, out)?;
+        }
+        Some(())
+    }
+    let mut out = Vec::new();
+    expand(
+        value.trim().to_string(),
+        properties,
+        alternatives,
+        0,
+        &mut out,
+    )?;
+    Some(out)
 }
 
 /// A POM and its ancestors, nearest first. A parent whose version is a
@@ -432,6 +493,18 @@ struct Effective {
     dep_mgmt: Managed,
     plugin_mgmt: Managed,
     imports: Vec<Coordinate>,
+    /// Other values a profile may give a property or a managed version. Which profile is
+    /// active depends on the JDK, OS and `-P` flags of the build, so each is a candidate.
+    property_alternatives: HashMap<String, Vec<String>>,
+    dep_alternatives: HashMap<String, Vec<String>>,
+    plugin_alternatives: HashMap<String, Vec<String>>,
+}
+
+fn add_alternative(map: &mut HashMap<String, Vec<String>>, key: &str, value: &str) {
+    let values = map.entry(key.to_string()).or_default();
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
 }
 
 fn effective(chain: &Chain) -> Effective {
@@ -448,23 +521,48 @@ fn effective(chain: &Chain) -> Effective {
     for level in &chain.levels {
         imports.extend(level.imports.clone());
     }
-    // A profile can be active by default or through `-P`. Anything it sets to a
-    // value other than the base value cannot be relied on, so it is dropped
-    // (the version then stays unresolved).
-    for level in &chain.levels {
+    // A profile may be active (by default, JDK, OS or `-P`). Where it gives a different value
+    // than the base, both are candidates; where the base has no value at all, the version
+    // cannot be pinned and stays unresolved.
+    let mut property_alternatives: HashMap<String, Vec<String>> = HashMap::new();
+    let mut dep_alternatives: HashMap<String, Vec<String>> = HashMap::new();
+    let mut plugin_alternatives: HashMap<String, Vec<String>> = HashMap::new();
+    for (index, level) in chain.levels.iter().enumerate() {
         for (name, value) in &level.profile_properties {
-            if properties.get(name) != Some(value) {
+            if properties.get(name) == Some(value) {
+                continue;
+            }
+            // A nearer POM's own property wins over an inherited profile's.
+            if chain.levels[..index]
+                .iter()
+                .any(|nearer| nearer.properties.contains_key(name))
+            {
+                continue;
+            }
+            if properties.contains_key(name) {
+                add_alternative(&mut property_alternatives, name, value);
+            } else {
                 properties.remove(name);
             }
         }
         for (key, version) in &level.profile_dep_mgmt {
-            if dep_mgmt.get(key) != Some(&Some(version.clone())) {
-                dep_mgmt.insert(key.clone(), None);
+            match dep_mgmt.get(key) {
+                Some(Some(base)) if base == version => {}
+                Some(Some(_)) => add_alternative(&mut dep_alternatives, key, version),
+                Some(None) => {}
+                None => {
+                    dep_mgmt.insert(key.clone(), None);
+                }
             }
         }
         for (key, version) in &level.profile_plugin_mgmt {
-            if plugin_mgmt.get(key) != Some(&Some(version.clone())) {
-                plugin_mgmt.insert(key.clone(), None);
+            match plugin_mgmt.get(key) {
+                Some(Some(base)) if base == version => {}
+                Some(Some(_)) => add_alternative(&mut plugin_alternatives, key, version),
+                Some(None) => {}
+                None => {
+                    plugin_mgmt.insert(key.clone(), None);
+                }
             }
         }
     }
@@ -513,6 +611,9 @@ fn effective(chain: &Chain) -> Effective {
         dep_mgmt,
         plugin_mgmt,
         imports,
+        property_alternatives,
+        dep_alternatives,
+        plugin_alternatives,
     }
 }
 
@@ -543,9 +644,14 @@ async fn bom_management(
     let model = effective(&chain);
     let mut managed: Vec<(String, Option<String>)> = Vec::new();
     for (name, version) in &model.dep_mgmt {
+        // A BOM version a profile could change is not pinned.
         let resolved = version
             .as_deref()
-            .and_then(|version| interpolate(version, &model.properties));
+            .and_then(|version| {
+                candidate_values(version, &model.properties, &model.property_alternatives)
+            })
+            .filter(|values| values.len() == 1 && !model.dep_alternatives.contains_key(name))
+            .map(|mut values| values.remove(0));
         managed.push((name.clone(), resolved));
     }
     for import in &model.imports {
@@ -617,6 +723,7 @@ pub(crate) async fn resolve_pom_versions(
     let mut model = effective(&chain);
     for name in maven_config_defines(pom_path) {
         model.properties.remove(&name);
+        model.property_alternatives.remove(&name);
     }
 
     // BOMs: entries the POM chain manages itself win; among imports the first wins.
@@ -632,14 +739,48 @@ pub(crate) async fn resolve_pom_versions(
         }
     }
 
-    // Only plugins the build itself declares are versioned from plugin
-    // management; a `pluginManagement` entry alone never runs.
-    let mut plugin_names: HashSet<String> = chain.levels[0]
-        .declared
-        .iter()
-        .filter(|declared| declared.plugin)
-        .map(|declared| declared.name.clone())
-        .collect();
+    // Plugins the project uses (build, reporting and profile sections) are versioned from
+    // plugin management; a `pluginManagement` entry alone never runs, so it is excluded.
+    let mut plugin_names: HashSet<String> = HashSet::new();
+    let mut outside_management = String::new();
+    let mut rest = content.as_str();
+    while let Some(start) = rest.find("<pluginManagement>") {
+        outside_management.push_str(&rest[..start]);
+        match rest[start..].find("</pluginManagement>") {
+            Some(end) => rest = &rest[start + end + "</pluginManagement>".len()..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    outside_management.push_str(rest);
+    for body in maven_element_bodies(&outside_management, "plugin")? {
+        let entry = xml_direct_children(body);
+        if let Some(artifact) = text_of(&entry, "artifactId") {
+            plugin_names.insert(format!("{}:{artifact}", plugin_group(&entry)));
+        }
+    }
+    // A plugin that appears only in `pluginManagement` (configuration, no version) still takes
+    // its version from the parent's plugin management, unless a dependency shares its name.
+    let mut dependency_names = HashSet::new();
+    for body in maven_element_bodies(&content, "dependency")? {
+        let entry = xml_direct_children(body);
+        if let (Some(group), Some(artifact)) =
+            (text_of(&entry, "groupId"), text_of(&entry, "artifactId"))
+        {
+            dependency_names.insert(format!("{group}:{artifact}"));
+        }
+    }
+    for body in maven_element_bodies(&content, "plugin")? {
+        let entry = xml_direct_children(body);
+        if let Some(artifact) = text_of(&entry, "artifactId") {
+            let name = format!("{}:{artifact}", plugin_group(&entry));
+            if !dependency_names.contains(&name) {
+                plugin_names.insert(name);
+            }
+        }
+    }
 
     // Everything an ancestor declares is inherited by this project, so it is
     // installed (or executed) by this build too.
@@ -652,7 +793,13 @@ pub(crate) async fn resolve_pom_versions(
         let mut inherited: Vec<(String, Option<String>, bool)> = level
             .declared
             .iter()
-            .map(|declared| (declared.name.clone(), declared.version.clone(), declared.plugin))
+            .map(|declared| {
+                (
+                    declared.name.clone(),
+                    declared.version.clone(),
+                    declared.plugin,
+                )
+            })
             .collect();
         if let Some(parent) = &level.parent {
             let coordinate = &parent.coordinate;
@@ -679,34 +826,60 @@ pub(crate) async fn resolve_pom_versions(
         }
     }
 
-    let managed_version = |map: &Managed, name: &str| -> Option<Option<String>> {
-        map.get(name).map(|version| {
-            version
-                .as_deref()
-                .and_then(|version| interpolate(version, &model.properties))
-        })
+    // Every version the build could end up with; a dependency is reported once per candidate.
+    let resolve_all = |raw: &str| -> Vec<String> {
+        candidate_values(raw, &model.properties, &model.property_alternatives).unwrap_or_default()
     };
 
-    Ok(deps
-        .into_iter()
-        .map(|mut dep| {
-            dep.version = match dep.version.as_deref() {
-                Some(declared) if declared.contains("${") => {
-                    interpolate(declared, &model.properties)
+    let mut resolved = Vec::new();
+    for dep in deps {
+        let versions: Vec<Option<String>> = match dep.version.as_deref() {
+            Some(declared) if declared.contains("${") => {
+                let values = resolve_all(declared);
+                if values.is_empty() {
+                    vec![None]
+                } else {
+                    values.into_iter().map(Some).collect()
                 }
-                Some(declared) => Some(declared.to_string()),
-                None => {
-                    let map = if plugin_names.contains(&dep.name) {
-                        &model.plugin_mgmt
-                    } else {
-                        &model.dep_mgmt
-                    };
-                    managed_version(map, &dep.name).flatten()
+            }
+            Some(declared) => vec![Some(declared.to_string())],
+            None => {
+                let (map, alternatives) = if plugin_names.contains(&dep.name) {
+                    (&model.plugin_mgmt, &model.plugin_alternatives)
+                } else {
+                    (&model.dep_mgmt, &model.dep_alternatives)
+                };
+                match map.get(&dep.name) {
+                    Some(Some(base)) => {
+                        let mut values = resolve_all(base);
+                        let mut complete = !values.is_empty();
+                        for alternative in alternatives.get(&dep.name).into_iter().flatten() {
+                            let extra = resolve_all(alternative);
+                            complete &= !extra.is_empty();
+                            for value in extra {
+                                if !values.contains(&value) {
+                                    values.push(value);
+                                }
+                            }
+                        }
+                        if complete {
+                            values.into_iter().map(Some).collect()
+                        } else {
+                            vec![None]
+                        }
+                    }
+                    _ => vec![None],
                 }
-            };
-            dep
-        })
-        .collect())
+            }
+        };
+        for version in versions {
+            resolved.push(Dependency {
+                version,
+                ..dep.clone()
+            });
+        }
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]
