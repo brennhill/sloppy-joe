@@ -24,7 +24,7 @@ Package names are limited to 214 bytes for npm and 1,024 bytes for other ecosyst
 # Install (single static binary, no runtime dependencies)
 cargo install sloppy-joe
 
-# Or download an auditable binary archive from GitHub Releases
+# Or download a prebuilt binary archive from GitHub Releases
 # https://github.com/brennhill/sloppy-joe/releases
 
 # Fast local guardrail — auto-detects ecosystem from manifest files
@@ -588,7 +588,7 @@ sloppy-joe check || exit 1
 
 ## Architecture
 
-sloppy-joe uses a **registry-based generative** approach to similarity detection. Instead of comparing every dependency against a static corpus with edit distance (which produces false positives), it generates specific mutations of each dependency name, queries the registry to check if the mutation exists, and flags exact matches.
+For name similarity, sloppy-joe generates mutations, queries registry candidates, and checks related names in the same manifest. Known scopes and selected popular roots add namespace and segment-overlap signals. Legitimate related packages can match these rules.
 
 ```
 Pipeline (in order):
