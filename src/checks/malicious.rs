@@ -55,6 +55,14 @@ struct OsvPage {
 #[derive(serde::Deserialize)]
 struct OsvVulnerability {
     id: String,
+    #[serde(default)]
+    affected: Vec<OsvAffected>,
+}
+
+#[derive(serde::Deserialize)]
+struct OsvAffected {
+    #[serde(default)]
+    database_specific: serde_json::Value,
 }
 
 /// Real OSV client that hits the API.
@@ -107,6 +115,7 @@ impl OsvClient for RealOsvClient {
         }
         let mut vuln_ids = Vec::new();
         let mut seen_tokens = std::collections::HashSet::new();
+        // shortcut: cap at 100 pages; raise after measuring legitimate larger OSV responses.
         for _ in 0..100 {
             let resp = self.client.post(&self.endpoint).json(&body).send().await?;
             if !resp.status().is_success() {
@@ -117,7 +126,13 @@ impl OsvClient for RealOsvClient {
                 if vulnerability.id.is_empty() {
                     anyhow::bail!("OSV returned a vulnerability without an ID");
                 }
-                vuln_ids.push(vulnerability.id);
+                let maintenance_only = !vulnerability.affected.is_empty()
+                    && vulnerability.affected.iter().all(|affected| {
+                        affected.database_specific["informational"].as_str() == Some("unmaintained")
+                    });
+                if !maintenance_only {
+                    vuln_ids.push(vulnerability.id);
+                }
             }
             let Some(token) = page.next_page_token.filter(|token| !token.is_empty()) else {
                 vuln_ids.sort();
@@ -361,6 +376,21 @@ mod tests {
             assert!(client.query("example", "npm", Some("1.0.0")).await.is_err());
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn maintenance_notices_are_not_reported_as_vulnerabilities() {
+        let (client, server) = mock_osv_server(vec![serde_json::json!({"vulns":[
+            {"id":"RUSTSEC-MAINTENANCE", "affected":[{"database_specific":{"informational":"unmaintained"}}]},
+            {"id":"RUSTSEC-UNSOUND", "affected":[{"database_specific":{"informational":"unsound"}}]},
+            {"id":"GHSA-VULNERABILITY"}
+        ]})]).await;
+        let ids = client
+            .query("example", "cargo", Some("1.0.0"))
+            .await
+            .unwrap();
+        assert_eq!(ids, vec!["GHSA-VULNERABILITY", "RUSTSEC-UNSOUND"]);
+        server.await.unwrap();
     }
 
     struct MockOsvClient {

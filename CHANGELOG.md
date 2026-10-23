@@ -12,6 +12,8 @@
 - Bound package-name lengths before typo mutation generation.
 - Include legacy Python build and test dependencies.
 - Follow OSV advisory pagination and reject malformed or incomplete query responses.
+- Separate maintenance-only unmaintained notices from vulnerability records; retain blocking unsoundness advisories.
+- Update affected direct and transitive dependencies to patched versions before release.
 - Refresh README coverage against primary-source supply-chain incident reports and document heuristic limits.
 
 ### Compatibility notes

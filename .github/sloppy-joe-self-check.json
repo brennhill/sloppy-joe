@@ -268,10 +268,61 @@
         "previous_publisher": "robertbastian",
         "current_publisher": "Manishearth",
         "reason": "Reviewed upstream maintainer transfer for repo self-check."
+      },
+      {
+        "package": "colored",
+        "check": "metadata/maintainer-change",
+        "version": "2.1.0",
+        "previous_publisher": "hwittenborn",
+        "current_publisher": "kurtlawrence",
+        "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/colored-rs/colored/releases/tag/v2.1.0"
+      },
+      {
+        "package": "icu_locale_core",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "sffc",
+        "current_publisher": "Manishearth",
+        "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0"
+      },
+      {
+        "package": "icu_normalizer",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "sffc",
+        "current_publisher": "Manishearth",
+        "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0"
+      },
+      {
+        "package": "icu_properties",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "robertbastian",
+        "current_publisher": "Manishearth",
+        "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0"
+      },
+      {
+        "package": "icu_properties_data",
+        "check": "metadata/maintainer-change",
+        "version": "2.2.0",
+        "previous_publisher": "robertbastian",
+        "current_publisher": "Manishearth",
+        "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0"
       }
     ]
   },
   "min_version_age_hours": 72,
   "allow_unresolved_versions": false,
-  "python_enforcement": "prefer_poetry"
+  "python_enforcement": "prefer_poetry",
+  "allowed": {
+    "cargo": [
+      "clap",
+      "libc",
+      "serde_json",
+      "serde",
+      "serde_yaml",
+      "toml",
+      "sha2"
+    ]
+  }
 }

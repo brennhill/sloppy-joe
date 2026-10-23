@@ -32,3 +32,11 @@ Research date: 2026-10-23. Scope: primary-source incident reports and package-ma
 ## Research-discovered gap: fixed for 1.2.0
 
 The [OSV pagination contract](https://google.github.io/osv.dev/post-v1-query/#pagination) permits token-only responses. Research reproduced a missed-advisory case in the old client. Version 1.2.0 follows `next_page_token` using `page_token`, retains package/version filters, validates response schemas, and fails closed on repeated tokens or a 100-page safety limit. Local HTTP protocol regressions cover these cases; historical attack artifacts were not replayed.
+
+## Live release-gate follow-up
+
+The live check identified affected locked dependencies, including [anyhow unsoundness](https://osv.dev/vulnerability/RUSTSEC-2026-0190), [rustls handshake validation](https://osv.dev/vulnerability/RUSTSEC-2026-0285), and [distrusted root certificates](https://osv.dev/vulnerability/RUSTSEC-2026-0381). The release updates affected dependencies to compatible patched versions.
+
+[RUSTSEC-2024-0449](https://osv.dev/vulnerability/RUSTSEC-2024-0449) explicitly describes an unmaintained package, not a demonstrated vulnerability. The client excludes records whose affected entries are all marked `informational: unmaintained` from vulnerability findings. Unsoundness records remain blocking. This does not evaluate dependency maintenance quality.
+
+Self-check publisher exceptions are pinned to exact package, version, and publisher transitions. Official [colored 2.1.0](https://github.com/colored-rs/colored/releases/tag/v2.1.0) and [ICU4X 2.2.0](https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0) releases corroborate the reviewed publishers. Named canonical dependency exceptions skip existence/similarity only; metadata and advisory checks still run.
