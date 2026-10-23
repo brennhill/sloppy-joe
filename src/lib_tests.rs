@@ -11276,6 +11276,8 @@ async fn planning_spikes_are_ignored_by_default_but_application_manifests_are_sc
         .await
         .expect("planning spikes are outside the application scan");
     assert!(!report.has_errors());
+    config::discover_current_config(&dir)
+        .expect("bootstrap discovery must also ignore planning spikes");
     let app = dir.join("web");
     std::fs::create_dir_all(&app).unwrap();
     std::fs::write(
@@ -11288,5 +11290,101 @@ async fn planning_spikes_are_ignored_by_default_but_application_manifests_are_sc
         .expect_err("application packages must still be checked");
     assert!(error.to_string().contains("web"), "{error}");
     assert!(!error.to_string().contains(".planning"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn directory_exclusions_are_configurable_and_can_be_disabled() {
+    let dir = unique_dir();
+    let policy_dir = unique_dir();
+    let policy = policy_dir.join("policy.json");
+    std::fs::write(dir.join("package.json"), r#"{"dependencies":{}}"#).unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{}}}}"#,
+    )
+    .unwrap();
+    for name in [".planning", "experiments"] {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+        std::fs::write(
+            dir.join(name).join("package.json"),
+            r#"{"dependencies":{"react":"18.3.1"}}"#,
+        )
+        .unwrap();
+    }
+    let opts = ScanOptions {
+        scan_mode: ScanMode::Fast,
+        no_cache: true,
+        ..Default::default()
+    };
+    std::fs::write(&policy, r#"{"ignore_dirs":[".planning","experiments"]}"#).unwrap();
+    let report = scan_with_source_full_options(&dir, Some("npm"), policy.to_str(), &opts)
+        .await
+        .unwrap();
+    assert!(!report.has_errors());
+    std::fs::write(&policy, r#"{"ignore_dirs":[]}"#).unwrap();
+    let error = scan_with_source_full_options(&dir, Some("npm"), policy.to_str(), &opts)
+        .await
+        .expect_err("an empty exclusion list must include planning projects");
+    assert!(error.to_string().contains(".planning"), "{error}");
+    for invalid in ["", ".", "..", "some/path", "some\\path", "*"] {
+        std::fs::write(
+            &policy,
+            serde_json::json!({"ignore_dirs":[invalid]}).to_string(),
+        )
+        .unwrap();
+        let error = scan_with_source_full_options(&dir, Some("npm"), policy.to_str(), &opts)
+            .await
+            .expect_err("exclusions accept directory names, not paths or globs");
+        assert!(error.to_string().contains("ignore_dirs"), "{error}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::remove_dir_all(policy_dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_aliases_do_not_rediscover_ignored_planning_spikes() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("package.json"), r#"{"dependencies":{}}"#).unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"lockfileVersion":3,"packages":{"":{"dependencies":{}}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join(".planning")).unwrap();
+    std::fs::write(
+        dir.join(".planning/package.json"),
+        r#"{"dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(".planning", dir.join("spike-alias")).unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("symlinks must respect the target's directory exclusion");
+    assert!(!report.has_errors());
+    // Selecting a planning project explicitly should still scan it.
+    let error = scan_with_source_full_options(
+        &dir.join(".planning"),
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_err("explicit scan roots are not excluded");
+    assert!(error.to_string().contains("lockfile"));
     std::fs::remove_dir_all(dir).unwrap();
 }

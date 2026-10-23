@@ -5310,6 +5310,18 @@ fn walk_project_tree(
         );
     }
 
+    if canonical_current
+        .strip_prefix(root)
+        .expect("checked scan root")
+        .components()
+        .any(|component| {
+            ignore_dirs
+                .iter()
+                .any(|name| component.as_os_str() == std::ffi::OsStr::new(name))
+        })
+    {
+        return Ok(());
+    }
     if !visited.insert(canonical_current.clone()) {
         return Ok(());
     }

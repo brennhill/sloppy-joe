@@ -517,6 +517,15 @@ impl SloppyJoeConfig {
     pub fn validate(&self) -> Vec<String> {
         let valid_ecosystems = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
         let mut errors = Vec::new();
+        for name in &self.ignore_dirs {
+            if name.trim().is_empty()
+                || matches!(name.as_str(), "." | "..")
+                || name.contains(['/', '\\', '*', '?', '[', ']'])
+                || name.chars().any(char::is_control)
+            {
+                errors.push("ignore_dirs entries must be nonempty directory names, without paths or glob patterns".to_string());
+            }
+        }
 
         // Check ecosystem names in all sections
         for (section, keys) in [
@@ -1326,6 +1335,7 @@ fn discover_repo_state(
             if matches!(
                 name,
                 ".git"
+                    | ".planning"
                     | "node_modules"
                     | "target"
                     | "vendor"
