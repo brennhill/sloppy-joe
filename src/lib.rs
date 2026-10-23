@@ -820,7 +820,9 @@ fn read_validated_npm_lockfile(
             .unwrap_or_default(),
     )?;
 
-    let warnings = if npm_lockfile_version(&lockfile) == 1 && config.allow_legacy_npm_v1_lockfile {
+    let warnings = if npm_lockfile_version(&lockfile, &path)? == 1
+        && config.allow_legacy_npm_v1_lockfile
+    {
         legacy_npm_v1_warnings(&path)
     } else {
         Vec::new()
@@ -4519,11 +4521,12 @@ fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
     }
 }
 
-fn npm_lockfile_version(lockfile: &serde_json::Value) -> u64 {
-    lockfile
-        .get("lockfileVersion")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0)
+fn npm_lockfile_version(
+    lockfile: &serde_json::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<u64> {
+    crate::lockfiles::npm::lockfile_version(lockfile)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", lockfile_path.display(), err))
 }
 
 fn npm_registry_tarball_path(resolved: &str) -> Option<&str> {
@@ -4584,7 +4587,7 @@ fn validate_npm_lockfile_version(
     lockfile_path: &std::path::Path,
     config: &config::SloppyJoeConfig,
 ) -> Result<()> {
-    let version = npm_lockfile_version(lockfile);
+    let version = npm_lockfile_version(lockfile, lockfile_path)?;
 
     if version == 1 && !config.allow_legacy_npm_v1_lockfile {
         anyhow::bail!(

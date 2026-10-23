@@ -313,7 +313,9 @@ fn read_lockfile(
                 crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
             let value: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
-            if value["lockfileVersion"].as_u64() == Some(1) {
+            let version = npm::lockfile_version(&value)
+                .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+            if version == 1 {
                 Ok(ParsedLockfile::NpmLegacy { value, file_name })
             } else {
                 Ok(ParsedLockfile::Npm {

@@ -22,6 +22,51 @@ fn npm_dep(name: &str, version: &str) -> Dependency {
 }
 
 #[test]
+fn npm_lockfile_version_parsing_is_strict() {
+    for ok in [1u64, 2, 3] {
+        let value = serde_json::json!({ "lockfileVersion": ok });
+        assert_eq!(npm::lockfile_version(&value).unwrap(), ok);
+    }
+    for bad in [
+        serde_json::json!({ "lockfileVersion": 1.0 }),
+        serde_json::json!({ "lockfileVersion": "1" }),
+        serde_json::json!({ "lockfileVersion": "3" }),
+        serde_json::json!({ "lockfileVersion": 4 }),
+        serde_json::json!({ "lockfileVersion": 0 }),
+        serde_json::json!({ "lockfileVersion": null }),
+        serde_json::json!({}),
+    ] {
+        assert!(
+            npm::lockfile_version(&bad).is_err(),
+            "{bad} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn npm_lockfile_data_rejects_noncanonical_lockfile_version() {
+    let dir = unique_dir();
+    let lockfile = dir.join("package-lock.json");
+    std::fs::write(
+        &lockfile,
+        r#"{"lockfileVersion": 1.0, "dependencies": {"lodash": {"version": "4.17.21"}}}"#,
+    )
+    .unwrap();
+    let deps = vec![npm_dep("lodash", "^4.17.21")];
+    assert!(
+        LockfileData::parse_for_kind_with_lockfile(
+            &dir,
+            Some(crate::ProjectInputKind::Npm),
+            &deps,
+            Some(&lockfile),
+        )
+        .is_err(),
+        "lockfileVersion 1.0 must not be treated as a modern lockfile"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn bun_transitives_include_optional_dependencies() {
     let dir = unique_dir();
     let lockfile = dir.join("bun.lock");

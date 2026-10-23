@@ -11,6 +11,25 @@ use super::{
     out_of_sync_issue, parse_failed_issue,
 };
 
+/// The npm `lockfileVersion`. npm only ever writes the JSON integers 1, 2 or 3;
+/// anything else (floats such as `1.0`, numeric strings, missing, or unknown
+/// versions) is rejected so a v1 lockfile cannot dodge the legacy ban by
+/// changing how the number is spelled.
+pub(crate) fn lockfile_version(parsed: &serde_json::Value) -> Result<u64> {
+    let Some(raw) = parsed.get("lockfileVersion") else {
+        anyhow::bail!(
+            "npm lockfile is missing lockfileVersion. Regenerate it with a modern npm."
+        );
+    };
+    match raw.as_u64() {
+        Some(version @ 1..=3) if raw.is_u64() => Ok(version),
+        _ => anyhow::bail!(
+            "npm lockfile declares unsupported lockfileVersion '{}'. sloppy-joe only accepts the integer lockfileVersion 1, 2, or 3 that npm writes.",
+            crate::report::sanitize_for_terminal(&raw.to_string())
+        ),
+    }
+}
+
 /// Resolve a dependency from the importing package's location, then its ancestors.
 pub(crate) fn installed_package_entry<'a>(
     packages: &'a serde_json::Map<String, serde_json::Value>,
