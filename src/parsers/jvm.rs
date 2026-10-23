@@ -2,6 +2,18 @@ use crate::Dependency;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
+mod gradle_plugins;
+
+/// A parsed Gradle build script: regular dependencies, the plugin marker
+/// artifacts its `plugins {}` requests resolve to, and the repositories Gradle
+/// consults for those plugins.
+#[derive(Debug, Clone)]
+pub(crate) struct GradleBuild {
+    pub deps: Vec<Dependency>,
+    pub plugins: Vec<Dependency>,
+    pub plugin_repositories: Vec<crate::registry::gradle_plugins::PluginRepository>,
+}
+
 const GRADLE_DEPENDENCY_CONFIGS: &[&str] = &[
     "implementation",
     "api",
@@ -32,22 +44,54 @@ pub(crate) fn parse_manifest(path: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
+    let build = parse_gradle_build(path)?;
+    if let Some(url) = build
+        .plugin_repositories
+        .iter()
+        .find_map(|repository| match repository {
+            crate::registry::gradle_plugins::PluginRepository::Custom(url) => Some(url),
+            _ => None,
+        })
+    {
+        bail!(
+            "Unsupported Gradle plugin repository '{}' for {}: plugins from a custom plugin repository cannot be verified unless the repository is allowlisted in trusted_registries.jvm of the out-of-repo sloppy-joe config",
+            crate::config::redact_url_for_display(url),
+            path.display()
+        );
+    }
+    let mut deps = build.deps;
+    deps.extend(build.plugins);
+    Ok(deps)
+}
+
+/// Parse a Gradle build script, the settings scripts that enclose it, and the
+/// plugin requests of both. Custom plugin repositories are returned, not
+/// rejected: the caller decides whether they are allowlisted.
+pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read build.gradle")?;
-    validate_gradle_source_policy(&content, path)?;
+    let script = scan_gradle_script(&content, path)?;
+    if script.has_plugin_management {
+        bail!(
+            "Unsupported Gradle plugin repository declaration in {}: pluginManagement is only valid in settings scripts",
+            path.display()
+        );
+    }
     let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
     let boundary = crate::config::registry::find_git_root(&project_dir)
         .map_err(anyhow::Error::msg)?
         .unwrap_or_else(|| project_dir.clone());
+    let mut settings = Vec::new();
     for ancestor in project_dir
         .ancestors()
         .take_while(|dir| dir.starts_with(&boundary))
     {
         for filename in ["settings.gradle", "settings.gradle.kts"] {
-            let settings = ancestor.join(filename);
-            if super::path_detected(&settings)? {
-                let content = super::read_file_limited(&settings, super::MAX_MANIFEST_BYTES)?;
-                validate_gradle_source_policy(&content, &settings)?;
+            let settings_path = ancestor.join(filename);
+            if super::path_detected(&settings_path)? {
+                let content = super::read_file_limited(&settings_path, super::MAX_MANIFEST_BYTES)?;
+                let settings_script = scan_gradle_script(&content, &settings_path)?;
+                settings.push((settings_path, settings_script));
             }
         }
     }
@@ -81,7 +125,19 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
             }
         }
     }
-    Ok(deps)
+
+    let plugins = gradle_plugins::resolve_plugins(&gradle_plugins::PluginContext {
+        build_path: path,
+        project_dir: &project_dir,
+        boundary: &boundary,
+        build: &script,
+        settings: &settings,
+    })?;
+    Ok(GradleBuild {
+        deps,
+        plugins,
+        plugin_repositories: gradle_plugins::plugin_repositories(&settings),
+    })
 }
 
 fn extract_gradle_dep(line: &str, source_path: &Path) -> Result<Option<Dependency>> {
@@ -553,99 +609,54 @@ fn gradle_literal_value(literal: &str) -> Option<&str> {
     (!value.contains(['$', '\\'])).then_some(value)
 }
 
-fn unsupported_gradle_plugin(path: &Path, what: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Unsupported Gradle plugin {} in {}: only plugins bundled with Gradle are allowed; third-party plugins resolve from the Gradle Plugin Portal (or a custom plugin repository) and cannot be verified",
-        what,
-        path.display()
-    )
-}
-
-/// Read `(literal)` or `literal` after a plugin-block keyword, returning the
-/// literal and the index of the next unconsumed token.
-fn gradle_plugin_argument(tokens: &[GradleToken], idx: usize) -> Option<(&str, usize)> {
-    match tokens.get(idx) {
-        Some(GradleToken::Literal(literal)) => Some((literal.as_str(), idx + 1)),
-        Some(GradleToken::Symbol('(')) => match (tokens.get(idx + 1), tokens.get(idx + 2)) {
-            (Some(GradleToken::Literal(literal)), Some(GradleToken::Symbol(')'))) => {
-                Some((literal.as_str(), idx + 3))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Validate a `plugins { }` block (build script, settings, or
-/// `pluginManagement`). Every request must be a Gradle core plugin; anything
-/// else is downloaded from a plugin repository we cannot check, so it fails
-/// closed just like `buildscript { dependencies { classpath ... } }`.
-fn validate_gradle_plugins_block(tokens: &[GradleToken], path: &Path) -> Result<()> {
-    let mut idx = 0usize;
-    while idx < tokens.len() {
-        let GradleToken::Ident(name) = &tokens[idx] else {
-            return Err(unsupported_gradle_plugin(path, "declaration"));
-        };
-        match name.as_str() {
-            "id" => {
-                let (literal, next) = gradle_plugin_argument(tokens, idx + 1)
-                    .ok_or_else(|| unsupported_gradle_plugin(path, "declaration"))?;
-                let id = gradle_literal_value(literal)
-                    .ok_or_else(|| unsupported_gradle_plugin(path, "id expression"))?;
-                if !is_gradle_core_plugin(id) {
-                    return Err(unsupported_gradle_plugin(
-                        path,
-                        &format!("'{}'", crate::report::sanitize_for_terminal(id)),
-                    ));
-                }
-                idx = next;
-            }
-            "version" => {
-                let (_, next) = gradle_plugin_argument(tokens, idx + 1)
-                    .ok_or_else(|| unsupported_gradle_plugin(path, "version expression"))?;
-                idx = next;
-            }
-            "apply" => {
-                let parenthesized = matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('(')));
-                let flag_idx = idx + 1 + usize::from(parenthesized);
-                let Some(GradleToken::Ident(flag)) = tokens.get(flag_idx) else {
-                    return Err(unsupported_gradle_plugin(path, "apply expression"));
-                };
-                if !matches!(flag.as_str(), "true" | "false") {
-                    return Err(unsupported_gradle_plugin(path, "apply expression"));
-                }
-                idx = flag_idx + 1;
-                if parenthesized {
-                    if !matches!(tokens.get(idx), Some(GradleToken::Symbol(')'))) {
-                        return Err(unsupported_gradle_plugin(path, "apply expression"));
-                    }
-                    idx += 1;
-                }
-            }
-            bare if is_gradle_core_plugin(bare) => idx += 1,
-            other => {
-                return Err(unsupported_gradle_plugin(
-                    path,
-                    &format!("'{}'", crate::report::sanitize_for_terminal(other)),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
+fn scan_gradle_script(content: &str, path: &Path) -> Result<gradle_plugins::GradleScript> {
     let tokens = tokenize_gradle(content);
+    let mut script = gradle_plugins::GradleScript::default();
+    walk_gradle_script(&tokens, path, &mut script, false)?;
+    Ok(script)
+}
+
+/// Enforce the Gradle source policy over `tokens` and collect plugin requests.
+/// `plugin_management` is set inside a `pluginManagement { }` block, where
+/// `repositories` and `plugins` configure plugin resolution.
+fn walk_gradle_script(
+    tokens: &[GradleToken],
+    path: &Path,
+    script: &mut gradle_plugins::GradleScript,
+    plugin_management: bool,
+) -> Result<()> {
+    let block_end = |idx: usize, name: &str| {
+        find_gradle_block_end(tokens, idx + 1).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Broken Gradle manifest '{}': unclosed '{}' block.",
+                path.display(),
+                name
+            )
+        })
+    };
     let mut idx = 0usize;
     while idx < tokens.len() {
+        let opens_block = matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{')));
         match &tokens[idx] {
             GradleToken::Ident(name)
                 if name.split('.').any(|part| part == "dependencies")
-                    && (name != "dependencies"
-                        || !matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{')))) =>
+                    && (name != "dependencies" || !opens_block) =>
             {
                 bail!(
                     "Unsupported Gradle dependency expression in {}: dependency mutations outside literal blocks cannot be verified",
+                    path.display()
+                );
+            }
+            GradleToken::Ident(name)
+                if name
+                    .split('.')
+                    .any(|part| matches!(part, "repositories" | "pluginManagement"))
+                    && (!matches!(name.as_str(), "repositories" | "pluginManagement")
+                        || !opens_block) =>
+            {
+                bail!(
+                    "Unsupported Gradle repository expression '{}' in {}: repositories can only be verified when declared in literal blocks",
+                    crate::report::sanitize_for_terminal(name),
                     path.display()
                 );
             }
@@ -658,16 +669,26 @@ fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
                 );
             }
             GradleToken::Ident(name)
-                if name == "plugins"
-                    && matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{'))) =>
+                if name.split('.').any(|part| {
+                    matches!(part, "versionCatalogs" | "defaultLibrariesExtensionName")
+                }) =>
             {
-                let end = find_gradle_block_end(&tokens, idx + 1).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Broken Gradle manifest '{}': unclosed 'plugins' block.",
-                        path.display()
-                    )
-                })?;
-                validate_gradle_plugins_block(&tokens[idx + 2..end], path)?;
+                script.custom_catalogs = true;
+            }
+            GradleToken::Ident(name) if name == "pluginManagement" && opens_block => {
+                let end = block_end(idx, name)?;
+                script.has_plugin_management = true;
+                walk_gradle_script(&tokens[idx + 2..end], path, script, true)?;
+                idx = end;
+            }
+            GradleToken::Ident(name) if name == "plugins" && opens_block => {
+                let end = block_end(idx, name)?;
+                let plugins = gradle_plugins::parse_plugins_block(&tokens[idx + 2..end], path)?;
+                if plugin_management {
+                    script.managed_plugins.extend(plugins);
+                } else {
+                    script.plugins.extend(plugins);
+                }
                 idx = end;
             }
             GradleToken::Ident(name) if matches!(name.as_str(), "apply" | "includeBuild") => {
@@ -678,21 +699,19 @@ fn validate_gradle_source_policy(content: &str, path: &Path) -> Result<()> {
                 );
             }
             GradleToken::Ident(name)
-                if matches!(name.as_str(), "repositories" | "dependencies")
-                    && matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{'))) =>
+                if matches!(name.as_str(), "repositories" | "dependencies") && opens_block =>
             {
-                let end = find_gradle_block_end(&tokens, idx + 1).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Broken Gradle manifest '{}': unclosed '{}' block.",
-                        path.display(),
-                        name
-                    )
-                })?;
+                let end = block_end(idx, name)?;
                 let block = &tokens[idx + 2..end];
-                if name == "repositories" {
-                    validate_gradle_repositories_block(block, path)?;
-                } else {
+                if name == "dependencies" {
                     validate_gradle_dependencies_block(block, path)?;
+                } else if plugin_management {
+                    script
+                        .plugin_repositories
+                        .get_or_insert_with(Vec::new)
+                        .extend(gradle_plugins::parse_plugin_repositories(block, path)?);
+                } else {
+                    validate_gradle_repositories_block(block, path)?;
                 }
                 idx = end;
             }
@@ -794,27 +813,49 @@ mod tests {
     }
 
     #[test]
-    fn reject_third_party_gradle_plugins_in_build_scripts() {
-        for (file, body) in [
+    fn pinned_third_party_gradle_plugins_are_scanned_as_marker_artifacts() {
+        for (file, body, marker) in [
             (
                 "build.gradle",
                 "plugins {\n    id 'java'\n    id 'com.evil.gradle-plugin' version '1.0.0'\n}\nrepositories { mavenCentral() }\ndependencies { implementation 'com.google.guava:guava:31.1-jre' }",
+                "com.evil.gradle-plugin:com.evil.gradle-plugin.gradle.plugin",
             ),
             (
                 "build.gradle.kts",
                 "plugins {\n    `java-library`\n    id(\"com.evil.gradle-plugin\") version \"1.0.0\"\n}",
+                "com.evil.gradle-plugin:com.evil.gradle-plugin.gradle.plugin",
             ),
             (
                 "build.gradle.kts",
-                "plugins { kotlin(\"jvm\") version \"1.9.0\" }",
+                "plugins { kotlin(\"jvm\") version \"1.0.0\" }",
+                "org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin",
             ),
+        ] {
+            let dir = setup_test_dir("jvm", file, body);
+            let deps = parse(&dir).unwrap_or_else(|err| panic!("{body}: {err}"));
+            let plugin = deps
+                .iter()
+                .find(|dep| dep.name == marker)
+                .unwrap_or_else(|| panic!("plugin marker must be scanned for {body}: {deps:?}"));
+            assert_eq!(plugin.version.as_deref(), Some("1.0.0"));
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_unverifiable_gradle_plugins_in_build_scripts() {
+        for (file, body) in [
             ("build.gradle.kts", "plugins { alias(libs.plugins.evil) }"),
             ("build.gradle", "plugins { id 'com.evil.gradle-plugin' }"),
             ("build.gradle", "plugins { id \"${evilPlugin}\" }"),
+            (
+                "build.gradle",
+                "plugins { id 'com.evil.gradle-plugin' version '1.+' }",
+            ),
         ] {
             let dir = setup_test_dir("jvm", file, body);
             let err = parse(&dir).expect_err(&format!(
-                "third-party Gradle plugins must fail closed: {body}"
+                "unverifiable Gradle plugins must fail closed: {body}"
             ));
             assert!(
                 err.to_string().contains("Gradle plugin"),
@@ -825,15 +866,28 @@ mod tests {
     }
 
     #[test]
-    fn reject_third_party_gradle_plugins_in_settings() {
+    fn reject_repository_expressions_outside_literal_blocks() {
+        for body in [
+            "repositories.maven { url 'https://evil.example' }\ndependencies {}",
+            "pluginManagement.repositories.maven { url 'https://evil.example' }",
+        ] {
+            let dir = setup_gradle("dependencies {}");
+            std::fs::write(dir.join("settings.gradle"), body).unwrap();
+            assert!(parse(&dir).is_err(), "must fail closed: {body}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn reject_unverifiable_gradle_plugins_in_settings() {
         for (settings, body) in [
             (
                 "settings.gradle",
-                "pluginManagement { plugins { id 'com.evil.settings' version '1.0.0' } }",
+                "pluginManagement { plugins { id 'com.evil.settings' version '1.0.0' } }\nplugins { id 'com.evil.settings' version '1.+' }",
             ),
             (
                 "settings.gradle.kts",
-                "plugins { id(\"com.evil.settings\") version \"1.0.0\" }",
+                "plugins { id(\"com.evil.settings\") }",
             ),
             (
                 "settings.gradle",
