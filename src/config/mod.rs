@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 ///     ]
 ///   },
 ///   "min_version_age_hours": 72,
+///   "max_npm_tarball_verifications": 100,
 ///   "allow_unresolved_versions": false,
 ///   "allow_legacy_npm_v1_lockfile": false,
 ///   "trusted_local_paths": {
@@ -77,6 +78,9 @@ use std::path::{Path, PathBuf};
 /// - `min_version_age_hours`: block any dependency whose latest version was
 ///   published less than this many hours ago. Default: 72 (3 days).
 ///   Internal packages are exempt. Allowed packages are NOT exempt.
+/// - `max_npm_tarball_verifications`: per-scan cap on npm tarball downloads
+///   for verification (1..=1000, default 100). Selected versions past the cap
+///   block with `metadata/tarball-unverified`.
 /// - `allow_unresolved_versions`: downgrade unresolved-version policy failures
 ///   to warnings, but still emit them. Default: false.
 /// - `allow_legacy_npm_v1_lockfile`: allow legacy npm v5/v6
@@ -273,6 +277,10 @@ pub struct SloppyJoeConfig {
     pub metadata_exceptions: HashMap<String, Vec<MetadataException>>,
     #[serde(default = "default_min_version_age_hours")]
     pub min_version_age_hours: u64,
+    /// Per-scan cap on npm tarball downloads for verification (cache hits do
+    /// not count). Selected versions past the cap block.
+    #[serde(default = "default_max_npm_tarball_verifications")]
+    pub max_npm_tarball_verifications: usize,
     #[serde(default)]
     pub allow_unresolved_versions: bool,
     #[serde(default)]
@@ -307,6 +315,13 @@ fn default_min_version_age_hours() -> u64 {
     72
 }
 
+/// Bounds for `max_npm_tarball_verifications`.
+pub const MAX_NPM_TARBALL_VERIFICATIONS_RANGE: std::ops::RangeInclusive<usize> = 1..=1000;
+
+fn default_max_npm_tarball_verifications() -> usize {
+    crate::checks::tarball_verification::DEFAULT_MAX_TARBALL_FETCHES
+}
+
 fn extract_npm_scope(package_or_pattern: &str) -> Option<&str> {
     let value = package_or_pattern
         .strip_suffix("/*")
@@ -330,6 +345,7 @@ impl Default for SloppyJoeConfig {
             similarity_exceptions: HashMap::new(),
             metadata_exceptions: HashMap::new(),
             min_version_age_hours: default_min_version_age_hours(),
+            max_npm_tarball_verifications: default_max_npm_tarball_verifications(),
             allow_unresolved_versions: false,
             allow_legacy_npm_v1_lockfile: false,
             trusted_local_paths: HashMap::new(),
@@ -541,6 +557,15 @@ impl SloppyJoeConfig {
             {
                 errors.push("ignore_dirs entries must be nonempty directory names, without paths or glob patterns".to_string());
             }
+        }
+
+        if !MAX_NPM_TARBALL_VERIFICATIONS_RANGE.contains(&self.max_npm_tarball_verifications) {
+            errors.push(format!(
+                "max_npm_tarball_verifications must be between {} and {} (got {})",
+                MAX_NPM_TARBALL_VERIFICATIONS_RANGE.start(),
+                MAX_NPM_TARBALL_VERIFICATIONS_RANGE.end(),
+                self.max_npm_tarball_verifications
+            ));
         }
 
         // Check ecosystem names in all sections
@@ -1642,6 +1667,10 @@ pub fn print_template() {
 #[cfg(test)]
 #[path = "strict_parsing_tests.rs"]
 mod strict_parsing_tests;
+
+#[cfg(test)]
+#[path = "tarball_limit_tests.rs"]
+mod tarball_limit_tests;
 
 #[cfg(test)]
 mod tests {

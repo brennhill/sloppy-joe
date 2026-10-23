@@ -364,7 +364,7 @@ pub async fn check_metadata(
                 cache_dir: None,
                 no_cache: true,
                 verify_all: false,
-                max_fetches: super::tarball_verification::DEFAULT_MAX_TARBALL_FETCHES,
+                max_fetches: config.max_npm_tarball_verifications,
             },
         )
         .await,
