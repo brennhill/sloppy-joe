@@ -137,7 +137,7 @@ fn parse_scoped_file_inner(
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
     let mut deps = Vec::new();
 
-    for entry in logical_requirement_lines(&content) {
+    for entry in logical_requirement_lines(&content)? {
         let line = strip_inline_comment(&entry).trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -194,7 +194,7 @@ fn classify_trust_inner(
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
     let mut trusted = true;
 
-    for entry in logical_requirement_lines(&content) {
+    for entry in logical_requirement_lines(&content)? {
         let line = strip_inline_comment(&entry).trim();
         if line.is_empty() {
             continue;
@@ -251,7 +251,7 @@ fn collect_source_provenance_inner(
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
     let mut provenance = RequirementsSourceProvenance::default();
 
-    for entry in logical_requirement_lines(&content) {
+    for entry in logical_requirement_lines(&content)? {
         let line = strip_inline_comment(&entry).trim();
         if line.is_empty() {
             continue;
@@ -293,7 +293,7 @@ fn collect_included_paths(
     let content = super::read_file_limited(&normalized_path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
 
-    for entry in logical_requirement_lines(&content) {
+    for entry in logical_requirement_lines(&content)? {
         let line = strip_inline_comment(&entry).trim();
         if let Some(include) = requirement_include_target(line) {
             let include_target = match include {
@@ -512,13 +512,53 @@ pub(crate) fn strip_utf8_bom(content: &str) -> &str {
     content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
-fn logical_requirement_lines(content: &str) -> Vec<String> {
+/// pip decodes a requirements file with the codec a `# -*- coding: X -*-` line in its first
+/// two lines declares. Only codecs that read ASCII bytes as ASCII are modeled; anything else
+/// (UTF-7 can hide a newline behind a comment) would make pip see different lines.
+fn ensure_modeled_encoding(content: &str) -> Result<()> {
+    for line in content.lines().take(2) {
+        let line = line.trim_start_matches('\u{feff}');
+        if !line.starts_with('#') {
+            continue;
+        }
+        let Some(position) = line.find("coding") else {
+            continue;
+        };
+        let rest = &line[position + "coding".len()..];
+        let Some(rest) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')) else {
+            continue;
+        };
+        let name: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        let normalized = name.to_ascii_lowercase().replace('_', "-");
+        if !matches!(
+            normalized.as_str(),
+            "utf-8" | "utf8" | "ascii" | "us-ascii" | "latin-1" | "latin1" | "iso-8859-1"
+        ) {
+            bail!(
+                "requirements file declares the unsupported encoding '{name}'; pip would decode it differently than sloppy-joe, so it cannot be scanned reliably. Fix: save the file as UTF-8 and remove the coding line."
+            );
+        }
+    }
+    Ok(())
+}
+
+fn logical_requirement_lines(content: &str) -> Result<Vec<String>> {
+    ensure_modeled_encoding(content)?;
     let mut entries = Vec::new();
     let mut current = String::new();
 
     for raw_line in strip_utf8_bom(content).lines() {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            // pip ends a backslash continuation at a blank or comment line.
+            if !current.trim().is_empty() {
+                entries.push(current.trim().to_string());
+            }
+            current.clear();
             continue;
         }
 
@@ -541,7 +581,7 @@ fn logical_requirement_lines(content: &str) -> Vec<String> {
         entries.push(current.trim().to_string());
     }
 
-    entries
+    Ok(entries)
 }
 
 /// Whether a file is a pip requirements manifest by naming convention: any `*.txt` whose name

@@ -230,3 +230,48 @@ mod self_editable_install {
         }
     }
 }
+
+#[test]
+fn a_blank_line_ends_a_backslash_continuation_like_pip() {
+    let dir = setup_test_dir(
+        "req-continuation-blank",
+        "requirements.txt",
+        "six==1.16.0 \\\n\nevil-pkg==6.6.6\n",
+    );
+    let names: Vec<String> = parse(&dir).unwrap().into_iter().map(|d| d.name).collect();
+    cleanup(&dir);
+    assert!(names.contains(&"six".to_string()), "{names:?}");
+    assert!(names.contains(&"evil-pkg".to_string()), "{names:?}");
+}
+
+#[test]
+fn a_comment_line_ends_a_backslash_continuation_like_pip() {
+    let dir = setup_test_dir(
+        "req-continuation-comment",
+        "requirements.txt",
+        "six==1.16.0 \\\n# note\nevil-pkg==6.6.6\n",
+    );
+    let names: Vec<String> = parse(&dir).unwrap().into_iter().map(|d| d.name).collect();
+    cleanup(&dir);
+    assert!(names.contains(&"evil-pkg".to_string()), "{names:?}");
+}
+
+#[test]
+fn unmodeled_pep263_encodings_fail_closed() {
+    for coding in ["utf-7", "utf-16", "cp037"] {
+        let dir = setup_test_dir(
+            "req-coding",
+            "requirements.txt",
+            &format!("# -*- coding: {coding} -*-\nsix==1.16.0\n"),
+        );
+        assert!(parse(&dir).is_err(), "{coding}");
+        cleanup(&dir);
+    }
+    let dir = setup_test_dir(
+        "req-coding-utf8",
+        "requirements.txt",
+        "# -*- coding: utf-8 -*-\nsix==1.16.0\n",
+    );
+    assert!(parse(&dir).is_ok());
+    cleanup(&dir);
+}

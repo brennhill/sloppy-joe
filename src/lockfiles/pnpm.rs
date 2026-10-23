@@ -452,11 +452,35 @@ fn normalized_pnpm_dependency(name: &str, reference: &str) -> Option<(String, St
     Some((name.to_string(), base.to_string()))
 }
 
+/// pnpm reads the lockfile with js-yaml, which expands `<<` merge keys; serde_yaml does not,
+/// so a merged dependency edge would be invisible here. pnpm never writes `<<`.
+fn reject_yaml_merge_keys(value: &serde_yaml::Value, lockfile_path: &Path) -> Result<()> {
+    match value {
+        serde_yaml::Value::Mapping(mapping) => {
+            for (key, inner) in mapping {
+                if key.as_str() == Some("<<") {
+                    anyhow::bail!(
+                        "Broken lockfile '{}': YAML merge keys ('<<') are not supported. pnpm expands them but sloppy-joe would not see the merged entries. Fix: regenerate the lockfile with pnpm install.",
+                        lockfile_path.display()
+                    );
+                }
+                reject_yaml_merge_keys(inner, lockfile_path)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .try_for_each(|item| reject_yaml_merge_keys(item, lockfile_path)),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn validate_provenance(
     parsed: &serde_yaml::Value,
     lockfile_path: &Path,
     registries: &crate::npm_config::NpmRegistries,
 ) -> Result<()> {
+    reject_yaml_merge_keys(parsed, lockfile_path)?;
     let Some(packages) = parsed.get("packages").and_then(|value| value.as_mapping()) else {
         return Ok(());
     };

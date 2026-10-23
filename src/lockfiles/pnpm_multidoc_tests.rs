@@ -277,3 +277,15 @@ fn directory_packages_that_leave_the_repo_or_mismatch_the_key_block() {
         );
     }
 }
+
+#[test]
+fn yaml_merge_keys_fail_closed_because_pnpm_expands_them() {
+    let doc = "lockfileVersion: '9.0'\nsnapshots:\n  a@1.0.0:\n    <<: {dependencies: {evil-pkg: 6.6.6}}\n";
+    let parsed = parse_pnpm_lock_guarded(doc).unwrap();
+    let result = pnpm::validate_provenance(
+        &parsed,
+        Path::new("pnpm-lock.yaml"),
+        &crate::npm_config::NpmRegistries::default(),
+    );
+    assert!(result.is_err(), "merge keys must be rejected");
+}
