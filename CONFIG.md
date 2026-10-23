@@ -169,7 +169,7 @@ Exact allowlist of project `.npmrc` registry routes. A route is named `default` 
 }
 ```
 
-**What it does:** `.npmrc` lives in the scanned repository, so its routes are repository-controlled. In `--ci` mode, every package routed through a route that is not allowlisted here is a blocking `resolution/untrusted-registry-source` error. Routed packages never skip OSV advisory checks, allowlisted or not. See the [JavaScript guide](docs/ecosystems/JAVASCRIPT.md#private-registries).
+**What it does:** `.npmrc` lives in the scanned repository, so its routes are repository-controlled. In `--ci` mode, every package routed through a route that is not allowlisted here is a blocking `resolution/untrusted-registry-source` error. Routed packages are private either way: their names are never sent to the public registry or OSV, so allowlisting a route here is what lets CI accept packages that skip those checks. See the [JavaScript guide](docs/ecosystems/JAVASCRIPT.md#private-registries).
 
 ### Python profile selection
 
