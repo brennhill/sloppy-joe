@@ -349,6 +349,68 @@ fn gemfile_lock_read_errors_propagate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn bun_transitive_names(lockfile_content: &str, importer_dir: &str) -> Result<Vec<String>> {
+    let dir = unique_dir();
+    let lockfile = dir.join("bun.lock");
+    std::fs::write(&lockfile, lockfile_content).unwrap();
+    std::fs::create_dir_all(dir.join(importer_dir)).unwrap();
+    let deps = vec![npm_dep("react", "18.3.1")];
+    let result = LockfileData::parse_for_kind_with_lockfile(
+        &dir.join(importer_dir),
+        Some(crate::ProjectInputKind::Npm),
+        &deps,
+        Some(&lockfile),
+    )
+    .map(|lock| {
+        lock.transitive_deps
+            .iter()
+            .map(|dep| dep.package_name().to_string())
+            .collect()
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+const BUN_LOCK_WITH_ORPHAN: &str = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root", "dependencies": { "react": "18.3.1" } },
+    "apps/web": { "name": "web", "dependencies": { "react": "18.3.1" } }
+  },
+  "packages": {
+    "react": ["react@18.3.1", "", {}, "sha512-react"],
+    "ghost": ["ghost@6.6.6", "", { "dependencies": { "ghost-child": "1.0.0" } }, "sha512-ghost"],
+    "ghost-child": ["ghost-child@1.0.0", "", {}, "sha512-ghost-child"],
+    "web": ["web@workspace:apps/web"]
+  }
+}"#;
+
+#[test]
+fn bun_root_importer_scans_orphan_package_entries() {
+    let names = bun_transitive_names(BUN_LOCK_WITH_ORPHAN, ".").unwrap();
+    assert!(names.contains(&"ghost".to_string()), "{names:?}");
+    assert!(names.contains(&"ghost-child".to_string()), "{names:?}");
+}
+
+#[test]
+fn bun_workspace_child_does_not_pick_up_orphans() {
+    let names = bun_transitive_names(BUN_LOCK_WITH_ORPHAN, "apps/web").unwrap();
+    assert!(!names.contains(&"ghost".to_string()), "{names:?}");
+}
+
+#[test]
+fn bun_entries_with_invalid_package_names_block() {
+    let lock = r#"{
+  "lockfileVersion": 1,
+  "workspaces": { "": { "name": "root", "dependencies": { "react": "18.3.1" } } },
+  "packages": {
+    "react": ["react@18.3.1", "", { "dependencies": { "evil%2Fpkg": "1.0.0" } }, "sha512-react"],
+    "evil%2Fpkg": ["evil%2Fpkg@1.0.0", "", {}, "sha512-evil"]
+  }
+}"#;
+    assert!(bun_transitive_names(lock, ".").is_err());
+}
+
 #[test]
 fn bun_transitives_include_optional_dependencies() {
     let dir = unique_dir();
