@@ -56,6 +56,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Legacy `setup.py` and `setup.cfg` scans include `install_requires`, `setup_requires`, `tests_require`, and extras.
 - `setup.cfg` supports both `=` and `:` option delimiters case-insensitive option names, and trailing section comments. `DEFAULT` inheritance reports `Scan not supported` rather than silently omitting inherited dependencies.
 - `setup.py` accepts standard setuptools imports, string metadata assignments, comments, and one `setup(...)` call with literal arguments. Executable preambles, computed metadata, custom source encodings, and trailing statements report `Scan not supported`. It requires complete literal dependency values. Concatenated lists or strings, encoded string escapes, expanded keyword arguments, multiple setup calls, triple-quoted strings, and unrecognized calls report `Scan not supported` (exit 2).
+- `setup.py` keywords are checked against a fixed list. `install_requires`, `setup_requires`, `tests_require`, and `extras_require` (a dict of string keys to lists of strings) are scanned. Standard metadata (`name`, `python_requires`, `classifiers`, `entry_points`, the PEP 314 `requires`/`provides`/`obsoletes`, and similar) is ignored. Unknown or plugin keywords (for example `pbr=True`), repeated keywords, a non-empty `dependency_links`, `options` that set `easy_install`, and string-valued or non-literal dependency values report `Scan not supported`.
 
 ## What blocks
 
