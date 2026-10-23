@@ -224,7 +224,6 @@ pub(super) fn resolve_from_parsed(
 
 /// Check name for lockfile entries no dependency reaches.
 pub(crate) const LOCKFILE_ORPHAN_ENTRIES: &str = "lockfile/orphan-entries";
-const ORPHAN_NAMES_LISTED: usize = 10;
 
 /// The registry package (name, version) an entry locks, if it is one. Blocks
 /// on invalid package names instead of silently dropping the entry.
@@ -461,38 +460,17 @@ fn orphan_entries_issue(
     packages: &[Option<(String, String)>],
     orphans: &[usize],
 ) -> crate::report::Issue {
-    let mut names = orphans
+    let names = orphans
         .iter()
         .filter_map(|index| packages[*index].as_ref())
         .map(|(name, version)| format!("{name}@{version}"))
         .collect::<Vec<_>>();
-    names.sort();
-    names.dedup();
-    let listed = names
-        .iter()
-        .take(ORPHAN_NAMES_LISTED)
-        .map(|name| crate::report::sanitize_for_terminal(name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let more = names.len().saturating_sub(ORPHAN_NAMES_LISTED);
-    let more = if more > 0 {
-        format!(" (and {more} more)")
-    } else {
-        String::new()
-    };
-    crate::report::Issue::new(
-        parsed.path.display().to_string(),
-        LOCKFILE_ORPHAN_ENTRIES,
-        crate::report::Severity::Warning,
+    super::stale_orphan_entries_issue(
+        &parsed.path,
+        names,
+        "Yarn",
+        "Run `yarn install` to prune the stale entries from yarn.lock, then commit the result.",
     )
-    .message(format!(
-        "Lockfile '{}' has {} stale entries that no dependency reaches: {}{}. Yarn does not install them, so they were not scanned.",
-        parsed.path.display(),
-        names.len(),
-        listed,
-        more
-    ))
-    .fix("Run `yarn install` to prune the stale entries from yarn.lock, then commit the result.")
 }
 
 pub(crate) fn validate_manifest_consistency(

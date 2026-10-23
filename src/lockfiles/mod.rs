@@ -4,6 +4,7 @@ mod composer;
 mod dotnet;
 mod gradle;
 pub(crate) mod npm;
+pub(crate) mod pipfile_lock;
 pub(crate) mod pnpm;
 pub(crate) mod python;
 mod ruby;
@@ -15,6 +16,9 @@ mod redteam_tests;
 
 #[cfg(test)]
 mod js_reachability_tests;
+
+#[cfg(test)]
+mod bun_nested_tests;
 
 use crate::Dependency;
 use crate::Ecosystem;
@@ -121,6 +125,7 @@ enum ParsedLockfile {
     Pnpm {
         value: serde_yaml::Value,
         importer_key: String,
+        path: PathBuf,
     },
     Bun {
         value: serde_json::Value,
@@ -133,6 +138,7 @@ enum ParsedLockfile {
     Gradle(String),
     Python(toml::Value),
     Uv(toml::Value),
+    Pipfile(serde_json::Value),
     Ruby(String),
     None,
 }
@@ -235,6 +241,18 @@ impl LockfileData {
         resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive, None)
     }
 
+    /// Treat every registry package the lockfile records as a transitive
+    /// dependency. Used when the manifest declares no roots at all, so nothing
+    /// proves which locked packages are installable (fail closed).
+    pub fn scan_all_locked_packages(&mut self) -> Result<()> {
+        let mut seen = HashSet::new();
+        self.transitive_deps = parse_all_from_parsed(&self.parsed)?
+            .into_iter()
+            .filter(|dep| seen.insert((dep.package_name().to_string(), dep.version.clone())))
+            .collect();
+        Ok(())
+    }
+
     pub fn reduced_confidence_from_manifest(direct_deps: &[Dependency]) -> Self {
         let mut resolution = ResolutionResult::default();
         add_manifest_exact_fallbacks(&mut resolution, direct_deps);
@@ -269,6 +287,7 @@ fn read_lockfile(
                 return Ok(ParsedLockfile::Pnpm {
                     value,
                     importer_key,
+                    path: path.to_path_buf(),
                 });
             }
             if lockfile_override.is_some_and(is_bun_lockfile_path) {
@@ -382,10 +401,13 @@ fn read_lockfile_for_project_kind(
             Some(value) => Ok(ParsedLockfile::Uv(value)),
             None => Ok(ParsedLockfile::None),
         },
+        crate::ProjectInputKind::PyPipfile => match pipfile_lock::read_lockfile(project_dir)? {
+            Some(value) => Ok(ParsedLockfile::Pipfile(value)),
+            None => Ok(ParsedLockfile::None),
+        },
         crate::ProjectInputKind::PyRequirements
         | crate::ProjectInputKind::PyRequirementsTrusted
         | crate::ProjectInputKind::PyProjectLegacy
-        | crate::ProjectInputKind::PyPipfile
         | crate::ProjectInputKind::PySetupPy
         | crate::ProjectInputKind::PySetupCfg => Ok(ParsedLockfile::None),
         crate::ProjectInputKind::Cargo => {
@@ -432,6 +454,7 @@ fn resolve_from_parsed(
         ParsedLockfile::Pnpm {
             value,
             importer_key,
+            ..
         } => pnpm::resolve_from_value(value, deps, importer_key),
         ParsedLockfile::Bun {
             value,
@@ -451,6 +474,9 @@ fn resolve_from_parsed(
         }
         ParsedLockfile::Uv(value) => {
             uv::resolve_from_value_with_mode_and_profile(value, deps, mode, python_profile)
+        }
+        ParsedLockfile::Pipfile(value) => {
+            pipfile_lock::resolve_from_value_with_mode(value, deps, mode)
         }
         ParsedLockfile::Ruby(content) => ruby::resolve_from_content_with_mode(content, deps, mode),
         ParsedLockfile::None => {
@@ -475,6 +501,7 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
         ParsedLockfile::Gradle(content) => gradle::parse_all_from_content(content),
         ParsedLockfile::Python(value) => python::parse_all_from_value(value),
         ParsedLockfile::Uv(value) => uv::parse_all_from_value(value),
+        ParsedLockfile::Pipfile(value) => pipfile_lock::parse_all_from_value(value),
         ParsedLockfile::Ruby(content) => ruby::parse_all_from_content(content),
         ParsedLockfile::None => Ok(vec![]),
     }
@@ -491,15 +518,19 @@ fn parse_all_from_parsed_for_project(
     if let ParsedLockfile::Yarn(parsed) = parsed {
         return yarn::parse_all_from_parsed_for_project(parsed, direct_deps, project_dir);
     }
+    if let ParsedLockfile::Pnpm {
+        value,
+        importer_key,
+        path,
+    } = parsed
+    {
+        return pnpm::parse_for_importer_with_orphans(value, importer_key, path);
+    }
     let deps = match parsed {
         ParsedLockfile::Npm {
             value, project_key, ..
         } => npm::parse_transitive_from_value(value, direct_deps, project_key),
         ParsedLockfile::NpmLegacy { .. } => Ok(vec![]),
-        ParsedLockfile::Pnpm {
-            value,
-            importer_key,
-        } => pnpm::parse_all_from_value_for_importer(value, importer_key),
         ParsedLockfile::Bun {
             value,
             importer_key,
@@ -513,6 +544,46 @@ fn parse_all_from_parsed_for_project(
         _ => parse_all_from_parsed(parsed),
     }?;
     Ok((deps, Vec::new()))
+}
+
+const ORPHAN_NAMES_LISTED: usize = 10;
+
+/// Non-blocking warning for lockfile entries that nothing reaches. Only used
+/// when reachability is certain, so the installer never installs them.
+fn stale_orphan_entries_issue(
+    lockfile_path: &Path,
+    mut names: Vec<String>,
+    installer: &str,
+    fix: &str,
+) -> Issue {
+    names.sort();
+    names.dedup();
+    let listed = names
+        .iter()
+        .take(ORPHAN_NAMES_LISTED)
+        .map(|name| crate::report::sanitize_for_terminal(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = names.len().saturating_sub(ORPHAN_NAMES_LISTED);
+    let more = if more > 0 {
+        format!(" (and {more} more)")
+    } else {
+        String::new()
+    };
+    Issue::new(
+        lockfile_path.display().to_string(),
+        yarn::LOCKFILE_ORPHAN_ENTRIES,
+        crate::report::Severity::Warning,
+    )
+    .message(format!(
+        "Lockfile '{}' has {} stale entries that no dependency reaches: {}{}. {} does not install them, so they were not scanned.",
+        lockfile_path.display(),
+        names.len(),
+        listed,
+        more,
+        installer
+    ))
+    .fix(fix)
 }
 
 #[cfg(test)]

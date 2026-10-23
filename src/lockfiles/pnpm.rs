@@ -93,6 +93,7 @@ pub(super) fn parse_all_from_value(parsed: &serde_yaml::Value) -> Result<Vec<Dep
     Ok(deps)
 }
 
+#[cfg(test)]
 pub(super) fn parse_all_from_value_for_importer(
     parsed: &serde_yaml::Value,
     importer_key: &str,
@@ -103,20 +104,99 @@ pub(super) fn parse_all_from_value_for_importer(
     else {
         return Ok(vec![]);
     };
+    let walk = walk_from_importers(parsed, [importer])?;
+    Ok(dependencies_for(walk.reachable))
+}
 
-    let mut deps = Vec::new();
-    let mut seen = HashSet::new();
-    let mut queue = VecDeque::new();
-
-    for (name, reference) in importer_dependency_entries(importer) {
-        let Some((package_name, version)) = normalized_pnpm_dependency(&name, &reference) else {
-            continue;
-        };
-        queue.push_back((package_name, version));
+/// Dependencies to scan for one importer, plus lockfile-level issues.
+///
+/// The importer scans what its own dependencies reach. Entries no importer
+/// reaches are owned by the root importer (`.`), or by every importer when
+/// the lockfile has no root importer. For a standalone lockfile (one importer)
+/// whose graph resolves completely they are stale and never installed, so
+/// they are flagged instead of scanned; otherwise they are scanned (fail
+/// closed) so a walker gap can never hide an installed package.
+pub(crate) fn parse_for_importer_with_orphans(
+    parsed: &serde_yaml::Value,
+    importer_key: &str,
+    lockfile_path: &Path,
+) -> Result<(Vec<Dependency>, Vec<crate::report::Issue>)> {
+    let Some(importers) = parsed.get("importers").and_then(|value| value.as_mapping()) else {
+        return Ok((vec![], vec![]));
+    };
+    let Some(importer) = parsed
+        .get("importers")
+        .and_then(|value| value.get(importer_key))
+    else {
+        return Ok((vec![], vec![]));
+    };
+    let own = walk_from_importers(parsed, [importer])?;
+    let owns_orphans = importer_key == "."
+        || parsed
+            .get("importers")
+            .and_then(|value| value.get("."))
+            .is_none();
+    if !owns_orphans {
+        return Ok((dependencies_for(own.reachable), vec![]));
     }
 
+    let global = walk_from_importers(parsed, importers.values())?;
+    let (entries, unattributable) = locked_package_identities(parsed)?;
+    let orphans = entries
+        .into_iter()
+        .filter(|identity| !global.reachable.contains(identity))
+        .collect::<HashSet<_>>();
+    // Only a standalone root importer can prove an entry is never installed.
+    let certain = importer_key == "."
+        && importers.len() == 1
+        && !own.unresolved_edge
+        && !global.unresolved_edge
+        && !unattributable;
+
+    let mut scan = own.reachable;
+    let mut issues = Vec::new();
+    if !orphans.is_empty() {
+        if certain {
+            issues.push(super::stale_orphan_entries_issue(
+                lockfile_path,
+                orphans
+                    .iter()
+                    .map(|(name, version)| format!("{name}@{version}"))
+                    .collect(),
+                "pnpm",
+                "Run `pnpm install` to prune the stale entries from pnpm-lock.yaml, then commit the result.",
+            ));
+        } else {
+            scan.extend(orphans);
+        }
+    }
+    Ok((dependencies_for(scan), issues))
+}
+
+struct PnpmWalk {
+    reachable: HashSet<(String, String)>,
+    /// A dependency edge pointed at a package the lockfile does not record.
+    unresolved_edge: bool,
+}
+
+fn walk_from_importers<'a>(
+    parsed: &serde_yaml::Value,
+    importers: impl IntoIterator<Item = &'a serde_yaml::Value>,
+) -> Result<PnpmWalk> {
+    let (known, _) = locked_package_identities(parsed)?;
+    let mut queue = VecDeque::new();
+    for importer in importers {
+        for (name, reference) in importer_dependency_entries(importer) {
+            if let Some(dependency) = normalized_pnpm_dependency(&name, &reference) {
+                queue.push_back(dependency);
+            }
+        }
+    }
+
+    let mut reachable = HashSet::new();
+    let mut unresolved_edge = false;
     while let Some((name, version)) = queue.pop_front() {
-        if !seen.insert((name.clone(), version.clone())) {
+        if reachable.contains(&(name.clone(), version.clone())) {
             continue;
         }
         if !crate::registry::validate_package_name(&name) {
@@ -126,22 +206,63 @@ pub(super) fn parse_all_from_value_for_importer(
                 crate::report::sanitize_for_terminal(&version)
             );
         }
-        deps.push(Dependency {
-            name: name.clone(),
-            version: Some(version.clone()),
-            ecosystem: crate::Ecosystem::Npm,
-            actual_name: None,
-        });
+        if !known.contains(&(name.clone(), version.clone())) {
+            unresolved_edge = true;
+        }
         for (child_name, child_reference) in package_dependency_entries(parsed, &name, &version) {
-            if let Some((child_package_name, child_version)) =
-                normalized_pnpm_dependency(&child_name, &child_reference)
-            {
-                queue.push_back((child_package_name, child_version));
+            if let Some(child) = normalized_pnpm_dependency(&child_name, &child_reference) {
+                queue.push_back(child);
             }
         }
+        reachable.insert((name, version));
     }
+    Ok(PnpmWalk {
+        reachable,
+        unresolved_edge,
+    })
+}
 
-    Ok(deps)
+/// Every (name, version) recorded under `packages` or `snapshots`, and whether
+/// any key could not be attributed to a package. Invalid names block.
+fn locked_package_identities(
+    parsed: &serde_yaml::Value,
+) -> Result<(HashSet<(String, String)>, bool)> {
+    let mut identities = HashSet::new();
+    let mut unattributable = false;
+    for section in ["packages", "snapshots"] {
+        let Some(entries) = parsed.get(section).and_then(|value| value.as_mapping()) else {
+            continue;
+        };
+        for key in entries.keys() {
+            let Some((name, version)) = key.as_str().and_then(pnpm_package_key_parts) else {
+                unattributable = true;
+                continue;
+            };
+            if !crate::registry::validate_package_name(name) {
+                anyhow::bail!(
+                    "pnpm-lock.yaml package '{}' has an invalid package name '{}'.",
+                    crate::report::sanitize_for_terminal(key.as_str().unwrap_or_default()),
+                    crate::report::sanitize_for_terminal(name)
+                );
+            }
+            identities.insert((name.to_string(), version.to_string()));
+        }
+    }
+    Ok((identities, unattributable))
+}
+
+fn dependencies_for(identities: HashSet<(String, String)>) -> Vec<Dependency> {
+    let mut ordered = identities.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+        .into_iter()
+        .map(|(name, version)| Dependency {
+            name,
+            version: Some(version),
+            ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
+        })
+        .collect()
 }
 
 fn importer_dependency_reference<'a>(

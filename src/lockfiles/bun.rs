@@ -43,6 +43,7 @@ pub(super) fn resolve_from_value(
         return Ok(result);
     };
 
+    let prefix = importer_scope(importer, importer_key);
     let mut result = ResolutionResult::default();
     for dep in deps {
         let Some(specifier) = importer_dependency_specifier(importer, &dep.name) else {
@@ -51,8 +52,13 @@ pub(super) fn resolve_from_value(
             continue;
         };
 
-        let resolved = match resolve_package_ref(packages, &dep.name, dep.package_name(), specifier)
-        {
+        let resolved = match resolve_package_ref(
+            packages,
+            &prefix,
+            &dep.name,
+            dep.package_name(),
+            specifier,
+        ) {
             Some((_, version)) => version,
             None => {
                 result.push_issue_for(
@@ -142,15 +148,21 @@ pub(super) fn parse_all_from_value_for_importer(
         return Ok(vec![]);
     };
 
-    let mut keys = reachable_package_keys(packages, importer_dependency_entries(importer));
+    let mut keys = reachable_package_keys(
+        packages,
+        &importer_scope(importer, importer_key),
+        importer_dependency_entries(importer),
+    );
 
     // The root importer also owns any package entry no workspace reaches, so
-    // an orphan entry can never sit in the lockfile unscanned.
-    if importer_key.is_empty() {
+    // an orphan entry can never sit in the lockfile unscanned. Without a root
+    // workspace nobody owns them, so every importer scans them (fail closed).
+    if importer_key.is_empty() || !workspaces.contains_key("") {
         let mut reachable_from_any = HashSet::new();
-        for workspace in workspaces.values() {
+        for (workspace_key, workspace) in workspaces {
             reachable_from_any.extend(reachable_package_keys(
                 packages,
+                &importer_scope(workspace, workspace_key),
                 importer_dependency_entries(workspace),
             ));
         }
@@ -193,16 +205,33 @@ pub(super) fn parse_all_from_value_for_importer(
     Ok(deps)
 }
 
+/// The nested scope an importer's own dependencies resolve from first: a
+/// workspace member's entries are nested under its package name (`app/dep`),
+/// the root's are top-level.
+fn importer_scope(importer: &serde_json::Value, importer_key: &str) -> String {
+    if importer_key.is_empty() {
+        return String::new();
+    }
+    importer
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|name| split_package_key(name).is_some_and(|segments| segments.len() == 1))
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Package keys reachable from an importer's declared dependency edges.
 fn reachable_package_keys(
     packages: &serde_json::Map<String, serde_json::Value>,
+    scope: &str,
     roots: Vec<(String, String)>,
 ) -> HashSet<String> {
     let start = roots
         .into_iter()
         .filter_map(|(dep_name, specifier)| {
             let target_name = bun_specifier_package_name(&dep_name, &specifier);
-            resolve_package_ref(packages, &dep_name, &target_name, &specifier).map(|(key, _)| key)
+            resolve_package_ref(packages, scope, &dep_name, &target_name, &specifier)
+                .map(|(key, _)| key)
         })
         .collect();
     walk_package_keys(packages, start)
@@ -224,9 +253,15 @@ fn walk_package_keys(
         };
         for (child_name, child_specifier) in bun_dependency_entries(value) {
             let target_name = bun_specifier_package_name(&child_name, &child_specifier);
-            if let Some((child_key, _)) =
-                resolve_package_ref(packages, &child_name, &target_name, &child_specifier)
-            {
+            // A package's own dependencies resolve from its nested
+            // node_modules first (`parent/child`), then up the tree.
+            if let Some((child_key, _)) = resolve_package_ref(
+                packages,
+                &package_key,
+                &child_name,
+                &target_name,
+                &child_specifier,
+            ) {
                 queue.push_back(child_key);
             }
         }
@@ -296,18 +331,75 @@ pub(crate) fn bun_dependency_entries(value: &serde_json::Value) -> Vec<(String, 
     entries
 }
 
+/// Split a `packages` key into its package-name segments (`a/@s/b` ->
+/// `["a", "@s/b"]`). None for malformed keys (empty or dangling segments).
+pub(crate) fn split_package_key(key: &str) -> Option<Vec<&str>> {
+    let mut segments = Vec::new();
+    let mut rest = key;
+    while !rest.is_empty() {
+        let end = if rest.starts_with('@') {
+            let slash = rest.find('/')?;
+            rest[slash + 1..]
+                .find('/')
+                .map(|next| slash + 1 + next)
+                .unwrap_or(rest.len())
+        } else {
+            rest.find('/').unwrap_or(rest.len())
+        };
+        let segment = &rest[..end];
+        if segment.is_empty() || segment.ends_with('/') || segment == "@" {
+            return None;
+        }
+        if segment.starts_with('@') && segment.split('/').any(str::is_empty) {
+            return None;
+        }
+        segments.push(segment);
+        rest = &rest[end..];
+        if let Some(stripped) = rest.strip_prefix('/') {
+            if stripped.is_empty() {
+                return None;
+            }
+            rest = stripped;
+        }
+    }
+    (!segments.is_empty()).then_some(segments)
+}
+
+/// The key Bun installs `dep_name` from when required inside `scope`: the
+/// nearest `scope/dep_name`, walking up the nested node_modules chain, then
+/// the top-level `dep_name`.
+fn nearest_package_key<'a>(
+    packages: &'a serde_json::Map<String, serde_json::Value>,
+    scope: &str,
+    dep_name: &str,
+) -> Option<&'a String> {
+    let mut segments = split_package_key(scope).unwrap_or_default();
+    loop {
+        let candidate = if segments.is_empty() {
+            dep_name.to_string()
+        } else {
+            format!("{}/{}", segments.join("/"), dep_name)
+        };
+        if let Some((key, _)) = packages.get_key_value(&candidate) {
+            return Some(key);
+        }
+        segments.pop()?;
+    }
+}
+
 fn resolve_package_ref(
     packages: &serde_json::Map<String, serde_json::Value>,
+    scope: &str,
     manifest_key: &str,
     package_name: &str,
     specifier: &str,
 ) -> Option<(String, String)> {
-    if let Some(value) = packages.get(manifest_key)
-        && let Some(descriptor) = bun_package_descriptor(value)
+    if let Some(key) = nearest_package_key(packages, scope, manifest_key)
+        && let Some(descriptor) = bun_package_descriptor(&packages[key])
         && let Some((name, version)) = bun_descriptor_parts(descriptor)
         && name == package_name
     {
-        return Some((manifest_key.to_string(), version.to_string()));
+        return Some((key.clone(), version.to_string()));
     }
 
     if let Some(exact) = crate::version::exact_version(specifier, crate::Ecosystem::Npm) {
@@ -383,9 +475,24 @@ pub(crate) fn validate_provenance(parsed: &serde_json::Value, lockfile_path: &Pa
                 crate::report::sanitize_for_terminal(descriptor)
             );
         };
-        if key != package_name
+        // Nested keys (`parent/child`) install `child` inside `parent`'s
+        // node_modules; the installed identity is the last segment.
+        let Some(installed_name) = split_package_key(key).and_then(|segments| {
+            segments
+                .iter()
+                .all(|segment| crate::registry::validate_package_name(segment))
+                .then(|| segments.last().copied())
+                .flatten()
+        }) else {
+            anyhow::bail!(
+                "Required lockfile '{}' has malformed Bun package key '{}'.",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(key)
+            );
+        };
+        if installed_name != package_name
             && allowed_alias_targets
-                .get(key.as_str())
+                .get(installed_name)
                 .is_none_or(|actual| actual != package_name)
         {
             anyhow::bail!(

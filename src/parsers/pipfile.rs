@@ -11,6 +11,36 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
+    Ok(parse_file_categories(path)?
+        .categories
+        .into_iter()
+        .flat_map(|category| category.deps)
+        .collect())
+}
+
+/// One Pipfile package category and the Pipfile.lock section that locks it.
+pub(crate) struct PipfileCategory {
+    pub(crate) lock_section: String,
+    pub(crate) deps: Vec<Dependency>,
+}
+
+pub(crate) struct ParsedPipfile {
+    pub(crate) categories: Vec<PipfileCategory>,
+    /// Normalized URLs of the declared `[[source]]` indexes.
+    pub(crate) source_urls: Vec<String>,
+}
+
+/// Pipenv locks `[packages]` under `default`, `[dev-packages]` under
+/// `develop`, and every custom category under its own name.
+fn lock_section_for_category(category: &str) -> &str {
+    match category {
+        "packages" => "default",
+        "dev-packages" => "develop",
+        other => other,
+    }
+}
+
+pub(crate) fn parse_file_categories(path: &Path) -> Result<ParsedPipfile> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
     let parsed = toml::from_str::<toml::Value>(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
@@ -36,7 +66,7 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
         }
     }
 
-    let mut deps = Vec::new();
+    let mut categories = Vec::new();
     for section in sections {
         let Some(value) = top_level.get(section) else {
             continue;
@@ -48,6 +78,7 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
                 path.display()
             );
         };
+        let mut deps = Vec::new();
         for (name, value) in table {
             if let Some(dep) =
                 parse_pipfile_dependency(name, value, default_index, &source_urls, path)?
@@ -55,9 +86,16 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
                 deps.push(dep);
             }
         }
+        categories.push(PipfileCategory {
+            lock_section: lock_section_for_category(section).to_string(),
+            deps,
+        });
     }
 
-    Ok(deps)
+    Ok(ParsedPipfile {
+        categories,
+        source_urls: sources.into_iter().map(|(_, url)| url).collect(),
+    })
 }
 
 fn parse_sources(parsed: &toml::Value, source_path: &Path) -> Result<Vec<(String, String)>> {
