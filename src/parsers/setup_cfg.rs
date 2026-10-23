@@ -58,6 +58,25 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
                 collect_dependency_lines(&entries, path, &mut deps)?;
                 index = next_index;
             }
+            "options" | "easy_install" => {
+                let key = key_name(trimmed).map(normalize_cfg_name);
+                let Some(key) = key else {
+                    index += 1;
+                    continue;
+                };
+                let carries_dependencies = section == "easy_install"
+                    || key == "dependency_links"
+                    || (key != "python_requires"
+                        && (key.contains("require") || key.contains("depend")));
+                let (entries, next_index) = read_cfg_value_block(&lines, index);
+                if carries_dependencies && entries.iter().any(|entry| !entry.is_empty()) {
+                    anyhow::bail!(
+                        "Scan not supported: setup.cfg [{section}] {key} can add or redirect dependencies in {}",
+                        path.display()
+                    );
+                }
+                index = next_index;
+            }
             _ => {
                 index += 1;
             }
