@@ -117,7 +117,10 @@ mod tests {
         // Regression: a literal '+' in the query is serialized as %2B, which
         // Solr rejects with HTTP 400 for every lookup.
         let url = search_url("com.example", "demo", None);
-        assert!(!url.contains("%2B"), "query must not contain encoded '+': {url}");
+        assert!(
+            !url.contains("%2B"),
+            "query must not contain encoded '+': {url}"
+        );
         let parsed = reqwest::Url::parse(&url).unwrap();
         let query = parsed
             .query_pairs()
