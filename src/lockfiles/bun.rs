@@ -430,6 +430,63 @@ fn split_npm_package_and_spec(spec: &str) -> Option<(&str, &str)> {
     Some((name, version.trim_start_matches('@')))
 }
 
+/// A `packages` entry that Bun installs from the local filesystem rather than a
+/// registry (`name@workspace:path`, `name@file:path`, `name@link:path`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BunLocalPackage<'a> {
+    pub(crate) key: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) protocol: &'static str,
+    pub(crate) target: &'a str,
+}
+
+/// Every local (workspace:/file:/link:) package entry in a Bun lockfile,
+/// regardless of whether the manifest declares it directly. Callers must prove
+/// each target is a scanned local project.
+pub(crate) fn local_package_entries(parsed: &serde_json::Value) -> Vec<BunLocalPackage<'_>> {
+    let Some(packages) = parsed.get("packages").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for (key, value) in packages {
+        let Some(descriptor) = bun_package_descriptor(value) else {
+            continue;
+        };
+        let descriptor = descriptor.trim();
+        // Mirror the `contains` checks that exempt these entries from registry
+        // provenance: any marker anywhere makes the entry local. Prefer a
+        // marker after a leading scope '@' so "@scope/name@file:x" keeps its
+        // name; a marker only at position 0 yields an empty name, which the
+        // caller rejects.
+        let mut matches = ["workspace:", "file:", "link:"]
+            .into_iter()
+            .flat_map(|protocol| {
+                let marker_len = protocol.len() + 1;
+                descriptor
+                    .match_indices(&format!("@{protocol}"))
+                    .map(move |(pos, _)| (pos, protocol, marker_len))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|(pos, _, _)| *pos);
+        let found = matches
+            .iter()
+            .find(|(pos, _, _)| *pos > 0)
+            .or_else(|| matches.first())
+            .copied();
+        let Some((pos, protocol, marker_len)) = found else {
+            continue;
+        };
+        entries.push(BunLocalPackage {
+            key: key.as_str(),
+            name: &descriptor[..pos],
+            protocol,
+            target: &descriptor[pos + marker_len..],
+        });
+    }
+    entries
+}
+
 fn bun_package_descriptor(value: &serde_json::Value) -> Option<&str> {
     value.as_array()?.first()?.as_str()
 }

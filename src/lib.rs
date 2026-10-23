@@ -1824,6 +1824,55 @@ fn validate_local_bun_dependencies(
         validate_local_bun_lockfile_target(spec, lockfile, &name, &local_spec, &expected_target)?;
     }
 
+    validate_bun_lockfile_local_packages(trusted_root, spec, lockfile, npm_index)
+}
+
+/// Every workspace:/file:/link: entry in bun.lock (including transitive ones the
+/// manifest never declares) must resolve to a scanned local project with the
+/// same package identity, mirroring the npm `link: true` check.
+fn validate_bun_lockfile_local_packages(
+    trusted_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    lockfile: &serde_json::Value,
+    npm_index: &NpmProjectIndex,
+) -> Result<()> {
+    let lockfile_path = selected_lockfile_path(spec).expect("bun preflight selected a lockfile");
+    let lockfile_dir = lockfile_path
+        .parent()
+        .expect("lockfile has a parent directory");
+    for local in crate::lockfiles::bun::local_package_entries(lockfile) {
+        let target = resolve_local_npm_target(
+            trusted_root,
+            spec,
+            local.name,
+            &format!("file:{}", local.target),
+            lockfile_dir,
+        )
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' local Bun package '{}' ({}{}) must resolve to a scanned local project: {}",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(local.key),
+                local.protocol,
+                crate::report::sanitize_for_terminal(local.target),
+                err
+            )
+        })?;
+        if local.name.is_empty()
+            || npm_index
+                .names_by_dir
+                .get(&target)
+                .is_none_or(|actual| actual != local.name)
+        {
+            anyhow::bail!(
+                "Required lockfile '{}' local Bun package '{}' ('{}') must resolve to a scanned local project with that package identity; target '{}' is unscanned or has a different name.",
+                lockfile_path.display(),
+                crate::report::sanitize_for_terminal(local.key),
+                crate::report::sanitize_for_terminal(local.name),
+                target.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -7238,3 +7287,7 @@ pub(crate) mod test_helpers {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lockfile_redteam_tests.rs"]
+mod lockfile_redteam_tests;
