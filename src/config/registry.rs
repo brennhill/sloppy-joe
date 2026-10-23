@@ -130,7 +130,10 @@ pub fn register(repo_root: &Path, config_path: &Path) -> Result<(), String> {
     register_at_config_home(repo_root, config_path, &config_home()?)
 }
 
-fn canonicalize_with_existing_ancestors(path: &Path) -> Result<PathBuf, String> {
+/// Resolve `path` for boundary checks even when its tail does not exist yet.
+/// Fails closed when the missing tail cannot be resolved without guessing:
+/// `..` below a missing directory, or a dangling symlink.
+pub(crate) fn canonicalize_with_existing_ancestors(path: &Path) -> Result<PathBuf, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -142,12 +145,21 @@ fn canonicalize_with_existing_ancestors(path: &Path) -> Result<PathBuf, String> 
     let mut suffix = Vec::new();
     let mut existing = absolute.as_path();
     while !existing.exists() {
-        let Some(name) = existing.file_name() else {
-            return Ok(absolute);
+        if std::fs::symlink_metadata(existing).is_ok() {
+            return Err(format!(
+                "Could not resolve path '{}': it is a dangling symlink",
+                existing.display()
+            ));
+        }
+        let Some(std::path::Component::Normal(name)) = existing.components().next_back() else {
+            return Err(format!(
+                "Could not resolve path '{}': '..' below a missing directory cannot be resolved safely",
+                absolute.display()
+            ));
         };
         suffix.push(name.to_os_string());
         let Some(parent) = existing.parent() else {
-            return Ok(absolute);
+            return Err(format!("Could not resolve path '{}'", absolute.display()));
         };
         existing = parent;
     }

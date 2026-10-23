@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- GitHub Action: download and extract the release in a fresh temp directory, verify the archive against its published `.sha256`, and never install or put on PATH files from the PR checkout.
+
+- Reject unknown and duplicate keys in sloppy-joe config and local overlay files instead of silently ignoring them.
+
+- Reject cache directories inside the scanned repository (or scan root), including symlinked and not-yet-created paths, and ignore relative `XDG_CACHE_HOME`/`HOME` values; committed cache files can no longer forge OSV or similarity results.
+
+- Stop repository `.npmrc` registry routes from opting packages out of OSV advisory checks; in `--ci`, block routes not allowlisted under `trusted_registries.npm` in the out-of-repo config.
+
 - Reject transitive npm links to external, unscanned, or incorrectly named local targets before a full scan can pass or save a success fingerprint.
 - Resolve npm workspace dependencies from the member directory upward, preserve nested versions in vulnerability checks, and use the same lookup for aliases and local links.
 - Check ancestor workspace membership before validating manager conflicts, so unrelated parent errors do not suppress independent child scans.

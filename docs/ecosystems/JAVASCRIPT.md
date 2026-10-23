@@ -89,8 +89,20 @@ Supported routing follows [npm's default and scoped registry syntax](https://doc
 
 Credentials are ignored without environment expansion and are never used for network requests. Registry URLs with embedded credentials, HTTP routes, unsupported configuration keys, and mismatched lockfile sources report errors with values redacted. The parser also accepts comments, quoted registry values, registry-scoped authentication settings, and the non-routing keys `always-auth`, `strict-ssl`, `audit`, `fund`, `ignore-scripts`, `save-exact`, and `engine-strict`.
 
-Each direct or transitive package routed to a non-default registry produces a non-blocking `resolution/private-registry-unvetted` warning. This applies to private registries and public-registry mirrors alike: the scanner cannot establish that a mirror serves the same package contents. CI can pass with these warnings. Public package checks continue, including checks on public dependencies pulled in by private packages.
+`.npmrc` is repository-controlled, so a registry route cannot by itself opt packages out of checks. Each route must be allowlisted in the out-of-repo sloppy-joe config under `trusted_registries.npm`, binding the exact route name (`default` for the unscoped `registry=` key, or the `@scope`) to the exact registry URL:
 
-Private identities are not queried against public npm or OSV. Existence, name similarity, metadata, publication age, publisher changes, and vulnerability coverage for those packages are unvetted. Lockfile consistency, required integrity metadata, and declared source origin/path checks remain active. An integrity field is not proof that the payload is safe, and private hosting does not guarantee an uncompromised release. Review registry access and package provenance separately.
+```json
+{
+  "trusted_registries": {
+    "npm": [
+      { "name": "@company", "source": "https://gitlab.example/api/v4/projects/${PROJECT_ID}/packages/npm/" }
+    ]
+  }
+}
+```
+
+In `--ci` mode, each direct or transitive package routed through a route that is not allowlisted produces a blocking `resolution/untrusted-registry-source` error. Packages routed through an allowlisted route, and all routed packages outside `--ci`, produce a non-blocking `resolution/private-registry-unvetted` warning. This applies to private registries and public-registry mirrors alike: the scanner cannot establish that a mirror serves the same package contents. Public package checks continue, including checks on public dependencies pulled in by private packages.
+
+Routed packages are never queried against the public npm registry, but their names and locked versions are still checked against OSV advisories. Existence, name similarity, metadata, publication age, and publisher changes for those packages are unvetted. Lockfile consistency, required integrity metadata, and declared source origin/path checks remain active. An integrity field is not proof that the payload is safe, and private hosting does not guarantee an uncompromised release. Review registry access and package provenance separately.
 
 For CI, scan a clean checkout and preserve the installer's actual source configuration. Do not remove `.npmrc` or add broad `internal` rules to manufacture a passing result. npm `overrides` and other unsupported graph rewrites remain unsupported even when private registry routing is accepted.

@@ -97,40 +97,15 @@ runs:
         INPUT_VERSION: ${{ steps.version.outputs.version }}
         INPUT_TARGET: ${{ steps.platform.outputs.target }}
         INPUT_EXT: ${{ steps.platform.outputs.ext }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        VERSION="${INPUT_VERSION}"
-        TARGET="${INPUT_TARGET}"
-        EXT="${INPUT_EXT}"
-        ARCHIVE="sloppy-joe-${TARGET}.${EXT}"
-        URL="https://github.com/brennhill/sloppy-joe/releases/download/v${VERSION}/${ARCHIVE}"
-
-        echo "Downloading sloppy-joe v${VERSION} from ${URL}"
-        curl -fsSL "${URL}" -o "${ARCHIVE}"
-
-        if [ "${EXT}" = "tar.xz" ]; then
-          tar -xf "${ARCHIVE}"
-        else
-          unzip -q "${ARCHIVE}"
-        fi
-
-        # cargo-dist extracts into a directory named like the archive (minus extension)
-        EXTRACT_DIR="sloppy-joe-${TARGET}"
-        if [ -d "${EXTRACT_DIR}" ]; then
-          mv "${EXTRACT_DIR}/sloppy-joe" /usr/local/bin/sloppy-joe || \
-            sudo mv "${EXTRACT_DIR}/sloppy-joe" /usr/local/bin/sloppy-joe
-        elif [ -f "sloppy-joe" ]; then
-          mv sloppy-joe /usr/local/bin/sloppy-joe || \
-            sudo mv sloppy-joe /usr/local/bin/sloppy-joe
-        elif [ -f "sloppy-joe.exe" ]; then
-          echo "$(pwd)" >> "$GITHUB_PATH"
-        else
-          echo "::error::Could not find sloppy-joe binary after extraction"
-          ls -la
-          exit 1
-        fi
-
-        chmod +x /usr/local/bin/sloppy-joe 2>/dev/null || true
-        echo "sloppy-joe v${VERSION} installed successfully"
+        # Downloads, verifies the published SHA-256, and extracts in a fresh
+        # temp dir; nothing in the (untrusted) checkout is installed or on PATH.
+        ARCHIVE="sloppy-joe-${INPUT_TARGET}.${INPUT_EXT}"
+        URL="https://github.com/brennhill/sloppy-joe/releases/download/v${INPUT_VERSION}/${ARCHIVE}"
+        bash "${ACTION_PATH}/scripts/install-action-binary.sh" \
+          "${URL}" "${ARCHIVE}" "${INPUT_TARGET}" "${INPUT_EXT}"
+        echo "sloppy-joe v${INPUT_VERSION} installed successfully"
 
     - name: Run sloppy-joe CI scan
       shell: bash

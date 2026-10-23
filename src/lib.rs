@@ -6488,6 +6488,7 @@ async fn scan_with_config(
         .cache_dir
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
+    cache::ensure_cache_dir_outside_project(&cache_base, project_dir)?;
     let mut specs = unbound_project_inputs_with_config(project_dir, project_type, &config)?;
     let mut binding_errors = std::collections::HashMap::new();
     for spec in &mut specs {
@@ -6716,10 +6717,30 @@ fn incomplete_project_issue(spec: &ProjectInputSpec, error: &anyhow::Error) -> I
     issue
 }
 
-fn private_npm_warning(dep: &Dependency, source: &str) -> Issue {
-    let mut issue = Issue::new(&dep.name, checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED, Severity::Warning)
-        .message(format!("Private registry package '{}' at {} is unvetted: public existence, similarity, metadata, and advisory checks do not verify this registry's contents.", dep.package_name(), dep.version.as_deref().unwrap_or("locked version")))
-        .fix("Review private registry access, upstream provenance, and package contents separately. Private hosting does not guarantee a safe release.");
+/// A repo `.npmrc` route is repo-controlled. In CI it blocks unless the exact
+/// route + registry is allowlisted in out-of-repo `trusted_registries.npm`.
+fn private_npm_issue(
+    dep: &Dependency,
+    source: &str,
+    registries: &npm_config::NpmRegistries,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Issue {
+    let (route, registry) = registries
+        .private_route(dep.package_name())
+        .expect("private npm issue requires a private route");
+    let version = dep.version.as_deref().unwrap_or("locked version");
+    let mut issue = if matches!(opts.scan_mode, ScanMode::Ci)
+        && !config.is_trusted_npm_registry(route, registry)
+    {
+        Issue::new(&dep.name, checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE, Severity::Error)
+            .message(format!("Package '{}' at {} is routed by the project's .npmrc ({} route) to a registry that is not allowlisted in the sloppy-joe config. A repository-controlled registry redirect cannot opt packages out of public existence, similarity, and metadata checks.", dep.package_name(), version, route))
+            .fix(format!("If this registry is approved, add {{\"name\": \"{route}\", \"source\": \"<registry URL>\"}} to trusted_registries.npm in the out-of-repo sloppy-joe config. Otherwise remove the registry route from .npmrc."))
+    } else {
+        Issue::new(&dep.name, checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED, Severity::Warning)
+            .message(format!("Private registry package '{}' at {} is unvetted: public existence, similarity, and metadata checks do not verify this registry's contents. Known advisories are still checked by package name.", dep.package_name(), version))
+            .fix("Review private registry access, upstream provenance, and package contents separately. Private hosting does not guarantee a safe release.")
+    };
     issue.source = Some(source.to_string());
     issue
 }
@@ -6746,6 +6767,8 @@ async fn scan_parsed_project(
     let mut private_issues = Vec::new();
     let mut public_deps = Vec::new();
     let mut private_direct = std::collections::HashSet::new();
+    let mut private_direct_deps = Vec::new();
+    let mut private_transitive_deps = Vec::new();
     for dep in &project.deps {
         if registries.private_registry(dep.package_name()).is_some() {
             private_direct.insert((
@@ -6755,7 +6778,8 @@ async fn scan_parsed_project(
                     .exact_version(dep)
                     .map(str::to_string),
             ));
-            private_issues.push(private_npm_warning(dep, "direct"));
+            private_issues.push(private_npm_issue(dep, "direct", &registries, &config, opts));
+            private_direct_deps.push(dep.clone());
         } else {
             public_deps.push(dep.clone());
         }
@@ -6765,7 +6789,14 @@ async fn scan_parsed_project(
             return true;
         }
         if !private_direct.contains(&(dep.package_name().to_string(), dep.version.clone())) {
-            private_issues.push(private_npm_warning(dep, "transitive"));
+            private_issues.push(private_npm_issue(
+                dep,
+                "transitive",
+                &registries,
+                &config,
+                opts,
+            ));
+            private_transitive_deps.push(dep.clone());
         }
         false
     });
@@ -6832,6 +6863,33 @@ async fn scan_parsed_project(
 
     let transitive_count =
         scan_transitive_dependencies(&lockfile_data, &ctx, &project.deps, &mut acc).await?;
+
+    // Registry redirects never opt packages out of name-based advisory checks.
+    for (deps, source) in [
+        (&private_direct_deps, "direct"),
+        (&private_transitive_deps, "transitive"),
+    ] {
+        if deps.is_empty() {
+            continue;
+        }
+        let resolution = if source == "direct" {
+            lockfile_data.resolution.clone()
+        } else {
+            lockfile_data.resolve_transitive(deps)?
+        };
+        let private_ctx = checks::CheckContext {
+            checkable_deps: &[],
+            non_internal_deps: deps,
+            resolution: &resolution,
+            ..ctx
+        };
+        let mut private_acc = checks::ScanAccumulator::new();
+        checks::pipeline::MaliciousCheck
+            .run(&private_ctx, &mut private_acc)
+            .await?;
+        mark_source(&mut private_acc.issues, source);
+        acc.issues.extend(private_acc.issues);
+    }
 
     acc.issues.extend(private_issues);
     Ok(ScanReport::from_issues_with_review_candidates(
@@ -7246,3 +7304,11 @@ mod tests;
 #[cfg(test)]
 #[path = "lib_manifest_discovery_tests.rs"]
 mod manifest_discovery_tests;
+
+#[cfg(test)]
+#[path = "npm_registry_redirect_tests.rs"]
+mod npm_registry_redirect_tests;
+
+#[cfg(test)]
+#[path = "cache_boundary_tests.rs"]
+mod cache_boundary_tests;

@@ -155,6 +155,22 @@ PyPI itself is implicitly trusted as `https://pypi.org/simple/`.
 
 **Current scope:** This covers repo-visible Poetry and uv source/index declarations, plus pip-tools requirements files that bind their own `--index-url` / `--extra-index-url` values in the committed requirements graph. Hash-locked pip-tools still downgrades to reduced-confidence when the primary index is not explicitly file-bound, because pip source state can otherwise still come from host-local pip config or environment variables.
 
+### `trusted_registries.npm`
+
+Exact allowlist of project `.npmrc` registry routes. A route is named `default` (the unscoped `registry=` key) or by its `@scope`, and is bound to one exact HTTPS registry URL. A `${NAME}` placeholder may occupy a whole path segment.
+
+```json
+{
+  "trusted_registries": {
+    "npm": [
+      { "name": "@company", "source": "https://npm.company.example/" }
+    ]
+  }
+}
+```
+
+**What it does:** `.npmrc` lives in the scanned repository, so its routes are repository-controlled. In `--ci` mode, every package routed through a route that is not allowlisted here is a blocking `resolution/untrusted-registry-source` error. Routed packages never skip OSV advisory checks, allowlisted or not. See the [JavaScript guide](docs/ecosystems/JAVASCRIPT.md#private-registries).
+
 ### Python profile selection
 
 Trusted Python modes evaluate one concrete install profile at a time.
