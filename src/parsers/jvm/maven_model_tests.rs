@@ -436,6 +436,10 @@ async fn profile_management_that_differs_is_scanned_as_an_alternative() {
         versions.contains(&Some("3.2.2".to_string())),
         "{versions:?}"
     );
+    assert!(
+        !versions.contains(&None),
+        "no candidate may stay unresolved: {versions:?}"
+    );
 }
 
 #[tokio::test]

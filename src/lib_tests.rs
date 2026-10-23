@@ -12057,11 +12057,26 @@ async fn pnpm_workspace_members_that_discovery_cannot_bind_block_the_scan() {
 
 #[test]
 fn bundler_gems_rb_is_not_silently_skipped() {
-    for name in ["gems.rb", "gems.locked"] {
+    let project = |extra: Option<&str>| {
         let dir = unique_dir();
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join("package.json"), r#"{"name":"app"}"#).unwrap();
-        std::fs::write(dir.join(name), "source \"https://rubygems.org\"\n").unwrap();
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"name":"app","lockfileVersion":3,"packages":{"":{"name":"app"}}}"#,
+        )
+        .unwrap();
+        if let Some(name) = extra {
+            std::fs::write(dir.join(name), "source \"https://rubygems.org\"\n").unwrap();
+        }
+        dir
+    };
+    let control = project(None);
+    let control_result = preflight_scan_inputs(&control, None);
+    let _ = std::fs::remove_dir_all(&control);
+    assert!(control_result.is_ok(), "control project must pass: {control_result:?}");
+    for name in ["gems.rb", "gems.locked"] {
+        let dir = project(Some(name));
         let result = preflight_scan_inputs(&dir, None);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(result.is_err(), "{name} must fail closed");
