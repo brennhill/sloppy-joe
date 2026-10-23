@@ -278,7 +278,11 @@ fn normalized_pnpm_dependency(name: &str, reference: &str) -> Option<(String, St
     Some((name.to_string(), base.to_string()))
 }
 
-pub(crate) fn validate_provenance(parsed: &serde_yaml::Value, lockfile_path: &Path) -> Result<()> {
+pub(crate) fn validate_provenance(
+    parsed: &serde_yaml::Value,
+    lockfile_path: &Path,
+    registries: &crate::npm_config::NpmRegistries,
+) -> Result<()> {
     let Some(packages) = parsed.get("packages").and_then(|value| value.as_mapping()) else {
         return Ok(());
     };
@@ -335,7 +339,9 @@ pub(crate) fn validate_provenance(parsed: &serde_yaml::Value, lockfile_path: &Pa
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            validate_pnpm_tarball_identity(package_name, version, tarball, lockfile_path)?;
+            if !registries.matches_private_source(package_name, tarball) {
+                validate_pnpm_tarball_identity(package_name, version, tarball, lockfile_path)?;
+            }
         }
     }
 

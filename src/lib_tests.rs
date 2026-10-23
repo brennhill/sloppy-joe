@@ -10997,3 +10997,46 @@ async fn private_npm_registry_source_mismatches_block_without_leaking_credential
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn pnpm_private_registry_routing_is_unvetted_with_integrity_still_required() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join(".npmrc"),
+        "@company:registry=https://registry.example/private/\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"packageManager":"pnpm@9.0.0","dependencies":{"@company/client":"1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      '@company/client':\n        specifier: 1.0.0\n        version: 1.0.0\npackages:\n  '@company/client@1.0.0':\n    resolution:\n      integrity: sha512-demo\n      tarball: https://registry.example/private/client.tgz\n").unwrap();
+    let opts = ScanOptions {
+        scan_mode: ScanMode::Ci,
+        no_cache: true,
+        ..Default::default()
+    };
+    let report = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+        .await
+        .unwrap();
+    assert!(!report.has_errors(), "{:?}", report.issues);
+    assert_eq!(report.issues.len(), 1);
+    assert_eq!(
+        report.issues[0].check,
+        "resolution/private-registry-unvetted"
+    );
+    let path = dir.join("pnpm-lock.yaml");
+    std::fs::write(
+        &path,
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("      integrity: sha512-demo\n", ""),
+    )
+    .unwrap();
+    let error = scan_with_source_full_options(&dir, Some("npm"), None, &opts)
+        .await
+        .expect_err("private sources still need integrity");
+    assert!(error.to_string().contains("integrity"));
+    std::fs::remove_dir_all(dir).unwrap();
+}

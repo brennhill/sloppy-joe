@@ -135,14 +135,14 @@ impl NpmRegistries {
     }
 
     pub(crate) fn validate_manager(&self, manager: &str, path: &Path) -> Result<()> {
-        if manager != "npm"
+        if !matches!(manager, "npm" | "pnpm")
             && self
                 .0
                 .values()
                 .any(|url| url != "https://registry.npmjs.org/")
         {
             bail!(
-                "Scan not supported: private .npmrc routing for {manager} in '{}'; npm package-lock.json and npm-shrinkwrap.json are supported",
+                "Scan not supported: private .npmrc routing for {manager} in '{}'; npm and pnpm lockfiles are supported",
                 path.display()
             );
         }

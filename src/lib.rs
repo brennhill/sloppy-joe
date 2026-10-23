@@ -808,7 +808,15 @@ fn read_validated_pnpm_lockfile(
     let lockfile: serde_yaml::Value = serde_yaml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
-    crate::lockfiles::pnpm::validate_provenance(&lockfile, &path)?;
+    crate::lockfiles::pnpm::validate_provenance(
+        &lockfile,
+        &path,
+        &spec
+            .js_binding
+            .as_ref()
+            .map(|b| b.npm_registries.clone())
+            .unwrap_or_default(),
+    )?;
     Ok(lockfile)
 }
 
