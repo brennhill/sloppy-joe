@@ -11,20 +11,20 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        version = "0.10.0";
+        version = "1.2.0";
 
         targets = {
           x86_64-linux = {
             target = "x86_64-unknown-linux-musl";
-            hash = "sha256-Cct7XvQfo2WjoaDoqXWnq+JDcaOrohDzeWL09cuN9t0=";
+            hash = "sha256-mPP1+POMhOwRUSqF0wamSVMWGAdvwsw99s56+B++6U8=";
           };
           aarch64-linux = {
             target = "aarch64-unknown-linux-musl";
-            hash = "sha256-gLKzwabQrw+vP9FjHnBZTBCZsD5I3Is7syC3rmg3Gso=";
+            hash = "sha256-3NuDHL0mLtOnPgrdfu0YADGMUuNGNts765ZWqzQ8nLQ=";
           };
           aarch64-darwin = {
             target = "aarch64-apple-darwin";
-            hash = "sha256-Z16hQUijApc4tDPX6YFfcjHyyGNbpcmNbpvuYe42iI0=";
+            hash = "sha256-XBK0V8ZvjYT1nSW9Wvg5pGGiFmDMZK1xJ/bnVoWLg5k=";
           };
         };
 
@@ -44,7 +44,7 @@
           nativeBuildInputs = [ pkgs.xz ];
 
           unpackPhase = ''
-            tar xf $src
+            tar -xf "$src" --strip-components=1
           '';
 
           installPhase = ''
