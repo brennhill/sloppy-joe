@@ -197,6 +197,7 @@ struct JsProjectBinding {
     lockfile_path: Option<std::path::PathBuf>,
     package_entry_key: String,
     npm_registries: npm_config::NpmRegistries,
+    independent_from_workspace: Option<std::path::PathBuf>,
 }
 
 impl ProjectInputSpec {
@@ -493,6 +494,15 @@ fn preflight_project_inputs_with_options(
         }
 
         if spec.kind == ProjectInputKind::Npm {
+            if let Some(workspace) = spec
+                .js_binding
+                .as_ref()
+                .and_then(|b| b.independent_from_workspace.as_ref())
+            {
+                warnings.push(Issue::new(spec.manifest_path.display().to_string(), checks::names::RESOLUTION_INDEPENDENT_INSTALL_ROOT, Severity::Warning)
+                    .message(format!("Scanning '{}' independently with its own lockfile: ancestor workspace '{}' has no authoritative lockfile and no explicit packageManager.", spec.manifest_path.display(), workspace.display()))
+                    .fix("Keep this project's installer and lockfile aligned with CI; remove unused ancestor workspace declarations if appropriate."));
+            }
             let manifest = npm_manifest.expect("npm manifests should be parsed during preflight");
             validate_supported_js_manager(spec)?;
             validate_js_manifest_security_policy(spec, manifest)?;
@@ -1204,7 +1214,31 @@ fn resolve_js_project_binding(
         )
     })?;
     let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
-    let workspace_root = find_js_workspace_root(&ancestry_root, &canonical_project_dir)?;
+    let mut workspace_root = find_js_workspace_root(&ancestry_root, &canonical_project_dir)?;
+    let mut independent_from_workspace = None;
+    if let Some(root) = &workspace_root
+        && root.project_dir != canonical_project_dir
+        && js_lockfile_path(
+            &canonical_project_dir,
+            detect_js_manager(
+                &canonical_project_dir,
+                &spec.manifest_path,
+                &read_npm_manifest_value(&spec.manifest_path)?,
+            )?,
+        )?
+        .is_some()
+        && js_lockfile_path(&root.project_dir, root.manager)?.is_none()
+    {
+        let root_manifest = root.project_dir.join("package.json");
+        let explicitly_selected = parsers::path_detected(&root_manifest)?
+            && read_npm_manifest_value(&root_manifest)?
+                .get("packageManager")
+                .is_some();
+        if !explicitly_selected {
+            independent_from_workspace = Some(root.manifest_path.clone());
+            workspace_root = None;
+        }
+    }
     let (root_manifest_path, root_dir, manager) = if let Some(root) = workspace_root.as_ref() {
         (
             root.manifest_path.clone(),
@@ -1248,28 +1282,7 @@ fn resolve_js_project_binding(
             }
         }
     }
-    let lockfile_path = match manager {
-        JsPackageManager::Npm => {
-            first_existing_lockfile(&root_dir, &["npm-shrinkwrap.json", "package-lock.json"])
-        }
-        JsPackageManager::Pnpm => {
-            let path = root_dir.join("pnpm-lock.yaml");
-            parsers::path_detected(&path)?.then_some(path)
-        }
-        JsPackageManager::Yarn => {
-            let path = root_dir.join("yarn.lock");
-            parsers::path_detected(&path)?.then_some(path)
-        }
-        JsPackageManager::Bun => {
-            let text = root_dir.join("bun.lock");
-            if parsers::path_detected(&text)? {
-                Some(text)
-            } else {
-                let binary = root_dir.join("bun.lockb");
-                parsers::path_detected(&binary)?.then_some(binary)
-            }
-        }
-    };
+    let lockfile_path = js_lockfile_path(&root_dir, manager)?;
     let package_entry_key = if canonical_project_dir == canonical_root_dir {
         match manager {
             JsPackageManager::Pnpm => ".".to_string(),
@@ -1285,7 +1298,27 @@ fn resolve_js_project_binding(
         lockfile_path,
         package_entry_key,
         npm_registries,
+        independent_from_workspace,
     })
+}
+
+fn js_lockfile_path(
+    root: &std::path::Path,
+    manager: JsPackageManager,
+) -> Result<Option<std::path::PathBuf>> {
+    let candidates: &[&str] = match manager {
+        JsPackageManager::Npm => &["npm-shrinkwrap.json", "package-lock.json"],
+        JsPackageManager::Pnpm => &["pnpm-lock.yaml"],
+        JsPackageManager::Yarn => &["yarn.lock"],
+        JsPackageManager::Bun => &["bun.lock", "bun.lockb"],
+    };
+    for name in candidates {
+        let path = root.join(name);
+        if parsers::path_detected(&path)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 fn js_ancestry_root(
@@ -6069,6 +6102,7 @@ fn project_binding_hash_for_projects(projects: &[ParsedProject]) -> u64 {
                             .map(|path| path.display().to_string()),
                         binding.package_entry_key.clone(),
                         binding.npm_registries.clone(),
+                        binding.independent_from_workspace.clone(),
                     )
                 }),
             )
