@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pipenv: check `Pipfile.lock`'s `_meta.hash` against the Pipfile using pipenv's own algorithm (validated against real published locks). A lock generated from a different Pipfile now blocks as out of date, and a missing `_meta.hash` blocks. Pipfiles holding values pipenv's hash cannot reproduce here (floats, datetimes) keep the package-level reconciliation only.
+- Pipenv: read a version with no comparison operator (`version = "26.2.*"`, `requests = "2.32.3"`) as `==`, as pipenv does, instead of rejecting the Pipfile with an invalid package name.
 - Go: verify the contents of `go.sum`, not just its presence. Every `require`d module version needs a well-formed `<version>/go.mod` checksum, conflicting duplicate hashes and malformed lines block, and a PR can no longer add a requirement without a recorded checksum. Vendored projects (`vendor/modules.txt`) are exempt because Go ignores `go.sum` there.
 - Python `setup.cfg`: block a non-empty `dependency_links`, any `[easy_install]` setting, and unrecognized dependency-looking `[options]` keys instead of silently ignoring them. Metadata and packaging options are still ignored.
 - bun.lock: resolve dependencies from the nearest nested entry (`parent/child`, `member/child`) before the top-level copy, as Bun installs them, so a nested version can no longer be swapped for the hoisted one; accept nested keys whose last segment matches the locked package and block malformed ones. When bun.lock has no root workspace, every workspace scans entries nothing reaches.

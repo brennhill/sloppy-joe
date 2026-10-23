@@ -61,3 +61,44 @@ fn non_table_top_level_entries_fail_closed() {
     assert!(parse(&dir).is_err());
     cleanup(&dir);
 }
+
+fn parse_pipfile_packages(name: &str, packages: &str) -> Vec<crate::Dependency> {
+    let dir = setup_test_dir(
+        name,
+        "Pipfile",
+        &format!(
+            "[[source]]\nname = \"pypi\"\nurl = \"https://pypi.org/simple\"\nverify_ssl = true\n[packages]\n{packages}\n"
+        ),
+    );
+    let deps = parse(&dir).unwrap();
+    cleanup(&dir);
+    deps
+}
+
+#[test]
+fn bare_wildcard_version_means_equals_like_pipenv() {
+    // Real-world: pypa/pipenv's own Pipfile has `gunicorn = {version = "26.2.*", ...}`.
+    let deps = parse_pipfile_packages(
+        "pipfile-bare-wildcard",
+        "gunicorn = {version = \"26.2.*\", sys_platform = \"== 'linux'\"}",
+    );
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].name, "gunicorn");
+}
+
+#[test]
+fn bare_plain_version_means_equals_like_pipenv() {
+    let deps = parse_pipfile_packages("pipfile-bare-version", "requests = \"2.32.3\"");
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].name, "requests");
+    assert_eq!(deps[0].version.as_deref(), Some("==2.32.3"));
+}
+
+#[test]
+fn operator_versions_are_left_alone() {
+    for spec in ["==1.0", ">=1.0,<2", "~=1.4.2", "!=1.5", "<3", "===1.0"] {
+        let deps = parse_pipfile_packages("pipfile-operators", &format!("requests = \"{spec}\""));
+        assert_eq!(deps.len(), 1, "{spec}");
+        assert_eq!(deps[0].name, "requests", "{spec}");
+    }
+}

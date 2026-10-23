@@ -192,6 +192,26 @@ pub(crate) fn validate(
 ) -> Result<()> {
     let (entries, sources) = checked_entries(lock, path)?;
 
+    let recorded_hash = lock
+        .get(META_KEY)
+        .and_then(|meta| meta.get("hash"))
+        .and_then(|hash| hash.get("sha256"))
+        .and_then(|hash| hash.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Broken lockfile '{}': _meta.hash.sha256 is missing. Regenerate Pipfile.lock with `pipenv lock`.",
+                path.display()
+            )
+        })?;
+    if let Some(expected) = &pipfile.hash
+        && !recorded_hash.eq_ignore_ascii_case(expected)
+    {
+        bail!(
+            "Required lockfile '{}' is out of date with the Pipfile: _meta.hash does not match the Pipfile's hash, so the lock was generated from a different Pipfile. Run `pipenv lock` and commit Pipfile.lock.",
+            path.display()
+        );
+    }
+
     let declared_sources: BTreeSet<&str> = if pipfile.source_urls.is_empty() {
         // Pipenv falls back to PyPI when the Pipfile declares no source.
         BTreeSet::from([crate::config::normalized_default_pypi_index()])

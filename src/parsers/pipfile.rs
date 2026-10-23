@@ -24,10 +24,149 @@ pub(crate) struct PipfileCategory {
     pub(crate) deps: Vec<Dependency>,
 }
 
+/// Pipenv's `Pipfile.get_hash()`: sha256 of the compact, key-sorted,
+/// ASCII-escaped JSON of the raw Pipfile data laid out as
+/// `{"_meta": {"sources", "requires"}, "default", "develop", <custom categories>}`.
+/// Returns `None` when the Pipfile has no `[[source]]` or holds a value pipenv's
+/// serializer would not render the way this one does (floats, datetimes), so the
+/// caller can fall back to the two-way package reconciliation instead of
+/// guessing.
+pub(crate) fn pipfile_hash(pipfile: &toml::Value) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+
+    let table = pipfile.as_table()?;
+    let empty = toml::Value::Table(toml::Table::new());
+    let mut meta = BTreeMap::new();
+    meta.insert("sources", table.get("source")?);
+    meta.insert("requires", table.get("requires").unwrap_or(&empty));
+    let mut top: BTreeMap<&str, JsonNode> = BTreeMap::new();
+    top.insert("_meta", JsonNode::Map(meta));
+    top.insert(
+        "default",
+        JsonNode::Toml(table.get("packages").unwrap_or(&empty)),
+    );
+    top.insert(
+        "develop",
+        JsonNode::Toml(table.get("dev-packages").unwrap_or(&empty)),
+    );
+    for (key, value) in table {
+        if PIPFILE_RESERVED_TABLES.contains(&key.as_str())
+            || ["packages", "dev-packages", "default", "develop", "pipfile"].contains(&key.as_str())
+        {
+            continue;
+        }
+        top.insert(key.as_str(), JsonNode::Toml(value));
+    }
+
+    let mut out = String::new();
+    write_json_node(&JsonNode::Top(top), &mut out)?;
+    Some(format!("{:x}", Sha256::digest(out.as_bytes())))
+}
+
+enum JsonNode<'a> {
+    Top(std::collections::BTreeMap<&'a str, JsonNode<'a>>),
+    Map(std::collections::BTreeMap<&'a str, &'a toml::Value>),
+    Toml(&'a toml::Value),
+}
+
+fn write_json_node(node: &JsonNode<'_>, out: &mut String) -> Option<()> {
+    match node {
+        JsonNode::Top(map) => {
+            out.push('{');
+            for (index, (key, value)) in map.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_json_string(key, out);
+                out.push(':');
+                write_json_node(value, out)?;
+            }
+            out.push('}');
+        }
+        JsonNode::Map(map) => {
+            out.push('{');
+            for (index, (key, value)) in map.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_json_string(key, out);
+                out.push(':');
+                write_json_value(value, out)?;
+            }
+            out.push('}');
+        }
+        JsonNode::Toml(value) => write_json_value(value, out)?,
+    }
+    Some(())
+}
+
+fn write_json_value(value: &toml::Value, out: &mut String) -> Option<()> {
+    match value {
+        toml::Value::String(text) => write_json_string(text, out),
+        toml::Value::Integer(number) => out.push_str(&number.to_string()),
+        toml::Value::Boolean(flag) => out.push_str(if *flag { "true" } else { "false" }),
+        toml::Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_json_value(item, out)?;
+            }
+            out.push(']');
+        }
+        toml::Value::Table(table) => {
+            let mut keys: Vec<&String> = table.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_json_string(key, out);
+                out.push(':');
+                write_json_value(&table[key], out)?;
+            }
+            out.push('}');
+        }
+        toml::Value::Float(_) | toml::Value::Datetime(_) => return None,
+    }
+    Some(())
+}
+
+/// Python `json.dumps` with `ensure_ascii=True`: everything outside
+/// space..`~` is escaped, characters above the BMP as surrogate pairs.
+fn write_json_string(text: &str, out: &mut String) {
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            ' '..='~' => out.push(ch),
+            _ => {
+                let mut units = [0u16; 2];
+                for unit in ch.encode_utf16(&mut units) {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
+        }
+    }
+    out.push('"');
+}
+
 pub(crate) struct ParsedPipfile {
     pub(crate) categories: Vec<PipfileCategory>,
     /// Normalized URLs of the declared `[[source]]` indexes.
     pub(crate) source_urls: Vec<String>,
+    /// Pipenv's `Pipfile.get_hash()`, or `None` when it cannot be reproduced
+    /// exactly (no `[[source]]`, float/datetime values).
+    pub(crate) hash: Option<String>,
 }
 
 /// Pipenv locks `[packages]` under `default`, `[dev-packages]` under
@@ -95,6 +234,7 @@ pub(crate) fn parse_file_categories(path: &Path) -> Result<ParsedPipfile> {
     Ok(ParsedPipfile {
         categories,
         source_urls: sources.into_iter().map(|(_, url)| url).collect(),
+        hash: pipfile_hash(&parsed),
     })
 }
 
@@ -206,6 +346,10 @@ fn parse_pipfile_dependency(
 fn compose_requirement(name: &str, spec: Option<&str>) -> String {
     match spec {
         Some("*") | None => name.to_string(),
+        // Pipenv reads a version with no comparison operator as `==<version>`.
+        Some(version) if !version.trim_start().starts_with(['<', '>', '=', '~', '!']) => {
+            format!("{name}=={}", version.trim())
+        }
         Some(version) => format!("{name}{version}"),
     }
 }
@@ -320,3 +464,7 @@ requests = { version = "==2.31.0", index = "mirror-b" }
         cleanup(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "pipfile_hash_tests.rs"]
+mod pipfile_hash_tests;

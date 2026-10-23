@@ -22,6 +22,9 @@ fn unique_dir() -> std::path::PathBuf {
     dir
 }
 
+/// pipenv's own hash of `PIPFILE` (computed with its published algorithm).
+const PIPFILE_HASH: &str = "ee9cbaa7f1fcf68794cf472c62ad7e2c07962e705309fe5b64eb419e5598b980";
+
 const PIPFILE: &str = r#"[[source]]
 name = "pypi"
 url = "https://pypi.org/simple"
@@ -45,7 +48,7 @@ fn entry(version: &str) -> serde_json::Value {
 fn base_lock() -> serde_json::Value {
     serde_json::json!({
         "_meta": {
-            "hash": {"sha256": "x"},
+            "hash": {"sha256": PIPFILE_HASH},
             "pipfile-spec": 6,
             "requires": {},
             "sources": [{"name": "pypi", "url": "https://pypi.org/simple", "verify_ssl": true}]
@@ -245,6 +248,9 @@ fn lock_names_are_matched_after_normalization() {
     let mut lock = base_lock();
     lock["default"].as_object_mut().unwrap().remove("flask");
     lock["default"]["flask-login"] = entry("==0.6.3");
+    lock["_meta"]["hash"]["sha256"] = serde_json::json!(
+        crate::parsers::pipfile::pipfile_hash(&toml::from_str(&pipfile).unwrap()).unwrap()
+    );
     let dir = write_project(&pipfile, Some(&lock));
     preflight(&dir).expect("normalized names should match");
     let _ = std::fs::remove_dir_all(&dir);
@@ -376,4 +382,57 @@ async fn lock_only_typosquat_is_scanned_and_blocks() {
         report.issues
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stale_pipfile_hash_blocks() {
+    let mut lock = base_lock();
+    lock["_meta"]["hash"]["sha256"] =
+        serde_json::json!("0000000000000000000000000000000000000000000000000000000000000000");
+    assert_blocks(&lock, "out of date");
+}
+
+#[test]
+fn pipfile_edited_after_locking_blocks() {
+    let edited = PIPFILE.replace("flask = \">=3.0\"", "flask = \">=3.1\"");
+    let dir = write_project(&edited, Some(&base_lock()));
+    let err = preflight(&dir).expect_err("edited Pipfile must make the lock stale");
+    assert!(format!("{err:#}").contains("out of date"), "{err:#}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_meta_hash_blocks() {
+    let mut lock = base_lock();
+    lock["_meta"].as_object_mut().unwrap().remove("hash");
+    assert_blocks(&lock, "_meta.hash");
+}
+
+#[test]
+fn malformed_meta_hash_blocks() {
+    let mut lock = base_lock();
+    lock["_meta"]["hash"] = serde_json::json!({"md5": "abc"});
+    assert_blocks(&lock, "_meta.hash");
+}
+
+#[test]
+fn pipfile_whose_hash_cannot_be_computed_relies_on_reconciliation() {
+    let pipfile = PIPFILE.replace(
+        "[docs]",
+        "[misc]\nthing = {version = \"==1.0\", added = 1979-05-27T07:32:00Z}\n\n[docs]",
+    );
+    let mut lock = base_lock();
+    lock["misc"] = serde_json::json!({"thing": entry("==1.0")});
+    lock["_meta"]["hash"]["sha256"] = serde_json::json!("irrelevant");
+    let dir = write_project(&pipfile, Some(&lock));
+    // The datetime value cannot be rendered the way pipenv renders it, so the
+    // hash check is skipped and the package-level reconciliation still applies.
+    let result = preflight(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(err) = result {
+        assert!(
+            !format!("{err:#}").contains("out of date"),
+            "uncomputable hash must not produce a stale-lock error: {err:#}"
+        );
+    }
 }
