@@ -346,7 +346,11 @@
       "serde",
       "serde_yaml",
       "toml",
-      "sha2"
+      "sha2",
+      "sha1",
+      "flate2",
+      "tar",
+      "semver"
     ]
   }
 }
