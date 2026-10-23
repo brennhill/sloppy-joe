@@ -77,7 +77,11 @@ pub(super) fn parse_all_from_value(parsed: &serde_yaml::Value) -> Result<Vec<Dep
             continue;
         };
         if !crate::registry::validate_package_name(name) {
-            continue;
+            anyhow::bail!(
+                "pnpm-lock.yaml package '{}' has an invalid package name '{}'.",
+                crate::report::sanitize_for_terminal(key),
+                crate::report::sanitize_for_terminal(name)
+            );
         }
         deps.push(Dependency {
             name: name.to_string(),
@@ -115,14 +119,19 @@ pub(super) fn parse_all_from_value_for_importer(
         if !seen.insert((name.clone(), version.clone())) {
             continue;
         }
-        if crate::registry::validate_package_name(&name) {
-            deps.push(Dependency {
-                name: name.clone(),
-                version: Some(version.clone()),
-                ecosystem: crate::Ecosystem::Npm,
-                actual_name: None,
-            });
+        if !crate::registry::validate_package_name(&name) {
+            anyhow::bail!(
+                "pnpm-lock.yaml dependency '{}@{}' has an invalid package name.",
+                crate::report::sanitize_for_terminal(&name),
+                crate::report::sanitize_for_terminal(&version)
+            );
         }
+        deps.push(Dependency {
+            name: name.clone(),
+            version: Some(version.clone()),
+            ecosystem: crate::Ecosystem::Npm,
+            actual_name: None,
+        });
         for (child_name, child_reference) in package_dependency_entries(parsed, &name, &version) {
             if let Some((child_package_name, child_version)) =
                 normalized_pnpm_dependency(&child_name, &child_reference)

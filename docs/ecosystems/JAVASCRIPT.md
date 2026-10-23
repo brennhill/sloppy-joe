@@ -43,6 +43,8 @@ Once projects are identified, binding, preflight, and scan errors are isolated p
   - public tarball URLs must match the locked package identity and version exactly
   - configured private npm/pnpm tarballs must stay within their declared HTTPS registry origin and path; their contents and identity remain unvetted
 - Alias dependencies are preserved under their real published identity instead of being flattened into the alias name.
+- `yarn.lock` entries that no dependency reaches are not installed, so they are not scanned. A standalone Yarn project reports them as a non-blocking `lockfile/orphan-entries` warning; run `yarn install` to prune them. When reachability cannot be proven (a workspace root, a dependency edge or direct dependency missing from the lockfile, or an entry sloppy-joe cannot attribute), those entries are scanned instead of reported.
+- Lockfile entries with invalid package names, and `yarn.lock` selectors repeated across entries, block the scan.
 - JavaScript transitives get similarity coverage in the trusted path, because JS typosquats often hide below the direct dependency layer.
 
 ## What blocks

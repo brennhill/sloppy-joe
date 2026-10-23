@@ -13,6 +13,9 @@ pub(crate) mod yarn;
 #[cfg(test)]
 mod redteam_tests;
 
+#[cfg(test)]
+mod js_reachability_tests;
+
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::parsers::python_scope::{PythonProfile, PythonRootExtras};
@@ -191,11 +194,12 @@ impl LockfileData {
         let parsed = read_lockfile(project_dir, ecosystem, project_kind, lockfile_override)?;
 
         // Resolve direct dep versions from the parsed data
-        let resolution =
+        let mut resolution =
             resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct, python_profile)?;
 
-        let all_deps =
+        let (all_deps, lockfile_issues) =
             parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir, python_profile)?;
+        resolution.issues.extend(lockfile_issues);
 
         // Filter to transitive only
         let direct_versions: HashSet<(String, String)> = direct_deps
@@ -433,7 +437,7 @@ fn resolve_from_parsed(
             value,
             importer_key,
         } => bun::resolve_from_value(value, deps, importer_key),
-        ParsedLockfile::Yarn(parsed) => yarn::resolve_from_parsed(parsed, deps),
+        ParsedLockfile::Yarn(parsed) => yarn::resolve_from_parsed(parsed, deps, mode),
         ParsedLockfile::Cargo(value) => cargo::resolve_from_value_with_mode(value, deps, mode),
         ParsedLockfile::Composer(value) => {
             composer::resolve_from_value_with_mode(value, deps, mode)
@@ -476,13 +480,18 @@ fn parse_all_from_parsed(parsed: &ParsedLockfile) -> Result<Vec<Dependency>> {
     }
 }
 
+/// Dependencies to scan for a project, plus lockfile-level issues (currently
+/// only Yarn's stale orphan-entry warning).
 fn parse_all_from_parsed_for_project(
     parsed: &ParsedLockfile,
     direct_deps: &[Dependency],
-    _project_dir: &Path,
+    project_dir: &Path,
     python_profile: Option<&PythonLockfileProfile>,
-) -> Result<Vec<Dependency>> {
-    match parsed {
+) -> Result<(Vec<Dependency>, Vec<Issue>)> {
+    if let ParsedLockfile::Yarn(parsed) = parsed {
+        return yarn::parse_all_from_parsed_for_project(parsed, direct_deps, project_dir);
+    }
+    let deps = match parsed {
         ParsedLockfile::Npm {
             value, project_key, ..
         } => npm::parse_transitive_from_value(value, direct_deps, project_key),
@@ -495,9 +504,6 @@ fn parse_all_from_parsed_for_project(
             value,
             importer_key,
         } => bun::parse_all_from_value_for_importer(value, importer_key),
-        ParsedLockfile::Yarn(parsed) => {
-            yarn::parse_all_from_parsed_for_project(parsed, direct_deps)
-        }
         ParsedLockfile::Python(value) => {
             python::parse_all_from_value_for_roots(value, direct_deps, python_profile)
         }
@@ -505,7 +511,8 @@ fn parse_all_from_parsed_for_project(
             uv::parse_all_from_value_for_roots(value, direct_deps, python_profile)
         }
         _ => parse_all_from_parsed(parsed),
-    }
+    }?;
+    Ok((deps, Vec::new()))
 }
 
 #[cfg(test)]
