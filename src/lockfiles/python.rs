@@ -643,10 +643,7 @@ fn poetry_filename_matches_package_version(
     file_name.match_indices(&version_marker).any(|(index, _)| {
         let remainder = &file_name[index + version_marker.len()..];
         normalize_name(&file_name[..index]) == normalized
-            && (remainder.starts_with('-')
-                || SDIST_EXTENSIONS
-                    .iter()
-                    .any(|extension| remainder == *extension))
+            && (remainder.starts_with('-') || SDIST_EXTENSIONS.contains(&remainder))
     })
 }
 
