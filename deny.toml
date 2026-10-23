@@ -4,6 +4,10 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# shortcut: retain the existing YAML parser until a compatibility-tested backend migration.
+ignore = [
+    { id = "RUSTSEC-2024-0449", reason = "Maintenance-only unsafe-libyaml notice, not a vulnerability. Replacing the YAML backend needs lockfile compatibility testing; vulnerability advisories remain enforced." },
+]
 
 [bans]
 multiple-versions = "warn"

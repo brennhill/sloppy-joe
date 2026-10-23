@@ -34,6 +34,7 @@ fn osv_ecosystem(ecosystem: Ecosystem) -> &'static str {
 }
 
 /// An OSV client that can be swapped out for testing.
+#[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait::async_trait]
 pub trait OsvClient: Send + Sync {
     async fn query(

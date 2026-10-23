@@ -53,6 +53,7 @@ pub struct PackageMetadata {
     pub version_history: Vec<VersionRecord>,
 }
 
+#[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait]
 pub trait RegistryExistence: Send + Sync {
     /// Check if a package exists on this registry.
@@ -86,6 +87,7 @@ pub trait RegistryExistence: Send + Sync {
     }
 }
 
+#[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait]
 pub trait RegistryMetadata: Send + Sync {
     /// Fetch metadata for a package. Returns None if not supported or not found.

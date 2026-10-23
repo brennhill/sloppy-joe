@@ -308,6 +308,30 @@
         "previous_publisher": "robertbastian",
         "current_publisher": "Manishearth",
         "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0"
+      },
+      {
+        "package": "rustls",
+        "check": "metadata/maintainer-change",
+        "version": "0.23.46",
+        "previous_publisher": "djc",
+        "current_publisher": "ctz",
+        "reason": "Verified crates.io owner/publisher records and upstream release: https://github.com/rustls/rustls/releases/tag/v/0.23.46"
+      },
+      {
+        "package": "rustls-webpki",
+        "check": "metadata/maintainer-change",
+        "version": "0.103.16",
+        "previous_publisher": "cpu",
+        "current_publisher": "ctz",
+        "reason": "Verified crates.io owner/publisher records and upstream release: https://github.com/rustls/webpki/releases/tag/v/0.103.16"
+      },
+      {
+        "package": "webpki-roots",
+        "check": "metadata/maintainer-change",
+        "version": "1.0.10",
+        "previous_publisher": "ctz",
+        "current_publisher": "cpu",
+        "reason": "Verified crates.io owner/publisher records and upstream release: https://github.com/rustls/webpki-roots/releases/tag/v/1.0.10"
       }
     ]
   },
