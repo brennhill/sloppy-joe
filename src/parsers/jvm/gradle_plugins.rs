@@ -581,32 +581,8 @@ pub(crate) fn resolve_plugins(ctx: &PluginContext<'_>) -> Result<Vec<Dependency>
         .collect();
 
     let mut deps: Vec<Dependency> = Vec::new();
-    let mut push = |dep: Dependency| {
-        if !deps
-            .iter()
-            .any(|seen| seen.name == dep.name && seen.version == dep.version)
-        {
-            deps.push(dep);
-        }
-    };
-
-    let mut requests: Vec<(&Path, &RawPlugin, bool)> = ctx
-        .build
-        .plugins
-        .iter()
-        .map(|plugin| (ctx.build_path, plugin, true))
-        .collect();
-    for (path, script) in ctx.settings {
-        requests.extend(
-            script
-                .plugins
-                .iter()
-                .map(|plugin| (path.as_path(), plugin, false)),
-        );
-    }
-
     let mut ancestors: Option<Vec<(PathBuf, GradleScript)>> = None;
-    for (source, plugin, from_build) in requests {
+    for (source, plugin, from_build) in plugin_requests(ctx) {
         let (id, explicit_version) = match &plugin.id {
             PluginIdExpr::Literal(id) => (id.clone(), plugin.version.clone()),
             PluginIdExpr::Alias(alias) => {
@@ -621,37 +597,13 @@ pub(crate) fn resolve_plugins(ctx: &PluginContext<'_>) -> Result<Vec<Dependency>
         if let Some(version) = explicit_version {
             versions.push(version);
         } else {
-            for script in &root_settings {
-                for managed in &script.managed_plugins {
-                    if managed.id == PluginIdExpr::Literal(id.clone())
-                        && let Some(version) = &managed.version
-                    {
-                        versions.push(version.clone());
-                    }
-                }
-            }
+            versions.extend(managed_versions(&root_settings, &id));
             if from_build {
                 let ancestors = match &mut ancestors {
                     Some(ancestors) => ancestors,
                     None => ancestors.insert(ancestor_build_scripts(ctx, &build_root)?),
                 };
-                'nearest: for (path, script) in ancestors.iter() {
-                    for declared in &script.plugins {
-                        let declared = match &declared.id {
-                            PluginIdExpr::Literal(declared_id) => declared
-                                .version
-                                .clone()
-                                .map(|version| (declared_id.clone(), version)),
-                            PluginIdExpr::Alias(alias) => Some(catalog.plugin(path, alias)?),
-                        };
-                        if let Some((declared_id, version)) = declared
-                            && declared_id == id
-                        {
-                            versions.push(version);
-                            break 'nearest;
-                        }
-                    }
-                }
+                versions.extend(nearest_declared_version(ancestors, &mut catalog, &id)?);
             }
         }
         if versions.is_empty() {
@@ -669,10 +621,71 @@ pub(crate) fn resolve_plugins(ctx: &PluginContext<'_>) -> Result<Vec<Dependency>
                     "dynamic, ranged, or SNAPSHOT plugin versions cannot be verified; pin an exact release",
                 ));
             }
-            push(marker_dependency(&id, &version, source)?);
+            let dep = marker_dependency(&id, &version, source)?;
+            if !deps
+                .iter()
+                .any(|seen| seen.name == dep.name && seen.version == dep.version)
+            {
+                deps.push(dep);
+            }
         }
     }
     Ok(deps)
+}
+
+/// Plugin requests of the build script (flagged `true`) followed by those of the settings scripts.
+fn plugin_requests<'a>(ctx: &'a PluginContext<'_>) -> Vec<(&'a Path, &'a RawPlugin, bool)> {
+    let mut requests: Vec<(&Path, &RawPlugin, bool)> = ctx
+        .build
+        .plugins
+        .iter()
+        .map(|plugin| (ctx.build_path, plugin, true))
+        .collect();
+    for (path, script) in ctx.settings {
+        requests.extend(
+            script
+                .plugins
+                .iter()
+                .map(|plugin| (path.as_path(), plugin, false)),
+        );
+    }
+    requests
+}
+
+/// Versions the root settings scripts pin for `id` in `pluginManagement { plugins {} }`.
+fn managed_versions(root_settings: &[&GradleScript], id: &str) -> Vec<String> {
+    let wanted = PluginIdExpr::Literal(id.to_string());
+    root_settings
+        .iter()
+        .flat_map(|script| &script.managed_plugins)
+        .filter(|managed| managed.id == wanted)
+        .filter_map(|managed| managed.version.clone())
+        .collect()
+}
+
+/// Version `id` is pinned to by the nearest enclosing build script that declares it.
+fn nearest_declared_version(
+    ancestors: &[(PathBuf, GradleScript)],
+    catalog: &mut Catalog,
+    id: &str,
+) -> Result<Option<String>> {
+    for (path, script) in ancestors {
+        for declared in &script.plugins {
+            let declared = match &declared.id {
+                PluginIdExpr::Literal(declared_id) => declared
+                    .version
+                    .clone()
+                    .map(|version| (declared_id.clone(), version)),
+                PluginIdExpr::Alias(alias) => Some(catalog.plugin(path, alias)?),
+            };
+            if let Some((declared_id, version)) = declared
+                && declared_id == id
+            {
+                return Ok(Some(version));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Build scripts of enclosing projects (nearest first), up to the build root.
