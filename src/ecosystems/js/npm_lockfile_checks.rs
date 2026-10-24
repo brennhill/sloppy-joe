@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) fn npm_lockfile_version(
     lockfile: &serde_json::Value,

@@ -2,12 +2,7 @@
 //! so existing paths keep working.
 mod discovery;
 mod fingerprint;
-mod js_binding;
-mod js_local_deps;
-mod js_workspace;
 mod lockfile_read;
-mod lockfile_validate;
-mod npm_lockfile_checks;
 mod parse_inputs;
 mod preflight;
 mod private_npm;
@@ -16,12 +11,7 @@ mod scan;
 
 pub(crate) use discovery::*;
 pub(crate) use fingerprint::*;
-pub(crate) use js_binding::*;
-pub(crate) use js_local_deps::*;
-pub(crate) use js_workspace::*;
 pub(crate) use lockfile_read::*;
-pub(crate) use lockfile_validate::*;
-pub(crate) use npm_lockfile_checks::*;
 pub(crate) use parse_inputs::*;
 pub(crate) use preflight::*;
 pub(crate) use private_npm::*;

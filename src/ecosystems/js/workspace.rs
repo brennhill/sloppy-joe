@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) struct WorkspaceRoot {
     pub(crate) manifest_path: std::path::PathBuf,
@@ -447,66 +447,4 @@ pub(crate) fn parse_npm_workspaces(
     };
 
     Ok(Some(patterns))
-}
-
-pub(crate) fn workspace_patterns_match<'a>(
-    root_dir: &std::path::Path,
-    candidate_dir: &std::path::Path,
-    mut patterns: impl Iterator<Item = &'a str>,
-) -> bool {
-    let Ok(relative) = candidate_dir.strip_prefix(root_dir) else {
-        return false;
-    };
-    let path_parts = relative
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if path_parts.is_empty() {
-        return false;
-    }
-
-    patterns.any(|pattern| workspace_pattern_matches_parts(pattern, &path_parts))
-}
-
-pub(crate) fn workspace_pattern_matches_parts(pattern: &str, path_parts: &[String]) -> bool {
-    let pattern_parts = pattern
-        .trim()
-        .trim_start_matches("./")
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    workspace_pattern_parts_match(&pattern_parts, path_parts)
-}
-
-pub(crate) fn workspace_pattern_parts_match(pattern_parts: &[&str], path_parts: &[String]) -> bool {
-    match pattern_parts.split_first() {
-        None => path_parts.is_empty(),
-        Some((&"**", remaining_patterns)) => (0..=path_parts.len())
-            .any(|skip| workspace_pattern_parts_match(remaining_patterns, &path_parts[skip..])),
-        Some((&segment_pattern, remaining_patterns)) => {
-            let Some((path_part, remaining_path)) = path_parts.split_first() else {
-                return false;
-            };
-            wildcard_segment_matches(segment_pattern, path_part)
-                && workspace_pattern_parts_match(remaining_patterns, remaining_path)
-        }
-    }
-}
-
-pub(crate) fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    match pattern.split_once('*') {
-        None => pattern == value,
-        Some((prefix, suffix)) => {
-            if !value.starts_with(prefix) || !value.ends_with(suffix) {
-                return false;
-            }
-            value.len() >= prefix.len() + suffix.len()
-        }
-    }
 }

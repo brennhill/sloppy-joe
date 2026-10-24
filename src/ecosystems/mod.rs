@@ -19,10 +19,14 @@ mod php;
 mod python;
 mod ruby;
 
+pub(crate) use common::first_existing_lockfile;
+use common::*;
+
 /// Plugin internals that unit tests exercise directly. Production code goes through the trait.
 #[cfg(test)]
 pub(crate) mod test_access {
     pub(crate) use super::cargo::*;
+    pub(crate) use super::js::*;
 }
 
 /// What a plugin needs to know about the scan it is part of.

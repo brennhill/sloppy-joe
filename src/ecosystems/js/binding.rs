@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) fn validate_supported_js_manager(spec: &ProjectInputSpec) -> Result<()> {
     let Some(binding) = &spec.js_binding else {

@@ -1,5 +1,19 @@
 use super::*;
 
+mod binding;
+mod local_deps;
+mod lockfile_read;
+mod lockfile_validate;
+mod npm_lockfile_checks;
+mod workspace;
+
+pub(crate) use binding::*;
+pub(crate) use local_deps::*;
+pub(crate) use lockfile_read::*;
+pub(crate) use lockfile_validate::*;
+pub(crate) use npm_lockfile_checks::*;
+pub(crate) use workspace::*;
+
 pub(super) struct Js;
 
 impl EcosystemSupport for Js {

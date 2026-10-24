@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) fn validate_local_npm_dependencies(
     trusted_root: &std::path::Path,
@@ -680,23 +680,4 @@ pub(crate) fn resolve_local_npm_target(
     }
 
     Ok(canonical_target)
-}
-
-pub(crate) fn normalize_filesystem_path(path: &std::path::Path) -> std::path::PathBuf {
-    let mut normalized = std::path::PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                normalized.pop();
-            }
-            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                normalized.push(component.as_os_str())
-            }
-            std::path::Component::Normal(part) => normalized.push(part),
-        }
-    }
-
-    normalized
 }

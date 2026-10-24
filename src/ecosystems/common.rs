@@ -88,3 +88,193 @@ pub(super) fn kind_for_file_name(
         .copied()
         .find(|kind| kind.descriptor().manifest_file_names.contains(&name))
 }
+
+pub(crate) fn normalize_filesystem_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut normalized = std::path::PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                normalized.push(component.as_os_str())
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    normalized
+}
+
+pub(crate) fn workspace_patterns_match<'a>(
+    root_dir: &std::path::Path,
+    candidate_dir: &std::path::Path,
+    mut patterns: impl Iterator<Item = &'a str>,
+) -> bool {
+    let Ok(relative) = candidate_dir.strip_prefix(root_dir) else {
+        return false;
+    };
+    let path_parts = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if path_parts.is_empty() {
+        return false;
+    }
+
+    patterns.any(|pattern| workspace_pattern_matches_parts(pattern, &path_parts))
+}
+
+pub(crate) fn workspace_pattern_matches_parts(pattern: &str, path_parts: &[String]) -> bool {
+    let pattern_parts = pattern
+        .trim()
+        .trim_start_matches("./")
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    workspace_pattern_parts_match(&pattern_parts, path_parts)
+}
+
+pub(crate) fn workspace_pattern_parts_match(pattern_parts: &[&str], path_parts: &[String]) -> bool {
+    match pattern_parts.split_first() {
+        None => path_parts.is_empty(),
+        Some((&"**", remaining_patterns)) => (0..=path_parts.len())
+            .any(|skip| workspace_pattern_parts_match(remaining_patterns, &path_parts[skip..])),
+        Some((&segment_pattern, remaining_patterns)) => {
+            let Some((path_part, remaining_path)) = path_parts.split_first() else {
+                return false;
+            };
+            wildcard_segment_matches(segment_pattern, path_part)
+                && workspace_pattern_parts_match(remaining_patterns, remaining_path)
+        }
+    }
+}
+
+pub(crate) fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    match pattern.split_once('*') {
+        None => pattern == value,
+        Some((prefix, suffix)) => {
+            if !value.starts_with(prefix) || !value.ends_with(suffix) {
+                return false;
+            }
+            value.len() >= prefix.len() + suffix.len()
+        }
+    }
+}
+
+pub(crate) fn ancestor_dirs_inclusive(
+    start: &std::path::Path,
+    root: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>> {
+    if !start.starts_with(root) {
+        anyhow::bail!(
+            "Path '{}' is outside scan root '{}'.",
+            start.display(),
+            root.display()
+        );
+    }
+
+    let mut dirs = Vec::new();
+    let mut current = start.to_path_buf();
+    loop {
+        dirs.push(current.clone());
+        if current == root {
+            break;
+        }
+        current = current
+            .parent()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Failed to find ancestor path from '{}' back to scan root '{}'.",
+                    start.display(),
+                    root.display()
+                )
+            })?
+            .to_path_buf();
+    }
+
+    Ok(dirs)
+}
+
+pub(crate) fn first_existing_lockfile(
+    project_dir: &std::path::Path,
+    candidates: &[&str],
+) -> Option<std::path::PathBuf> {
+    candidates.iter().find_map(|candidate| {
+        let path = project_dir.join(candidate);
+        match parsers::path_detected(&path) {
+            Ok(true) => Some(path),
+            _ => None,
+        }
+    })
+}
+
+pub(crate) fn ensure_lockfile_readable(path: &std::path::Path, help: &str) -> Result<()> {
+    parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)
+        .and_then(|content| {
+            if content.trim().is_empty() {
+                anyhow::bail!("lockfile is empty");
+            }
+            Ok(())
+        })
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Required lockfile '{}' is missing or unreadable: {}. Fix: {}",
+                path.display(),
+                err,
+                help
+            )
+        })
+}
+
+pub(crate) fn ensure_one_lockfile_readable(
+    project_dir: &std::path::Path,
+    candidates: &[&str],
+    help: &str,
+) -> Result<()> {
+    let mut found_readable = false;
+
+    for candidate in candidates {
+        let path = project_dir.join(candidate);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+                    anyhow::anyhow!(
+                        "Required lockfile '{}' is unreadable: {}. Fix: {}",
+                        path.display(),
+                        err,
+                        help
+                    )
+                })?;
+                found_readable = true;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "Required lockfile '{}' could not be inspected: {}. Fix: {}",
+                    path.display(),
+                    err,
+                    help
+                ));
+            }
+        }
+    }
+
+    if found_readable {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Required lockfile '{}' is missing. Fix: {}",
+        candidates.join("' or '"),
+        help
+    )
+}

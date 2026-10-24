@@ -2,6 +2,8 @@
 pub mod bootstrap;
 mod ecosystems;
 mod engine;
+#[cfg(test)]
+pub(crate) use ecosystems::first_existing_lockfile;
 pub(crate) use ecosystems::selected_lockfile_path;
 #[cfg(test)]
 pub(crate) use ecosystems::test_access::*;
