@@ -38,6 +38,10 @@ impl EcosystemSupport for Go {
         &[ProjectInputKind::Go]
     }
 
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
             ProjectInputKind::Go => common::named_lockfile(spec),
@@ -111,6 +115,43 @@ impl EcosystemSupport for Go {
     ) -> Result<SourcePolicy> {
         Ok(SourcePolicy::EnforcedEarlier("manifest parse"))
     }
+}
+
+/// Repository files the go command reads beside a module.
+mod ambient_inputs {
+    use crate::ecosystems::ambient::{AmbientInput as Row, Disposition::*, Scope::*};
+
+    pub(super) const AMBIENT: &[Row] = &[
+        Row::new(
+            "go.work",
+            AncestorsToRepoRoot,
+            Blocked("workspace dependency sources are not trusted yet"),
+        ),
+        Row::new(
+            "go.work.sum",
+            AncestorsToRepoRoot,
+            Irrelevant("only read together with go.work, which blocks"),
+        ),
+        Row::new(
+            "go.sum",
+            ProjectDir,
+            ModeledElsewhere("go::check_go_sum verifies it against go.mod"),
+        ),
+        Row::new(
+            "vendor/modules.txt",
+            ProjectDir,
+            ModeledElsewhere(
+                "go::check_go_sum checks it covers go.mod; the vendored source itself only warns",
+            ),
+        ),
+        Row::new(
+            "go.env",
+            ProjectDir,
+            Irrelevant(
+                "the go command reads go.env from GOROOT and the user config directory, never from the module",
+            ),
+        ),
+    ];
 }
 
 /// Go never checks vendored files against go.sum, so edited vendored code cannot be detected.

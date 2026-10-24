@@ -1,5 +1,6 @@
 use super::*;
 
+mod ambient_inputs;
 mod cargo_surface;
 mod config_file;
 mod program_settings;
@@ -49,6 +50,10 @@ impl EcosystemSupport for Cargo {
 
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Cargo]
+    }
+
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
     }
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
@@ -120,7 +125,6 @@ impl EcosystemSupport for Cargo {
         let lockfile = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
         common::ensure_kind_lockfile(spec, &lockfile)?;
         cargo_lockfile_value(&lockfile)?;
-        program_settings::reject_toolchain_path(spec.project_dir())?;
         Ok(Vec::new())
     }
 

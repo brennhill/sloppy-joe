@@ -10,6 +10,7 @@ use crate::*;
 use std::path::{Path, PathBuf};
 use tree::walk_project_tree;
 
+pub(crate) mod ambient;
 mod cargo;
 pub(crate) mod common;
 mod dotnet;
@@ -152,6 +153,10 @@ pub(crate) trait EcosystemSupport: Sync {
         spec: &ProjectInputSpec,
     ) -> Result<SourcePolicy>;
 
+    /// The repository files this ecosystem's tools read without being told to, and what the scan
+    /// does about each. No default: a plugin states its surface or it does not compile.
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput];
+
     /// The preflight stage: parse the manifest, verify its lockfile, apply the source policy. An
     /// error blocks the project; the returned issues are warnings. The stages it runs are all
     /// required, so this composition has nothing of its own to get wrong.
@@ -166,6 +171,8 @@ pub(crate) trait EcosystemSupport: Sync {
             SourcePolicy::EnforcedEarlier(_) => {}
             SourcePolicy::ReducedConfidence(issue) => warnings.push(issue),
         }
+        let strict = ctx.scan.opts.scan_mode == ScanMode::Ci;
+        warnings.extend(ambient::check(self.ambient_inputs(), spec, strict)?);
         Ok(warnings)
     }
 

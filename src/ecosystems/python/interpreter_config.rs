@@ -1,6 +1,8 @@
 //! Repository files that choose which Python interpreter, cache or environment an install uses:
 //! `.python-version`, a committed `.venv`, `poetry.toml` and the `.env` that pipenv loads. Each can
-//! make the tool run or install something the lockfile hashes never covered.
+//! make the tool run or install something the lockfile hashes never covered. `.python-version`,
+//! `.venv` and `.env` are rows of the plugin's ambient-input table; `poetry.toml` needs the
+//! operator's allows, so it is checked here.
 
 use super::*;
 use crate::config_surface::{Surface, ValueRule, rule};
@@ -26,40 +28,25 @@ fn exists(path: &Path) -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn check_interpreter_config(
-    spec: &ProjectInputSpec,
-    strict: bool,
-) -> Result<Vec<Issue>> {
-    check_interpreter_config_with(spec, strict, &[])
+pub(super) fn check_interpreter_config(spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+    check_interpreter_config_with(spec, &[])
 }
 
 /// `allows` are the operator's `config_key_allow` entries; each one applied is a warning.
 pub(super) fn check_interpreter_config_with(
     spec: &ProjectInputSpec,
-    strict: bool,
     allows: &[crate::config_surface::KeyAllow],
 ) -> Result<Vec<Issue>> {
     let dirs = config_dirs(spec.project_dir())?;
     let mut applied = Vec::new();
     for dir in &dirs {
-        reject_python_version_path(&dir.join(".python-version"))?;
         applied.extend(check_poetry_toml(&dir.join("poetry.toml"), allows)?);
     }
-    let is_pipfile = spec
-        .manifest_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        == Some("Pipfile");
-    if is_pipfile {
-        reject_pipenv_dotenv(&spec.project_dir().join(".env"))?;
-    }
-    let mut issues = crate::config_surface::issues(&applied);
-    issues.extend(committed_venv_issues(spec, &dirs, strict)?);
-    Ok(issues)
+    Ok(crate::config_surface::issues(&applied))
 }
 
 /// uv accepts a path or executable in `.python-version` and runs it to query the interpreter.
-fn reject_python_version_path(path: &Path) -> Result<()> {
+pub(super) fn reject_python_version_path(path: &Path) -> Result<()> {
     if !exists(path) {
         return Ok(());
     }
@@ -154,7 +141,7 @@ const DOTENV_BLOCKED_PREFIXES: &[&str] = &[
 
 /// pipenv loads `.env` beside the Pipfile for every command, so it can set `PYTHONPATH`,
 /// `PIP_INDEX_URL`, `PIPENV_*` and similar variables for the install.
-fn reject_pipenv_dotenv(path: &Path) -> Result<()> {
+pub(super) fn reject_pipenv_dotenv(path: &Path) -> Result<()> {
     if !exists(path) {
         return Ok(());
     }
@@ -190,76 +177,6 @@ fn reject_pipenv_dotenv(path: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn venv_present(dir: &Path) -> bool {
-    let venv = dir.join(".venv");
-    exists(&venv.join("pyvenv.cfg")) || exists(&venv.join("bin/python"))
-}
-
-/// Whether `.venv` files are tracked by git, from the index. `None` when the index cannot be
-/// read reliably (unsupported index version, oversized, unreadable).
-fn venv_tracked(repo_root: &Path) -> Option<bool> {
-    let dot_git = repo_root.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        let pointer = std::fs::read_to_string(&dot_git).ok()?;
-        let target = Path::new(pointer.trim().strip_prefix("gitdir:")?.trim()).to_path_buf();
-        if target.is_absolute() {
-            target
-        } else {
-            repo_root.join(target)
-        }
-    };
-    let index_path = git_dir.join("index");
-    if std::fs::metadata(&index_path).ok()?.len() > 256 * 1024 * 1024 {
-        return None;
-    }
-    let index = std::fs::read(index_path).ok()?;
-    // Versions 2 and 3 store full paths; version 4 compresses prefixes and cannot be searched.
-    if index.get(..4)? != b"DIRC" || !matches!(index.get(7)?, 2 | 3) {
-        return None;
-    }
-    let tracked = [&b".venv/pyvenv.cfg"[..], b".venv/bin/python"]
-        .iter()
-        .any(|needle| index.windows(needle.len()).any(|window| window == *needle));
-    Some(tracked)
-}
-
-/// uv, Poetry and pipenv use an existing `.venv` and run its interpreter. A `.venv` that a pull
-/// request commits therefore executes repository code. One that is merely present in a developer
-/// checkout is the developer's own, so only a tracked (or undecidable) one counts.
-fn committed_venv_issues(
-    spec: &ProjectInputSpec,
-    dirs: &[PathBuf],
-    strict: bool,
-) -> Result<Vec<Issue>> {
-    let boundary = cache::find_git_root(spec.project_dir()).map_err(anyhow::Error::msg)?;
-    let mut issues = Vec::new();
-    for dir in dirs.iter().filter(|dir| venv_present(dir)) {
-        match boundary.as_deref().and_then(venv_tracked) {
-            Some(false) => {}
-            Some(true) => bail!(
-                "Committed virtual environment '{}': uv, Poetry and pipenv run its interpreter, so it executes repository code during install. Fix: remove it from the repository and add .venv to .gitignore.",
-                dir.join(".venv").display()
-            ),
-            None => issues.push(
-                Issue::new(
-                    dir.join(".venv").display().to_string(),
-                    checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST,
-                    if strict {
-                        Severity::Error
-                    } else {
-                        Severity::Warning
-                    },
-                )
-                .message("A .venv exists and sloppy-joe cannot tell whether git tracks it; uv, Poetry and pipenv run its interpreter, so a committed one executes repository code.")
-                .fix("Make sure .venv is not committed (add it to .gitignore). Blocks in --ci."),
-            ),
-        }
-    }
-    Ok(issues)
 }
 
 #[cfg(test)]

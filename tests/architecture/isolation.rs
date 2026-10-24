@@ -9,7 +9,7 @@ pub(crate) fn plugin_names() -> Vec<String> {
     for entry in std::fs::read_dir(repo_root().join("src").join("ecosystems")).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        if !["mod", "common", "tests", "tree"].contains(&name.as_str()) {
+        if !["mod", "common", "tests", "tree", "ambient"].contains(&name.as_str()) {
             names.push(name);
         }
     }

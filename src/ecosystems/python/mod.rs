@@ -1,5 +1,6 @@
 use super::*;
 
+mod ambient_inputs;
 mod flavors;
 mod interpreter_config;
 mod lockfile_read;
@@ -59,6 +60,10 @@ impl EcosystemSupport for Python {
             ProjectInputKind::PySetupPy,
             ProjectInputKind::PySetupCfg,
         ]
+    }
+
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
     }
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {

@@ -97,6 +97,7 @@ pub const RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE: &str =
     "resolution/python-implicit-runtime-profile";
 pub const RESOLUTION_PYTHON_GROUPS_NOT_SCANNED: &str = "resolution/python-groups-not-scanned";
 pub const RESOLUTION_VENDORED_SOURCE_UNVERIFIED: &str = "resolution/vendored-source-unverified";
+pub const RESOLUTION_AMBIENT_INPUT_UNDECIDABLE: &str = "resolution/ambient-input-undecidable";
 pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
 pub const CONFIG_KEY_ALLOWED: &str = "config/key-allowed";
 
@@ -168,6 +169,7 @@ mod tests {
             RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE,
             RESOLUTION_PYTHON_GROUPS_NOT_SCANNED,
             RESOLUTION_VENDORED_SOURCE_UNVERIFIED,
+            RESOLUTION_AMBIENT_INPUT_UNDECIDABLE,
             CONFIG_LOCAL_OVERLAY_RELAXATION,
             CONFIG_KEY_ALLOWED,
         ]

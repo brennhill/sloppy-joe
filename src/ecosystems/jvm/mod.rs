@@ -1,5 +1,6 @@
 use super::*;
 
+mod ambient_inputs;
 mod gradle_plugin_scan;
 #[cfg(test)]
 pub(crate) use gradle_plugin_scan::implementation_advisory_issues;
@@ -14,6 +15,10 @@ impl EcosystemSupport for Jvm {
 
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Gradle, ProjectInputKind::Maven]
+    }
+
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
     }
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {

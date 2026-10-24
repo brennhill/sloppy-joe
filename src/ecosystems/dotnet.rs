@@ -38,6 +38,10 @@ impl EcosystemSupport for Dotnet {
         &[ProjectInputKind::Dotnet]
     }
 
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
             ProjectInputKind::Dotnet => common::named_lockfile(spec),
@@ -166,6 +170,77 @@ fn check_project_references(scan_root: &Path, manifest: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Repository files MSBuild and NuGet read beside a .NET project and in every directory above it.
+mod ambient_inputs {
+    use crate::ecosystems::ambient::{AmbientInput as Row, Disposition::*, Scope::*};
+
+    const IMPLICIT_IMPORT: &str = "implicit dependency imports are not trusted yet";
+
+    pub(super) const AMBIENT: &[Row] = &[
+        Row::new(
+            "Directory.Build.props",
+            AncestorsToRepoRoot,
+            Blocked(IMPLICIT_IMPORT),
+        ),
+        Row::new(
+            "Directory.Build.targets",
+            AncestorsToRepoRoot,
+            Blocked(IMPLICIT_IMPORT),
+        ),
+        Row::new(
+            "Directory.Build.rsp",
+            AncestorsToRepoRoot,
+            Blocked(IMPLICIT_IMPORT),
+        ),
+        Row::new(
+            "Directory.Packages.props",
+            AncestorsToRepoRoot,
+            Blocked(IMPLICIT_IMPORT),
+        ),
+        Row::new(
+            "Directory.Solution.props",
+            AncestorsToRepoRoot,
+            Blocked(IMPLICIT_IMPORT),
+        ),
+        Row::new(
+            "Directory.Solution.targets",
+            AncestorsToRepoRoot,
+            Blocked(IMPLICIT_IMPORT),
+        ),
+        Row::new(
+            "nuget.config",
+            AncestorsToRepoRoot,
+            ModeledElsewhere(
+                "parsers::nuget_config (nuget.config allowlist), with config_key_allow",
+            ),
+        ),
+        Row::new(
+            "global.json",
+            AncestorsToRepoRoot,
+            ModeledElsewhere("parsers::csproj::reject_global_json_msbuild_sdks"),
+        ),
+        Row::new(
+            ".config/dotnet-tools.json",
+            AncestorsToRepoRoot,
+            ModeledElsewhere("parsers::csproj_hooks::reject_local_tools"),
+        ),
+        Row::new(
+            "obj/*.props",
+            ProjectDir,
+            ModeledElsewhere(
+                "parsers::csproj_hooks (obj extension imports NuGet did not generate)",
+            ),
+        ),
+        Row::new(
+            "obj/*.targets",
+            ProjectDir,
+            ModeledElsewhere(
+                "parsers::csproj_hooks (obj extension imports NuGet did not generate)",
+            ),
+        ),
+    ];
 }
 
 #[cfg(test)]

@@ -38,6 +38,10 @@ impl EcosystemSupport for Ruby {
         &[ProjectInputKind::Ruby]
     }
 
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
             ProjectInputKind::Ruby => common::named_lockfile(spec),
@@ -135,4 +139,34 @@ impl EcosystemSupport for Ruby {
     ) -> Result<SourcePolicy> {
         Ok(SourcePolicy::EnforcedEarlier("manifest parse"))
     }
+}
+
+/// Repository files Bundler reads beside a Gemfile.
+mod ambient_inputs {
+    use crate::ecosystems::ambient::{AmbientInput as Row, Disposition::*, Scope::*};
+
+    pub(super) const AMBIENT: &[Row] = &[
+        Row::new(
+            ".bundle/config",
+            AncestorsToRepoRoot,
+            Blocked("registry mirrors and local overrides cannot be verified"),
+        ),
+        Row::new(
+            "*.gemspec",
+            ProjectDir,
+            ModeledElsewhere(
+                "parsers::gemfile reads the gemspec a Gemfile names; reflection calls block",
+            ),
+        ),
+        Row::new(
+            "gems.rb",
+            ProjectDir,
+            ModeledElsewhere("Ruby::detect rejects Bundler 2's alternate names"),
+        ),
+        Row::new(
+            "gems.locked",
+            ProjectDir,
+            ModeledElsewhere("Ruby::detect rejects Bundler 2's alternate names"),
+        ),
+    ];
 }

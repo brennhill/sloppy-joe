@@ -16,7 +16,7 @@ pub(super) fn check_tool_config(
     let strict = ctx.scan.opts.scan_mode == ScanMode::Ci;
     let mut issues = crate::config_surface::issues(&uv_allowed);
     issues.extend(interpreter_config::check_interpreter_config_with(
-        spec, strict, allows,
+        spec, allows,
     )?);
     issues.extend(unscanned_tool_files(spec, strict)?);
     Ok(issues)

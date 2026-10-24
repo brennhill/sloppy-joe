@@ -1,5 +1,6 @@
 use super::*;
 
+mod ambient_inputs;
 mod binding;
 mod config_surfaces;
 mod local_deps;
@@ -52,6 +53,10 @@ impl EcosystemSupport for Js {
 
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Npm]
+    }
+
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
     }
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {

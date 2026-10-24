@@ -11,7 +11,6 @@ raw-read src/ecosystems/js/lockfile_read.rs 4
 raw-read src/ecosystems/js/mod.rs 1
 raw-read src/ecosystems/js/workspace.rs 1
 raw-read src/ecosystems/php/provenance.rs 1
-raw-read src/ecosystems/python/interpreter_config.rs 2
 raw-read src/ecosystems/python/lockfile_read.rs 3
 raw-read src/ecosystems/python/tool_config.rs 1
 raw-read src/lockfiles/composer.rs 1

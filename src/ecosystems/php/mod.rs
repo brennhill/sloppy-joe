@@ -1,5 +1,6 @@
 use super::*;
 
+mod ambient_inputs;
 mod provenance;
 
 pub(super) struct Php;
@@ -46,6 +47,10 @@ impl EcosystemSupport for Php {
 
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Php]
+    }
+
+    fn ambient_inputs(&self) -> &'static [ambient::AmbientInput] {
+        ambient_inputs::AMBIENT
     }
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {

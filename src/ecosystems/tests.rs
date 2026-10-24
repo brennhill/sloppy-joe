@@ -658,3 +658,6 @@ fn every_kind_has_an_unsupported_construct_fixture() {
 
 #[path = "tests/registry.rs"]
 mod registry;
+
+#[path = "tests/ambient.rs"]
+mod ambient_surface;

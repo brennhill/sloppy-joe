@@ -5,6 +5,7 @@
 //! shrink. Rewrite the baseline with smaller values via
 //! `UPDATE_ARCH_BASELINE=1 cargo test --test architecture`.
 
+mod ambient_surface;
 mod baseline;
 mod bypass_rules;
 mod gap_tests;
@@ -34,6 +35,7 @@ const FOUNDATION: &[&str] = &[
     "http",
     "fsutil",
     "untrusted",
+    "gitindex",
     "config_surface",
 ];
 const CONFIG: &[&str] = &["config", "npm_config"];

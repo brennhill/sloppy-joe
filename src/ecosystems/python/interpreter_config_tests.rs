@@ -13,11 +13,20 @@ fn project(files: &[(&str, &str)], manifest: &str) -> ProjectInputSpec {
         std::fs::write(dir.join(name), content).unwrap();
     }
     ProjectInputSpec {
-        kind: ProjectInputKind::PyProjectUv,
+        kind: if manifest == "Pipfile" {
+            ProjectInputKind::PyPipfile
+        } else {
+            ProjectInputKind::PyProjectUv
+        },
         manifest_path: dir.join(manifest),
         lockfile_path_override: None,
         js_binding: None,
     }
+}
+
+/// The plugin's ambient-input table applied to `spec`.
+fn ambient(spec: &ProjectInputSpec, strict: bool) -> Result<Vec<Issue>> {
+    crate::ecosystems::ambient::check(super::ambient_inputs::AMBIENT, spec, strict)
 }
 
 const PYPROJECT: &str = "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n";
@@ -34,10 +43,7 @@ fn python_version_naming_a_path_blocks() {
             &[("pyproject.toml", PYPROJECT), (".python-version", content)],
             "pyproject.toml",
         );
-        assert!(
-            check_interpreter_config(&spec, true).is_err(),
-            "{content:?}"
-        );
+        assert!(ambient(&spec, true).is_err(), "{content:?}");
     }
     for content in [
         "3.12\n",
@@ -50,7 +56,7 @@ fn python_version_naming_a_path_blocks() {
             &[("pyproject.toml", PYPROJECT), (".python-version", content)],
             "pyproject.toml",
         );
-        assert!(check_interpreter_config(&spec, true).is_ok(), "{content:?}");
+        assert!(ambient(&spec, true).is_ok(), "{content:?}");
     }
 }
 
@@ -68,9 +74,7 @@ fn poetry_toml_is_allowlisted() {
             &[("pyproject.toml", PYPROJECT), ("poetry.toml", content)],
             "pyproject.toml",
         );
-        let err = check_interpreter_config(&spec, true)
-            .unwrap_err()
-            .to_string();
+        let err = check_interpreter_config(&spec).unwrap_err().to_string();
         assert!(
             err.contains("Unsupported Poetry setting"),
             "{content}: {err}"
@@ -86,7 +90,7 @@ fn poetry_toml_is_allowlisted() {
         ],
         "pyproject.toml",
     );
-    assert!(check_interpreter_config(&spec, true).unwrap().is_empty());
+    assert!(check_interpreter_config(&spec).unwrap().is_empty());
 }
 
 #[test]
@@ -102,10 +106,7 @@ fn pipenv_dotenv_variables_that_steer_the_install_block() {
         "path=/evil\n",
     ] {
         let spec = project(&[("Pipfile", ""), (".env", content)], "Pipfile");
-        assert!(
-            check_interpreter_config(&spec, true).is_err(),
-            "{content:?}"
-        );
+        assert!(ambient(&spec, true).is_err(), "{content:?}");
     }
     let spec = project(
         &[
@@ -114,13 +115,13 @@ fn pipenv_dotenv_variables_that_steer_the_install_block() {
         ],
         "Pipfile",
     );
-    assert!(check_interpreter_config(&spec, true).unwrap().is_empty());
+    assert!(ambient(&spec, true).unwrap().is_empty());
     // A `.env` beside a non-Pipfile project is not loaded by pipenv.
     let spec = project(
         &[("pyproject.toml", PYPROJECT), (".env", "PYTHONPATH=./x\n")],
         "pyproject.toml",
     );
-    assert!(check_interpreter_config(&spec, true).unwrap().is_empty());
+    assert!(ambient(&spec, true).unwrap().is_empty());
 }
 
 fn git_index(version: u8, paths: &[&str]) -> Vec<u8> {
@@ -148,27 +149,21 @@ fn repo_with_venv(index: Option<Vec<u8>>) -> ProjectInputSpec {
 #[test]
 fn a_tracked_venv_blocks_and_an_untracked_one_does_not() {
     let tracked = repo_with_venv(Some(git_index(2, &["pyproject.toml", ".venv/pyvenv.cfg"])));
-    let err = check_interpreter_config(&tracked, false)
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("Committed virtual environment"), "{err}");
+    let err = ambient(&tracked, false).unwrap_err().to_string();
+    assert!(err.contains("Committed repository file"), "{err}");
 
     let untracked = repo_with_venv(Some(git_index(2, &["pyproject.toml"])));
-    assert!(
-        check_interpreter_config(&untracked, true)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(ambient(&untracked, true).unwrap().is_empty());
 }
 
 #[test]
 fn an_undecidable_venv_warns_and_blocks_in_ci() {
     for index in [None, Some(git_index(4, &["pyproject.toml"]))] {
         let spec = repo_with_venv(index);
-        let warn = check_interpreter_config(&spec, false).unwrap();
+        let warn = ambient(&spec, false).unwrap();
         assert_eq!(warn.len(), 1);
         assert_eq!(warn[0].severity, Severity::Warning);
-        let ci = check_interpreter_config(&spec, true).unwrap();
+        let ci = ambient(&spec, true).unwrap();
         assert_eq!(ci[0].severity, Severity::Error);
     }
 }
@@ -189,15 +184,12 @@ fn an_unlisted_poetry_setting_blocks_until_the_operator_allows_it() {
         ],
         "pyproject.toml",
     );
-    let err = check_interpreter_config(&spec, true)
-        .unwrap_err()
-        .to_string();
+    let err = check_interpreter_config(&spec).unwrap_err().to_string();
     assert!(
         err.contains("Unsupported Poetry setting 'warnings.export'"),
         "{err}"
     );
-    let issues =
-        check_interpreter_config_with(&spec, true, &[allow_poetry("warnings.export")]).unwrap();
+    let issues = check_interpreter_config_with(&spec, &[allow_poetry("warnings.export")]).unwrap();
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].check, crate::names::CONFIG_KEY_ALLOWED);
     assert_eq!(issues[0].severity, Severity::Warning);
@@ -222,7 +214,7 @@ fn denied_poetry_settings_cannot_be_allowed() {
             "pyproject.toml",
         );
         assert!(
-            check_interpreter_config_with(&spec, true, &[allow_poetry(key)]).is_err(),
+            check_interpreter_config_with(&spec, &[allow_poetry(key)]).is_err(),
             "{content}"
         );
     }
