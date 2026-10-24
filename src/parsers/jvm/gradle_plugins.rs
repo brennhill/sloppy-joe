@@ -16,14 +16,14 @@ use std::path::{Path, PathBuf};
 
 /// How a plugin request names its plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PluginIdExpr {
+pub(crate) enum PluginIdExpr {
     Literal(String),
     /// `alias(libs.plugins.<key>)`: the accessor path after `libs.plugins.`.
     Alias(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RawPlugin {
+pub(crate) struct RawPlugin {
     pub id: PluginIdExpr,
     pub version: Option<String>,
     /// Whether a `version` clause may follow (not for aliases or bare ids).
@@ -32,7 +32,7 @@ pub(super) struct RawPlugin {
 
 /// What one Gradle script declares about plugins.
 #[derive(Debug, Clone, Default)]
-pub(super) struct GradleScript {
+pub(crate) struct GradleScript {
     /// Top-level `plugins {}` requests (build or settings plugins).
     pub plugins: Vec<RawPlugin>,
     /// `pluginManagement { plugins {} }` default versions.
@@ -51,7 +51,7 @@ pub(super) struct GradleScript {
     pub custom_catalogs: bool,
 }
 
-pub(super) fn unsupported_plugin(path: &Path, what: &str, why: &str) -> anyhow::Error {
+pub(crate) fn unsupported_plugin(path: &Path, what: &str, why: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "Unsupported Gradle plugin {} in {}: {}",
         what,
@@ -94,7 +94,7 @@ fn valid_plugin_id(id: &str) -> bool {
 
 /// A version Gradle resolves to exactly one immutable release: no ranges,
 /// `+` prefixes, `latest.*` selectors, or SNAPSHOTs.
-pub(super) fn is_pinned_plugin_version(version: &str) -> bool {
+pub(crate) fn is_pinned_plugin_version(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 128
         && version.starts_with(|ch: char| ch.is_ascii_alphanumeric())
@@ -107,7 +107,7 @@ pub(super) fn is_pinned_plugin_version(version: &str) -> bool {
 
 /// Parse the body of a `plugins { }` block into requests. Expressions that
 /// cannot be resolved statically fail closed.
-pub(super) fn parse_plugins_block(tokens: &[GradleToken], path: &Path) -> Result<Vec<RawPlugin>> {
+pub(crate) fn parse_plugins_block(tokens: &[GradleToken], path: &Path) -> Result<Vec<RawPlugin>> {
     let mut plugins: Vec<RawPlugin> = Vec::new();
     let mut idx = 0usize;
     while idx < tokens.len() {
@@ -324,7 +324,7 @@ fn maven_block_url(tokens: &[GradleToken], path: &Path) -> Result<String> {
 }
 
 /// Parse `pluginManagement { repositories { ... } }` in declaration order.
-pub(super) fn parse_plugin_repositories(
+pub(crate) fn parse_plugin_repositories(
     tokens: &[GradleToken],
     path: &Path,
 ) -> Result<Vec<PluginRepository>> {
@@ -401,7 +401,7 @@ pub(super) fn parse_plugin_repositories(
 /// `pluginManagement` repositories (Gradle's default is the Plugin Portal).
 /// Custom repositories declared by any enclosing settings script are kept too
 /// so they are never silently ignored.
-pub(super) fn plugin_repositories(settings: &[(PathBuf, GradleScript)]) -> Vec<PluginRepository> {
+pub(crate) fn plugin_repositories(settings: &[(PathBuf, GradleScript)]) -> Vec<PluginRepository> {
     let mut repositories = settings
         .first()
         .and_then(|(_, script)| script.plugin_repositories.clone())
@@ -535,7 +535,7 @@ impl Catalog {
 }
 
 /// Everything needed to resolve plugin requests of one build script.
-pub(super) struct PluginContext<'a> {
+pub(crate) struct PluginContext<'a> {
     pub build_path: &'a Path,
     pub project_dir: &'a Path,
     pub boundary: &'a Path,
@@ -557,7 +557,7 @@ fn marker_dependency(id: &str, version: &str, source: &Path) -> Result<Dependenc
 
 /// Resolve every non-core plugin request of the build script and of its
 /// settings scripts to pinned plugin marker dependencies.
-pub(super) fn resolve_plugins(ctx: &PluginContext<'_>) -> Result<Vec<Dependency>> {
+pub(crate) fn resolve_plugins(ctx: &PluginContext<'_>) -> Result<Vec<Dependency>> {
     let build_root = ctx
         .settings
         .first()

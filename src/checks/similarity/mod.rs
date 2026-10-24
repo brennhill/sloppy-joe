@@ -1,3 +1,7 @@
+mod result_cache;
+pub(crate) use result_cache::*;
+mod messages;
+pub(crate) use messages::*;
 mod confusables;
 pub mod generators;
 mod popular;
@@ -15,74 +19,12 @@ use std::path::{Path, PathBuf};
 pub use generators::{MutationGenerator, default_generators};
 use generators::{extract_scope, known_scopes};
 
-const SIMILARITY_CACHE_TTL_SECS: u64 = 7 * 24 * 3600; // 7 days
-
-/// On-disk similarity existence cache.
-///
-/// Each entry carries its own `checked_at` so that rewriting the file with new
-/// results never renews the lifetime of older entries (a stale negative entry
-/// would otherwise hide a typosquat target registered after the first scan).
-/// The file-level `timestamp` records the last write.
-#[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
-struct SimilarityCache {
-    timestamp: u64,
-    entries: HashMap<String, SimilarityCacheEntry>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(untagged)]
-enum SimilarityCacheEntry {
-    Timed {
-        exists: bool,
-        checked_at: u64,
-    },
-    /// Pre-per-entry format: a bare bool aged by the file timestamp.
-    Legacy(bool),
-}
-
-impl SimilarityCache {
-    /// Normalize legacy entries to the file timestamp and drop every entry
-    /// older than the TTL (or dated in the future).
-    fn normalize_and_expire(mut self, now: u64, ttl_secs: u64) -> Self {
-        let file_ts = self.timestamp;
-        self.entries = self
-            .entries
-            .into_iter()
-            .filter_map(|(name, entry)| {
-                let (exists, checked_at) = match entry {
-                    SimilarityCacheEntry::Timed { exists, checked_at } => (exists, checked_at),
-                    SimilarityCacheEntry::Legacy(exists) => (exists, file_ts),
-                };
-                let age = now.checked_sub(checked_at)?;
-                (age < ttl_secs)
-                    .then_some((name, SimilarityCacheEntry::Timed { exists, checked_at }))
-            })
-            .collect();
-        self
-    }
-
-    fn get(&self, name: &str) -> Option<bool> {
-        self.entries.get(name).map(|entry| match *entry {
-            SimilarityCacheEntry::Timed { exists, .. } | SimilarityCacheEntry::Legacy(exists) => {
-                exists
-            }
-        })
-    }
-}
-
 pub(crate) struct SimilarityRunOptions<'a> {
     pub cache_dir: Option<&'a Path>,
     pub no_cache: bool,
     pub paranoid: bool,
     pub dep_metadata: Option<&'a [crate::checks::metadata::MetadataLookup]>,
     pub config: &'a crate::config::SloppyJoeConfig,
-}
-
-fn cache_path_for(ecosystem: Ecosystem, cache_dir: Option<&Path>) -> PathBuf {
-    let base = cache_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-    base.join(format!("similarity-{}.json", ecosystem))
 }
 
 fn is_case_insensitive(ecosystem: Ecosystem) -> bool {
@@ -158,100 +100,6 @@ fn generate_mutations_with(
     candidates.remove(&lower);
     candidates
 }
-
-/// Format a human-readable message for a match, given the generator name (from tagged mutations).
-/// Replaces the old `classify_match` which re-ran all generators to determine the match type.
-fn format_match_message(dep_name: &str, candidate: &str, generator: &str) -> String {
-    match generator {
-        "homoglyph" => format!(
-            "'{}' contains non-Latin characters that look identical to letters in '{}'. \
-             This is a homoglyph attack -- the package name uses lookalike Unicode characters \
-             to impersonate a legitimate package. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "separator-swap" => format!(
-            "'{}' matches '{}' after normalizing separators (-, _, .). \
-             These may resolve to different packages. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "collapse-repeated" => format!(
-            "'{}' matches '{}' after removing a repeated character. \
-             This is a common typosquatting pattern. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "version-suffix" => format!(
-            "'{}' looks like '{}' with a version suffix appended. \
-             An attacker could register the suffixed variant as a separate package. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "word-reorder" => format!(
-            "'{}' is a reordering of '{}'. Word-swapped package names are a known \
-             typosquatting vector. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "char-swap" => format!(
-            "'{}' matches '{}' with two adjacent characters swapped. \
-             This is a common typo and a known typosquatting pattern. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "extra-char" => format!(
-            "'{}' matches '{}' with one character removed. \
-             An extra character may have been added -- this is a common typosquatting pattern. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "confused-forms" => format!(
-            "'{}' is a confused form of '{}'. These are commonly interchanged but \
-             resolve to different packages. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "bitflip" => format!(
-            "'{}' matches '{}' with a single-bit character change. \
-             Bitflip attacks exploit hardware errors or deliberate bit manipulation \
-             to produce names that differ by exactly one bit in a character. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "segment-overlap" => format!(
-            "'{}' is a known popular package '{}' with extra segments added. \
-             An attacker could register an extended name to impersonate the real package. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        "keyboard-proximity" => format!(
-            "'{}' matches '{}' with a keyboard-adjacent character substitution. \
-             An attacker could register a name where one key is replaced by its \
-             neighbor on a QWERTY keyboard. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-        _ => format!(
-            "'{}' is suspiciously similar to '{}'. \
-             Examine both packages and add the intended one to your allowed list.",
-            dep_name, candidate
-        ),
-    }
-}
-
-fn is_suppressed(
-    config: &crate::config::SloppyJoeConfig,
-    ecosystem: Ecosystem,
-    package: &str,
-    candidate: &str,
-    generator: &str,
-) -> bool {
-    config.is_similarity_exception(ecosystem.as_str(), package, candidate, generator)
-}
-
-/// Longest package name that is expanded into lookalike variants (npm's own limit is 214).
-const MAX_SIMILARITY_NAME_CHARS: usize = 214;
 
 /// Main entry point. Registry-based similarity checking.
 ///

@@ -1,15 +1,6 @@
 # Architecture baseline (docs/specs/architecture-guardrails.md).
 # Existing violations only. Values may shrink, never grow.
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
-file-lines src/checks/similarity/mod.rs 846
-file-lines src/lockfiles/python.rs 1369
-file-lines src/lockfiles/uv.rs 1517
-file-lines src/lockfiles/yarn.rs 986
-file-lines src/parsers/jvm.rs 1003
-file-lines src/parsers/jvm/maven_model.rs 885
-file-lines src/parsers/pyproject_toml.rs 1261
-file-lines src/parsers/python_scope.rs 926
-file-lines src/parsers/requirements.rs 881
 fn-complexity src/checks/similarity/mod.rs::check_similarity_with_options 61
 fn-complexity src/checks/tarball_verification.rs::verify_npm_tarballs 22
 fn-complexity src/engine/discovery.rs::project_input_kind_from_path 20
@@ -20,7 +11,7 @@ fn-complexity src/engine/preflight.rs::preflight_selected_project_inputs 32
 fn-complexity src/engine/scan.rs::scan_with_config 34
 fn-complexity src/lockfiles/cargo.rs::resolve_from_value_with_mode 23
 fn-complexity src/lockfiles/nesting.rs::ensure_nesting_depth 20
-fn-complexity src/lockfiles/python.rs::validate_source_policy 16
+fn-complexity src/lockfiles/python/source_policy.rs::validate_source_policy 16
 fn-complexity src/lockfiles/read.rs::read_lockfile 20
 fn-complexity src/lockfiles/uv.rs::resolve_from_value_with_mode_and_profile 16
 fn-complexity src/lockfiles/yarn.rs::parse_all_from_parsed_for_project 16
@@ -31,14 +22,14 @@ fn-complexity src/parsers/csproj.rs::parse_file 18
 fn-complexity src/parsers/gemfile.rs::collect_gem_entries 26
 fn-complexity src/parsers/gemfile.rs::ingest 19
 fn-complexity src/parsers/gemfile.rs::parse_gemspec 21
-fn-complexity src/parsers/jvm.rs::tokenize_gradle 26
-fn-complexity src/parsers/jvm.rs::walk_gradle_script 36
 fn-complexity src/parsers/jvm/gradle_plugins.rs::resolve_plugins 23
+fn-complexity src/parsers/jvm/gradle_scan.rs::tokenize_gradle 26
+fn-complexity src/parsers/jvm/gradle_scan.rs::walk_gradle_script 36
 fn-complexity src/parsers/jvm/maven_model.rs::effective 20
 fn-complexity src/parsers/jvm/maven_model.rs::resolve_pom_versions 30
 fn-complexity src/parsers/mod.rs::parse_all_ecosystems_inner 32
-fn-complexity src/parsers/python_scope.rs::resolve_marker_variable 18
-fn-complexity src/parsers/python_scope.rs::tokenize_marker 29
+fn-complexity src/parsers/python_scope/marker.rs::resolve_marker_variable 18
+fn-complexity src/parsers/python_scope/marker.rs::tokenize_marker 29
 fn-complexity src/parsers/setup_cfg.rs::parse_file 17
 fn-complexity src/parsers/setup_py.rs::extract_setup_call 36
 fn-complexity src/parsers/setup_py.rs::find_keyword_assignment 30
