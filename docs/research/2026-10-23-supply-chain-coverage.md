@@ -42,3 +42,29 @@ The live check identified affected locked dependencies, including [anyhow unsoun
 Self-check publisher exceptions are pinned to exact package, version, and publisher transitions. Official [colored 2.1.0](https://github.com/colored-rs/colored/releases/tag/v2.1.0) and [ICU4X 2.2.0](https://github.com/unicode-org/icu4x/releases/tag/icu@2.2.0) releases corroborate the reviewed publishers. Named canonical dependency exceptions skip existence/similarity only; metadata and advisory checks still run.
 
 Cargo name comparison also respects the [crates.io collision rules](https://doc.rust-lang.org/cargo/reference/registry-index.html#name-restrictions): case and hyphen/underscore spellings cannot distinguish separately registered crates. The release excludes these equivalent spellings from name-similarity candidates.
+
+## 2026 campaigns and slopsquatting (added 2026-10-24)
+
+Sources below are mostly vendor write-ups and secondary reports; counts differ between them and were not independently verified. They motivate the coverage table and gap list, and none was replayed through sloppy-joe.
+
+| Class | Evidence | Actual sloppy-joe coverage and limits |
+| --- | --- | --- |
+| Slopsquatting (registered hallucinated names) | Bar Lanyado registered an empty `huggingface-cli` package that LLMs kept inventing; it drew 30,000+ downloads in three months ([Wikipedia](https://en.wikipedia.org/wiki/Slopsquatting)). A USENIX study found 19.7% of generated samples contained a hallucinated package and 43% of hallucinations repeated across ten runs ([Endor Labs](https://www.endorlabs.com/learn/slopsquatting-when-ai-agents-hallucinate-malicious-packages)). No in-the-wild malicious slopsquat is named in the sources reviewed. | A name that does not exist blocks (`existence`). A name an attacker has already registered passes `existence`; only `metadata/new-package`, `metadata/low-downloads`, similarity and OSV can catch it. A registered squat older than 30 days with downloads passes. |
+| Build-time execution without an install script (Phantom Gyp) | A 157-byte `binding.gyp` makes npm run `node-gyp rebuild` with no `scripts` entry ([StepSecurity](https://www.stepsecurity.io/blog/binding-gyp-npm-supply-chain-attack-spreads-like-worm)). | Covered for npm: `gypfile` and a root `*.gyp` in the tarball count as install scripts (`src/registry/npm.rs`, `src/registry/npm_tarball.rs`). Content of the gyp file is not analyzed. |
+| Interpreter-startup execution (`*.pth` in PyPI wheels, Hades) | Malicious wheels shipped a `*-setup.pth` that runs at Python startup ([GitGuardian](https://blog.gitguardian.com/shai-hulud-npm-pypi-supply-chain-attacks/)). | Not covered. Only npm tarballs are opened; PyPI archives are not inspected. The version-age gate is the only relevant control. |
+| Compromised maintainer account, worm propagation (ChainDrop/keyv) | Hundreds of packages republished through one stolen account ([Datadog](https://securitylabs.datadoghq.com/articles/npm-worm-compromises-popular-npm-packages/), [Aikido](https://www.aikido.dev/blog/keyv-and-friends-compromised-in-npm-supply-chain-attack)). | Version-age gate and publisher-change checks apply. A stolen account publishes under the same identity, so publisher-change does not fire. |
+| Malicious release with valid provenance | AsyncAPI releases carried valid Sigstore/SLSA provenance because CI was hijacked ([TuxCare](https://tuxcare.com/blog/supply-chain-broke-in-2026/)). | sloppy-joe does not read attestations, so it neither trusts nor reports them. Provenance would not have been a safe pass signal. |
+| Typosquatted MCP server packages | Described as plausible by [Nesbitt](https://nesbitt.io/2026/04/08/package-security-problems-for-ai-agents); no in-the-wild case found. | Ordinary similarity applies only if the real MCP package is in the popular-package set. Not specifically modeled. |
+
+## Gap review of proposed checks (2026-10-24)
+
+| Proposed check | Status | Evidence |
+| --- | --- | --- |
+| New or low-history package with a plausible hallucinated name | Done | `metadata/new-package` (under 30 days) and `metadata/low-downloads` in `src/checks/signals.rs`. No check combines "name looks like a CLI/tool name" with recency. |
+| Execution on install beyond scripts (`binding.gyp`, `.pth`) | Partly done | npm gyp covered; PyPI `.pth` and other wheel startup hooks are not. |
+| Maintainer change, version burst, dormancy-then-release | Partly done | Publisher change and publisher/script history exist (`check_maintainer_change`, `check_publisher_script_combo`). No dormancy or release-burst signal. |
+| Cooldown window for new versions | Done | `min_version_age_hours`, default 72 (`src/config/mod.rs`, `check_version_age`). |
+| Dependency steering (agent-introduced deps, CLI-name-as-package) | Not done | No code path; `canonical` rules only help where an org configures them. |
+| Lockfile integrity and non-registry sources | Done for npm-family | `metadata/lockfile-integrity-mismatch`/`-unverified`; source provenance checks for Cargo, Python, Composer, pnpm, Yarn. Yarn Berry checksums cannot be compared with registry data. |
+| MCP server package name similarity | Not done | No MCP-specific names in the popular-package data. |
+| Report attestation/provenance status | Not done | No attestation or Sigstore handling in `src/`. Treat as an informational signal only. |
