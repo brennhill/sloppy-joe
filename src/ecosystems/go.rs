@@ -123,12 +123,97 @@ fn check_go_sum(spec: &ProjectInputSpec) -> Result<()> {
     }
     let go_sum_path = common::named_lockfile(spec).expect("Go names go.sum");
     common::ensure_kind_lockfile(spec, &go_sum_path)?;
-    // Vendored builds ignore go.sum, so only enforce it otherwise.
-    if !spec.project_dir().join("vendor/modules.txt").is_file() {
+    // Vendored builds (go >= 1.14 with vendor/modules.txt) ignore go.sum, so the vendor listing
+    // must cover go.mod instead. Its mere existence is not a substitute for either check.
+    let modules_txt = spec.project_dir().join("vendor/modules.txt");
+    if modules_txt.is_file() && parsers::go_mod::vendoring_applies(&manifest_content) {
+        let listing = parsers::read_file_limited(&modules_txt, parsers::MAX_MANIFEST_BYTES)?;
+        parsers::go_mod::check_vendor_modules(&manifest_content, &listing).map_err(|err| {
+            anyhow::anyhow!(
+                "Broken vendor directory '{}': {}",
+                modules_txt.display(),
+                err
+            )
+        })?;
+    } else {
         let go_sum = parsers::read_file_limited(&go_sum_path, parsers::MAX_MANIFEST_BYTES)?;
         parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum).map_err(|err| {
             anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err)
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod vendor_tests {
+    use super::*;
+
+    const HASH: &str = "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=";
+
+    fn project(go_mod: &str, go_sum: &str, modules_txt: Option<&str>) -> ProjectInputSpec {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "sj-go-vendor-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(dir.join("vendor")).unwrap();
+        std::fs::write(dir.join("go.mod"), go_mod).unwrap();
+        std::fs::write(dir.join("go.sum"), go_sum).unwrap();
+        if let Some(listing) = modules_txt {
+            std::fs::write(dir.join("vendor/modules.txt"), listing).unwrap();
+        }
+        ProjectInputSpec {
+            kind: ProjectInputKind::Go,
+            manifest_path: dir.join("go.mod"),
+            lockfile_path_override: None,
+            js_binding: None,
+        }
+    }
+
+    const GO_MOD: &str = "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/text v0.14.0\n";
+
+    #[test]
+    fn an_unrelated_vendor_listing_does_not_switch_off_the_checks() {
+        // The red-team case: go.sum lacks the module and a one-line modules.txt "vendors" it.
+        let spec = project(
+            GO_MOD,
+            &format!("example.com/other v1.0.0/go.mod {HASH}\n"),
+            Some("# example.com/unrelated v1.0.0\n"),
+        );
+        let err = check_go_sum(&spec).unwrap_err().to_string();
+        assert!(err.contains("vendor/modules.txt"), "{err}");
+        // Without vendoring the same go.sum is rejected as before.
+        let spec = project(
+            GO_MOD,
+            &format!("example.com/other v1.0.0/go.mod {HASH}\n"),
+            None,
+        );
+        assert!(check_go_sum(&spec).is_err());
+    }
+
+    #[test]
+    fn a_vendor_listing_that_covers_go_mod_replaces_go_sum_entries() {
+        let listing =
+            "# golang.org/x/text v0.14.0\n## explicit; go 1.18\ngolang.org/x/text/unicode\n";
+        let spec = project(
+            GO_MOD,
+            &format!("example.com/other v1.0.0/go.mod {HASH}\n"),
+            Some(listing),
+        );
+        check_go_sum(&spec).unwrap();
+    }
+
+    #[test]
+    fn a_vendor_directory_is_ignored_by_go_before_1_14() {
+        let old = "module example.com/app\n\ngo 1.13\n\nrequire golang.org/x/text v0.14.0\n";
+        let listing = "# golang.org/x/text v0.14.0\n";
+        let spec = project(
+            old,
+            &format!("example.com/other v1.0.0/go.mod {HASH}\n"),
+            Some(listing),
+        );
+        assert!(check_go_sum(&spec).is_err(), "go.sum still governs");
+    }
 }

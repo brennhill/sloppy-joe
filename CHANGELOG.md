@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Go: a `vendor/modules.txt` no longer switches off the go.sum check by merely existing. While vendoring is in effect (go 1.14 or later), the listing must contain every required module version (`# <module> <version>`) or the scan blocks; before go 1.14, or without a listing, go.sum is enforced. go.sum must also carry the content hash (the entry without `/go.mod`) for every direct requirement, not just the `/go.mod` hash; `// indirect` requirements keep needing only the `/go.mod` hash.
 - JavaScript: a `package.json5`, or a `package.yaml` that declares npm-style `dependencies`/`devDependencies` as a mapping, now blocks discovery instead of being skipped, so a repo no longer reports "0 packages, no issues" while a project's dependencies go unread. Haskell hpack `package.yaml` files (a list of dependencies) are still ignored; `ignore_dirs` excludes a directory outright.
 - Scan: a lockfile that cannot be read for internal packages now blocks instead of scanning them with no resolved versions (which skipped their advisory checks).
 - Scan: when project discovery finds nothing to scan but the legacy manifest parser reads a manifest, the scan now blocks with a discovery/parser mismatch error instead of reporting a clean zero-package scan.

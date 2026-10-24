@@ -36,7 +36,7 @@ fn preflight_accepts_a_complete_go_sum() {
     let dir = project(
         GO_MOD,
         &format!(
-            "github.com/google/uuid v1.6.0/go.mod {HASH}\ngithub.com/evil/pkg v1.0.0/go.mod {HASH}\n"
+            "github.com/google/uuid v1.6.0 {HASH}\ngithub.com/google/uuid v1.6.0/go.mod {HASH}\ngithub.com/evil/pkg v1.0.0 {HASH}\ngithub.com/evil/pkg v1.0.0/go.mod {HASH}\n"
         ),
     );
     preflight_scan_inputs(&dir, Some("go")).unwrap();
@@ -44,7 +44,24 @@ fn preflight_accepts_a_complete_go_sum() {
 }
 
 #[test]
-fn preflight_skips_the_content_check_for_vendored_modules() {
+fn a_vendor_listing_covering_go_mod_replaces_the_go_sum_content_check() {
+    let dir = project(
+        GO_MOD,
+        &format!("github.com/google/uuid v1.6.0/go.mod {HASH}\n"),
+    );
+    std::fs::create_dir_all(dir.join("vendor")).unwrap();
+    std::fs::write(
+        dir.join("vendor/modules.txt"),
+        "# github.com/google/uuid v1.6.0\n## explicit\n# github.com/evil/pkg v1.0.0\n## explicit\n",
+    )
+    .unwrap();
+    preflight_scan_inputs(&dir, Some("go")).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_vendor_listing_that_omits_a_requirement_blocks() {
+    // vendor/modules.txt existing is not enough: it must list what go.mod requires.
     let dir = project(
         GO_MOD,
         &format!("github.com/google/uuid v1.6.0/go.mod {HASH}\n"),
@@ -55,6 +72,9 @@ fn preflight_skips_the_content_check_for_vendored_modules() {
         "# github.com/google/uuid v1.6.0\n",
     )
     .unwrap();
-    preflight_scan_inputs(&dir, Some("go")).unwrap();
+    let err = preflight_scan_inputs(&dir, Some("go")).expect_err("must block");
+    let msg = err.to_string();
+    assert!(msg.contains("github.com/evil/pkg"), "{msg}");
+    assert!(msg.contains("vendor/modules.txt"), "{msg}");
     let _ = std::fs::remove_dir_all(&dir);
 }

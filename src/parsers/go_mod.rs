@@ -179,20 +179,115 @@ pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
     }
 
     let local = parse_local_replace_targets(go_mod);
+    let indirect = indirect_requirements(go_mod);
+    let mut missing: Vec<String> = Vec::new();
+    let mut unhashed: Vec<String> = Vec::new();
+    for (name, version) in parse_requirements(go_mod) {
+        let Some(version) = version else { continue };
+        if local.contains(name.as_str()) {
+            continue;
+        }
+        if !hashes.contains_key(&(name.clone(), format!("{version}/go.mod"))) {
+            missing.push(format!("{name} {version}"));
+        }
+        // Modules the build imports from need the content hash too; only `// indirect` ones that
+        // provide no package may have just the go.mod hash.
+        if !indirect.contains(&(name.clone(), version.clone()))
+            && !hashes.contains_key(&(name.clone(), version.clone()))
+        {
+            unhashed.push(format!("{name} {version}"));
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    unhashed.sort();
+    unhashed.dedup();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "go.sum has no checksum for required module version(s): {}. Fix: run `go mod tidy` so Go records dependency checksums in go.sum.",
+            missing.join(", ")
+        );
+    }
+    if !unhashed.is_empty() {
+        anyhow::bail!(
+            "go.sum has no content hash (the entry without /go.mod) for direct requirement(s): {}. Fix: run `go mod tidy` so Go records the module content checksum in go.sum.",
+            unhashed.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Requirements go.mod marks `// indirect`.
+fn indirect_requirements(go_mod: &str) -> HashSet<(String, String)> {
+    let mut indirect = HashSet::new();
+    for line in go_mod.lines() {
+        let Some((code, comment)) = line.split_once("//") else {
+            continue;
+        };
+        if comment.trim() != "indirect" && !comment.trim_start().starts_with("indirect") {
+            continue;
+        }
+        let code = code.trim();
+        let code = code.strip_prefix("require").map_or(code, str::trim);
+        let tokens: Vec<String> = code.split_whitespace().map(unquote_go_token).collect();
+        if let [name, version, ..] = &tokens[..] {
+            indirect.insert((name.clone(), version.clone()));
+        }
+    }
+    indirect
+}
+
+/// Go uses `vendor/` instead of the module cache by default from go 1.14 on; before that the
+/// directory is ignored and go.sum still governs.
+pub(crate) fn vendoring_applies(go_mod: &str) -> bool {
+    let Some(version) = parse_directive(go_mod, "go")
+        .into_iter()
+        .next()
+        .and_then(|tokens| tokens.into_iter().next())
+    else {
+        return false;
+    };
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+    let minor = parts.next().and_then(|part| {
+        part.trim_end_matches(|c: char| !c.is_ascii_digit())
+            .parse::<u32>()
+            .ok()
+    });
+    matches!((major, minor), (Some(major), Some(minor)) if (major, minor) >= (1, 14))
+}
+
+/// `vendor/modules.txt` must list every required module version (`# <module> <version>`), as
+/// `go mod vendor` writes it. While vendoring is in effect Go ignores go.sum, so this list is
+/// what ties the vendored code to go.mod; a vendor directory that does not cover go.mod is not
+/// a substitute for go.sum.
+pub(crate) fn check_vendor_modules(go_mod: &str, modules_txt: &str) -> Result<()> {
+    let mut vendored: HashSet<(String, String)> = HashSet::new();
+    for line in modules_txt.lines() {
+        let Some(rest) = line.strip_prefix("# ") else {
+            continue;
+        };
+        let rest = rest.split(" => ").next().unwrap_or(rest);
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if let [name, version, ..] = fields[..] {
+            vendored.insert((name.to_string(), version.to_string()));
+        }
+    }
+    let local = parse_local_replace_targets(go_mod);
     let mut missing: Vec<String> = parse_requirements(go_mod)
         .into_iter()
         .filter(|(name, _)| !local.contains(name.as_str()))
         .filter_map(|(name, version)| {
             let version = version?;
-            let key = (name.clone(), format!("{version}/go.mod"));
-            (!hashes.contains_key(&key)).then(|| format!("{name} {version}"))
+            (!vendored.contains(&(name.clone(), version.clone())))
+                .then(|| format!("{name} {version}"))
         })
         .collect();
     missing.sort();
     missing.dedup();
     if !missing.is_empty() {
         anyhow::bail!(
-            "go.sum has no checksum for required module version(s): {}. Fix: run `go mod tidy` so Go records dependency checksums in go.sum.",
+            "vendor/modules.txt does not list required module version(s): {}. Fix: run `go mod vendor` so the vendor directory matches go.mod.",
             missing.join(", ")
         );
     }
