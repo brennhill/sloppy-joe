@@ -64,9 +64,9 @@ impl EcosystemSupport for Jvm {
         &self,
         _scan_root: &Path,
         _config: &config::SloppyJoeConfig,
-        _specs: &mut Vec<ProjectInputSpec>,
+        specs: &mut Vec<ProjectInputSpec>,
     ) -> Result<()> {
-        Ok(())
+        reject_both_gradle_dsls(specs)
     }
 
     fn bind(
@@ -196,4 +196,46 @@ fn ensure_gradle_lockfile_pins_dependencies(
         );
     }
     Ok(())
+}
+
+/// Gradle evaluates one build script per directory; `build.gradle` beside `build.gradle.kts`
+/// leaves it unclear which one the build uses, so neither can be trusted alone.
+fn reject_both_gradle_dsls(specs: &[ProjectInputSpec]) -> Result<()> {
+    let mut seen = std::collections::HashMap::new();
+    for spec in specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::Gradle)
+    {
+        if let Some(first) = seen.insert(spec.project_dir().to_path_buf(), &spec.manifest_path) {
+            anyhow::bail!(
+                "Ambiguous Gradle build in {}: {} and {} both define the build",
+                spec.project_dir().display(),
+                first.display(),
+                spec.manifest_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod dsl_tests {
+    use super::*;
+
+    fn gradle(path: &str) -> ProjectInputSpec {
+        ProjectInputSpec {
+            kind: ProjectInputKind::Gradle,
+            manifest_path: PathBuf::from(path),
+            lockfile_path_override: None,
+            js_binding: None,
+        }
+    }
+
+    #[test]
+    fn groovy_and_kotlin_build_scripts_in_one_directory_are_ambiguous() {
+        let both = [gradle("/p/build.gradle"), gradle("/p/build.gradle.kts")];
+        assert!(reject_both_gradle_dsls(&both).is_err());
+        let apart = [gradle("/p/build.gradle"), gradle("/q/build.gradle.kts")];
+        assert!(reject_both_gradle_dsls(&apart).is_ok());
+    }
 }

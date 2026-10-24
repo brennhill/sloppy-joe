@@ -561,7 +561,7 @@ async fn empty_direct_graph_with_locked_packages_is_unsupported() {
         ),
         (
             "app.csproj",
-            "<Project><ItemGroup><ProjectReference Include=\"../other/other.csproj\" /></ItemGroup></Project>",
+            "<Project></Project>",
             "packages.lock.json",
             r#"{"version":1,"dependencies":{"net8.0":{"Payload":{"type":"Transitive","resolved":"1.0.0","contentHash":"abc"}}}}"#,
         ),

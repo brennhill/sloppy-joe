@@ -45,12 +45,10 @@ impl EcosystemSupport for Dotnet {
         }
     }
 
-    fn parse_manifest(
-        &self,
-        _scan_root: &Path,
-        spec: &ProjectInputSpec,
-    ) -> Result<Vec<Dependency>> {
-        parsers::csproj::parse_file(&spec.manifest_path)
+    fn parse_manifest(&self, scan_root: &Path, spec: &ProjectInputSpec) -> Result<Vec<Dependency>> {
+        let deps = parsers::csproj::parse_file(&spec.manifest_path)?;
+        check_project_references(scan_root, &spec.manifest_path)?;
+        Ok(deps)
     }
 
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput> {
@@ -82,9 +80,9 @@ impl EcosystemSupport for Dotnet {
         &self,
         _scan_root: &Path,
         _config: &config::SloppyJoeConfig,
-        _specs: &mut Vec<ProjectInputSpec>,
+        specs: &mut Vec<ProjectInputSpec>,
     ) -> Result<()> {
-        Ok(())
+        reject_shared_directories(specs)
     }
 
     fn bind(
@@ -124,5 +122,104 @@ impl EcosystemSupport for Dotnet {
         _spec: &ProjectInputSpec,
     ) -> Result<SourcePolicy> {
         Ok(SourcePolicy::EnforcedEarlier("manifest parse"))
+    }
+}
+
+/// One directory with several project files (`.csproj` beside `.fsproj`) would share a single
+/// `packages.lock.json`, so the lockfile cannot vouch for each of them.
+fn reject_shared_directories(specs: &[ProjectInputSpec]) -> Result<()> {
+    let mut seen = std::collections::HashMap::new();
+    for spec in specs
+        .iter()
+        .filter(|spec| spec.kind == ProjectInputKind::Dotnet)
+    {
+        if let Some(first) = seen.insert(spec.project_dir().to_path_buf(), &spec.manifest_path) {
+            anyhow::bail!(
+                "Ambiguous .NET project directory {}: {} and {} share one packages.lock.json",
+                spec.project_dir().display(),
+                first.display(),
+                spec.manifest_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A `<ProjectReference>` builds another project's code and packages with this one. It must exist
+/// inside the scan root, where discovery scans it like any other project.
+fn check_project_references(scan_root: &Path, manifest: &Path) -> Result<()> {
+    let root = std::fs::canonicalize(scan_root)?;
+    let dir = manifest.parent().unwrap_or(Path::new("."));
+    for include in parsers::csproj::project_reference_includes(manifest)? {
+        let target = dir.join(include.replace('\\', "/"));
+        match std::fs::canonicalize(&target) {
+            Ok(resolved) if resolved.starts_with(&root) => {}
+            _ => anyhow::bail!(
+                "Unsupported ProjectReference '{}' in {}: the target must exist inside the scan root to be scanned",
+                crate::report::sanitize_for_terminal(&include),
+                manifest.display()
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_reference_tests {
+    use super::*;
+
+    fn tree(files: &[(&str, &str)]) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "sj-dotnet-refs-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        for (path, content) in files {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, content).unwrap();
+        }
+        root
+    }
+
+    fn spec(root: &Path, manifest: &str) -> ProjectInputSpec {
+        ProjectInputSpec {
+            kind: ProjectInputKind::Dotnet,
+            manifest_path: root.join(manifest),
+            lockfile_path_override: None,
+            js_binding: None,
+        }
+    }
+
+    const PROJECT: &str = "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><ProjectReference Include=\"REF\" /></ItemGroup></Project>";
+
+    #[test]
+    fn a_project_reference_must_exist_inside_the_scan_root() {
+        let root = tree(&[
+            (
+                "app/app.csproj",
+                &PROJECT.replace("REF", "..\\lib\\lib.csproj"),
+            ),
+            ("lib/lib.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />"),
+        ]);
+        check_project_references(&root, &root.join("app/app.csproj")).unwrap();
+
+        for target in ["../evil/evil.csproj", "../../outside.csproj"] {
+            let root = tree(&[("app/app.csproj", &PROJECT.replace("REF", target))]);
+            let err = check_project_references(&root, &root.join("app/app.csproj"))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("ProjectReference"), "{target}: {err}");
+        }
+    }
+
+    #[test]
+    fn two_project_files_in_one_directory_are_ambiguous() {
+        let root = tree(&[("a.csproj", "<Project />"), ("a.fsproj", "<Project />")]);
+        let specs = [spec(&root, "a.csproj"), spec(&root, "a.fsproj")];
+        assert!(reject_shared_directories(&specs).is_err());
+        assert!(reject_shared_directories(&specs[..1]).is_ok());
     }
 }

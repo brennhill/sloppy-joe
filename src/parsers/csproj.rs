@@ -23,6 +23,32 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
     collect_package_references(&content, csproj)
 }
 
+/// The `Include` paths of the project's `<ProjectReference>` elements, as written.
+pub(crate) fn project_reference_includes(csproj: &Path) -> Result<Vec<String>> {
+    let content = super::read_file_limited(csproj, super::MAX_MANIFEST_BYTES)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
+    let content = strip_xml_comments(&content);
+    let mut includes = Vec::new();
+    for tag in content.split("<ProjectReference").skip(1) {
+        let boundary = tag
+            .chars()
+            .next()
+            .is_none_or(|ch| ch.is_whitespace() || matches!(ch, '/' | '>'));
+        if !boundary {
+            continue;
+        }
+        let attrs = tag.split('>').next().unwrap_or_default();
+        let include = extract_attr(attrs, "Include").ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported ProjectReference in {}: expected an Include attribute",
+                csproj.display()
+            )
+        })?;
+        includes.push(include);
+    }
+    Ok(includes)
+}
+
 /// Implicit imports, `global.json` SDK pins and `nuget.config` feeds in any ancestor directory.
 fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
     for ancestor in csproj.parent().into_iter().flat_map(Path::ancestors) {
