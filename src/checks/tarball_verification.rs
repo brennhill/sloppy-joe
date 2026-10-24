@@ -124,18 +124,12 @@ fn selection_priority(
     verify_all.then_some(2)
 }
 
-pub(crate) async fn verify_npm_tarballs(
-    registry: &dyn Registry,
-    lookups: &mut [MetadataLookup],
-    config: &SloppyJoeConfig,
+fn collect_units(
+    lookups: &[MetadataLookup],
+    flagged: &HashSet<String>,
     similarity_flagged: &HashSet<String>,
-    options: &TarballVerificationOptions<'_>,
-) -> Vec<Issue> {
-    let flagged: HashSet<String> = issues_from_lookups(lookups, config, similarity_flagged)
-        .into_iter()
-        .map(|issue| issue.package)
-        .collect();
-
+    verify_all: bool,
+) -> Vec<Unit> {
     let mut units: Vec<Unit> = Vec::new();
     let mut unit_index: HashMap<(String, String), usize> = HashMap::new();
     for (index, lookup) in lookups.iter().enumerate() {
@@ -148,13 +142,9 @@ pub(crate) async fn verify_npm_tarballs(
         let Some(reference) = meta.npm_tarball.as_ref() else {
             continue;
         };
-        let Some(priority) = selection_priority(
-            lookup,
-            meta,
-            &flagged,
-            similarity_flagged,
-            options.verify_all,
-        ) else {
+        let Some(priority) =
+            selection_priority(lookup, meta, flagged, similarity_flagged, verify_all)
+        else {
             continue;
         };
         let key = reference.cache_key(&lookup.package);
@@ -176,22 +166,69 @@ pub(crate) async fn verify_npm_tarballs(
         units[unit].priority = units[unit].priority.min(priority);
         units[unit].lookups.push(index);
     }
-    if units.is_empty() {
-        return Vec::new();
-    }
+    units
+}
 
-    let now = cache::now_epoch();
-    let cache_path = tarball_cache_path(options.cache_dir);
-    let mut disk_cache = if options.no_cache {
+fn load_disk_cache(cache_path: &Path, no_cache: bool, now: u64) -> TarballCache {
+    let mut disk_cache = if no_cache {
         TarballCache::default()
     } else {
-        cache::read_json_cache(&cache_path, CACHE_TTL_SECS, |c: &TarballCache| c.timestamp)
+        cache::read_json_cache(cache_path, CACHE_TTL_SECS, |c: &TarballCache| c.timestamp)
             .unwrap_or_default()
     };
     disk_cache.entries.retain(|_, entry| {
         now.checked_sub(entry.checked_at)
             .is_some_and(|age| age < CACHE_TTL_SECS)
     });
+    disk_cache
+}
+
+fn limit_issue(unit: &Unit, max_fetches: usize, skipped: usize, selected: usize) -> Issue {
+    unverified_issue(
+        unit,
+        &format!(
+            "the per-scan tarball verification limit ({max_fetches}) was reached; {skipped} of {selected} selected npm versions needing a download were not verified"
+        ),
+    )
+    .fix(
+        "Re-run the scan: verified tarballs are cached, so each run verifies more versions. To verify more per scan, raise max_npm_tarball_verifications (up to 1000) in the sloppy-joe config.",
+    )
+}
+
+fn fetch_outcome(unit: &Unit, result: anyhow::Result<Option<NpmManifestFacts>>) -> Outcome {
+    match result {
+        Ok(Some(facts)) => Outcome::Verified(facts),
+        Ok(None) => Outcome::Failed(unverified_issue(
+            unit,
+            "this registry client cannot download npm tarballs",
+        )),
+        Err(err) => match err.downcast_ref::<IntegrityMismatch>() {
+            Some(mismatch) => Outcome::Failed(integrity_issue(unit, &mismatch.0)),
+            None => Outcome::Failed(unverified_issue(unit, &format!("{err:#}"))),
+        },
+    }
+}
+
+pub(crate) async fn verify_npm_tarballs(
+    registry: &dyn Registry,
+    lookups: &mut [MetadataLookup],
+    config: &SloppyJoeConfig,
+    similarity_flagged: &HashSet<String>,
+    options: &TarballVerificationOptions<'_>,
+) -> Vec<Issue> {
+    let flagged: HashSet<String> = issues_from_lookups(lookups, config, similarity_flagged)
+        .into_iter()
+        .map(|issue| issue.package)
+        .collect();
+
+    let units = collect_units(lookups, &flagged, similarity_flagged, options.verify_all);
+    if units.is_empty() {
+        return Vec::new();
+    }
+
+    let now = cache::now_epoch();
+    let cache_path = tarball_cache_path(options.cache_dir);
+    let mut disk_cache = load_disk_cache(&cache_path, options.no_cache, now);
 
     let mut outcomes: Vec<Option<Outcome>> = (0..units.len()).map(|_| None).collect();
     let mut to_fetch = Vec::new();
@@ -217,18 +254,12 @@ pub(crate) async fn verify_npm_tarballs(
     let selected = to_fetch.len() + overflow.len();
     let skipped = overflow.len();
     for index in overflow {
-        outcomes[index] = Some(Outcome::Failed(
-            unverified_issue(
-                &units[index],
-                &format!(
-                    "the per-scan tarball verification limit ({}) was reached; {skipped} of {selected} selected npm versions needing a download were not verified",
-                    options.max_fetches
-                ),
-            )
-            .fix(
-                "Re-run the scan: verified tarballs are cached, so each run verifies more versions. To verify more per scan, raise max_npm_tarball_verifications (up to 1000) in the sloppy-joe config.",
-            ),
-        ));
+        outcomes[index] = Some(Outcome::Failed(limit_issue(
+            &units[index],
+            options.max_fetches,
+            skipped,
+            selected,
+        )));
     }
 
     let units_ref = &units;
@@ -247,29 +278,19 @@ pub(crate) async fn verify_npm_tarballs(
     let mut cache_dirty = false;
     for (index, result) in fetched {
         let unit = &units[index];
-        outcomes[index] = Some(match result {
-            Ok(Some(facts)) => {
-                if let Some(key) = &unit.key {
-                    disk_cache.entries.insert(
-                        key.clone(),
-                        TarballCacheEntry {
-                            checked_at: now,
-                            facts: facts.clone(),
-                        },
-                    );
-                    cache_dirty = true;
-                }
-                Outcome::Verified(facts)
-            }
-            Ok(None) => Outcome::Failed(unverified_issue(
-                unit,
-                "this registry client cannot download npm tarballs",
-            )),
-            Err(err) => match err.downcast_ref::<IntegrityMismatch>() {
-                Some(mismatch) => Outcome::Failed(integrity_issue(unit, &mismatch.0)),
-                None => Outcome::Failed(unverified_issue(unit, &format!("{err:#}"))),
-            },
-        });
+        if let Ok(Some(facts)) = &result
+            && let Some(key) = &unit.key
+        {
+            disk_cache.entries.insert(
+                key.clone(),
+                TarballCacheEntry {
+                    checked_at: now,
+                    facts: facts.clone(),
+                },
+            );
+            cache_dirty = true;
+        }
+        outcomes[index] = Some(fetch_outcome(unit, result));
     }
 
     if cache_dirty && !options.no_cache {
