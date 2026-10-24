@@ -1,6 +1,7 @@
 use super::*;
 
 mod ambient_inputs;
+mod lock_schema;
 mod provenance;
 
 pub(super) struct Php;
@@ -115,14 +116,16 @@ impl EcosystemSupport for Php {
 
     fn validate_lockfile(
         &self,
-        _ctx: &PreflightCtx<'_>,
+        ctx: &PreflightCtx<'_>,
         spec: &ProjectInputSpec,
         _parsed: &ParsedInput,
     ) -> Result<Vec<Issue>> {
         let lockfile = common::named_lockfile(spec).expect("Php names composer.lock");
         common::ensure_kind_lockfile(spec, &lockfile)?;
-        common::read_json_lockfile(&lockfile)?;
-        Ok(Vec::new())
+        let parsed = common::read_json_lockfile(&lockfile)?;
+        let applied =
+            lock_schema::check_entry_keys(&parsed, &lockfile, &ctx.scan.config.config_key_allow)?;
+        Ok(crate::config_surface::issues(&applied))
     }
 
     fn source_policy(

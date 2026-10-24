@@ -91,6 +91,7 @@ pub const KNOWN_SURFACES: &[&str] = &[
     "pnpm-workspace.yaml",
     "nuget.config",
     "package-lock.json",
+    "composer.lock",
 ];
 
 /// One entry of the scanner config's `config_key_allow`: permit one exact key on one surface.

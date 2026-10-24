@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Composer: `composer.lock` package entries are held to a closed key schema; a key Composer's lock dumper does not write blocks, naming the entry and the key (`config_key_allow` with file `composer.lock` permits one more exact key; `transport-options` is never allowed).
 - npm: lockfile entries in `package-lock.json`/`npm-shrinkwrap.json` are held to a closed key schema. An entry key that npm's arborist does not write now blocks, naming the entry and the key; a `config_key_allow` entry with file `package-lock.json` permits one more exact key and is reported as a `config/key-allowed` warning. Spec: `docs/specs/verification-and-schemas.md`.
 - npm/yarn: a lockfile `resolved` value without a literal `https://` (for example `registry.npmjs.org/x/-/x-1.0.0.tgz`, which npm installs as a local file) is no longer treated as a registry tarball and blocks; a pnpm importer whose lockfile target is a different package than the manifest declares (`is-number` resolving to `ms@2.1.3`) blocks in every mode.
 - Gradle/Maven properties: `\r\n` is one line terminator when parsing Java Properties, so a backslash continuation across CRLF can no longer hide a wrapper `distributionUrl` or a `-javaagent` in `org.gradle.jvmargs`. .NET: `RestoreConfigFile`, `RestorePackagesPath`, `RestoreRootConfigDirectory`, and `nuget.config` `globalPackagesFolder`/`repositoryPath` block. Python: `tox.toml`, `setup.cfg` with tox sections and `[tool.tox]` in pyproject are flagged like `tox.ini`.
