@@ -146,7 +146,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         kind: ProjectInputKind::Gradle,
         manifest: "build.gradle",
-        content: "dependencies {\n    implementation 'com.google.guava:guava:33.0.0-jre'\n}\n",
+        content: "dependencyLocking { lockAllConfigurations() }\ndependencies {\n    implementation 'com.google.guava:guava:33.0.0-jre'\n}\n",
         lockfile: "gradle.lockfile",
     },
     Fixture {

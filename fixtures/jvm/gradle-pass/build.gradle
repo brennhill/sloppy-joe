@@ -2,6 +2,10 @@ plugins {
     id 'java'
 }
 
+dependencyLocking {
+    lockAllConfigurations()
+}
+
 repositories {
     mavenCentral()
 }

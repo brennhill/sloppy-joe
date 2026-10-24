@@ -135,6 +135,7 @@ impl EcosystemSupport for Jvm {
                     &common::named_lockfile(spec).expect("Gradle names gradle.lockfile"),
                 )?;
                 common::ensure_no_locked_packages_without_declarations(spec, &parsed.deps)?;
+                ensure_gradle_enforces_lockfile(spec)?;
                 ensure_gradle_lockfile_pins_dependencies(spec, parsed.deps.len())?;
             }
             // Maven has no lockfile to validate; source_policy states what that means.
@@ -176,6 +177,22 @@ fn maven_no_lockfile_warning(spec: &ProjectInputSpec) -> Issue {
 
 /// `gradle.lockfile` lines read `group:artifact:version=configurations`. A lockfile with none of
 /// them cannot back declared dependencies.
+/// Gradle only honors `gradle.lockfile` when dependency locking is switched on; otherwise it
+/// resolves normally and the lockfile the scan trusted is ignored.
+fn ensure_gradle_enforces_lockfile(spec: &ProjectInputSpec) -> Result<()> {
+    match parsers::jvm::gradle_locking(&spec.manifest_path)? {
+        parsers::jvm::GradleLocking::Strict => Ok(()),
+        parsers::jvm::GradleLocking::Lenient => anyhow::bail!(
+            "Gradle dependency locking in {} uses LockMode.LENIENT, which resolves dependencies the lockfile does not list. Fix: use the default strict mode.",
+            spec.manifest_path.display()
+        ),
+        parsers::jvm::GradleLocking::Off => anyhow::bail!(
+            "Gradle ignores gradle.lockfile for {} because dependency locking is not enabled. Fix: add `dependencyLocking {{ lockAllConfigurations() }}` to the build script.",
+            spec.manifest_path.display()
+        ),
+    }
+}
+
 fn ensure_gradle_lockfile_pins_dependencies(
     spec: &ProjectInputSpec,
     declared: usize,

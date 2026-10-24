@@ -24,7 +24,11 @@ const LOCKFILE: &str =
 
 fn gradle_project(build: &str, extra: &[(&str, &str)]) -> std::path::PathBuf {
     let dir = unique_dir();
-    std::fs::write(dir.join("build.gradle"), build).unwrap();
+    std::fs::write(
+        dir.join("build.gradle"),
+        format!("dependencyLocking {{ lockAllConfigurations() }}\n{build}"),
+    )
+    .unwrap();
     std::fs::write(dir.join("gradle.lockfile"), LOCKFILE).unwrap();
     for (path, content) in extra {
         let path = dir.join(path);

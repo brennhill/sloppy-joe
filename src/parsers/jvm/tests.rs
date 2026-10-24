@@ -682,3 +682,44 @@ fn maven_core_extensions_block_the_project() {
     assert!(err.contains("core extensions"), "{err}");
     cleanup(&dir);
 }
+
+#[test]
+fn gradle_locking_is_only_strict_when_the_build_turns_it_on() {
+    use crate::parsers::jvm::{GradleLocking, gradle_locking};
+    for (script, expected) in [
+        (
+            "dependencies { implementation 'a:b:1' }",
+            GradleLocking::Off,
+        ),
+        (
+            "dependencyLocking { lockAllConfigurations() }",
+            GradleLocking::Strict,
+        ),
+        (
+            "dependencyLocking { lockAllConfigurations()\n lockMode = LockMode.LENIENT }",
+            GradleLocking::Lenient,
+        ),
+    ] {
+        let dir = setup_gradle(script);
+        assert_eq!(gradle_locking(&dir.join("build.gradle")).unwrap(), expected);
+        cleanup(&dir);
+    }
+}
+
+#[test]
+fn a_parent_settings_script_is_found_without_a_git_checkout() {
+    let dir = setup_test_dir(
+        "jvm-nogit",
+        "settings.gradle",
+        "dependencyResolutionManagement { repositories { maven { url 'https://evil.example/maven2' } } }",
+    );
+    std::fs::create_dir_all(dir.join("app")).unwrap();
+    std::fs::write(
+        dir.join("app/build.gradle"),
+        "dependencies { implementation 'a:b:1' }",
+    )
+    .unwrap();
+    let err = parse_manifest(&dir.join("app/build.gradle")).map(|_| ());
+    assert!(err.is_err(), "the parent settings repository must be seen");
+    cleanup(&dir);
+}

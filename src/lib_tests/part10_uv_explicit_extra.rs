@@ -522,7 +522,12 @@ fn full_scan_recommendation_reasons_include_policy_changed_when_config_differs()
 #[tokio::test]
 async fn empty_or_unstructured_required_lockfiles_fail_closed() {
     for (manifest, content, lockfile, locked) in [
-        ("build.gradle", "dependencies {}", "gradle.lockfile", ""),
+        (
+            "build.gradle",
+            "dependencyLocking { lockAllConfigurations() }\ndependencies {}",
+            "gradle.lockfile",
+            "",
+        ),
         (
             "Gemfile",
             "source 'https://rubygems.org'",

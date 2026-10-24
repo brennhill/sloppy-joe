@@ -89,6 +89,63 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
     Ok(deps)
 }
 
+/// How far up Gradle's enclosing settings scripts apply: the repository root, or without a git
+/// checkout (Docker contexts, source tarballs) the filesystem root, since Gradle searches upward
+/// regardless.
+fn gradle_boundary(project_dir: &Path) -> Result<std::path::PathBuf> {
+    let root = crate::cache::find_git_root(project_dir).map_err(anyhow::Error::msg)?;
+    Ok(root.unwrap_or_else(|| {
+        project_dir
+            .ancestors()
+            .last()
+            .unwrap_or(project_dir)
+            .to_path_buf()
+    }))
+}
+
+/// Whether Gradle enforces `gradle.lockfile` for the build at `path`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GradleLocking {
+    /// `dependencyLocking { lockAllConfigurations() }` is active in this build or an enclosing one.
+    Strict,
+    /// Locking is on but `LockMode.LENIENT` lets unlisted dependencies resolve.
+    Lenient,
+    /// Gradle resolves normally and ignores the lockfile.
+    Off,
+}
+
+pub(crate) fn gradle_locking(path: &Path) -> Result<GradleLocking> {
+    let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
+    let boundary = gradle_boundary(&project_dir)?;
+    let mut locks = false;
+    let mut lenient = false;
+    for dir in project_dir
+        .ancestors()
+        .take_while(|dir| dir.starts_with(&boundary))
+    {
+        for name in ["build.gradle", "build.gradle.kts"] {
+            let script = dir.join(name);
+            if !super::path_detected(&script)? {
+                continue;
+            }
+            let content = super::read_file_limited(&script, super::MAX_MANIFEST_BYTES)?;
+            for token in tokenize_gradle(&content) {
+                let GradleToken::Ident(ident) = token else {
+                    continue;
+                };
+                let last = ident.rsplit('.').next().unwrap_or_default();
+                locks |= last == "lockAllConfigurations";
+                lenient |= matches!(last, "LENIENT" | "lockMode");
+            }
+        }
+    }
+    Ok(match (locks, lenient) {
+        (false, _) => GradleLocking::Off,
+        (true, true) => GradleLocking::Lenient,
+        (true, false) => GradleLocking::Strict,
+    })
+}
+
 /// Parse a Gradle build script, the settings scripts that enclose it, and the
 /// plugin requests of both. Custom plugin repositories are returned, not
 /// rejected: the caller decides whether they are allowlisted.
@@ -103,9 +160,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
         );
     }
     let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
-    let boundary = crate::cache::find_git_root(&project_dir)
-        .map_err(anyhow::Error::msg)?
-        .unwrap_or_else(|| project_dir.clone());
+    let boundary = gradle_boundary(&project_dir)?;
     let mut settings = Vec::new();
     for ancestor in project_dir
         .ancestors()

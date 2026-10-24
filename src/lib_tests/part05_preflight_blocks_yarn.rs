@@ -668,7 +668,7 @@ fn preflight_blocks_invalid_secondary_jvm_manifest() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("build.gradle"),
-        "implementation 'com.google.guava:guava:31.1-jre'\n",
+        "dependencyLocking { lockAllConfigurations() }\nimplementation 'com.google.guava:guava:31.1-jre'\n",
     )
     .unwrap();
     std::fs::write(
