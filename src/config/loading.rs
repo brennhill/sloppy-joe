@@ -1,6 +1,14 @@
 //! Loading, parsing and overlaying config files and URLs.
 use super::*;
 
+/// Resolve config source with full resolution cascade:
+/// 1. `--config` CLI flag (highest priority)
+/// 2. `SLOPPY_JOE_CONFIG` env var
+/// 3. Registry lookup (if project_dir is Some)
+/// 4. None (caller must handle — usually a blocking error)
+///
+/// Never reads from the project directory.
+/// Accepts a file path or a URL (http:// or https://).
 pub fn resolve_config_source(
     cli_config: Option<&str>,
     project_dir: Option<&Path>,

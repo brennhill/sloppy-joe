@@ -23,15 +23,6 @@ pub(super) fn valid_similarity_generator(generator: &str) -> bool {
     valid_similarity_generators().contains(&generator)
 }
 
-/// Resolve config source with full resolution cascade:
-/// 1. `--config` CLI flag (highest priority)
-/// 2. `SLOPPY_JOE_CONFIG` env var
-/// 3. Registry lookup (if project_dir is Some)
-/// 4. None (caller must handle — usually a blocking error)
-///
-/// Never reads from the project directory.
-/// Accepts a file path or a URL (http:// or https://).
-
 impl SloppyJoeConfig {
     /// Validate config at load time. Returns a list of errors.
     pub fn validate(&self) -> Vec<String> {
