@@ -543,3 +543,19 @@ fn msbuild_response_and_solution_files_in_a_parent_block() {
         cleanup(&dir);
     }
 }
+
+#[test]
+fn nuget_restore_location_properties_block() {
+    for property in [
+        "<RestoreConfigFile>build/feeds.xml</RestoreConfigFile>",
+        "<RestorePackagesPath>pkgs</RestorePackagesPath>",
+        "<RestoreRootConfigDirectory>cfg</RestoreRootConfigDirectory>",
+        "<restorepackagespath>pkgs</restorepackagespath>",
+    ] {
+        let dir = setup_csproj(&format!(
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>{property}</PropertyGroup></Project>"#
+        ));
+        assert!(crate::parsers::csproj::parse(&dir).is_err(), "{property}");
+        cleanup(&dir);
+    }
+}

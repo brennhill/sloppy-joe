@@ -96,6 +96,28 @@ fn reject_hatch_toml(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether a tox configuration declares environment `deps` or `requires`. In `setup.cfg` and
+/// `pyproject.toml` only a tox section counts; `tox.ini` and `tox.toml` are tox's own files.
+fn tox_installs_packages(path: &Path, shared_file_section: Option<&str>) -> Result<bool> {
+    let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
+    if let Some(section) = shared_file_section {
+        let lowered = content.to_ascii_lowercase();
+        let has_tox = lowered.contains("[tox:tox]")
+            || lowered.contains("[testenv")
+            || lowered.contains(&format!("[{section}"));
+        if !has_tox {
+            return Ok(false);
+        }
+    }
+    Ok(content.lines().any(|line| {
+        let line = line.trim_start();
+        ["deps", "requires"].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with(['=', ':']))
+        })
+    }))
+}
+
 /// Files that install Python packages but that no scan reads: conda environments and tox
 /// environment dependencies. A warning, and an error in `--ci`.
 fn unscanned_tool_files(spec: &ProjectInputSpec, strict: bool) -> Result<Vec<Issue>> {
@@ -106,17 +128,15 @@ fn unscanned_tool_files(spec: &ProjectInputSpec, strict: bool) -> Result<Vec<Iss
             found.push(path);
         }
     }
-    let tox = spec.project_dir().join("tox.ini");
-    if exists(&tox) {
-        let content = parsers::read_file_limited(&tox, parsers::MAX_MANIFEST_BYTES)?;
-        if content.lines().any(|line| {
-            let line = line.trim_start();
-            ["deps", "requires"].iter().any(|key| {
-                line.strip_prefix(key)
-                    .is_some_and(|rest| rest.trim_start().starts_with(['=', ':']))
-            })
-        }) {
-            found.push(tox);
+    for (name, section) in [
+        ("tox.ini", None),
+        ("tox.toml", None),
+        ("setup.cfg", Some("tox")),
+        ("pyproject.toml", Some("tool.tox")),
+    ] {
+        let path = spec.project_dir().join(name);
+        if exists(&path) && tox_installs_packages(&path, section)? {
+            found.push(path);
         }
     }
     let severity = if strict {

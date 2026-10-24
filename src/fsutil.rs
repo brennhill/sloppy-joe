@@ -108,6 +108,8 @@ pub(crate) fn reject_unmodeled_line_breaks(content: &str, path: &std::path::Path
 pub(crate) fn parse_java_properties(bytes: &[u8]) -> Vec<(String, String)> {
     let text: String = bytes.iter().map(|&b| b as char).collect();
     let mut logical: Vec<String> = Vec::new();
+    // `\r\n` is one terminator, so normalize it before splitting on a lone `\r` or `\n`.
+    let text = text.replace("\r\n", "\n");
     let mut physical = text.split(['\n', '\r']).peekable();
     while let Some(line) = physical.next() {
         let line = line.trim_start_matches([' ', '\t', '\x0c']);
@@ -180,6 +182,32 @@ mod line_tests {
         assert!(reject_unmodeled_line_breaks("a\nb\r\nc", path).is_ok());
         for bad in ["a\rb", "a\x0cb", "a\u{2028}b", "# c\revil", "a\x0bb"] {
             assert!(reject_unmodeled_line_breaks(bad, path).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn crlf_is_one_terminator_across_continuations() {
+        for eol in ["\r\n", "\n", "\r"] {
+            let text = format!(
+                "distribution\\{eol}   Url=https\\://evil.example/g.zip{eol}jvm=-Xmx2g \\{eol}  -javaagent:a.jar{eol}"
+            );
+            let props = parse_java_properties(text.as_bytes());
+            let get = |k: &str| {
+                props
+                    .iter()
+                    .find(|(key, _)| key == k)
+                    .map(|(_, v)| v.clone())
+            };
+            assert_eq!(
+                get("distributionUrl").as_deref(),
+                Some("https://evil.example/g.zip"),
+                "{eol:?}"
+            );
+            assert_eq!(
+                get("jvm").as_deref(),
+                Some("-Xmx2g -javaagent:a.jar"),
+                "{eol:?}"
+            );
         }
     }
 
