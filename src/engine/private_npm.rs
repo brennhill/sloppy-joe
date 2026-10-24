@@ -107,11 +107,12 @@ pub(crate) async fn scan_parsed_project(
         let canonical = checks::pipeline::CanonicalCheck;
         canonical.run(&ctx, &mut acc).await?;
         acc.issues.extend(lockfile_data.resolution.issues.clone());
-        acc.issues.extend(unresolved_version_policy_issues(
-            &non_internal,
-            &lockfile_data.resolution,
-            &config,
-        ));
+        acc.issues
+            .extend(checks::unresolved::unresolved_version_policy_issues(
+                &non_internal,
+                &lockfile_data.resolution,
+                &config,
+            ));
         mark_source(&mut acc.issues, "direct");
         acc.issues.extend(private_issues);
         return Ok(ScanReport::from_issues_with_review_candidates(

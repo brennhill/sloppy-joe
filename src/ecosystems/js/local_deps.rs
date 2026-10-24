@@ -15,7 +15,7 @@ pub(crate) fn validate_local_npm_dependencies(
         )
     })?;
 
-    for (name, local_spec) in npm_dependency_entries(manifest)
+    for (name, local_spec) in parsers::package_json::npm_dependency_entries(manifest)
         .into_iter()
         .filter(|(_, spec)| {
             spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
@@ -133,7 +133,7 @@ pub(crate) fn validate_local_pnpm_dependencies(
         )
     })?;
 
-    for (name, local_spec) in npm_dependency_entries(manifest)
+    for (name, local_spec) in parsers::package_json::npm_dependency_entries(manifest)
         .into_iter()
         .filter(|(_, spec)| {
             spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
@@ -206,7 +206,7 @@ pub(crate) fn validate_local_bun_dependencies(
         )
     })?;
 
-    for (name, local_spec) in npm_dependency_entries(manifest)
+    for (name, local_spec) in parsers::package_json::npm_dependency_entries(manifest)
         .into_iter()
         .filter(|(_, spec)| {
             spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")
@@ -327,7 +327,7 @@ pub(crate) fn validate_local_yarn_dependencies(
         )
     })?;
 
-    for (name, local_spec) in npm_dependency_entries(manifest)
+    for (name, local_spec) in parsers::package_json::npm_dependency_entries(manifest)
         .into_iter()
         .filter(|(_, spec)| {
             spec.starts_with("workspace:") || spec.starts_with("file:") || spec.starts_with("link:")

@@ -418,7 +418,7 @@ fn unresolved_version_policy_only_skips_matching_lockfile_sync_issue_keys() {
         .fix("fix"),
     );
 
-    let issues = unresolved_version_policy_issues(
+    let issues = checks::unresolved::unresolved_version_policy_issues(
         &[dep_a.clone(), dep_b.clone()],
         &resolution,
         &config::SloppyJoeConfig::default(),

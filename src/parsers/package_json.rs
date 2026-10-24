@@ -128,6 +128,26 @@ fn is_unsupported_remote_spec(version: &str) -> bool {
         || version.contains("://")
 }
 
+/// Every `name -> spec` string entry of the manifest's dependency sections.
+pub(crate) fn npm_dependency_entries(manifest: &serde_json::Value) -> Vec<(String, String)> {
+    [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ]
+    .into_iter()
+    .flat_map(|section| {
+        manifest
+            .get(section)
+            .and_then(|value| value.as_object())
+            .into_iter()
+            .flat_map(|section| section.iter())
+            .filter_map(|(name, value)| value.as_str().map(|spec| (name.clone(), spec.to_string())))
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
