@@ -283,6 +283,68 @@ pub(crate) fn marker_membership(left: &str, right: &str) -> bool {
     right.contains(left)
 }
 
+fn unsupported_marker(marker: &str, detail: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Unsupported Python environment marker '{}': {detail}",
+        crate::report::sanitize_for_terminal(marker)
+    )
+}
+
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'
+}
+
+/// Operator starting at `index`: the token and how many characters it spans.
+fn tokenize_operator(
+    marker: &str,
+    chars: &[char],
+    index: usize,
+) -> Result<Option<(MarkerToken, usize)>> {
+    let followed_by_eq = chars.get(index + 1) == Some(&'=');
+    let token = match (chars[index], followed_by_eq) {
+        ('(', _) => (MarkerToken::LParen, 1),
+        (')', _) => (MarkerToken::RParen, 1),
+        ('=', true) => (MarkerToken::Eq, 2),
+        ('!', true) => (MarkerToken::NotEq, 2),
+        ('<', true) => (MarkerToken::LtEq, 2),
+        ('<', false) => (MarkerToken::Lt, 1),
+        ('>', true) => (MarkerToken::GtEq, 2),
+        ('>', false) => (MarkerToken::Gt, 1),
+        (ch @ ('=' | '!'), false) => {
+            return Err(unsupported_marker(marker, format!("unexpected '{ch}'")));
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(token))
+}
+
+/// Quoted string starting at `index`: the token and how many characters it spans.
+fn tokenize_string(marker: &str, chars: &[char], index: usize) -> Result<(MarkerToken, usize)> {
+    let quote = chars[index];
+    let start = index + 1;
+    let Some(len) = chars[start..].iter().position(|&c| c == quote) else {
+        return Err(unsupported_marker(marker, "unterminated string"));
+    };
+    let value = chars[start..start + len].iter().collect();
+    Ok((MarkerToken::String(value), len + 2))
+}
+
+fn tokenize_identifier(chars: &[char], index: usize) -> (MarkerToken, usize) {
+    let len = chars[index..]
+        .iter()
+        .take_while(|&&c| is_ident_char(c))
+        .count();
+    let ident: String = chars[index..index + len].iter().collect();
+    let token = match ident.as_str() {
+        "and" => MarkerToken::And,
+        "or" => MarkerToken::Or,
+        "not" => MarkerToken::Not,
+        "in" => MarkerToken::In,
+        _ => MarkerToken::Ident(ident),
+    };
+    (token, len)
+}
+
 pub(crate) fn tokenize_marker(marker: &str) -> Result<Vec<MarkerToken>> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = marker.chars().collect();
@@ -293,98 +355,20 @@ pub(crate) fn tokenize_marker(marker: &str) -> Result<Vec<MarkerToken>> {
             index += 1;
             continue;
         }
-        match ch {
-            '(' => {
-                tokens.push(MarkerToken::LParen);
-                index += 1;
-            }
-            ')' => {
-                tokens.push(MarkerToken::RParen);
-                index += 1;
-            }
-            '=' => {
-                if chars.get(index + 1) == Some(&'=') {
-                    tokens.push(MarkerToken::Eq);
-                    index += 2;
-                } else {
-                    bail!(
-                        "Unsupported Python environment marker '{}': unexpected '='",
-                        crate::report::sanitize_for_terminal(marker)
-                    );
-                }
-            }
-            '!' => {
-                if chars.get(index + 1) == Some(&'=') {
-                    tokens.push(MarkerToken::NotEq);
-                    index += 2;
-                } else {
-                    bail!(
-                        "Unsupported Python environment marker '{}': unexpected '!'",
-                        crate::report::sanitize_for_terminal(marker)
-                    );
-                }
-            }
-            '<' => {
-                if chars.get(index + 1) == Some(&'=') {
-                    tokens.push(MarkerToken::LtEq);
-                    index += 2;
-                } else {
-                    tokens.push(MarkerToken::Lt);
-                    index += 1;
-                }
-            }
-            '>' => {
-                if chars.get(index + 1) == Some(&'=') {
-                    tokens.push(MarkerToken::GtEq);
-                    index += 2;
-                } else {
-                    tokens.push(MarkerToken::Gt);
-                    index += 1;
-                }
-            }
-            '\'' | '"' => {
-                let quote = ch;
-                index += 1;
-                let start = index;
-                while index < chars.len() && chars[index] != quote {
-                    index += 1;
-                }
-                if index >= chars.len() {
-                    bail!(
-                        "Unsupported Python environment marker '{}': unterminated string",
-                        crate::report::sanitize_for_terminal(marker)
-                    );
-                }
-                tokens.push(MarkerToken::String(chars[start..index].iter().collect()));
-                index += 1;
-            }
-            _ if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' => {
-                let start = index;
-                index += 1;
-                while index < chars.len()
-                    && (chars[index].is_ascii_alphanumeric()
-                        || chars[index] == '_'
-                        || chars[index] == '.')
-                {
-                    index += 1;
-                }
-                let ident: String = chars[start..index].iter().collect();
-                tokens.push(match ident.as_str() {
-                    "and" => MarkerToken::And,
-                    "or" => MarkerToken::Or,
-                    "not" => MarkerToken::Not,
-                    "in" => MarkerToken::In,
-                    _ => MarkerToken::Ident(ident),
-                });
-            }
-            _ => {
-                bail!(
-                    "Unsupported Python environment marker '{}': unexpected character '{}'",
-                    crate::report::sanitize_for_terminal(marker),
-                    ch
-                );
-            }
-        }
+        let (token, len) = if let Some(operator) = tokenize_operator(marker, &chars, index)? {
+            operator
+        } else if ch == '\'' || ch == '"' {
+            tokenize_string(marker, &chars, index)?
+        } else if is_ident_char(ch) {
+            tokenize_identifier(&chars, index)
+        } else {
+            return Err(unsupported_marker(
+                marker,
+                format!("unexpected character '{ch}'"),
+            ));
+        };
+        tokens.push(token);
+        index += len;
     }
     Ok(tokens)
 }

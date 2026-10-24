@@ -10,7 +10,6 @@ fn-complexity src/parsers/jvm/gradle_plugins.rs::resolve_plugins 23
 fn-complexity src/parsers/jvm/gradle_scan.rs::tokenize_gradle 26
 fn-complexity src/parsers/jvm/gradle_scan.rs::walk_gradle_script 36
 fn-complexity src/parsers/mod.rs::parse_all_ecosystems_inner 32
-fn-complexity src/parsers/python_scope/marker.rs::tokenize_marker 29
 placement project-input-kind src/engine/discovery.rs 28
 placement project-input-kind src/engine/js_binding.rs 3
 placement project-input-kind src/engine/js_workspace.rs 1
