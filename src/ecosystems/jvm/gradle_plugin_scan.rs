@@ -30,7 +30,8 @@ pub(super) fn parse_gradle_project_input(
     spec: &ProjectInputSpec,
     config: &config::SloppyJoeConfig,
 ) -> Result<ParsedInput> {
-    let build = parsers::jvm::parse_gradle_build(&spec.manifest_path)?;
+    let build =
+        parsers::jvm::parse_gradle_build_with(&spec.manifest_path, Some(&config.config_key_allow))?;
     let custom: Vec<&str> = build
         .plugin_repositories
         .iter()
@@ -50,7 +51,7 @@ pub(super) fn parse_gradle_project_input(
             TRUSTED_PLUGIN_REPOSITORY_NAME
         );
     }
-    let mut warnings = Vec::new();
+    let mut warnings = crate::config_surface::issues(&build.applied_allows);
     let plugins = if custom.is_empty() {
         warnings.extend(known_plugin_lookalikes(&build.plugins, config));
         build.plugins
@@ -226,7 +227,7 @@ pub(super) fn plugin_registry_for(
     if project.spec.kind != ProjectInputKind::Gradle {
         return Ok(None);
     }
-    let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
+    let build = parsers::jvm::parse_gradle_build_with(&project.spec.manifest_path, None)?;
     // Dependencies and buildscript classpath artifacts come from Maven Central,
     // plus Google's repository when the matching `repositories {}` lists it.
     let maven_with = |google: bool| {
@@ -276,7 +277,7 @@ pub(super) async fn project_implementation_issues(
     if !is_plugin_marker_project(project) {
         return Ok(Vec::new());
     }
-    let build = parsers::jvm::parse_gradle_build(&project.spec.manifest_path)?;
+    let build = parsers::jvm::parse_gradle_build_with(&project.spec.manifest_path, None)?;
     let registry = GradlePluginRegistry::new(client, &build.plugin_repositories, &project.deps)?;
     let cache_path = if opts.disable_osv_disk_cache || opts.no_cache {
         None

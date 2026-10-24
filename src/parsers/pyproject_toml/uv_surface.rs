@@ -126,6 +126,7 @@ pub(super) const UV: Surface = Surface {
         "pip.python",
     ],
     deny_under: &["pip"],
+    scope: &[],
 };
 
 #[cfg(test)]

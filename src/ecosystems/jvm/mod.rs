@@ -38,10 +38,17 @@ impl EcosystemSupport for Jvm {
             ProjectInputKind::Gradle => {
                 gradle_plugin_scan::parse_gradle_project_input(spec, ctx.config)
             }
-            ProjectInputKind::Maven => Ok(ParsedInput {
-                deps: self.parse_manifest(ctx.scan_root, spec)?,
-                ..ParsedInput::default()
-            }),
+            ProjectInputKind::Maven => {
+                let (deps, applied) = parsers::jvm::parse_manifest_with(
+                    &spec.manifest_path,
+                    &ctx.config.config_key_allow,
+                )?;
+                Ok(ParsedInput {
+                    deps,
+                    warnings: crate::config_surface::issues(&applied),
+                    ..ParsedInput::default()
+                })
+            }
             other => wrong_plugin(other),
         }
     }

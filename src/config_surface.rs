@@ -26,6 +26,8 @@ pub(crate) enum ValueRule {
     BoolIs(bool),
     Str,
     OneOf(&'static [&'static str]),
+    /// A string accepted by the predicate; the text says what is accepted (shown on refusal).
+    StrWhere(fn(&str) -> bool, &'static str),
 }
 
 /// A key path (dotted; `*` matches one segment) and the values it may hold. A path that is a
@@ -44,6 +46,7 @@ impl std::fmt::Debug for ValueRule {
             ValueRule::BoolIs(value) => write!(f, "{value}"),
             ValueRule::Str => write!(f, "string"),
             ValueRule::OneOf(values) => write!(f, "one of {values:?}"),
+            ValueRule::StrWhere(_, what) => write!(f, "{what}"),
         }
     }
 }
@@ -65,10 +68,21 @@ pub(crate) struct Surface {
     pub deny: &'static [&'static str],
     /// Sub-tables in which the `deny` paths also apply (for example uv's `pip`).
     pub deny_under: &'static [&'static str],
+    /// Flat (properties/argument) surfaces only: key prefixes the table governs. A key outside
+    /// every prefix is an ordinary project setting and passes; empty means the whole file.
+    pub scope: &'static [&'static str],
 }
 
 /// Surface ids a `config_key_allow` entry may name.
-pub const KNOWN_SURFACES: &[&str] = &["uv", "poetry.toml", "composer.json"];
+pub const KNOWN_SURFACES: &[&str] = &[
+    "uv",
+    "poetry.toml",
+    "composer.json",
+    "gradle.properties",
+    "gradle-daemon-jvm.properties",
+    "maven.config",
+    "jvm.config",
+];
 
 /// One entry of the scanner config's `config_key_allow`: permit one exact key on one surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -171,6 +185,39 @@ pub(crate) fn check_json(
     Ok(walk.applied)
 }
 
+/// Check flat settings (a properties file, a list of command-line options): each entry is one
+/// whole key, never split on dots. A rule or deny path ending in `*` is a prefix; one starting
+/// with `=` matches exactly; a deny path otherwise also matches by prefix, a rule path only
+/// exactly.
+pub(crate) fn check_flat(
+    surface: &Surface,
+    entries: &[(String, Value)],
+    source: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
+    let mut walk = Walk {
+        surface,
+        source,
+        allows,
+        applied: Vec::new(),
+    };
+    for (key, node) in entries {
+        walk.flat_entry(key, node)?;
+    }
+    Ok(walk.applied)
+}
+
+fn flat_matches(pattern: &str, key: &str, prefix: bool) -> bool {
+    if let Some(exact) = pattern.strip_prefix('=') {
+        return key == exact;
+    }
+    match pattern.strip_suffix('*') {
+        Some(head) => key.starts_with(head),
+        None if prefix => key.starts_with(pattern),
+        None => key == pattern,
+    }
+}
+
 struct Walk<'a> {
     surface: &'a Surface,
     source: &'a Path,
@@ -242,6 +289,31 @@ impl Walk<'_> {
         self.unknown(path)
     }
 
+    fn flat_entry(&mut self, key: &str, node: &Value) -> Result<()> {
+        let path = [key.to_string()];
+        let scope = self.surface.scope;
+        if !scope.is_empty() && !scope.iter().any(|prefix| key.starts_with(prefix)) {
+            return Ok(());
+        }
+        if self
+            .surface
+            .deny
+            .iter()
+            .any(|deny| flat_matches(deny, key, true))
+        {
+            return Err(self.refusal(&path, self.surface.why));
+        }
+        if let Some(rule) = self
+            .surface
+            .allow
+            .iter()
+            .find(|rule| flat_matches(rule.path, key, false))
+        {
+            return self.check_value(rule, node, &path);
+        }
+        self.unknown(&path)
+    }
+
     fn denied(&self, path: &[String]) -> bool {
         self.surface.deny.iter().any(|deny| {
             let parts: Vec<&str> = deny.split('.').collect();
@@ -260,6 +332,7 @@ impl Walk<'_> {
             ValueRule::BoolIs(want) => node.as_bool() == Some(want),
             ValueRule::Str => node.is_string(),
             ValueRule::OneOf(values) => node.as_str().is_some_and(|text| values.contains(&text)),
+            ValueRule::StrWhere(check, _) => node.as_str().is_some_and(check),
         };
         if fits {
             return Ok(());

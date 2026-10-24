@@ -25,10 +25,10 @@ raw-read src/parsers/cargo_toml.rs 2
 raw-read src/parsers/composer_json.rs 1
 raw-read src/parsers/csproj.rs 3
 raw-read src/parsers/csproj_hooks.rs 1
-raw-read src/parsers/jvm.rs 6
+raw-read src/parsers/jvm.rs 3
 raw-read src/parsers/jvm/gradle_plugins.rs 2
 raw-read src/parsers/jvm/maven_model.rs 1
-raw-read src/parsers/jvm/pom.rs 4
+raw-read src/parsers/jvm/pom.rs 2
 raw-read src/parsers/nuget_config.rs 1
 raw-read src/parsers/package_json.rs 1
 raw-read src/parsers/pipfile.rs 1

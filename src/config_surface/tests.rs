@@ -14,6 +14,7 @@ const SURFACE: Surface = Surface {
     ],
     deny: &["cache", "net.proxy"],
     deny_under: &["pip"],
+    scope: &[],
 };
 
 fn run(toml_text: &str, allows: &[KeyAllow]) -> Result<Vec<AppliedAllow>> {

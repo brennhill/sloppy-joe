@@ -1,72 +1,57 @@
 //! JVM system properties that a repository-controlled file (`gradle.properties`, `.mvn/*.config`)
 //! can set to change where Gradle or Maven fetch from, what they trust, or where they keep state.
+//! The list is a macro so each surface can prepend its own spelling (`-D`, `systemProp.`) and
+//! append its own denied entries while sharing one source of truth.
 
-/// Property name prefixes that redirect repositories, replace the trust store, route traffic
-/// through a proxy, move the home or local repository, or point at a build cache.
-const REDIRECTING_PREFIXES: &[&str] = &[
-    "javax.net.ssl.",
-    "http.proxy",
-    "https.proxy",
-    "http.nonProxyHosts",
-    "https.nonProxyHosts",
-    "socksProxy",
-    "user.home",
-    "java.home",
-    "maven.repo.local",
-    "maven.repo.central",
-    "maven.home",
-    "maven.ext.class.path",
-    "maven.build.cache",
-    "org.apache.maven.user-settings",
-    "org.apache.maven.global-settings",
-    "aether.connector.",
-    "org.gradle.internal.plugins.portal.url.override",
-];
-
-/// Whether `name` (a system property name without `-D`) redirects fetching or trust.
-pub(super) fn is_redirecting_system_property(name: &str) -> bool {
-    let name = name.trim();
-    REDIRECTING_PREFIXES
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
+/// Expands to a `&[&str]` of denied key prefixes: every redirecting system property behind the
+/// literal prefix `$p`, followed by the extra literals. Redirecting properties are those that
+/// redirect repositories, replace the trust store, route traffic through a proxy, move the home,
+/// the user directory or the local repository, load a class loader, security provider
+/// configuration or native library, or point at a build cache.
+macro_rules! redirecting_props {
+    ($p:literal; $($extra:literal),* $(,)?) => {
+        &[
+            concat!($p, "javax.net.ssl."),
+            concat!($p, "http.proxy"),
+            concat!($p, "https.proxy"),
+            concat!($p, "http.nonProxyHosts"),
+            concat!($p, "https.nonProxyHosts"),
+            concat!($p, "https.protocols"),
+            concat!($p, "jdk.tls."),
+            concat!($p, "socksProxy"),
+            concat!($p, "user.home"),
+            concat!($p, "user.dir"),
+            concat!($p, "java.home"),
+            concat!($p, "java.class.path"),
+            concat!($p, "java.library.path"),
+            concat!($p, "java.security."),
+            concat!($p, "java.system.class.loader"),
+            concat!($p, "gradle.user.home"),
+            concat!($p, "maven.repo.local"),
+            concat!($p, "maven.repo.central"),
+            concat!($p, "maven.home"),
+            concat!($p, "maven.ext.class.path"),
+            concat!($p, "maven.build.cache"),
+            concat!($p, "org.apache.maven.user-settings"),
+            concat!($p, "org.apache.maven.global-settings"),
+            concat!($p, "aether.connector."),
+            concat!($p, "org.gradle.internal.plugins.portal.url.override"),
+            $($extra),*
+        ]
+    };
 }
-
-/// The first redirecting `-Dname[=value]` token in a JVM argument string, if any.
-pub(super) fn redirecting_jvm_arg(args: &str) -> Option<String> {
-    args.split(|c: char| c.is_whitespace() || c == '\u{0c}')
-        .filter_map(|token| token.strip_prefix("-D"))
-        .map(|rest| rest.split('=').next().unwrap_or(rest))
-        .find(|name| is_redirecting_system_property(name))
-        .map(str::to_string)
-}
+pub(super) use redirecting_props;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn redirecting_properties_are_recognized() {
-        for name in [
-            "javax.net.ssl.trustStore",
-            "https.proxyHost",
-            "http.nonProxyHosts",
-            "user.home",
-            "maven.repo.local",
-            "org.gradle.internal.plugins.portal.url.override",
-            "aether.connector.https.securityMode",
-        ] {
-            assert!(is_redirecting_system_property(name), "{name}");
-        }
-        assert!(!is_redirecting_system_property("file.encoding"));
-        assert!(!is_redirecting_system_property("maven.test.skip"));
-    }
-
-    #[test]
-    fn jvm_args_are_scanned_for_redirecting_properties() {
-        assert_eq!(
-            redirecting_jvm_arg("-Xmx1g -Djavax.net.ssl.trustStore=a.jks").as_deref(),
-            Some("javax.net.ssl.trustStore")
-        );
-        assert_eq!(redirecting_jvm_arg("-Xmx1g -Dfile.encoding=UTF-8"), None);
+    fn the_macro_prefixes_every_property_and_appends_extras() {
+        const LIST: &[&str] = redirecting_props!("-D"; "-javaagent");
+        assert!(LIST.contains(&"-Djavax.net.ssl."));
+        assert!(LIST.contains(&"-Dmaven.repo.local"));
+        assert!(LIST.contains(&"-Dorg.gradle.internal.plugins.portal.url.override"));
+        assert_eq!(LIST.last(), Some(&"-javaagent"));
+        const GRADLE: &[&str] = redirecting_props!("systemProp."; );
+        assert!(GRADLE.contains(&"systemProp.https.proxy"));
     }
 }

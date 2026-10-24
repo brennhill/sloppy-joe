@@ -59,6 +59,13 @@ pub(crate) fn read_text(path: &std::path::Path, format: Format, max_bytes: u64) 
     }
 }
 
+/// A `java.util.Properties` file (`gradle.properties`, wrapper properties) as key/value pairs.
+pub(crate) fn read_properties(path: &std::path::Path) -> Result<Vec<(String, String)>> {
+    let bytes = crate::fsutil::read_bytes_limited(path, crate::fsutil::MAX_MANIFEST_BYTES)?;
+    reject_unreadable_bytes(&bytes, path)?;
+    Ok(crate::fsutil::parse_java_properties(&bytes))
+}
+
 /// A line-oriented manifest or lockfile with the standard size limit.
 pub(crate) fn read_line_file(path: &std::path::Path) -> Result<String> {
     read_text(path, Format::Line, crate::fsutil::MAX_MANIFEST_BYTES)

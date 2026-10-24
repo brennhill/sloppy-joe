@@ -62,6 +62,7 @@ pub(super) const COMPOSER_CONFIG: Surface = Surface {
         "github-protocols",
     ],
     deny_under: &[],
+    scope: &[],
 };
 
 #[cfg(test)]

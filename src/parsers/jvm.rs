@@ -8,6 +8,7 @@ use std::path::Path;
 
 mod gradle_plugins;
 pub(crate) mod maven_model;
+mod surfaces;
 mod sysprops;
 
 /// Fill in the versions Maven derives from properties, management sections,
@@ -37,6 +38,8 @@ pub(crate) struct GradleBuild {
     pub classpath: Vec<Dependency>,
     /// The classpath's `buildscript { repositories {} }` lists `google()`.
     pub classpath_uses_google_maven: bool,
+    /// Entries in the surrounding config files that `config_key_allow` permitted.
+    pub applied_allows: Vec<crate::config_surface::AppliedAllow>,
 }
 
 const GRADLE_DEPENDENCY_CONFIGS: &[&str] = &[
@@ -50,26 +53,38 @@ const GRADLE_DEPENDENCY_CONFIGS: &[&str] = &[
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let gradle = project_dir.join("build.gradle");
     if super::path_detected(&gradle)? {
-        return parse_gradle(&gradle);
+        return parse_gradle(&gradle, &[]).map(|(deps, _)| deps);
     }
     let gradle_kts = project_dir.join("build.gradle.kts");
     if super::path_detected(&gradle_kts)? {
-        return parse_gradle(&gradle_kts);
+        return parse_gradle(&gradle_kts, &[]).map(|(deps, _)| deps);
     }
     let pom = project_dir.join("pom.xml");
     parse_pom(&pom)
 }
 
 pub(crate) fn parse_manifest(path: &Path) -> Result<Vec<Dependency>> {
+    parse_manifest_with(path, &[]).map(|(deps, _)| deps)
+}
+
+/// Like [`parse_manifest`], applying the operator's `config_key_allow` entries to the config files
+/// around the project; the entries that were applied come back with the dependencies.
+pub(crate) fn parse_manifest_with(
+    path: &Path,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<(Vec<Dependency>, Vec<crate::config_surface::AppliedAllow>)> {
     match path.file_name().and_then(|name| name.to_str()) {
-        Some("build.gradle") | Some("build.gradle.kts") => parse_gradle(path),
-        Some("pom.xml") => parse_pom(path),
+        Some("build.gradle") | Some("build.gradle.kts") => parse_gradle(path, allows),
+        Some("pom.xml") => parse_pom_with(path, allows),
         _ => bail!("Unsupported JVM manifest: {}", path.display()),
     }
 }
 
-fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
-    let build = parse_gradle_build(path)?;
+fn parse_gradle(
+    path: &Path,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<(Vec<Dependency>, Vec<crate::config_surface::AppliedAllow>)> {
+    let build = parse_gradle_build_with(path, Some(allows))?;
     if let Some(url) = build
         .plugin_repositories
         .iter()
@@ -87,7 +102,7 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
     let mut deps = build.deps;
     deps.extend(build.classpath);
     deps.extend(build.plugins);
-    Ok(deps)
+    Ok((deps, build.applied_allows))
 }
 
 /// How far up Gradle's enclosing settings scripts apply: the repository root, or without a git
@@ -123,63 +138,13 @@ fn reject_buildsrc_without_script(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `gradle.properties` JVM arguments that load agents or replace the class path run inside Gradle
-/// itself, before any build script the scan reads.
-fn reject_gradle_jvm_overrides(dir: &Path) -> Result<()> {
-    let properties = dir.join("gradle.properties");
-    if std::fs::symlink_metadata(&properties).is_err() {
-        return Ok(());
-    }
-    let bytes = crate::fsutil::read_bytes_limited(&properties, super::MAX_MANIFEST_BYTES)?;
-    for (key, value) in crate::fsutil::parse_java_properties(&bytes) {
-        let agent = ["-javaagent", "-agentpath", "-agentlib", "-Xbootclasspath"]
-            .iter()
-            .any(|flag| value.contains(flag));
-        let redirecting_arg =
-            key == "org.gradle.jvmargs" && sysprops::redirecting_jvm_arg(&value).is_some();
-        let redirecting_prop = key
-            .strip_prefix("systemProp.")
-            .is_some_and(sysprops::is_redirecting_system_property);
-        if (key == "org.gradle.jvmargs" && agent)
-            || key == "org.gradle.java.home"
-            || redirecting_arg
-            || redirecting_prop
-        {
-            bail!(
-                "Unsupported Gradle property '{key}' in {}: it changes the JVM, trust store, proxy or repository endpoints Gradle uses in ways the scan cannot verify",
-                properties.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-/// `gradle/gradle-daemon-jvm.properties` makes Gradle download and run a JDK from `toolchainUrl.*`.
-fn reject_daemon_jvm_download(dir: &Path) -> Result<()> {
-    let properties = dir.join("gradle/gradle-daemon-jvm.properties");
-    if std::fs::symlink_metadata(&properties).is_err() {
-        return Ok(());
-    }
-    let bytes = crate::fsutil::read_bytes_limited(&properties, super::MAX_MANIFEST_BYTES)?;
-    for (key, _) in crate::fsutil::parse_java_properties(&bytes) {
-        if key.starts_with("toolchainUrl") {
-            bail!(
-                "Unsupported Gradle daemon JVM download '{key}' in {}: Gradle would download and run a JDK from a URL the scan cannot verify",
-                properties.display()
-            );
-        }
-    }
-    Ok(())
-}
-
 /// The Gradle wrapper downloads and runs a Gradle distribution; only Gradle's own hosts count.
 fn reject_untrusted_gradle_wrapper(dir: &Path) -> Result<()> {
     let properties = dir.join("gradle/wrapper/gradle-wrapper.properties");
     if std::fs::symlink_metadata(&properties).is_err() {
         return Ok(());
     }
-    let bytes = crate::fsutil::read_bytes_limited(&properties, super::MAX_MANIFEST_BYTES)?;
-    for (key, value) in crate::fsutil::parse_java_properties(&bytes) {
+    for (key, value) in crate::untrusted::read_properties(&properties)? {
         if key == "distributionUrl"
             && ![
                 "https://services.gradle.org/",
@@ -252,7 +217,18 @@ pub(crate) fn gradle_locking(path: &Path) -> Result<GradleLocking> {
 /// Parse a Gradle build script, the settings scripts that enclose it, and the
 /// plugin requests of both. Custom plugin repositories are returned, not
 /// rejected: the caller decides whether they are allowlisted.
+#[cfg(test)]
 pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
+    parse_gradle_build_with(path, Some(&[]))
+}
+
+/// Like [`parse_gradle_build`], applying the operator's `config_key_allow` entries to the config
+/// files around the build. `None` skips those config checks: later phases re-read a build that
+/// already passed them when it was first parsed with the operator's config.
+pub(crate) fn parse_gradle_build_with(
+    path: &Path,
+    allows: Option<&[crate::config_surface::KeyAllow]>,
+) -> Result<GradleBuild> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read build.gradle")?;
     let script = scan_gradle_script(&content, path)?;
@@ -265,13 +241,16 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
     let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
     let boundary = gradle_boundary(&project_dir)?;
     let mut settings = Vec::new();
+    let mut applied_allows = Vec::new();
     for ancestor in project_dir
         .ancestors()
         .take_while(|dir| dir.starts_with(&boundary))
     {
         reject_untrusted_gradle_wrapper(ancestor)?;
-        reject_gradle_jvm_overrides(ancestor)?;
-        reject_daemon_jvm_download(ancestor)?;
+        if let Some(allows) = allows {
+            applied_allows.extend(surfaces::check_gradle_properties(ancestor, allows)?);
+            applied_allows.extend(surfaces::check_gradle_daemon_jvm(ancestor, allows)?);
+        }
         reject_buildsrc_without_script(ancestor)?;
         for filename in ["settings.gradle", "settings.gradle.kts"] {
             let settings_path = ancestor.join(filename);
@@ -342,6 +321,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
             || settings
                 .iter()
                 .any(|(_, settings)| settings.buildscript_uses_google),
+        applied_allows,
     })
 }
 

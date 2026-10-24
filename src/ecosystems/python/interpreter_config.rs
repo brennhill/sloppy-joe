@@ -119,6 +119,7 @@ const POETRY: Surface = Surface {
         "pypi-token",
     ],
     deny_under: &[],
+    scope: &[],
 };
 
 fn check_poetry_toml(

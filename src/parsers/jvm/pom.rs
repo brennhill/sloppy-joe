@@ -55,9 +55,17 @@ pub(crate) fn validate_pom_structure(content: &str) -> Result<()> {
 }
 
 pub(crate) fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
+    parse_pom_with(path, &[]).map(|(deps, _)| deps)
+}
+
+/// Like [`parse_pom`], applying the operator's `config_key_allow` entries to `.mvn/` options.
+pub(crate) fn parse_pom_with(
+    path: &Path,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<(Vec<Dependency>, Vec<crate::config_surface::AppliedAllow>)> {
     let content = read_pom(path)?;
     validate_pom_source_policy(&content, path)?;
-    reject_core_extensions(path)?;
+    let applied = reject_core_extensions(path, allows)?;
     let mut deps = Vec::new();
     let mut remaining = content.as_str();
     while let Some((_, body)) = remaining.split_once("<dependency>") {
@@ -131,7 +139,7 @@ pub(crate) fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
             deps.push(dep);
         }
     }
-    Ok(deps)
+    Ok((deps, applied))
 }
 
 pub(crate) const MAVEN_DEFAULT_PLUGIN_GROUP: &str = "org.apache.maven.plugins";
@@ -380,25 +388,32 @@ const TRUSTED_MAVEN_WRAPPER_URLS: &[&str] = &[
 
 /// Everything under `.mvn/` (in the project or an ancestor up to the repository root) that
 /// changes what Maven itself runs or fetches from: core extensions, project settings, a wrapper
-/// download from an untrusted host, command-line settings files and JVM agents.
-fn reject_core_extensions(pom_path: &Path) -> Result<()> {
+/// download from an untrusted host, command-line options and JVM options.
+fn reject_core_extensions(
+    pom_path: &Path,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<Vec<crate::config_surface::AppliedAllow>> {
     let Some(start) = pom_path.parent() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
     let root = crate::cache::find_git_root(&start).ok().flatten();
+    let mut applied = Vec::new();
     let mut current = Some(start.as_path());
     while let Some(dir) = current {
-        check_mvn_dir(&dir.join(".mvn"))?;
+        applied.extend(check_mvn_dir(&dir.join(".mvn"), allows)?);
         if root.as_deref() == Some(dir) {
             break;
         }
         current = dir.parent();
     }
-    Ok(())
+    Ok(applied)
 }
 
-fn check_mvn_dir(mvn: &Path) -> Result<()> {
+fn check_mvn_dir(
+    mvn: &Path,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<Vec<crate::config_surface::AppliedAllow>> {
     for (name, why) in [
         (
             "extensions.xml",
@@ -418,25 +433,7 @@ fn check_mvn_dir(mvn: &Path) -> Result<()> {
             bail!("Unsupported Maven {name} in {}: {why}", file.display());
         }
     }
-    let read = |name: &str| -> Result<String> {
-        let file = mvn.join(name);
-        if std::fs::symlink_metadata(&file).is_err() {
-            return Ok(String::new());
-        }
-        let bytes = crate::fsutil::read_bytes_limited(&file, crate::fsutil::MAX_MANIFEST_BYTES)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
-    };
-    for token in read("maven.config")?.split(|c: char| c.is_whitespace() || c == '\u{0c}') {
-        reject_maven_option(token, &mvn.join("maven.config"))?;
-    }
-    let jvm = read("jvm.config")?;
-    if let Some(property) = super::sysprops::redirecting_jvm_arg(&jvm) {
-        bail!(
-            "Unsupported Maven JVM option '-D{}' in {}: it redirects the repository, settings, trust store or proxy Maven uses",
-            crate::report::sanitize_for_terminal(&property),
-            mvn.join("jvm.config").display()
-        );
-    }
+    let applied = super::surfaces::check_maven_options(mvn, allows)?;
     let cache_config = mvn.join("maven-build-cache-config.xml");
     if std::fs::symlink_metadata(&cache_config).is_ok() {
         bail!(
@@ -444,26 +441,9 @@ fn check_mvn_dir(mvn: &Path) -> Result<()> {
             cache_config.display()
         );
     }
-    if [
-        "-javaagent",
-        "-agentpath",
-        "-agentlib",
-        "-Xbootclasspath",
-        "-Djava.system.class.loader",
-        "-Dmaven.ext.class.path",
-    ]
-    .iter()
-    .any(|flag| jvm.contains(flag))
-    {
-        bail!(
-            "Unsupported Maven JVM option in {}: agents and class path overrides run inside Maven unscanned",
-            mvn.join("jvm.config").display()
-        );
-    }
     let wrapper = mvn.join("wrapper").join("maven-wrapper.properties");
     if std::fs::symlink_metadata(&wrapper).is_ok() {
-        let bytes = crate::fsutil::read_bytes_limited(&wrapper, crate::fsutil::MAX_MANIFEST_BYTES)?;
-        for (key, value) in crate::fsutil::parse_java_properties(&bytes) {
+        for (key, value) in crate::untrusted::read_properties(&wrapper)? {
             if matches!(key.as_str(), "distributionUrl" | "wrapperUrl")
                 && !TRUSTED_MAVEN_WRAPPER_URLS
                     .iter()
@@ -478,39 +458,7 @@ fn check_mvn_dir(mvn: &Path) -> Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-/// Options in `.mvn/maven.config` that change which settings, toolchains, project file,
-/// repository or extensions Maven uses. commons-cli accepts attached short values (`-sfile`) and
-/// abbreviated long options, so match by prefix.
-fn reject_maven_option(token: &str, config: &Path) -> Result<()> {
-    let name = token.split('=').next().unwrap_or(token);
-    let long_overrides = [
-        "--settings",
-        "--global-settings",
-        "--toolchains",
-        "--global-toolchains",
-        "--file",
-    ];
-    let short = !name.starts_with("--")
-        && ["-s", "-gs", "-t", "-gt", "-f"]
-            .iter()
-            .any(|flag| name.starts_with(flag));
-    let long = name.len() >= 3
-        && name.starts_with("--")
-        && long_overrides.iter().any(|option| option.starts_with(name));
-    let property = name
-        .strip_prefix("-D")
-        .is_some_and(super::sysprops::is_redirecting_system_property);
-    if short || long || property {
-        bail!(
-            "Unsupported Maven option '{}' in {}: it changes the settings, project file, repository or extensions Maven uses",
-            crate::report::sanitize_for_terminal(token),
-            config.display()
-        );
-    }
-    Ok(())
+    Ok(applied)
 }
 
 pub(crate) fn validate_pom_source_policy(content: &str, path: &Path) -> Result<()> {
