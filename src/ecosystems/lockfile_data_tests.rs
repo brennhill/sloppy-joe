@@ -105,6 +105,16 @@ fn every_lockfile_backed_kind_has_a_locked_project_fixture() {
 /// Parse the row's project with `mutate` applied to its lockfile text and return the sorted names
 /// of the direct and the lockfile-reported transitive dependencies.
 fn locked_names(row: &LockedProject, mutate: &dyn Fn(&str) -> String) -> Result<Vec<String>> {
+    mutated_names(row, mutate, &|text| text.to_string())
+}
+
+/// [`locked_names`] with `mutate_manifest` applied to the manifest text as well. The Poetry
+/// content hash is computed from the unmutated manifest, as a real lock would carry it.
+fn mutated_names(
+    row: &LockedProject,
+    mutate: &dyn Fn(&str) -> String,
+    mutate_manifest: &dyn Fn(&str) -> String,
+) -> Result<Vec<String>> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let config = config::SloppyJoeConfig::default();
@@ -116,7 +126,10 @@ fn locked_names(row: &LockedProject, mutate: &dyn Fn(&str) -> String) -> Result<
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let outcome = (|| {
-        std::fs::write(dir.join(row.manifest), row.manifest_content)?;
+        std::fs::write(
+            dir.join(row.manifest),
+            mutate_manifest(row.manifest_content),
+        )?;
         // A Poetry lockfile must carry the hash of its pyproject.
         let lockfile = if row.lockfile_content.contains("__CONTENT_HASH__") {
             let hash = crate::lockfiles::python::poetry_content_hash_for_test(row.manifest_content)
@@ -238,4 +251,27 @@ fn nul_and_bom_are_never_silently_accepted_in_line_oriented_locks() {
             );
         }
     }
+}
+
+#[test]
+fn formatting_mutations_never_change_what_the_scanner_reads_from_a_manifest() {
+    let mut accepted = 0;
+    for row in LOCKED {
+        let baseline = locked_names(row, &|text| text.to_string())
+            .unwrap_or_else(|err| panic!("{:?}: {err}", row.kind));
+        for (name, mutate) in MUTATIONS {
+            if let Ok(names) = mutated_names(row, &|text| text.to_string(), mutate) {
+                assert_eq!(
+                    names, baseline,
+                    "{:?}: the '{name}' mutation of {} was accepted but changed the packages read",
+                    row.kind, row.manifest
+                );
+                accepted += 1;
+            }
+        }
+    }
+    assert!(
+        accepted > 0,
+        "no mutation was accepted, so nothing was compared"
+    );
 }
