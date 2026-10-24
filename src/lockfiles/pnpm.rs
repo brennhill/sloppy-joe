@@ -423,10 +423,10 @@ fn normalized_pnpm_reference(reference: &str, fallback_name: &str) -> Option<Str
         let (actual_name, version) = split_npm_package_and_spec(alias_spec)?;
         return (actual_name == fallback_name).then_some(version.to_string());
     }
-    if let Some((name, version)) = pnpm_package_key_parts(base)
-        && name == fallback_name
-    {
-        return Some(version.to_string());
+    if let Some((name, version)) = pnpm_package_key_parts(base) {
+        // pnpm installs whatever package the importer names under the declared name; a
+        // different package is an alias written only in the lockfile and cannot be verified.
+        return (name == fallback_name).then_some(version.to_string());
     }
     Some(base.to_string())
 }
@@ -696,5 +696,28 @@ packages:
         assert!(names.contains(&"react"));
         assert!(names.contains(&"@scope/pkg"));
         assert!(names.contains(&"react-dom"));
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    #[test]
+    fn an_importer_reference_naming_another_package_is_not_the_declared_one() {
+        assert_eq!(
+            normalized_pnpm_reference("7.0.0", "is-number"),
+            Some("7.0.0".to_string())
+        );
+        assert_eq!(
+            normalized_pnpm_reference("is-number@7.0.0", "is-number"),
+            Some("7.0.0".to_string())
+        );
+        assert_eq!(normalized_pnpm_reference("ms@2.1.3", "is-number"), None);
+        assert_eq!(normalized_pnpm_reference("npm:ms@2.1.3", "is-number"), None);
+        assert_eq!(
+            normalized_pnpm_reference("@scope/x@1.0.0", "@scope/y"),
+            None
+        );
     }
 }
