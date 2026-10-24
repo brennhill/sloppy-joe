@@ -102,7 +102,37 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<String>> {
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    crate::untrusted::read_line_file(&path).map(Some)
+    let content = crate::untrusted::read_line_file(&path)?;
+    validate_grammar(&content, &path)?;
+    Ok(Some(content))
+}
+
+/// Gradle writes `group:artifact:version=config,config`, `empty=config` and `#` comments; any
+/// other line is a shape the scanner does not model, so it blocks instead of being skipped.
+fn validate_grammar(content: &str, path: &Path) -> Result<()> {
+    for (index, line) in crate::untrusted::rows(content).enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let well_formed = line.split_once('=').is_some_and(|(coords, configs)| {
+            let parts = coords.split(':').collect::<Vec<_>>();
+            let coordinates = parts.len() == 3
+                && parts.iter().all(|part| !part.is_empty())
+                && crate::ecosystem::validate_package_name(&format!("{}:{}", parts[0], parts[1]));
+            // `empty=` has no configurations when every configuration resolved something.
+            coords == "empty" || (coordinates && !configs.is_empty())
+        });
+        if !well_formed {
+            anyhow::bail!(
+                "Unsupported line {} in '{}': '{}' is not a `group:artifact:version=configurations` entry, `empty=configurations` or comment, so the scanner cannot tell what it locks.",
+                index + 1,
+                path.display(),
+                crate::report::sanitize_for_terminal(line)
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -166,6 +196,37 @@ fn parse_entries(content: &str) -> Vec<(String, String)> {
     }
 
     entries
+}
+
+#[cfg(test)]
+mod grammar_tests {
+    use super::validate_grammar;
+    use std::path::Path;
+
+    fn check(content: &str) -> anyhow::Result<()> {
+        validate_grammar(content, Path::new("gradle.lockfile"))
+    }
+
+    #[test]
+    fn gradle_written_lines_pass() {
+        check("# comment\n\norg.a:b:1.0=compileClasspath,runtimeClasspath\nempty=annotationProcessor\nempty=\n").unwrap();
+    }
+
+    #[test]
+    fn unrecognized_lines_block_instead_of_being_skipped() {
+        for line in [
+            "org.a:b:1.0",
+            "org.a:b=compileClasspath",
+            "org.a:b:1.0:extra=compileClasspath",
+            "repository=https://evil.test",
+            "org.a:b:1.0=",
+            "=compileClasspath",
+            "nonsense=compileClasspath",
+        ] {
+            let err = check(&format!("org.a:b:1.0=compileClasspath\n{line}\n")).unwrap_err();
+            assert!(err.to_string().contains("line 2"), "{line}: {err}");
+        }
+    }
 }
 
 #[cfg(test)]

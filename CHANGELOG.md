@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Gradle: a `gradle.lockfile` line that is not `group:artifact:version=configurations`, `empty=configurations` or a comment now blocks, naming the line, instead of being skipped (a skipped line could hide a pinned dependency from the scan).
 - Bun: `bun.lock` package entries are held to a closed shape; a tuple with more than four elements blocks, and a metadata key Bun does not write blocks, naming the entry and the key (`config_key_allow` with file `bun.lock` permits one more exact metadata key).
 - Yarn: `yarn.lock` entries (classic and Berry) are held to a closed key schema; a property or section Yarn does not write blocks, naming the entry and the key (`config_key_allow` with file `yarn.lock` permits one more exact key).
 - pnpm: `pnpm-lock.yaml` `packages` and `snapshots` entries are held to a closed key schema; a key pnpm does not write blocks, naming the entry and the key (`config_key_allow` with file `pnpm-lock.yaml` permits one more exact key).

@@ -1,7 +1,7 @@
 # Closed Lock-Entry Schemas, Differential Testing, Layer Enforcement, Threat Model
 
 **Created**: 2026-10-24
-**Status**: Draft (step 4 done: npm, composer, cargo, uv, poetry, pipenv, pnpm, yarn, bun; gradle.lockfile is a fixed line grammar, already closed; steps 5-8 open)
+**Status**: Draft (step 4 done: npm, composer, cargo, uv, poetry, pipenv, pnpm, yarn, bun; gradle.lockfile grammar closed; steps 5-8 open)
 **Input**: items 4-7 of the answer to "any feedback on architectural improvements to prevent these
 issues?", after `untrusted-input-hardening.md` (items 1-3) was implemented.
 
