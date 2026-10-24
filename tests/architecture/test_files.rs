@@ -80,7 +80,32 @@ fn candidates(parent: &str, declaration: &Declaration) -> Vec<String> {
     ]
 }
 
-/// Relative paths of the files that only exist in test builds.
+/// Files compiled into the production crate: everything reachable from a crate root through
+/// declarations that carry no `#[cfg(test)]`.
+fn production_files(decls: &[(&String, Vec<Declaration>)]) -> BTreeSet<String> {
+    let mut production: BTreeSet<String> = decls
+        .iter()
+        .map(|(rel, _)| (*rel).clone())
+        .filter(|rel| rel == "src/lib.rs" || rel == "src/main.rs" || rel.starts_with("src/bin/"))
+        .collect();
+    loop {
+        let before = production.len();
+        for (rel, list) in decls {
+            if !production.contains(*rel) {
+                continue;
+            }
+            for declaration in list.iter().filter(|d| !d.cfg_test) {
+                production.extend(candidates(rel, declaration));
+            }
+        }
+        if production.len() == before {
+            return production;
+        }
+    }
+}
+
+/// Relative paths of the files that only exist in test builds. A file that production code also
+/// declares is production, even when a `#[cfg(test)] #[path]` module includes it again.
 pub(crate) fn test_only_files(sources: &[(String, String)]) -> BTreeSet<String> {
     let decls: Vec<(&String, Vec<Declaration>)> = sources
         .iter()
@@ -98,7 +123,130 @@ pub(crate) fn test_only_files(sources: &[(String, String)]) -> BTreeSet<String> 
             }
         }
         if tests.len() == before {
+            let production = production_files(&decls);
+            tests.retain(|file| !production.contains(file));
             return tests;
         }
+    }
+}
+
+/// `#[cfg(test)] #[path = ".."] mod x;` that points at a file another declaration also uses:
+/// the production module and its test alias would share one file.
+pub(crate) fn shared_test_path_violations(sources: &[(String, String)]) -> Vec<String> {
+    let decls: Vec<(&String, Vec<Declaration>)> = sources
+        .iter()
+        .map(|(rel, raw)| (rel, declarations(raw)))
+        .collect();
+    let mut violations = Vec::new();
+    for (rel, list) in &decls {
+        for declaration in list.iter().filter(|d| d.cfg_test && d.path_attr.is_some()) {
+            let targets = candidates(rel, declaration);
+            let shared = decls.iter().any(|(other, others)| {
+                others.iter().any(|d| {
+                    let same = std::ptr::eq(d, declaration);
+                    !(same || d.cfg_test && d.path_attr.is_some())
+                        && candidates(other, d).iter().any(|c| targets.contains(c))
+                })
+            });
+            if shared {
+                violations.push(format!(
+                    "{rel} aliases a file that another module declaration also uses (`mod {}`); a test-only alias must not share production files",
+                    declaration.name
+                ));
+            }
+        }
+    }
+    violations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn src(rel: &str, code: &str) -> (String, String) {
+        (rel.to_string(), code.to_string())
+    }
+
+    fn leak_tree() -> Vec<(String, String)> {
+        vec![
+            src(
+                "src/lib.rs",
+                "mod engine;
+",
+            ),
+            src(
+                "src/engine/mod.rs",
+                "mod leak;
+#[cfg(test)]
+#[path = \"leak.rs\"]\nmod leak_tests;\n",
+            ),
+            src("src/engine/leak.rs", ""),
+        ]
+    }
+
+    #[test]
+    fn a_production_file_is_not_test_only_because_a_test_alias_includes_it() {
+        let tests = test_only_files(&leak_tree());
+        assert!(!tests.contains("src/engine/leak.rs"));
+        assert_eq!(shared_test_path_violations(&leak_tree()).len(), 1);
+    }
+
+    #[test]
+    fn a_test_only_path_module_with_its_own_file_is_fine() {
+        let tree = vec![
+            src("src/lib.rs", "mod engine;\n"),
+            src(
+                "src/engine/mod.rs",
+                "#[cfg(test)]\n#[path = \"x_tests.rs\"]\nmod x_tests;\n",
+            ),
+            src("src/engine/x_tests.rs", ""),
+        ];
+        assert!(test_only_files(&tree).contains("src/engine/x_tests.rs"));
+        assert!(shared_test_path_violations(&tree).is_empty());
+    }
+
+    #[test]
+    fn the_real_tree_has_no_shared_test_aliases() {
+        let root = repo_root();
+        let mut paths = Vec::new();
+        collect_rs(&root.join("src"), &mut paths);
+        let raw: Vec<(String, String)> = paths
+            .iter()
+            .map(|path| {
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (rel, std::fs::read_to_string(path).unwrap())
+            })
+            .collect();
+        let violations = shared_test_path_violations(&raw);
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    #[test]
+    fn an_alias_injected_into_the_real_engine_is_caught() {
+        let root = repo_root();
+        let mut paths = Vec::new();
+        collect_rs(&root.join("src"), &mut paths);
+        let mut raw: Vec<(String, String)> = paths
+            .iter()
+            .map(|path| {
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (rel, std::fs::read_to_string(path).unwrap())
+            })
+            .collect();
+        for (rel, code) in raw.iter_mut() {
+            if rel == "src/engine/mod.rs" {
+                code.push_str("\n#[cfg(test)]\n#[path = \"scan.rs\"]\nmod scan_alias_tests;\n");
+            }
+        }
+        assert!(!test_only_files(&raw).contains("src/engine/scan.rs"));
+        assert_eq!(shared_test_path_violations(&raw).len(), 1);
     }
 }
