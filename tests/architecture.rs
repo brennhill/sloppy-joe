@@ -42,6 +42,7 @@ fn layer_of(module: &str) -> Option<&'static str> {
         "lockfiles" => Some("lockfiles"),
         "checks" => Some("checks"),
         "project" => Some("project"),
+        "ecosystems" => Some("ecosystems"),
         _ => None,
     }
 }
@@ -62,6 +63,16 @@ fn layer_may_depend_on(from: &str, to: &str) -> bool {
             "checks",
         ],
         "project" => &["foundation", "config", "parsers", "project"],
+        "ecosystems" => &[
+            "foundation",
+            "config",
+            "parsers",
+            "registry",
+            "lockfiles",
+            "checks",
+            "project",
+            "ecosystems",
+        ],
         "orchestration" => return true,
         _ => &[],
     };
@@ -329,8 +340,9 @@ fn measure() -> Measures {
                 measures.complexity.insert(key, complexity);
             }
         }
+        // The kind table and the ecosystem plugins are where kinds are meant to be matched.
         let kind_uses = file.code.matches("ProjectInputKind::").count();
-        if kind_uses > 0 {
+        if kind_uses > 0 && file.module != "ecosystems" && file.module != "project" {
             measures
                 .placement
                 .insert(format!("{PLACEMENT_KEY_PREFIX}{}", file.rel), kind_uses);

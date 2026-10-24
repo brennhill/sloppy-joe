@@ -6,7 +6,7 @@ placement project-input-kind src/engine/js_binding.rs 3
 placement project-input-kind src/engine/js_workspace.rs 1
 placement project-input-kind src/engine/lockfile_read.rs 1
 placement project-input-kind src/engine/lockfile_validate.rs 16
-placement project-input-kind src/engine/parse_inputs.rs 63
+placement project-input-kind src/engine/parse_inputs.rs 24
 placement project-input-kind src/engine/preflight.rs 23
 placement project-input-kind src/engine/python_warnings.rs 4
 placement project-input-kind src/engine/scan.rs 4

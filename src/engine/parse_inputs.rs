@@ -206,24 +206,12 @@ pub(crate) fn parse_project_input_with_config(
     config: &config::SloppyJoeConfig,
     opts: &ScanOptions<'_>,
 ) -> Result<ParsedInput> {
-    match spec.kind {
-        ProjectInputKind::Cargo => Ok(ParsedInput {
-            deps: parse_cargo_project_dependencies(scan_root, spec, config)?,
-            ..ParsedInput::default()
-        }),
-        ProjectInputKind::PyProjectPoetry
-        | ProjectInputKind::PyProjectUv
-        | ProjectInputKind::PyRequirements
-        | ProjectInputKind::PyRequirementsTrusted
-        | ProjectInputKind::PyProjectLegacy => {
-            parse_python_project_dependencies(scan_root, spec, opts)
-        }
-        ProjectInputKind::Gradle => gradle_plugin_scan::parse_gradle_project_input(spec, config),
-        _ => Ok(ParsedInput {
-            deps: parse_project_input(scan_root, spec)?,
-            ..ParsedInput::default()
-        }),
-    }
+    let ctx = ecosystems::ScanCtx {
+        scan_root,
+        config,
+        opts,
+    };
+    ecosystems::for_kind(spec.kind).parse(&ctx, spec)
 }
 
 pub(crate) fn parse_cargo_project_dependencies(
@@ -259,35 +247,7 @@ pub(crate) fn parse_project_input(
     scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
 ) -> Result<Vec<Dependency>> {
-    match spec.kind {
-        ProjectInputKind::Npm => parsers::package_json::parse(spec.project_dir()),
-        ProjectInputKind::PyProjectPoetry => {
-            parsers::pyproject_toml::parse_poetry_file(&spec.manifest_path)
-        }
-        ProjectInputKind::PyProjectUv => {
-            parsers::pyproject_toml::parse_legacy_file(&spec.manifest_path)
-        }
-        ProjectInputKind::PyRequirements => {
-            parsers::requirements::parse_file(&spec.manifest_path, scan_root)
-        }
-        ProjectInputKind::PyRequirementsTrusted => {
-            parsers::requirements::parse_file(&spec.manifest_path, scan_root)
-        }
-        ProjectInputKind::PyProjectLegacy => {
-            parsers::pyproject_toml::parse_legacy_file(&spec.manifest_path)
-        }
-        ProjectInputKind::PyPipfile => parsers::pipfile::parse_file(&spec.manifest_path),
-        ProjectInputKind::PySetupPy => parsers::setup_py::parse_file(&spec.manifest_path),
-        ProjectInputKind::PySetupCfg => parsers::setup_cfg::parse_file(&spec.manifest_path),
-        ProjectInputKind::Cargo => parsers::cargo_toml::parse(spec.project_dir()),
-        ProjectInputKind::Go => parsers::go_mod::parse(spec.project_dir()),
-        ProjectInputKind::Ruby => parsers::gemfile::parse(spec.project_dir()),
-        ProjectInputKind::Php => parsers::composer_json::parse(spec.project_dir()),
-        ProjectInputKind::Gradle | ProjectInputKind::Maven => {
-            parsers::jvm::parse_manifest(&spec.manifest_path)
-        }
-        ProjectInputKind::Dotnet => parsers::csproj::parse_file(&spec.manifest_path),
-    }
+    ecosystems::for_kind(spec.kind).parse_manifest(scan_root, spec)
 }
 
 pub(crate) fn parse_python_project_dependencies(
@@ -377,44 +337,6 @@ pub(crate) fn parse_python_project_dependencies(
         python_root_extras: root_extras,
         unlocked_tooling_deps,
     })
-}
-
-pub(crate) fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::path::PathBuf> {
-    if let Some(path) = &spec.lockfile_path_override {
-        return Some(path.clone());
-    }
-    let project_dir = spec.project_dir();
-    match spec.kind {
-        ProjectInputKind::Npm => spec
-            .js_binding
-            .as_ref()
-            .and_then(|binding| binding.lockfile_path.clone())
-            .or_else(|| {
-                first_existing_lockfile(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
-            }),
-        // Lockfile named by the descriptor, next to the manifest.
-        ProjectInputKind::Cargo
-        | ProjectInputKind::Go
-        | ProjectInputKind::Ruby
-        | ProjectInputKind::Php
-        | ProjectInputKind::Gradle
-        | ProjectInputKind::Dotnet
-        | ProjectInputKind::PyProjectPoetry
-        | ProjectInputKind::PyProjectUv => spec
-            .kind
-            .descriptor()
-            .lockfile_name
-            .map(|name| project_dir.join(name)),
-        ProjectInputKind::PyRequirementsTrusted => Some(spec.manifest_path.clone()),
-        ProjectInputKind::PyPipfile => {
-            first_existing_lockfile(project_dir, &[lockfiles::pipfile_lock::LOCKFILE_NAME])
-        }
-        ProjectInputKind::PyRequirements
-        | ProjectInputKind::PyProjectLegacy
-        | ProjectInputKind::PySetupPy
-        | ProjectInputKind::PySetupCfg
-        | ProjectInputKind::Maven => None,
-    }
 }
 
 pub(crate) fn js_lockfile_help(spec: &ProjectInputSpec) -> String {

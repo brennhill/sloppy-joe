@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 pub mod bootstrap;
+mod ecosystems;
 mod engine;
+pub(crate) use ecosystems::selected_lockfile_path;
 pub(crate) use engine::*;
 pub mod cache;
 pub mod checks;
