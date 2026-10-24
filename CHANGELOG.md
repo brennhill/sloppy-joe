@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Yarn: `yarn.lock` entries (classic and Berry) are held to a closed key schema; a property or section Yarn does not write blocks, naming the entry and the key (`config_key_allow` with file `yarn.lock` permits one more exact key).
 - pnpm: `pnpm-lock.yaml` `packages` and `snapshots` entries are held to a closed key schema; a key pnpm does not write blocks, naming the entry and the key (`config_key_allow` with file `pnpm-lock.yaml` permits one more exact key).
 - Python: `uv.lock` and `poetry.lock` `[[package]]` entries and `Pipfile.lock` `default`/`develop` entries are held to closed key schemas; a key the tool does not write blocks, naming the entry and the key (`config_key_allow` with file `uv.lock`, `poetry.lock` or `Pipfile.lock` permits one more exact key).
 - Cargo: `Cargo.lock` `[[package]]` entries are held to a closed key schema; a key Cargo does not write blocks, naming the entry and the key (`config_key_allow` with file `Cargo.lock` permits one more exact key).

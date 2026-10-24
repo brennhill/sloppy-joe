@@ -117,7 +117,8 @@ pub(crate) fn read_validated_bun_lockfile(
 pub(crate) fn read_validated_yarn_lockfile(
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
-) -> Result<crate::lockfiles::yarn::ParsedYarnLock> {
+    config: &config::SloppyJoeConfig,
+) -> Result<(crate::lockfiles::yarn::ParsedYarnLock, Vec<Issue>)> {
     let path =
         selected_lockfile_path(spec).expect("Yarn preflight should guarantee a lockfile exists");
     let content = crate::untrusted::read_line_file(&path).map_err(|err| {
@@ -146,5 +147,6 @@ pub(crate) fn read_validated_yarn_lockfile(
         project_name,
     )?;
     crate::lockfiles::yarn::validate_provenance(&lockfile)?;
-    Ok(lockfile)
+    let applied = yarn_lock_schema::check_entry_keys(&lockfile, &config.config_key_allow)?;
+    Ok((lockfile, crate::config_surface::issues(&applied)))
 }

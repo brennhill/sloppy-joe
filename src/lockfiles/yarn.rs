@@ -13,7 +13,7 @@ use super::{
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedYarnLock {
     pub(crate) path: PathBuf,
-    entries: Vec<YarnLockEntry>,
+    pub(crate) entries: Vec<YarnLockEntry>,
     by_selector: HashMap<String, usize>,
 }
 
@@ -26,6 +26,8 @@ pub(crate) struct YarnLockEntry {
     pub(crate) checksum: Option<String>,
     pub(crate) integrity: Option<String>,
     pub(crate) link_type: Option<String>,
+    /// Every property and section name in the entry body, for the closed-schema check.
+    pub(crate) keys: Vec<String>,
     pub(crate) sections: HashMap<String, BTreeMap<String, String>>,
 }
 
@@ -116,6 +118,7 @@ fn parse_entry_body(
         checksum: None,
         integrity: None,
         link_type: None,
+        keys: Vec::new(),
         sections: HashMap::new(),
     };
     while *index < lines.len() {
@@ -131,6 +134,7 @@ fn parse_entry_body(
         if let Some(section_name) = body.trim_end().strip_suffix(':') {
             *index += 1;
             let section = parse_nested_section(lines, index, path)?;
+            entry.keys.push(section_name.trim().to_string());
             entry
                 .sections
                 .insert(section_name.trim().to_string(), section);
@@ -144,6 +148,7 @@ fn parse_entry_body(
                 *index + 1
             )
         })?;
+        entry.keys.push(key.clone());
         entry.set_property(&key, normalize_yarn_value(&value));
         *index += 1;
     }

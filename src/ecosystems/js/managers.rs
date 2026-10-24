@@ -234,7 +234,7 @@ impl JsManager for Yarn {
         manifest: &serde_json::Value,
         scope_root: &Path,
     ) -> Result<Vec<Issue>> {
-        let lockfile = read_validated_yarn_lockfile(spec, manifest)?;
+        let (lockfile, warnings) = read_validated_yarn_lockfile(spec, manifest, ctx.scan.config)?;
         validate_local_yarn_dependencies(
             scope_root,
             spec,
@@ -242,7 +242,7 @@ impl JsManager for Yarn {
             &lockfile,
             &ctx.scan.config.ignore_dirs,
         )?;
-        Ok(Vec::new())
+        Ok(warnings)
     }
 }
 
