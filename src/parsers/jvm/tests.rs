@@ -665,3 +665,20 @@ fn reject_namespaced_maven_system_path_dependencies() {
     assert!(err.to_string().contains("systemPath"));
     cleanup(&dir);
 }
+
+#[test]
+fn maven_core_extensions_block_the_project() {
+    let dir = setup_pom(
+        "<project><dependencies><dependency><groupId>a</groupId><artifactId>b</artifactId><version>1</version></dependency></dependencies></project>",
+    );
+    assert!(parse(&dir).is_ok());
+    std::fs::create_dir_all(dir.join(".mvn")).unwrap();
+    std::fs::write(
+        dir.join(".mvn/extensions.xml"),
+        "<extensions><extension><groupId>evil</groupId><artifactId>ext</artifactId><version>1</version></extension></extensions>",
+    )
+    .unwrap();
+    let err = parse(&dir).unwrap_err().to_string();
+    assert!(err.contains("core extensions"), "{err}");
+    cleanup(&dir);
+}

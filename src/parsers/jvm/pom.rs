@@ -57,6 +57,7 @@ pub(crate) fn validate_pom_structure(content: &str) -> Result<()> {
 pub(crate) fn parse_pom(path: &Path) -> Result<Vec<Dependency>> {
     let content = read_pom(path)?;
     validate_pom_source_policy(&content, path)?;
+    reject_core_extensions(path)?;
     let mut deps = Vec::new();
     let mut remaining = content.as_str();
     while let Some((_, body)) = remaining.split_once("<dependency>") {
@@ -353,6 +354,31 @@ pub(crate) fn xml_contains_open_tag(content: &str, target: &str) -> bool {
         }
     }
     false
+}
+
+/// `.mvn/extensions.xml` (in the project or an ancestor up to the repository root) loads core
+/// extensions into Maven itself before the build; they are fetched and run unscanned.
+fn reject_core_extensions(pom_path: &Path) -> Result<()> {
+    let Some(start) = pom_path.parent() else {
+        return Ok(());
+    };
+    let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    let root = crate::cache::find_git_root(&start).ok().flatten();
+    let mut current = Some(start.as_path());
+    while let Some(dir) = current {
+        let extensions = dir.join(".mvn").join("extensions.xml");
+        if std::fs::symlink_metadata(&extensions).is_ok() {
+            bail!(
+                "Unsupported Maven core extensions in {}: extensions loaded by Maven itself are not scanned",
+                extensions.display()
+            );
+        }
+        if root.as_deref() == Some(dir) {
+            break;
+        }
+        current = dir.parent();
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_pom_source_policy(content: &str, path: &Path) -> Result<()> {

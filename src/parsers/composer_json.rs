@@ -74,6 +74,56 @@ fn validate_supported_sources(parsed: &serde_json::Value, path: &Path) -> Result
         );
     }
 
+    reject_install_time_code(parsed, path)
+}
+
+/// Composer events that run during `composer install`/`update`.
+const INSTALL_EVENTS: &[&str] = &[
+    "pre-install-cmd",
+    "post-install-cmd",
+    "pre-update-cmd",
+    "post-update-cmd",
+    "pre-autoload-dump",
+    "post-autoload-dump",
+    "post-root-package-install",
+    "post-create-project-cmd",
+    "pre-operations-exec",
+    "pre-package-install",
+    "post-package-install",
+    "pre-package-update",
+    "post-package-update",
+];
+
+/// Scripts bound to install events and blanket plugin trust execute code that no scan sees.
+fn reject_install_time_code(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+    if let Some(scripts) = parsed.get("scripts").and_then(|value| value.as_object())
+        && let Some(event) = INSTALL_EVENTS.iter().find(|event| {
+            scripts.get(**event).is_some_and(|value| match value {
+                serde_json::Value::Array(entries) => !entries.is_empty(),
+                serde_json::Value::String(text) => !text.is_empty(),
+                _ => true,
+            })
+        })
+    {
+        anyhow::bail!(
+            "Unsupported Composer script in {}: '{}' runs unscanned code during install",
+            path.display(),
+            event
+        );
+    }
+    let blanket = match parsed.pointer("/config/allow-plugins") {
+        Some(serde_json::Value::Bool(allowed)) => *allowed,
+        Some(serde_json::Value::Object(plugins)) => plugins
+            .get("*")
+            .is_some_and(|value| value.as_bool() == Some(true)),
+        _ => false,
+    };
+    if blanket {
+        anyhow::bail!(
+            "Unsupported Composer config in {}: allow-plugins permits every plugin to run unscanned code",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -142,6 +192,36 @@ mod tests {
         let dir = setup_dir(r#"{"name": "test/pkg", "description": "test"}"#);
         let deps = parse(&dir).unwrap();
         assert!(deps.is_empty());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn install_event_scripts_block_but_other_scripts_do_not() {
+        let dir = setup_dir(
+            r#"{"require": {"a/b": "^1.0"}, "scripts": {"post-install-cmd": ["curl x | sh"]}}"#,
+        );
+        let err = parse(&dir).unwrap_err().to_string();
+        assert!(err.contains("post-install-cmd"), "{err}");
+        cleanup(&dir);
+
+        let dir = setup_dir(r#"{"require": {"a/b": "^1.0"}, "scripts": {"test": "phpunit"}}"#);
+        assert!(parse(&dir).is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn blanket_allow_plugins_blocks_but_named_plugins_do_not() {
+        for blanket in [r#"true"#, r#"{"*": true}"#] {
+            let dir = setup_dir(&format!(
+                r#"{{"require": {{"a/b": "^1.0"}}, "config": {{"allow-plugins": {blanket}}}}}"#
+            ));
+            assert!(parse(&dir).is_err(), "{blanket}");
+            cleanup(&dir);
+        }
+        let dir = setup_dir(
+            r#"{"require": {"a/b": "^1.0"}, "config": {"allow-plugins": {"a/b": true}}}"#,
+        );
+        assert!(parse(&dir).is_ok());
         cleanup(&dir);
     }
 }
