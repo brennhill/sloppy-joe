@@ -1,4 +1,5 @@
 use crate::Dependency;
+use crate::config_surface::{AppliedAllow, KeyAllow};
 use anyhow::{Result, bail};
 use std::path::Path;
 
@@ -11,18 +12,27 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
+    parse_file_with(csproj, &[]).map(|(deps, _)| deps)
+}
+
+/// Like [`parse_file`], with the operator's `config_key_allow` entries; the ones a `nuget.config`
+/// relied on come back.
+pub(crate) fn parse_file_with(
+    csproj: &Path,
+    allows: &[KeyAllow],
+) -> Result<(Vec<Dependency>, Vec<AppliedAllow>)> {
     let csproj = &std::fs::canonicalize(csproj)?;
     let content = super::read_file_limited(csproj, super::MAX_MANIFEST_BYTES)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
     let content = strip_xml_comments(&content);
 
-    reject_ancestor_overrides(csproj)?;
+    let applied = reject_ancestor_overrides(csproj, allows)?;
     reject_user_file(csproj)?;
     super::csproj_hooks::reject_obj_extension_imports(csproj)?;
     for tag in content.split('<').skip(1) {
         check_tag(tag, csproj)?;
     }
-    collect_package_references(&content, csproj)
+    Ok((collect_package_references(&content, csproj)?, applied))
 }
 
 /// The `Include` paths of the project's `<ProjectReference>` elements, as written.
@@ -52,7 +62,8 @@ pub(crate) fn project_reference_includes(csproj: &Path) -> Result<Vec<String>> {
 }
 
 /// Implicit imports, `global.json` SDK pins and `nuget.config` feeds in any ancestor directory.
-fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
+fn reject_ancestor_overrides(csproj: &Path, allows: &[KeyAllow]) -> Result<Vec<AppliedAllow>> {
+    let mut applied = Vec::new();
     for ancestor in csproj.parent().into_iter().flat_map(Path::ancestors) {
         for name in [
             "Directory.Build.props",
@@ -72,9 +83,11 @@ fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
         }
         reject_global_json_msbuild_sdks(ancestor, csproj)?;
         super::csproj_hooks::reject_local_tools(ancestor, csproj)?;
-        super::nuget_config::reject_untrusted_nuget_config(ancestor, csproj)?;
+        applied.extend(super::nuget_config::reject_untrusted_nuget_config(
+            ancestor, csproj, allows,
+        )?);
     }
-    Ok(())
+    Ok(applied)
 }
 
 /// Reject one `<...` fragment of the project file that declares sources or dependencies

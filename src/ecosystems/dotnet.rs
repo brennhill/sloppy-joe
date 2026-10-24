@@ -52,8 +52,12 @@ impl EcosystemSupport for Dotnet {
     }
 
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput> {
+        let (deps, applied) =
+            parsers::csproj::parse_file_with(&spec.manifest_path, &ctx.config.config_key_allow)?;
+        check_project_references(ctx.scan_root, &spec.manifest_path)?;
         Ok(ParsedInput {
-            deps: self.parse_manifest(ctx.scan_root, spec)?,
+            deps,
+            warnings: crate::config_surface::issues(&applied),
             ..ParsedInput::default()
         })
     }

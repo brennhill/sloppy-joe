@@ -1,6 +1,23 @@
-//! `nuget.config` policy for .NET projects.
+//! `nuget.config` policy for .NET projects: an allowlist of the elements and settings a
+//! repo-committed NuGet config may use. `dotnet restore` honors a `nuget.config` in the project
+//! directory or any parent, so a feed other than nuget.org, a package folder, a trust anchor or a
+//! proxy there redirects or re-trusts every package. An unlisted entry blocks unless the
+//! operator lists it in `config_key_allow` (file id `nuget.config`).
+//!
+//! Entries are flat keys: `<element>` for every element, `source` (value: feed URL) for each
+//! `<add>` under `<packageSources>`, `config:<key>` for `<add>` under `<config>`, and
+//! `<section>:<key>` for the other `<add>` settings, all lower-cased.
+//!
+//! Decisions:
+//! - **Denied**: `<fallbackPackageFolders>`, `<trustedSigners>`, `<auditSources>`, the package
+//!   folder keys (`globalPackagesFolder`, `repositoryPath`) wherever they appear and the proxy
+//!   keys; a package source other than nuget.org; `signatureValidationMode` other than `require`.
+//! - **Allowed**: package source mapping, disabled sources, `<clear/>`/`<remove/>`, restore and
+//!   package-management preferences, `dependencyVersion`.
 use super::csproj::{extract_attr, strip_xml_comments};
-use anyhow::{Result, bail};
+use crate::config_surface::{AppliedAllow, KeyAllow, Surface, ValueRule::*, check_flat, rule};
+use anyhow::Result;
+use serde_json::Value;
 use std::path::Path;
 
 const NUGET_ORG_FEED: &str = "https://api.nuget.org/v3/index.json";
@@ -9,12 +26,112 @@ const NUGET_ORG_FEED: &str = "https://api.nuget.org/v3/index.json";
 /// folder then supplies packages with their recorded hash metadata.
 const FOLDER_KEYS: &[&str] = &["globalpackagesfolder", "repositorypath"];
 
-/// `dotnet restore` honors a `nuget.config` in the project directory or any parent, so a
-/// feed other than nuget.org there redirects every package to an unverified source.
-pub(super) fn reject_untrusted_nuget_config(dir: &Path, csproj: &Path) -> Result<()> {
+fn is_nuget_org(value: &str) -> bool {
+    value.trim() == NUGET_ORG_FEED
+}
+
+const NUGET_CONFIG: Surface = Surface {
+    id: "nuget.config",
+    subject: "NuGet config entry",
+    why: "it changes where restore reads packages from, which feeds, signers or proxies it trusts, so the scanned lockfile no longer describes what is installed",
+    allow: &[
+        rule("=<configuration>", Any),
+        rule("=<packagesources>", Any),
+        rule("=<config>", Any),
+        rule("=<packagesourcemapping>", Any),
+        rule("=<packagesource>", Any),
+        rule("=<package>", Any),
+        rule("=<disabledpackagesources>", Any),
+        rule("=<packagerestore>", Any),
+        rule("=<bindingredirects>", Any),
+        rule("=<packagemanagement>", Any),
+        rule("=<solution>", Any),
+        rule("=<clear>", Any),
+        rule("=<remove>", Any),
+        rule("=<add>", Any),
+        rule("=source", StrWhere(is_nuget_org, "the nuget.org v3 feed")),
+        rule("config:dependencyversion", Any),
+        rule("config:signaturevalidationmode", OneOf(&["require"])),
+        rule("disabledpackagesources:*", Any),
+        rule("packagerestore:*", Any),
+        rule("bindingredirects:*", Any),
+        rule("packagemanagement:*", Any),
+        rule("solution:*", Any),
+    ],
+    deny: &[
+        "=<fallbackpackagefolders>",
+        "=<trustedsigners>",
+        "=<auditsources>",
+        "config:globalpackagesfolder",
+        "config:repositorypath",
+        "config:http_proxy",
+        "config:https_proxy",
+        "config:no_proxy",
+    ],
+    deny_under: &[],
+    scope: &[],
+};
+
+/// The flat entries of a NuGet config document (comments already stripped).
+fn config_entries(content: &str) -> Vec<(String, Value)> {
+    let mut entries = Vec::new();
+    let mut open: Vec<String> = Vec::new();
+    for tag in content.split('<').skip(1) {
+        if tag.starts_with(['?', '!']) {
+            continue;
+        }
+        if let Some(closing) = tag.strip_prefix('/') {
+            let name = closing.split('>').next().unwrap_or_default().trim();
+            if open
+                .last()
+                .is_some_and(|last| last.eq_ignore_ascii_case(name))
+            {
+                open.pop();
+            }
+            continue;
+        }
+        let attrs = tag.split('>').next().unwrap_or_default();
+        let name = attrs
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let self_closing = attrs.trim_end().ends_with('/');
+        entries.push((format!("<{name}>"), Value::String(String::new())));
+        if name == "add" {
+            let section = open.last().cloned().unwrap_or_default();
+            let key = extract_attr(attrs, "key")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let value = extract_attr(attrs, "value").unwrap_or_default();
+            let entry = if section == "packagesources" {
+                "source".to_string()
+            } else if section == "config" || FOLDER_KEYS.contains(&key.as_str()) {
+                format!("config:{key}")
+            } else {
+                format!("{section}:{key}")
+            };
+            entries.push((entry, Value::String(value)));
+        }
+        if !self_closing {
+            open.push(name);
+        }
+    }
+    entries
+}
+
+/// `dotnet restore` honors a `nuget.config` in the project directory or any parent; check the
+/// ones in `dir` against the allowlist.
+pub(super) fn reject_untrusted_nuget_config(
+    dir: &Path,
+    csproj: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
+    let mut applied = Vec::new();
     for entry in entries.flatten() {
         if !entry
             .file_name()
@@ -24,96 +141,19 @@ pub(super) fn reject_untrusted_nuget_config(dir: &Path, csproj: &Path) -> Result
             continue;
         }
         let path = entry.path();
-        let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)?;
+        let content = crate::untrusted::read_text(
+            &path,
+            crate::untrusted::Format::Xml,
+            super::MAX_MANIFEST_BYTES,
+        )?;
         let content = strip_xml_comments(&content);
-        let lowered = content.to_ascii_lowercase();
-        if lowered.contains("<fallbackpackagefolders") {
-            bail!(
-                "Unsupported {} (applies to {}): <fallbackPackageFolders> changes where restore reads packages from",
-                path.display(),
-                csproj.display()
-            );
-        }
-        for tag in content.split('<').skip(1) {
-            if !tag.to_ascii_lowercase().starts_with("add") {
-                continue;
-            }
-            let attrs = tag.split('>').next().unwrap_or_default();
-            let key = extract_attr(attrs, "key")
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if FOLDER_KEYS.contains(&key.trim()) {
-                bail!(
-                    "Unsupported {} setting in {} (applies to {}): it changes where restore reads packages from",
-                    key.trim(),
-                    path.display(),
-                    csproj.display()
-                );
-            }
-        }
-        let mut rest = lowered.as_str();
-        let original = content.as_str();
-        let mut offset = 0;
-        while let Some(start) = rest.find("<packagesources") {
-            let section_start = offset + start;
-            let section_end = lowered[section_start..]
-                .find("</packagesources")
-                .map(|end| section_start + end)
-                .unwrap_or(lowered.len());
-            for tag in original[section_start..section_end].split('<').skip(1) {
-                if !tag.to_ascii_lowercase().starts_with("add") {
-                    continue;
-                }
-                let attrs = tag.split('>').next().unwrap_or_default();
-                let value = extract_attr(attrs, "value").unwrap_or_default();
-                if value.trim() != NUGET_ORG_FEED {
-                    bail!(
-                        "Unsupported package source '{}' in {} (applies to {}): only {NUGET_ORG_FEED} is trusted",
-                        value.trim(),
-                        path.display(),
-                        csproj.display()
-                    );
-                }
-            }
-            offset = section_end;
-            rest = &lowered[offset..];
-        }
+        applied.extend(
+            check_flat(&NUGET_CONFIG, &config_entries(&content), &path, allows)
+                .map_err(|err| anyhow::anyhow!("{err} (applies to {})", csproj.display()))?,
+        );
     }
-    Ok(())
+    Ok(applied)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn package_folder_settings_block() {
-        let dir = std::env::temp_dir().join(format!("sj-nuget-folder-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let manifest = dir.join("a.csproj");
-        for key in [
-            "globalPackagesFolder",
-            "repositoryPath",
-            "GLOBALPACKAGESFOLDER",
-        ] {
-            std::fs::write(
-                dir.join("nuget.config"),
-                format!(
-                    r#"<configuration><config><add key="{key}" value="pkgs"/></config></configuration>"#
-                ),
-            )
-            .unwrap();
-            assert!(
-                reject_untrusted_nuget_config(&dir, &manifest).is_err(),
-                "{key}"
-            );
-        }
-        std::fs::write(
-            dir.join("nuget.config"),
-            r#"<configuration><config><add key="signatureValidationMode" value="require"/></config></configuration>"#,
-        )
-        .unwrap();
-        assert!(reject_untrusted_nuget_config(&dir, &manifest).is_ok());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-}
+mod tests;

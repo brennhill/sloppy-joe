@@ -358,7 +358,7 @@ Legacy Python support still fails closed on unsafe forms. For example, direct UR
 
 ### `config_key_allow`
 
-Package-manager config files in the repository (uv settings in `pyproject.toml` / `uv.toml`, `poetry.toml`, and the `config` object of `composer.json`) are checked against built-in allowlists. A setting that is not on a list blocks, because an unclassified setting may fetch from, cache in, or run something the lockfile never vouched for. When a repository legitimately needs such a setting, name it here, one exact key per entry:
+Package-manager config files in the repository (uv settings in `pyproject.toml` / `uv.toml`, `poetry.toml`, the `config` object of `composer.json`, Gradle and Maven option files, `.npmrc`, `.yarnrc.yml`, `bunfig.toml`, `pnpm-workspace.yaml`, Cargo config and `nuget.config`) are checked against built-in allowlists. A setting that is not on a list blocks, because an unclassified setting may fetch from, cache in, or run something the lockfile never vouched for. When a repository legitimately needs such a setting, name it here, one exact key per entry:
 
 ```json
 {
@@ -369,8 +369,8 @@ Package-manager config files in the repository (uv settings in `pyproject.toml` 
 }
 ```
 
-- `file` is the config surface: `uv` (`[tool.uv]` and `uv.toml`), `poetry.toml`, or `composer.json` (its `config` object).
-- `key` is the dotted path of the setting, with no wildcards. Each leaf setting is allowed on its own, so allowing one key in a table does not allow its siblings.
+- `file` is the config surface: `uv` (`[tool.uv]` and `uv.toml`), `poetry.toml`, `composer.json` (its `config` object), `gradle.properties`, `gradle-daemon-jvm.properties`, `maven.config`, `jvm.config`, `cargo-config` (`.cargo/config.toml`), `.npmrc`, `.yarnrc.yml`, `bunfig.toml`, `pnpm-workspace.yaml`, or `nuget.config`.
+- `key` is the dotted path of the setting, with no wildcards. For flat files the key is the whole setting name, never split on dots: `org.gradle.configuration-cache` (`gradle.properties`), a JVM or Maven option such as `-XX:+UseZGC` (`jvm.config`, `maven.config`), `message` (`.npmrc`). For `nuget.config` it is `config:<key>` (lower-case) for a `<config>` setting, such as `config:defaultpushsource`. Each leaf setting is allowed on its own, so allowing one key in a table does not allow its siblings.
 - Every applied entry is reported as a `config/key-allowed` warning (in the output and in `--json`) so the exception stays visible.
 - Settings known to redirect a registry, move a cache, change TLS trust, or download and run code (for example uv `index-url`, `cache-dir`, `python-install-mirror`; Poetry `cache-dir`, `repositories.*`; Composer `cache-dir`, `cafile`) cannot be allowed this way, and neither can a value that fails its rule (for example Composer `disable-tls: true`).
 - Like the rest of the policy, this is read only from the out-of-repo config; the local overlay cannot set it.
