@@ -136,6 +136,9 @@ fn read_package_manager_config(
             npm_registries.read(&npmrc)?;
             npm_registries.validate_manager(manager.as_str(), &npmrc)?;
         }
+        npm_registries
+            .1
+            .extend(managers::manager(manager).check_settings_file(&dir)?);
         for (filename, owner) in managers::ALL.into_iter().flat_map(|owner| {
             managers::manager(owner)
                 .unverifiable_config_files()

@@ -1,6 +1,7 @@
 use super::*;
 
 mod binding;
+mod config_surfaces;
 mod local_deps;
 mod lockfile_read;
 mod lockfile_validate;
@@ -78,8 +79,18 @@ impl EcosystemSupport for Js {
     }
 
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput> {
+        // Settings files were checked while binding, before the operator's config was known;
+        // the keys they left undecided are settled here.
+        let applied = match &spec.js_binding {
+            Some(binding) => crate::config_surface::resolve_deferred(
+                &binding.npm_registries.1,
+                &ctx.config.config_key_allow,
+            )?,
+            None => Vec::new(),
+        };
         Ok(ParsedInput {
             deps: self.parse_manifest(ctx.scan_root, spec)?,
+            warnings: crate::config_surface::issues(&applied),
             ..ParsedInput::default()
         })
     }

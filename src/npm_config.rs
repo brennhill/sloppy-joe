@@ -1,4 +1,5 @@
 //! Project-local npm routing. Private package identities must never use public registries.
+use crate::config_surface::{DeferredKey, Surface, ValueRule::*, check_flat_deferred, rule};
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -51,13 +52,83 @@ pub(crate) fn normalize_registry_url(value: &str) -> Option<String> {
     Some(format!("{}/", url.as_str().trim_end_matches('/')))
 }
 
+const TRUE_FALSE: &[&str] = &["true", "false"];
+
+/// `.npmrc` settings other than registry routing and credentials. Denied: anything that moves
+/// the cache, prefix, store or config files, adds trust anchors, proxies traffic, runs a shell
+/// or hook, or turns off integrity (`package-lock=false`) or TLS checks (`strict-ssl=false`).
+const NPMRC: Surface = Surface {
+    id: ".npmrc",
+    subject: "npm setting",
+    why: "it moves caches or config files, changes trust or proxying, runs a hook or weakens integrity or TLS checks, so the scanned lockfile no longer describes what is installed",
+    allow: &[
+        rule("always-auth", OneOf(TRUE_FALSE)),
+        rule("strict-ssl", OneOf(&["true"])),
+        rule("package-lock", OneOf(&["true"])),
+        rule("audit", OneOf(TRUE_FALSE)),
+        rule(
+            "audit-level",
+            OneOf(&["low", "moderate", "high", "critical"]),
+        ),
+        rule("fund", OneOf(TRUE_FALSE)),
+        rule("ignore-scripts", OneOf(TRUE_FALSE)),
+        rule("save-exact", OneOf(TRUE_FALSE)),
+        rule("save-prefix", OneOf(&["^", "~", ""])),
+        rule("engine-strict", OneOf(TRUE_FALSE)),
+        rule("legacy-peer-deps", OneOf(TRUE_FALSE)),
+        rule("auto-install-peers", OneOf(TRUE_FALSE)),
+        rule("strict-peer-dependencies", OneOf(TRUE_FALSE)),
+        rule("loglevel", Str),
+        rule("progress", OneOf(TRUE_FALSE)),
+        rule("update-notifier", OneOf(TRUE_FALSE)),
+        rule("node-linker", OneOf(&["isolated", "hoisted", "pnp"])),
+    ],
+    deny: &[
+        "cache",
+        "prefix",
+        "globalconfig",
+        "userconfig",
+        "=ca",
+        "cafile",
+        "=cert",
+        "=key",
+        "proxy",
+        "https-proxy",
+        "noproxy",
+        "local-address",
+        "store-dir",
+        "virtual-store-dir",
+        "global-dir",
+        "state-dir",
+        "pnpmfile",
+        "global-pnpmfile",
+        "script-shell",
+        "=shell",
+        "node-options",
+        "node-gyp",
+        "=tmp",
+        "init-module",
+        "=git",
+        "replace-registry-host",
+        "registry",
+    ],
+    deny_under: &[],
+    scope: &[],
+};
+
+/// Routing read from `.npmrc` (and, in the second field, settings that the operator's
+/// `config_key_allow` still has to settle).
 #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct NpmRegistries(pub(crate) BTreeMap<String, String>);
+pub(crate) struct NpmRegistries(
+    pub(crate) BTreeMap<String, String>,
+    pub(crate) Vec<DeferredKey>,
+);
 
 impl NpmRegistries {
     pub(crate) fn read(&mut self, path: &Path) -> Result<()> {
         let content = crate::fsutil::read_file_limited(path, crate::fsutil::MAX_MANIFEST_BYTES)?;
         crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
+        let mut other_settings: Vec<(String, serde_json::Value)> = Vec::new();
         for (line_number, line) in content.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with(['#', ';']) {
@@ -96,23 +167,20 @@ impl NpmRegistries {
                     return Err(invalid());
                 }
                 scope
-            } else if matches!(
-                key,
-                "always-auth"
-                    | "strict-ssl"
-                    | "audit"
-                    | "fund"
-                    | "ignore-scripts"
-                    | "save-exact"
-                    | "engine-strict"
-            ) {
-                continue;
             } else {
-                return Err(invalid());
+                // Judged against the allowlist below; an unlisted key blocks once the operator's
+                // `config_key_allow` is known.
+                other_settings.push((
+                    key.to_string(),
+                    serde_json::Value::String(value.trim().to_string()),
+                ));
+                continue;
             };
             let value = normalize_registry_url(value.trim()).ok_or_else(invalid)?;
             self.0.insert(scope.to_string(), value);
         }
+        self.1
+            .extend(check_flat_deferred(&NPMRC, &other_settings, path)?);
         Ok(())
     }
 

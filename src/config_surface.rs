@@ -82,6 +82,10 @@ pub const KNOWN_SURFACES: &[&str] = &[
     "gradle-daemon-jvm.properties",
     "maven.config",
     "jvm.config",
+    ".npmrc",
+    ".yarnrc.yml",
+    "bunfig.toml",
+    "pnpm-workspace.yaml",
 ];
 
 /// One entry of the scanner config's `config_key_allow`: permit one exact key on one surface.
@@ -144,6 +148,40 @@ impl AppliedAllow {
     }
 }
 
+/// An unlisted key found where the operator's config is not available yet (while projects are
+/// bound to their package manager). It blocks later, in [`resolve_deferred`], unless allowed.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct DeferredKey {
+    surface: &'static str,
+    key: String,
+    source: PathBuf,
+    refusal: String,
+}
+
+/// Settle deferred keys against the operator's `config_key_allow`: allowed ones become
+/// [`AppliedAllow`]s, the first one that is not allowed is the error the check would have raised.
+pub(crate) fn resolve_deferred(
+    deferred: &[DeferredKey],
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
+    let mut applied = Vec::new();
+    for item in deferred {
+        if allows
+            .iter()
+            .any(|allow| allow.file == item.surface && allow.key == item.key)
+        {
+            applied.push(AppliedAllow {
+                surface: item.surface,
+                key: item.key.clone(),
+                source: item.source.clone(),
+            });
+        } else {
+            bail!("{}", item.refusal);
+        }
+    }
+    Ok(applied)
+}
+
 pub(crate) fn issues(applied: &[AppliedAllow]) -> Vec<Issue> {
     applied.iter().map(AppliedAllow::to_issue).collect()
 }
@@ -179,6 +217,7 @@ pub(crate) fn check_json(
         source,
         allows,
         applied: Vec::new(),
+        deferred: None,
     };
     let mut path = Vec::new();
     walk.visit_table(table, &mut path)?;
@@ -200,11 +239,79 @@ pub(crate) fn check_flat(
         source,
         allows,
         applied: Vec::new(),
+        deferred: None,
     };
     for (key, node) in entries {
         walk.flat_entry(key, node)?;
     }
     Ok(walk.applied)
+}
+
+/// Like [`check_json`], but unlisted keys are returned instead of blocking, for callers that run
+/// before the operator's config is available; settle them with [`resolve_deferred`]. Denied
+/// keys and failing values still block immediately.
+pub(crate) fn check_json_deferred(
+    surface: &Surface,
+    root: &Value,
+    source: &Path,
+) -> Result<Vec<DeferredKey>> {
+    let Some(table) = root.as_object() else {
+        bail!(
+            "Unsupported {} in {}: expected a table of settings",
+            surface.subject,
+            source.display()
+        );
+    };
+    let mut walk = Walk {
+        surface,
+        source,
+        allows: &[],
+        applied: Vec::new(),
+        deferred: Some(Vec::new()),
+    };
+    walk.visit_table(table, &mut Vec::new())?;
+    Ok(walk.deferred.unwrap_or_default())
+}
+
+/// [`check_json_deferred`] for a parsed TOML document.
+pub(crate) fn check_toml_deferred(
+    surface: &Surface,
+    root: &toml::Value,
+    source: &Path,
+) -> Result<Vec<DeferredKey>> {
+    let json = serde_json::to_value(root)
+        .map_err(|err| anyhow::anyhow!("Cannot inspect {}: {err}", source.display()))?;
+    check_json_deferred(surface, &json, source)
+}
+
+/// [`check_json_deferred`] for a parsed YAML document.
+pub(crate) fn check_yaml_deferred(
+    surface: &Surface,
+    root: &serde_yaml::Value,
+    source: &Path,
+) -> Result<Vec<DeferredKey>> {
+    let json = serde_json::to_value(root)
+        .map_err(|err| anyhow::anyhow!("Cannot inspect {}: {err}", source.display()))?;
+    check_json_deferred(surface, &json, source)
+}
+
+/// [`check_flat`] with unlisted keys returned instead of blocking.
+pub(crate) fn check_flat_deferred(
+    surface: &Surface,
+    entries: &[(String, Value)],
+    source: &Path,
+) -> Result<Vec<DeferredKey>> {
+    let mut walk = Walk {
+        surface,
+        source,
+        allows: &[],
+        applied: Vec::new(),
+        deferred: Some(Vec::new()),
+    };
+    for (key, node) in entries {
+        walk.flat_entry(key, node)?;
+    }
+    Ok(walk.deferred.unwrap_or_default())
 }
 
 fn flat_matches(pattern: &str, key: &str, prefix: bool) -> bool {
@@ -223,6 +330,8 @@ struct Walk<'a> {
     source: &'a Path,
     allows: &'a [KeyAllow],
     applied: Vec<AppliedAllow>,
+    /// When set, unlisted keys are collected here instead of blocking.
+    deferred: Option<Vec<DeferredKey>>,
 }
 
 fn segments_match(pattern: &[&str], path: &[String], whole: bool) -> bool {
@@ -360,13 +469,23 @@ impl Walk<'_> {
             });
             return Ok(());
         }
-        Err(self.refusal(
+        let refusal = self.refusal(
             path,
             &format!(
                 "it is not on the allowlist for this file ({}). To permit it, add {{\"file\": \"{}\", \"key\": \"{}\"}} to config_key_allow in the scanner config",
                 self.surface.why, self.surface.id, key
             ),
-        ))
+        );
+        if let Some(deferred) = self.deferred.as_mut() {
+            deferred.push(DeferredKey {
+                surface: self.surface.id,
+                key,
+                source: self.source.to_path_buf(),
+                refusal: refusal.to_string(),
+            });
+            return Ok(());
+        }
+        Err(refusal)
     }
 
     fn refusal(&self, path: &[String], reason: &str) -> anyhow::Error {

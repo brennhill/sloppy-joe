@@ -16,6 +16,10 @@ pub(super) trait JsManager: Sync {
     /// rewrites cannot be verified, so their presence blocks.
     fn unverifiable_config_files(&self) -> &'static [&'static str];
 
+    /// Check this manager's structured settings file in `dir` against its allowlist: denied
+    /// settings block now, unlisted ones come back deferred until the operator's config is known.
+    fn check_settings_file(&self, dir: &Path) -> Result<Vec<crate::config_surface::DeferredKey>>;
+
     /// The lockfile key of a project that is its own install root.
     fn root_package_entry_key(&self) -> &'static str;
 
@@ -72,6 +76,10 @@ impl JsManager for Npm {
 
     fn unverifiable_config_files(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    fn check_settings_file(&self, _dir: &Path) -> Result<Vec<crate::config_surface::DeferredKey>> {
+        Ok(Vec::new())
     }
 
     fn declared_workspaces(
@@ -135,6 +143,10 @@ impl JsManager for Pnpm {
         ]
     }
 
+    fn check_settings_file(&self, dir: &Path) -> Result<Vec<crate::config_surface::DeferredKey>> {
+        super::config_surfaces::check_pnpm_workspace(dir)
+    }
+
     fn declared_workspaces(
         &self,
         workspace_dir: &Path,
@@ -187,7 +199,11 @@ impl JsManager for Yarn {
     }
 
     fn unverifiable_config_files(&self) -> &'static [&'static str] {
-        &[".yarnrc", ".yarnrc.yml"]
+        &[".yarnrc"]
+    }
+
+    fn check_settings_file(&self, dir: &Path) -> Result<Vec<crate::config_surface::DeferredKey>> {
+        super::config_surfaces::check_yarnrc_yml(dir)
     }
 
     fn declared_workspaces(
@@ -236,7 +252,11 @@ impl JsManager for Bun {
     }
 
     fn unverifiable_config_files(&self) -> &'static [&'static str] {
-        &["bunfig.toml"]
+        &[]
+    }
+
+    fn check_settings_file(&self, dir: &Path) -> Result<Vec<crate::config_surface::DeferredKey>> {
+        super::config_surfaces::check_bunfig(dir)
     }
 
     fn declared_workspaces(
