@@ -10,8 +10,22 @@ pub fn exact_version(raw: &str, ecosystem: Ecosystem) -> Option<String> {
         Ecosystem::PyPI => exact_pypi_version(raw),
         Ecosystem::Cargo => exact_cargo_version(raw),
         Ecosystem::Npm => exact_npm_version(raw),
+        Ecosystem::Jvm => exact_jvm_version(raw),
         _ => (!has_range_syntax(raw)).then(|| raw.to_string()),
     }
+}
+
+/// Maven metaversions (`LATEST`, `RELEASE`) and `-SNAPSHOT` artifacts resolve to whatever was last
+/// published at build time, so none of them pins a version.
+fn exact_jvm_version(raw: &str) -> Option<String> {
+    let folded = raw.to_ascii_uppercase();
+    if has_range_syntax(raw)
+        || matches!(folded.as_str(), "LATEST" | "RELEASE")
+        || folded.contains("SNAPSHOT")
+    {
+        return None;
+    }
+    Some(raw.to_string())
 }
 
 fn exact_pypi_version(raw: &str) -> Option<String> {
@@ -64,6 +78,23 @@ fn has_wildcard_syntax(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn jvm_metaversions_and_snapshots_are_not_exact() {
+        for raw in [
+            "LATEST",
+            "release",
+            "1.0-SNAPSHOT",
+            "2.1-snapshot",
+            "1.0.0-20240101.120000-1-SNAPSHOT",
+        ] {
+            assert_eq!(exact_version(raw, Ecosystem::Jvm), None, "{raw}");
+        }
+        assert_eq!(
+            exact_version("31.1-jre", Ecosystem::Jvm),
+            Some("31.1-jre".to_string())
+        );
+    }
+
     use super::*;
 
     #[test]
