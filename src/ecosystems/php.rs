@@ -9,7 +9,7 @@ impl EcosystemSupport for Php {
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
-            ProjectInputKind::Php => Some(spec.project_dir().join("composer.lock")),
+            ProjectInputKind::Php => common::named_lockfile(spec),
             other => wrong_plugin(other),
         }
     }
@@ -27,5 +27,13 @@ impl EcosystemSupport for Php {
             deps: self.parse_manifest(ctx.scan_root, spec)?,
             ..ParsedInput::default()
         })
+    }
+
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+        let parsed = common::parse_for_preflight(self, ctx, spec)?;
+        let lockfile = common::named_lockfile(spec).expect("Php names composer.lock");
+        common::ensure_kind_lockfile(spec, &lockfile)?;
+        common::read_json_lockfile(&lockfile)?;
+        Ok(parsed.warnings)
     }
 }

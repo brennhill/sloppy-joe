@@ -9,9 +9,7 @@ impl EcosystemSupport for Dotnet {
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
-            ProjectInputKind::Dotnet => {
-                Some(spec.manifest_path.with_file_name("packages.lock.json"))
-            }
+            ProjectInputKind::Dotnet => common::named_lockfile(spec),
             other => wrong_plugin(other),
         }
     }
@@ -29,5 +27,20 @@ impl EcosystemSupport for Dotnet {
             deps: self.parse_manifest(ctx.scan_root, spec)?,
             ..ParsedInput::default()
         })
+    }
+
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+        let parsed = common::parse_for_preflight(self, ctx, spec)?;
+        let lockfile = common::named_lockfile(spec).expect("Dotnet names packages.lock.json");
+        common::ensure_kind_lockfile(spec, &lockfile)?;
+        common::ensure_no_locked_packages_without_declarations(spec, &parsed.deps)?;
+        let value = common::read_json_lockfile(&lockfile)?;
+        if !matches!(value["version"].as_u64(), Some(1 | 2)) || !value["dependencies"].is_object() {
+            anyhow::bail!(
+                "Broken lockfile '{}': expected a supported version and dependencies object",
+                lockfile.display()
+            );
+        }
+        Ok(parsed.warnings)
     }
 }

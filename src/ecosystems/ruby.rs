@@ -9,7 +9,7 @@ impl EcosystemSupport for Ruby {
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
-            ProjectInputKind::Ruby => Some(spec.project_dir().join("Gemfile.lock")),
+            ProjectInputKind::Ruby => common::named_lockfile(spec),
             other => wrong_plugin(other),
         }
     }
@@ -27,5 +27,14 @@ impl EcosystemSupport for Ruby {
             deps: self.parse_manifest(ctx.scan_root, spec)?,
             ..ParsedInput::default()
         })
+    }
+
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+        let parsed = common::parse_for_preflight(self, ctx, spec)?;
+        common::ensure_kind_lockfile(
+            spec,
+            &common::named_lockfile(spec).expect("Ruby names Gemfile.lock"),
+        )?;
+        Ok(parsed.warnings)
     }
 }

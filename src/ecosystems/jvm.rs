@@ -9,7 +9,7 @@ impl EcosystemSupport for Jvm {
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
-            ProjectInputKind::Gradle => Some(spec.project_dir().join("gradle.lockfile")),
+            ProjectInputKind::Gradle => common::named_lockfile(spec),
             // Maven has no trusted lockfile format: scans continue with reduced confidence.
             ProjectInputKind::Maven => None,
             other => wrong_plugin(other),
@@ -36,4 +36,36 @@ impl EcosystemSupport for Jvm {
             other => wrong_plugin(other),
         }
     }
+
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+        let parsed = common::parse_for_preflight(self, ctx, spec)?;
+        let mut warnings = parsed.warnings.clone();
+        match spec.kind {
+            ProjectInputKind::Gradle => {
+                common::ensure_kind_lockfile(
+                    spec,
+                    &common::named_lockfile(spec).expect("Gradle names gradle.lockfile"),
+                )?;
+                common::ensure_no_locked_packages_without_declarations(spec, &parsed.deps)?;
+            }
+            ProjectInputKind::Maven => warnings.push(maven_no_lockfile_warning(spec)),
+            other => wrong_plugin(other),
+        }
+        Ok(warnings)
+    }
+}
+
+fn maven_no_lockfile_warning(spec: &ProjectInputSpec) -> Issue {
+    Issue::new(
+        "<lockfile>",
+        checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE,
+        Severity::Warning,
+    )
+    .message(format!(
+        "Maven manifest '{}' has no trusted lockfile-backed verification path in sloppy-joe. Resolution-sensitive checks continue with reduced confidence. Gradle dependency locking via gradle.lockfile is recommended when practical.",
+        spec.manifest_path.display()
+    ))
+    .fix(
+        "Keep Maven and review resolution-sensitive findings manually, or move the build to Gradle with dependency locking if you need strict lockfile enforcement.",
+    )
 }

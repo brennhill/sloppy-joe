@@ -49,9 +49,6 @@ fn every_kind_describes_itself_completely() {
             d.missing_lockfile_help.is_some(),
             "{kind:?}: missing-lockfile help must exist exactly when a lockfile is required"
         );
-        if d.rejects_locked_packages_without_declarations {
-            assert_eq!(d.lockfile, LockfilePolicy::Required, "{kind:?}");
-        }
     }
 }
 

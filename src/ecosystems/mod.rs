@@ -10,6 +10,7 @@ use crate::*;
 use std::path::{Path, PathBuf};
 
 mod cargo;
+pub(crate) mod common;
 mod dotnet;
 mod go;
 mod js;
@@ -25,6 +26,35 @@ pub(crate) struct ScanCtx<'a> {
     pub(crate) opts: &'a ScanOptions<'a>,
 }
 
+/// Everything a preflight needs: the scan, the whole project set, and the selected projects.
+pub(crate) struct PreflightCtx<'a> {
+    pub(crate) scan: ScanCtx<'a>,
+    pub(crate) canonical_root: PathBuf,
+    js: js::JsPreflightState,
+}
+
+impl<'a> PreflightCtx<'a> {
+    pub(crate) fn new(
+        scan: ScanCtx<'a>,
+        all_specs: &[ProjectInputSpec],
+        selected: &[ProjectInputSpec],
+    ) -> Result<Self> {
+        let canonical_root = std::fs::canonicalize(scan.scan_root).map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to inspect {} for project manifests: {}",
+                scan.scan_root.display(),
+                err
+            )
+        })?;
+        let js = js::JsPreflightState::load(all_specs, selected)?;
+        Ok(Self {
+            scan,
+            canonical_root,
+            js,
+        })
+    }
+}
+
 pub(crate) trait EcosystemSupport: Sync {
     /// The project kinds this plugin owns. Every kind is owned by exactly one plugin.
     fn kinds(&self) -> &'static [ProjectInputKind];
@@ -38,6 +68,10 @@ pub(crate) trait EcosystemSupport: Sync {
 
     /// Dependencies (and warnings/tooling) the scan checks for this project.
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput>;
+
+    /// Verify the project's lockfile and policy before anything is scanned. An error blocks the
+    /// project; the returned issues are warnings about reduced confidence.
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>>;
 }
 
 static PLUGINS: [&dyn EcosystemSupport; 8] = [
@@ -62,6 +96,11 @@ pub(crate) fn for_kind(kind: ProjectInputKind) -> &'static dyn EcosystemSupport 
         .copied()
         .find(|plugin| plugin.kinds().contains(&kind))
         .unwrap_or_else(|| panic!("no ecosystem plugin registered for {kind:?}"))
+}
+
+/// Verify one project's lockfile and policy; see [`EcosystemSupport::preflight`].
+pub(crate) fn preflight(ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+    for_kind(spec.kind).preflight(ctx, spec)
 }
 
 /// A plugin was handed a project it does not own: an engine bug, never user input.

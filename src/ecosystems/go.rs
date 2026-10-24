@@ -9,7 +9,7 @@ impl EcosystemSupport for Go {
 
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         match spec.kind {
-            ProjectInputKind::Go => Some(spec.project_dir().join("go.sum")),
+            ProjectInputKind::Go => common::named_lockfile(spec),
             other => wrong_plugin(other),
         }
     }
@@ -28,4 +28,29 @@ impl EcosystemSupport for Go {
             ..ParsedInput::default()
         })
     }
+
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+        let parsed = common::parse_for_preflight(self, ctx, spec)?;
+        check_go_sum(spec)?;
+        Ok(parsed.warnings)
+    }
+}
+
+fn check_go_sum(spec: &ProjectInputSpec) -> Result<()> {
+    let manifest_content =
+        parsers::read_file_limited(&spec.manifest_path, parsers::MAX_MANIFEST_BYTES)
+            .map_err(|err| common::broken_manifest(spec, err))?;
+    if !parsers::go_mod::requires_go_sum(&manifest_content) {
+        return Ok(());
+    }
+    let go_sum_path = common::named_lockfile(spec).expect("Go names go.sum");
+    common::ensure_kind_lockfile(spec, &go_sum_path)?;
+    // Vendored builds ignore go.sum, so only enforce it otherwise.
+    if !spec.project_dir().join("vendor/modules.txt").is_file() {
+        let go_sum = parsers::read_file_limited(&go_sum_path, parsers::MAX_MANIFEST_BYTES)?;
+        parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum).map_err(|err| {
+            anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err)
+        })?;
+    }
+    Ok(())
 }

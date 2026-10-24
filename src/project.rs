@@ -119,8 +119,6 @@ pub(crate) struct KindDescriptor {
     pub(crate) lockfile: LockfilePolicy,
     /// Remedy shown when the required lockfile is missing; `Some` exactly when `lockfile` is `Required`.
     pub(crate) missing_lockfile_help: Option<&'static str>,
-    /// Locked packages with no declared dependencies means declarations were missed: block.
-    pub(crate) rejects_locked_packages_without_declarations: bool,
 }
 
 impl ProjectInputKind {
@@ -157,7 +155,6 @@ impl ProjectInputKind {
                     manager: Some(manager),
                     lockfile,
                     missing_lockfile_help: help,
-                    rejects_locked_packages_without_declarations: false,
                 }
             };
         let simple = |ecosystem,
@@ -176,7 +173,6 @@ impl ProjectInputKind {
                 manager: Some(manager),
                 lockfile: Required,
                 missing_lockfile_help: Some(help),
-                rejects_locked_packages_without_declarations: false,
             }
         };
         match self {
@@ -191,7 +187,6 @@ impl ProjectInputKind {
                 missing_lockfile_help: Some(
                     "Run `npm install --package-lock-only` or `npm shrinkwrap`, then commit the lockfile.",
                 ),
-                rejects_locked_packages_without_declarations: false,
             },
             Self::Cargo => simple(
                 Ecosystem::Cargo,
@@ -229,30 +224,24 @@ impl ProjectInputKind {
                 "composer.lock",
                 "Run `composer update` or `composer install`, then commit composer.lock.",
             ),
-            Self::Gradle => KindDescriptor {
-                rejects_locked_packages_without_declarations: true,
-                ..simple(
-                    Ecosystem::Jvm,
-                    "jvm",
-                    "build.gradle or build.gradle.kts",
-                    &["build.gradle", "build.gradle.kts"],
-                    "gradle",
-                    "gradle.lockfile",
-                    "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
-                )
-            },
-            Self::Dotnet => KindDescriptor {
-                rejects_locked_packages_without_declarations: true,
-                ..simple(
-                    Ecosystem::Dotnet,
-                    "dotnet",
-                    "*.csproj",
-                    &[],
-                    "nuget",
-                    "packages.lock.json",
-                    "Run `dotnet restore --use-lock-file` and commit packages.lock.json.",
-                )
-            },
+            Self::Gradle => simple(
+                Ecosystem::Jvm,
+                "jvm",
+                "build.gradle or build.gradle.kts",
+                &["build.gradle", "build.gradle.kts"],
+                "gradle",
+                "gradle.lockfile",
+                "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
+            ),
+            Self::Dotnet => simple(
+                Ecosystem::Dotnet,
+                "dotnet",
+                "*.csproj",
+                &[],
+                "nuget",
+                "packages.lock.json",
+                "Run `dotnet restore --use-lock-file` and commit packages.lock.json.",
+            ),
             Self::Maven => KindDescriptor {
                 ecosystem: Ecosystem::Jvm,
                 manifest_label: "pom.xml",
@@ -262,7 +251,6 @@ impl ProjectInputKind {
                 manager: Some("maven"),
                 lockfile: Unsupported,
                 missing_lockfile_help: None,
-                rejects_locked_packages_without_declarations: false,
             },
             Self::PyProjectPoetry => python(
                 "pyproject.toml",
