@@ -81,10 +81,18 @@ pub(super) fn workspace_member_manifests(
             let Ok(canonical) = std::fs::canonicalize(&dir) else {
                 continue;
             };
-            if !canonical.starts_with(&root)
-                || excluded.contains(&canonical)
-                || !parsers::path_detected(&member_manifest)?
-            {
+            if excluded.contains(&canonical) {
+                continue;
+            }
+            // Cargo builds a member wherever it lives; one outside the scan root cannot be scanned.
+            if !canonical.starts_with(&root) {
+                anyhow::bail!(
+                    "Cargo workspace member '{}' of {} is outside the scan root; scan the directory that contains the whole workspace",
+                    crate::report::sanitize_for_terminal(pattern),
+                    manifest.manifest_path.display()
+                );
+            }
+            if !parsers::path_detected(&member_manifest)? {
                 continue;
             }
             members.push(canonical.join("Cargo.toml"));
@@ -142,18 +150,14 @@ mod tests {
     }
 
     #[test]
-    fn members_outside_the_scan_root_and_unsupported_globs() {
+    fn members_outside_the_scan_root_block_and_unsupported_globs_fail_closed() {
         let root = tree(&[
             ("ws/Cargo.toml", "[workspace]\nmembers = [\"../outside\"]\n"),
             ("outside/Cargo.toml", MEMBER),
         ]);
         let ws = root.join("ws");
         let manifest = parsers::cargo_toml::parse_manifest_file(&ws.join("Cargo.toml")).unwrap();
-        assert!(
-            workspace_member_manifests(&ws, &manifest)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(workspace_member_manifests(&ws, &manifest).is_err());
 
         let root = tree(&[("Cargo.toml", "[workspace]\nmembers = [\"crates/[ab]\"]\n")]);
         assert!(members_of(&root).is_err());
