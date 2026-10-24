@@ -40,12 +40,14 @@ pub(crate) fn read_validated_npm_lockfile(
             .unwrap_or_default(),
     )?;
 
-    let warnings =
+    let applied = npm_lock_schema::check_entry_keys(&lockfile, &path, &config.config_key_allow)?;
+    let mut warnings =
         if npm_lockfile_version(&lockfile, &path)? == 1 && config.allow_legacy_npm_v1_lockfile {
             legacy_npm_v1_warnings(&path)
         } else {
             Vec::new()
         };
+    warnings.extend(crate::config_surface::issues(&applied));
 
     Ok((lockfile, warnings))
 }

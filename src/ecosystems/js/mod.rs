@@ -7,6 +7,7 @@ mod local_deps;
 mod lockfile_read;
 mod lockfile_validate;
 mod managers;
+mod npm_lock_schema;
 mod npm_lockfile_checks;
 mod workspace;
 
