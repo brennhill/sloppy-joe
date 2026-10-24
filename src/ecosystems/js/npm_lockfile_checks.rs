@@ -10,7 +10,9 @@ pub(crate) fn npm_lockfile_version(
 
 pub(crate) fn npm_registry_tarball_path(resolved: &str) -> Option<&str> {
     let resolved = resolved.trim();
-    let resolved = resolved.strip_prefix("https://").unwrap_or(resolved);
+    // Only a literal https:// URL is a registry tarball: npm reads a scheme-less path ending in
+    // `.tgz` as a local file.
+    let resolved = resolved.strip_prefix("https://")?;
     resolved.strip_prefix("registry.npmjs.org/")
 }
 
@@ -683,5 +685,38 @@ mod flag_tests {
             );
             assert!(result.is_err(), "{flag}");
         }
+    }
+}
+
+#[cfg(test)]
+mod scheme_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_literal_https_url_is_a_registry_tarball() {
+        let path = "left-pad/-/left-pad-1.3.0.tgz";
+        assert_eq!(
+            npm_registry_tarball_path(&format!("https://registry.npmjs.org/{path}")),
+            Some(path)
+        );
+        for resolved in [
+            format!("registry.npmjs.org/{path}"),
+            format!("http://registry.npmjs.org/{path}"),
+            format!("./registry.npmjs.org/{path}"),
+        ] {
+            assert_eq!(npm_registry_tarball_path(&resolved), None, "{resolved}");
+        }
+    }
+
+    #[test]
+    fn a_schemeless_resolved_path_is_not_integrity_exempt() {
+        let entry = serde_json::json!({"resolved": "registry.npmjs.org/a/-/a-1.0.0.tgz", "integrity": "sha512-x"});
+        let validated = validate_npm_resolved_identity(
+            "a",
+            "1.0.0",
+            "registry.npmjs.org/a/-/a-1.0.0.tgz",
+            std::path::Path::new("package-lock.json"),
+        );
+        assert!(validated.is_err(), "{entry}");
     }
 }

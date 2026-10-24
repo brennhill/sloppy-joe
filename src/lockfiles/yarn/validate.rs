@@ -271,7 +271,7 @@ pub(crate) fn validate_yarn_classic_resolved_identity(
 
 pub(crate) fn yarn_registry_tarball_path(resolved: &str) -> Option<&str> {
     let resolved = resolved.trim();
-    let resolved = resolved.strip_prefix("https://").unwrap_or(resolved);
+    let resolved = resolved.strip_prefix("https://")?;
     let resolved = resolved
         .strip_prefix("registry.yarnpkg.com/")
         .or_else(|| resolved.strip_prefix("registry.npmjs.org/"))?;
