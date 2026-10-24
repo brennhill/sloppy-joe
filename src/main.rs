@@ -380,11 +380,319 @@ fn ensure_global_init_target_safe(
     sloppy_joe::config::registry::ensure_config_home_outside_project(project_dir, config_home)
 }
 
+/// Print an error to stderr and exit with the runtime-error status.
+fn exit_with(message: impl std::fmt::Display) -> ! {
+    eprintln!("Error: {}", message);
+    process::exit(2);
+}
+
+fn current_dir_or_exit() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|e| {
+        exit_with(format!(
+            "Could not determine current directory.\n  Error: {}\n  Fix: Check directory permissions.",
+            e
+        ))
+    })
+}
+
+fn config_home_or_exit() -> PathBuf {
+    sloppy_joe::config::registry::config_home().unwrap_or_else(|e| exit_with(e))
+}
+
+fn canonical_dir_or_exit(dir: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&dir).unwrap_or_else(|e| {
+        exit_with(format!(
+            "Could not resolve directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
+            dir.display(),
+            e
+        ))
+    })
+}
+
+/// Git root of `dir`, or exit with `not_a_repo_fix` as the remedy.
+fn git_root_or_exit(dir: &std::path::Path, not_a_repo_fix: &str) -> PathBuf {
+    match sloppy_joe::config::registry::find_git_root(dir) {
+        Ok(Some(root)) => root,
+        Ok(None) => exit_with(format!(
+            "Not inside a git repository.\n  Path: {}\n  Fix: {}",
+            dir.display(),
+            not_a_repo_fix
+        )),
+        Err(e) => exit_with(e),
+    }
+}
+
+struct CheckArgs {
+    full: bool,
+    ci: bool,
+    project_type: Option<String>,
+    json: bool,
+    review_exceptions: bool,
+    dir: PathBuf,
+    config: Option<String>,
+    deep: bool,
+    paranoid: bool,
+    no_cache: bool,
+    cache_dir: Option<PathBuf>,
+    python_groups: Option<String>,
+    python_extras: Option<String>,
+    python_platform: Option<String>,
+    python_arch: Option<String>,
+    python_version: Option<String>,
+}
+
+async fn run_check(args: CheckArgs) {
+    let scan_mode = match resolve_scan_mode(args.full, args.ci) {
+        Ok(mode) => mode,
+        Err(e) => exit_with(e),
+    };
+    let dir = std::fs::canonicalize(&args.dir).unwrap_or(args.dir);
+    let config_source = require_config(args.config.as_deref(), &dir);
+    let opts = sloppy_joe::ScanOptions {
+        scan_mode: match scan_mode {
+            ScanMode::Fast => sloppy_joe::ScanMode::Fast,
+            ScanMode::Full => sloppy_joe::ScanMode::Full,
+            ScanMode::Ci => sloppy_joe::ScanMode::Ci,
+        },
+        deep: args.deep,
+        paranoid: args.paranoid,
+        no_cache: args.no_cache,
+        cache_dir: args.cache_dir.as_deref(),
+        disable_osv_disk_cache: false,
+        skip_hash_check: false,
+        review_exceptions: args.review_exceptions,
+        python_groups: split_csv_arg(args.python_groups.as_deref()),
+        python_extras: split_csv_arg(args.python_extras.as_deref()),
+        python_platform: args.python_platform,
+        python_arch: args.python_arch,
+        python_version: args.python_version,
+    };
+    match sloppy_joe::scan_with_source_full_options(
+        &dir,
+        args.project_type.as_deref(),
+        config_source.as_deref(),
+        &opts,
+    )
+    .await
+    {
+        Ok(report) => {
+            if args.json {
+                report.print_json();
+            } else {
+                report.print_human();
+                if matches!(scan_mode, ScanMode::Fast) {
+                    println!("\n{}", fast_mode_ci_guidance());
+                }
+            }
+            if report.has_incomplete_projects() {
+                process::exit(2);
+            }
+            if report.has_errors() {
+                process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {:#}", e);
+            process::exit(2);
+        }
+    }
+}
+
+async fn run_cache(
+    project_type: Option<String>,
+    dir: PathBuf,
+    config: Option<String>,
+    deep: bool,
+    paranoid: bool,
+    cache_dir: Option<PathBuf>,
+) {
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let config_source = require_config(config.as_deref(), &dir);
+    eprintln!("Warming cache for {} ...", dir.display());
+    match sloppy_joe::warm_cache(
+        &dir,
+        project_type.as_deref(),
+        config_source.as_deref(),
+        deep,
+        paranoid,
+        cache_dir.as_deref(),
+    )
+    .await
+    {
+        Ok(report) => {
+            report.print_human();
+            eprintln!(
+                "Cache warm-up finished. {} packages indexed.",
+                report.packages_checked
+            );
+        }
+        Err(e) => {
+            eprintln!("Warning: cache warming encountered errors: {:#}", e);
+            eprintln!("Partial cache may have been written. CI will retry failed queries.");
+            // Always exit 0 — cache warming is best-effort
+        }
+    }
+}
+
+struct InitArgs {
+    greenfield: bool,
+    ecosystem: Option<String>,
+    from_current: bool,
+    register: bool,
+    global: bool,
+}
+
+fn run_init(args: InitArgs) {
+    if args.register && args.global {
+        exit_with(
+            "Use --register or --global, not both.\n  Fix: --register creates per-project config, --global creates a shared default.",
+        );
+    }
+    if args.register {
+        init_register(&args);
+    } else if args.global {
+        init_global();
+    } else if args.greenfield || args.from_current {
+        println!(
+            "{}",
+            init_config_json(
+                args.greenfield,
+                args.ecosystem.as_deref(),
+                args.from_current,
+                std::path::Path::new(".")
+            )
+        );
+    } else {
+        // No flags: print template to stdout (backward compat)
+        sloppy_joe::bootstrap::print_template();
+    }
+}
+
+/// Create config at {config_home}/{dirname}/config.json and register cwd.
+fn init_register(args: &InitArgs) {
+    let dir = current_dir_or_exit();
+    let git_root = git_root_or_exit(
+        &dir,
+        "Run this command from inside a git repo, or write a template to a safe external path with `sloppy-joe init > /secure/sloppy-joe.json`.",
+    );
+    let config_home = config_home_or_exit();
+    let config_json = init_config_json(
+        args.greenfield,
+        args.ecosystem.as_deref(),
+        args.from_current,
+        &git_root,
+    );
+    let (git_root, config_path) = create_registered_init_config(&dir, &config_home, &config_json)
+        .unwrap_or_else(|e| exit_with(e));
+
+    eprintln!("Config created: {}", config_path.display());
+    eprintln!(
+        "Registered: {} -> {}",
+        git_root.display(),
+        config_path.display()
+    );
+    if args.from_current {
+        eprintln!(
+            "Seeded config from the current repo state. Review bootstrap_review suggestions before enforcing canonicals."
+        );
+    } else if args.greenfield {
+        eprintln!(
+            "Created an ecosystem-specific starter policy. Review and tighten it before pushing."
+        );
+    } else {
+        eprintln!("Edit the config to add your policy.");
+    }
+}
+
+/// Create the global default config at {config_home}/default/config.json.
+fn init_global() {
+    let config_home = config_home_or_exit();
+    let default_dir = config_home.join("default");
+    let config_path = default_dir.join("config.json");
+    let current_dir = current_dir_or_exit();
+    if let Err(e) = ensure_global_init_target_safe(&current_dir, &config_home) {
+        exit_with(e);
+    }
+
+    if let Err(e) = std::fs::create_dir_all(&default_dir) {
+        exit_with(format!(
+            "Could not create default config directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
+            default_dir.display(),
+            e
+        ));
+    }
+
+    if let Err(e) = write_config_json(&config_path, &sloppy_joe::bootstrap::template_json()) {
+        exit_with(e);
+    }
+
+    eprintln!("Global default config created: {}", config_path.display());
+    eprintln!("Edit the config to add your policy.");
+    eprintln!("Any unregistered repo will use this config as fallback.");
+}
+
+fn run_register(dir: PathBuf, config: Option<String>) {
+    let dir = canonical_dir_or_exit(dir);
+    let git_root = git_root_or_exit(&dir, "Run this command from inside a git repo.");
+
+    let config_path = match config {
+        Some(explicit) => std::fs::canonicalize(&explicit).unwrap_or_else(|e| {
+            exit_with(format!(
+                "Could not resolve config path.\n  Path: {}\n  Error: {}\n  Fix: Check that the config file exists.",
+                explicit, e
+            ))
+        }),
+        // Default: {config_home}/{dirname}/config.json
+        None => config_home_or_exit()
+            .join(repo_dirname(&git_root))
+            .join("config.json"),
+    };
+
+    if !config_path.exists() {
+        exit_with(format!(
+            "Config file does not exist.\n  Path: {}\n  Fix: Create it first with `sloppy-joe init --register` or create it manually.",
+            config_path.display()
+        ));
+    }
+
+    if let Err(e) = sloppy_joe::config::registry::register(&git_root, &config_path) {
+        exit_with(e);
+    }
+
+    eprintln!(
+        "Registered: {} -> {}",
+        git_root.display(),
+        config_path.display()
+    );
+}
+
+fn run_unregister(dir: PathBuf) {
+    let dir = canonical_dir_or_exit(dir);
+    let git_root = git_root_or_exit(&dir, "Run this command from inside a git repo.");
+
+    match sloppy_joe::config::registry::unregister(&git_root) {
+        Ok(true) => eprintln!("Unregistered: {}", git_root.display()),
+        Ok(false) => eprintln!("Warning: {} was not registered.", git_root.display()),
+        Err(e) => exit_with(e),
+    }
+}
+
+fn run_list() {
+    let entries = sloppy_joe::config::registry::load_registry().unwrap_or_else(|e| exit_with(e));
+
+    if entries.is_empty() {
+        eprintln!("No repos registered.");
+        eprintln!("Run `sloppy-joe register` in a git repo to get started.");
+    } else {
+        for (repo, config) in &entries {
+            println!("{} -> {}", repo, config);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
-
-    match cli.command {
+    match Cli::parse().command {
         Commands::Check {
             full,
             ci,
@@ -403,63 +711,25 @@ async fn main() {
             python_arch,
             python_version,
         } => {
-            let scan_mode = match resolve_scan_mode(full, ci) {
-                Ok(mode) => mode,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            };
-            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let config_source = require_config(config.as_deref(), &dir);
-            let opts = sloppy_joe::ScanOptions {
-                scan_mode: match scan_mode {
-                    ScanMode::Fast => sloppy_joe::ScanMode::Fast,
-                    ScanMode::Full => sloppy_joe::ScanMode::Full,
-                    ScanMode::Ci => sloppy_joe::ScanMode::Ci,
-                },
+            run_check(CheckArgs {
+                full,
+                ci,
+                project_type,
+                json,
+                review_exceptions,
+                dir,
+                config,
                 deep,
                 paranoid,
                 no_cache,
-                cache_dir: cache_dir.as_deref(),
-                disable_osv_disk_cache: false,
-                skip_hash_check: false,
-                review_exceptions,
-                python_groups: split_csv_arg(python_groups.as_deref()),
-                python_extras: split_csv_arg(python_extras.as_deref()),
+                cache_dir,
+                python_groups,
+                python_extras,
                 python_platform,
                 python_arch,
                 python_version,
-            };
-            match sloppy_joe::scan_with_source_full_options(
-                &dir,
-                project_type.as_deref(),
-                config_source.as_deref(),
-                &opts,
-            )
+            })
             .await
-            {
-                Ok(report) => {
-                    if json {
-                        report.print_json();
-                    } else {
-                        report.print_human();
-                        if matches!(scan_mode, ScanMode::Fast) {
-                            println!("\n{}", fast_mode_ci_guidance());
-                        }
-                    }
-                    if report.has_incomplete_projects() {
-                        process::exit(2);
-                    }
-                    if report.has_errors() {
-                        process::exit(1);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error: {:#}", e);
-                    process::exit(2);
-                }
-            }
         }
         Commands::Cache {
             project_type,
@@ -468,289 +738,23 @@ async fn main() {
             deep,
             paranoid,
             cache_dir,
-        } => {
-            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let config_source = require_config(config.as_deref(), &dir);
-            eprintln!("Warming cache for {} ...", dir.display());
-            match sloppy_joe::warm_cache(
-                &dir,
-                project_type.as_deref(),
-                config_source.as_deref(),
-                deep,
-                paranoid,
-                cache_dir.as_deref(),
-            )
-            .await
-            {
-                Ok(report) => {
-                    report.print_human();
-                    eprintln!(
-                        "Cache warm-up finished. {} packages indexed.",
-                        report.packages_checked
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Warning: cache warming encountered errors: {:#}", e);
-                    eprintln!("Partial cache may have been written. CI will retry failed queries.");
-                    // Always exit 0 — cache warming is best-effort
-                }
-            }
-        }
+        } => run_cache(project_type, dir, config, deep, paranoid, cache_dir).await,
         Commands::Init {
             greenfield,
             ecosystem,
             from_current,
             register,
             global,
-        } => {
-            if register && global {
-                eprintln!(
-                    "Error: Use --register or --global, not both.\n  Fix: --register creates per-project config, --global creates a shared default."
-                );
-                process::exit(2);
-            }
-
-            if register {
-                // Create config at {config_home}/{dirname}/config.json and register cwd
-                let dir = match std::env::current_dir() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!(
-                            "Error: Could not determine current directory.\n  Error: {}\n  Fix: Check directory permissions.",
-                            e
-                        );
-                        process::exit(2);
-                    }
-                };
-                let git_root = match sloppy_joe::config::registry::find_git_root(&dir) {
-                    Ok(Some(root)) => root,
-                    Ok(None) => {
-                        eprintln!(
-                            "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo, or write a template to a safe external path with `sloppy-joe init > /secure/sloppy-joe.json`.",
-                            dir.display()
-                        );
-                        process::exit(2);
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        process::exit(2);
-                    }
-                };
-                let config_home = match sloppy_joe::config::registry::config_home() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        process::exit(2);
-                    }
-                };
-                let config_json =
-                    init_config_json(greenfield, ecosystem.as_deref(), from_current, &git_root);
-                let (git_root, config_path) =
-                    match create_registered_init_config(&dir, &config_home, &config_json) {
-                        Ok(result) => result,
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
-                            process::exit(2);
-                        }
-                    };
-
-                eprintln!("Config created: {}", config_path.display());
-                eprintln!(
-                    "Registered: {} -> {}",
-                    git_root.display(),
-                    config_path.display()
-                );
-                if from_current {
-                    eprintln!(
-                        "Seeded config from the current repo state. Review bootstrap_review suggestions before enforcing canonicals."
-                    );
-                } else if greenfield {
-                    eprintln!(
-                        "Created an ecosystem-specific starter policy. Review and tighten it before pushing."
-                    );
-                } else {
-                    eprintln!("Edit the config to add your policy.");
-                }
-            } else if global {
-                // Create global default config at {config_home}/default/config.json
-                let config_home = match sloppy_joe::config::registry::config_home() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        process::exit(2);
-                    }
-                };
-                let default_dir = config_home.join("default");
-                let config_path = default_dir.join("config.json");
-                let current_dir = match std::env::current_dir() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!(
-                            "Error: Could not determine current directory.\n  Error: {}\n  Fix: Check directory permissions.",
-                            e
-                        );
-                        process::exit(2);
-                    }
-                };
-                if let Err(e) = ensure_global_init_target_safe(&current_dir, &config_home) {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-
-                if let Err(e) = std::fs::create_dir_all(&default_dir) {
-                    eprintln!(
-                        "Error: Could not create default config directory.\n  Path: {}\n  Error: {}\n  Fix: Check directory permissions.",
-                        default_dir.display(),
-                        e
-                    );
-                    process::exit(2);
-                }
-
-                if let Err(e) =
-                    write_config_json(&config_path, &sloppy_joe::bootstrap::template_json())
-                {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-
-                eprintln!("Global default config created: {}", config_path.display());
-                eprintln!("Edit the config to add your policy.");
-                eprintln!("Any unregistered repo will use this config as fallback.");
-            } else if greenfield || from_current {
-                println!(
-                    "{}",
-                    init_config_json(
-                        greenfield,
-                        ecosystem.as_deref(),
-                        from_current,
-                        std::path::Path::new(".")
-                    )
-                );
-            } else {
-                // No flags: print template to stdout (backward compat)
-                sloppy_joe::bootstrap::print_template();
-            }
-        }
-        Commands::Register { dir, config } => {
-            let dir = std::fs::canonicalize(&dir).unwrap_or_else(|e| {
-                eprintln!(
-                    "Error: Could not resolve directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
-                    dir.display(),
-                    e
-                );
-                process::exit(2);
-            });
-            let git_root = match sloppy_joe::config::registry::find_git_root(&dir) {
-                Ok(Some(root)) => root,
-                Ok(None) => {
-                    eprintln!(
-                        "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo.",
-                        dir.display()
-                    );
-                    process::exit(2);
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            };
-
-            let config_path = match config {
-                Some(explicit) => std::fs::canonicalize(&explicit).unwrap_or_else(|e| {
-                    eprintln!(
-                        "Error: Could not resolve config path.\n  Path: {}\n  Error: {}\n  Fix: Check that the config file exists.",
-                        explicit, e
-                    );
-                    process::exit(2);
-                }),
-                None => {
-                    // Default: {config_home}/{dirname}/config.json
-                    let config_home = match sloppy_joe::config::registry::config_home() {
-                        Ok(h) => h,
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
-                            process::exit(2);
-                        }
-                    };
-                    let dirname = repo_dirname(&git_root);
-                    config_home.join(&dirname).join("config.json")
-                }
-            };
-
-            if !config_path.exists() {
-                eprintln!(
-                    "Error: Config file does not exist.\n  Path: {}\n  Fix: Create it first with `sloppy-joe init --register` or create it manually.",
-                    config_path.display()
-                );
-                process::exit(2);
-            }
-
-            if let Err(e) = sloppy_joe::config::registry::register(&git_root, &config_path) {
-                eprintln!("Error: {}", e);
-                process::exit(2);
-            }
-
-            eprintln!(
-                "Registered: {} -> {}",
-                git_root.display(),
-                config_path.display()
-            );
-        }
-        Commands::Unregister { dir } => {
-            let dir = std::fs::canonicalize(&dir).unwrap_or_else(|e| {
-                eprintln!(
-                    "Error: Could not resolve directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists.",
-                    dir.display(),
-                    e
-                );
-                process::exit(2);
-            });
-            let git_root = match sloppy_joe::config::registry::find_git_root(&dir) {
-                Ok(Some(root)) => root,
-                Ok(None) => {
-                    eprintln!(
-                        "Error: Not inside a git repository.\n  Path: {}\n  Fix: Run this command from inside a git repo.",
-                        dir.display()
-                    );
-                    process::exit(2);
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            };
-
-            match sloppy_joe::config::registry::unregister(&git_root) {
-                Ok(true) => {
-                    eprintln!("Unregistered: {}", git_root.display());
-                }
-                Ok(false) => {
-                    eprintln!("Warning: {} was not registered.", git_root.display());
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            }
-        }
-        Commands::List => {
-            let entries = match sloppy_joe::config::registry::load_registry() {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(2);
-                }
-            };
-
-            if entries.is_empty() {
-                eprintln!("No repos registered.");
-                eprintln!("Run `sloppy-joe register` in a git repo to get started.");
-            } else {
-                for (repo, config) in &entries {
-                    println!("{} -> {}", repo, config);
-                }
-            }
-        }
+        } => run_init(InitArgs {
+            greenfield,
+            ecosystem,
+            from_current,
+            register,
+            global,
+        }),
+        Commands::Register { dir, config } => run_register(dir, config),
+        Commands::Unregister { dir } => run_unregister(dir),
+        Commands::List => run_list(),
     }
 }
 

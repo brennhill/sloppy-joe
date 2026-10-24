@@ -3,7 +3,6 @@
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
 fn-complexity src/checks/similarity/mod.rs::check_similarity_with_options 61
 fn-complexity src/checks/tarball_verification.rs::verify_npm_tarballs 17
-fn-complexity src/main.rs::main 46
 placement project-input-kind src/engine/discovery.rs 28
 placement project-input-kind src/engine/js_binding.rs 3
 placement project-input-kind src/engine/js_workspace.rs 1
