@@ -141,7 +141,7 @@ pub(crate) fn parse_poetry_source_intents_scoped(
 }
 
 /// uv settings that redirect resolution to indexes or directories outside the declared
-/// `[[tool.uv.index]]` entries.
+/// `[[tool.uv.index]]` entries, or the download of a managed interpreter that uv then executes.
 const UV_UNVERIFIABLE_KEYS: &[&str] = &[
     "index-url",
     "extra-index-url",
@@ -150,6 +150,9 @@ const UV_UNVERIFIABLE_KEYS: &[&str] = &[
     "index",
     "index-strategy",
     "default-index",
+    "python-install-mirror",
+    "pypy-install-mirror",
+    "python-downloads-json-url",
 ];
 
 fn reject_uv_redirects(table: &toml::map::Map<String, toml::Value>, source: &Path) -> Result<()> {

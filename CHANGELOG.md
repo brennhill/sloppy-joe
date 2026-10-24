@@ -102,6 +102,7 @@
 
 - Round 9: Yarn classic and Berry fields are no longer interchangeable — the format is decided by the `__metadata` header alone, a classic lock with `resolution`/`checksum` (which yarn 1 ignores while fetching `resolved`) and a Berry lock with `resolved`/`integrity` now block. pnpm lock resolutions of type `git`/`binary`/`variations` or any key besides `integrity`/`tarball` block, and a `type: directory` resolution escaping the repository no longer falls through to the registry path. A `rust-toolchain(.toml)` with `[toolchain] path` (in the project or any ancestor) blocks.
 - Round 10: Files read line by line (`go.mod`, `go.sum`, `vendor/modules.txt`, `gradle.lockfile`, `Gemfile`, `Gemfile.lock`, every `yarn.lock`) now block on a lone `\r` and the other line terminators `str::lines()` ignores; Go's lexer and Gradle's `readAllLines` honour them, so they read directives and lock entries sloppy-joe never saw. The Gradle script scanner ends `//` comments at a lone `\r`, models triple-quoted, interpolated and slashy strings, and blocks getter/setter forms of `repositories`, `dependencies`, `buildscript`, `pluginManagement` and `resolutionStrategy` (for example `getRepositories().maven {…}`).
+- Round 11: uv `python-install-mirror`, `pypy-install-mirror` and `python-downloads-json-url` in `[tool.uv]`/`uv.toml` now block: uv downloads and executes the interpreter from that location during `uv sync`/`uv run`.
 
 ## 1.2.0
 

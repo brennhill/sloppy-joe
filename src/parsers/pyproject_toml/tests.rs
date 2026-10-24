@@ -678,6 +678,9 @@ fn uv_settings_that_redirect_resolution_block() {
         "[tool.uv]\nindex-url = \"https://evil.example/simple\"\n",
         "[tool.uv]\nfind-links = [\"./wheels\"]\n",
         "[tool.uv.pip]\nextra-index-url = [\"https://evil.example/simple\"]\n",
+        "[tool.uv]\npython-install-mirror = \"https://evil.example/pythons\"\n",
+        "[tool.uv]\npython-downloads-json-url = \"https://evil.example/dl.json\"\n",
+        "[tool.uv]\npypy-install-mirror = \"https://evil.example/pypy\"\n",
     ] {
         let dir = setup_test_dir(
             "pyproject-uv-legacy",
