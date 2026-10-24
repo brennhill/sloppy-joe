@@ -1,7 +1,7 @@
 # Untrusted Input Hardening Specification
 
 **Created**: 2026-10-24
-**Status**: Accepted (decisions recorded at the end)
+**Status**: Implemented (steps 1-4; see Implementation notes)
 **Input**: "any feedback on architectural improvements to prevent these issues?" — items 1–3 of the
 answer: allowlist config tables, a declared table of the files each package manager reads, and one
 function through which every security-relevant file is read.
@@ -239,4 +239,34 @@ that every plugin returns a non-empty `ambient_inputs`.
    returning tracked / untracked / undecidable) and a `BlockedIfTracked` disposition for
    `ambient_inputs`; the Python `.venv` check and a committed Composer `vendor/` use it.
 4. **Rollout**: each rollout step is its own commit (tests green, changelog entry, no push).
+
+## Implementation notes
+
+Deviations from the contract above, and what remains:
+
+- `Disposition::ModeledElsewhere(reason)` records rows whose check needs more than a path (a parsed
+  manifest, the operator's `config_key_allow`). The conformance suite still proves, per row, that a
+  bad file blocks with the message of the named check.
+- `AmbientInput.kinds` filters a row to some project kinds of a plugin (Gradle versus Maven).
+- `BlockedIfTracked` with an undecidable index is a warning (`resolution/ambient-input-undecidable`)
+  and an error under `--ci`, so developers without a readable index are not blocked on a file the
+  repository probably ignores.
+- `untrusted::read_validated` runs the gateway checks on a structured file and returns its text for
+  callers that deserialize into their own types; `read_validated_bom_tolerant` allows the leading
+  BOM that npm and the pyproject readers already strip. Migrated: package.json, composer.json and
+  composer.lock, Cargo.toml and Cargo.lock, pyproject.toml, uv.lock, poetry.lock, Pipfile.lock,
+  packages.lock.json, package-lock.json.
+- Not yet on the gateway (still in the raw-read baseline, which may only shrink): YAML and JSON5
+  lockfiles (pnpm-lock.yaml, bun.lock; the YAML alias scan can refuse plain scalars that start
+  with `&` or `*`), XML manifests (pom.xml, csproj), requirements.txt and setup.cfg (pip strips a
+  BOM), Cargo `.cargo/config` readers, and Gradle/Maven property readers that model a lone CR
+  themselves.
+- Call sites that duplicate an ambient row (Maven `.mvn` existence blocks, wrapper URL checks,
+  `go.work`, Bundler `.bundle/config`, `.yarnrc` and `.pnpmfile` checks, `Directory.*` blocks) were
+  kept as defense in depth.
+- Rows added in step 4: Yarn PnP files (blocked if tracked), Yarn releases, plugins and cache
+  (irrelevant: the keys that load them are denied, and archives are checksummed), Gradle
+  `verification-metadata.xml` (weakening blocks), `gradle/*.versions.toml` (read through the
+  gateway), Gradle init scripts (blocked if tracked), Bundler `vendor/cache` (blocked if tracked),
+  `*.csproj.user`, and committed `obj/*.nuget.g.props|targets` (blocked if tracked).
 

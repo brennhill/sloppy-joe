@@ -30,14 +30,18 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<serde_json::Val
 }
 
 pub(crate) fn read_lockfile_at(path: &Path) -> Result<serde_json::Value> {
-    let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is unreadable: {}",
-                path.display(),
-                err
-            )
-        })?;
+    let content = crate::untrusted::read_validated(
+        path,
+        crate::untrusted::Format::Json,
+        crate::parsers::MAX_MANIFEST_BYTES,
+    )
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' is unreadable: {}",
+            path.display(),
+            err
+        )
+    })?;
     let value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     if !value.is_object() {

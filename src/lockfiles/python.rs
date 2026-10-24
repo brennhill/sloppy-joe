@@ -169,7 +169,11 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<toml::Value>> {
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let content = crate::untrusted::read_validated(
+        &path,
+        crate::untrusted::Format::Toml,
+        crate::parsers::MAX_MANIFEST_BYTES,
+    )?;
     let parsed = toml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
     Ok(Some(parsed))

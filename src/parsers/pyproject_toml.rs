@@ -207,7 +207,11 @@ pub(crate) fn parse_legacy_scoped_file(path: &Path) -> Result<Vec<PythonScopedDe
 }
 
 fn parse_toml(path: &Path) -> Result<toml::Value> {
-    let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
+    let content = crate::untrusted::read_validated_bom_tolerant(
+        path,
+        crate::untrusted::Format::Toml,
+        super::MAX_MANIFEST_BYTES,
+    )?;
     toml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))
 }

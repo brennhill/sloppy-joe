@@ -84,7 +84,11 @@ fn read_npm_package_lock(
         .and_then(|n| n.to_str())
         .unwrap_or("npm-shrinkwrap.json")
         .to_string();
-    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let content = crate::untrusted::read_validated(
+        &path,
+        crate::untrusted::Format::Json,
+        crate::parsers::MAX_MANIFEST_BYTES,
+    )?;
     let value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
     let version = npm::lockfile_version(&value)
@@ -110,7 +114,11 @@ fn read_cargo_lockfile(
     if !crate::parsers::path_detected(&path)? {
         return Ok(ParsedLockfile::None);
     }
-    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let content = crate::untrusted::read_validated(
+        &path,
+        crate::untrusted::Format::Toml,
+        crate::parsers::MAX_MANIFEST_BYTES,
+    )?;
     let value = toml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse Cargo.lock: {}", err))?;
     Ok(ParsedLockfile::Cargo(value))

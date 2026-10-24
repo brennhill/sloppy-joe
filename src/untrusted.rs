@@ -45,6 +45,43 @@ pub(crate) fn read(path: &std::path::Path, format: Format, max_bytes: u64) -> Re
     parse(&bytes, format, path)
 }
 
+/// Validate a structured file (BOM, NUL, duplicate keys, ...) and return its original text for a
+/// caller that deserializes into its own types.
+pub(crate) fn read_validated(
+    path: &std::path::Path,
+    format: Format,
+    max_bytes: u64,
+) -> Result<String> {
+    validated(path, format, max_bytes, false)
+}
+
+/// [`read_validated`] for a file whose reader is known to strip a leading UTF-8 BOM (npm reading
+/// `package.json`, for one); the BOM is allowed and the text is returned unchanged.
+pub(crate) fn read_validated_bom_tolerant(
+    path: &std::path::Path,
+    format: Format,
+    max_bytes: u64,
+) -> Result<String> {
+    validated(path, format, max_bytes, true)
+}
+
+fn validated(
+    path: &std::path::Path,
+    format: Format,
+    max_bytes: u64,
+    allow_bom: bool,
+) -> Result<String> {
+    let bytes = crate::fsutil::read_bytes_limited(path, max_bytes)?;
+    let body = match bytes.strip_prefix(b"\xEF\xBB\xBF") {
+        Some(rest) if allow_bom => rest,
+        _ => bytes.as_slice(),
+    };
+    parse(body, format, path)
+        .map_err(|err| anyhow::anyhow!("Failed to parse {}: {err:#}", path.display()))?;
+    String::from_utf8(bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to decode {} as UTF-8: {}", path.display(), e))
+}
+
 /// Like [`read`] for the formats whose content stays text.
 pub(crate) fn read_text(path: &std::path::Path, format: Format, max_bytes: u64) -> Result<String> {
     if matches!(format, Format::Toml | Format::Json | Format::Yaml) {

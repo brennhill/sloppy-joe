@@ -4,8 +4,12 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let path = project_dir.join("package.json");
-    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
-        .context("Failed to read package.json")?;
+    let content = crate::untrusted::read_validated_bom_tolerant(
+        &path,
+        crate::untrusted::Format::Json,
+        super::MAX_MANIFEST_BYTES,
+    )
+    .context("Failed to read package.json")?;
     let parsed: serde_json::Value =
         parse_manifest_json(&content).context("Failed to parse package.json")?;
 

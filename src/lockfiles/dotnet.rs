@@ -121,7 +121,11 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<serde_json::Val
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let content = crate::untrusted::read_validated(
+        &path,
+        crate::untrusted::Format::Json,
+        crate::parsers::MAX_MANIFEST_BYTES,
+    )?;
     let parsed = serde_json::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
     Ok(Some(parsed))

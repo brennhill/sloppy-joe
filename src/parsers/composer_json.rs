@@ -15,8 +15,12 @@ pub(crate) fn parse_with(
     allows: &[KeyAllow],
 ) -> Result<(Vec<Dependency>, Vec<AppliedAllow>)> {
     let path = project_dir.join("composer.json");
-    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
-        .context("Failed to read composer.json")?;
+    let content = crate::untrusted::read_validated(
+        &path,
+        crate::untrusted::Format::Json,
+        super::MAX_MANIFEST_BYTES,
+    )
+    .context("Failed to read composer.json")?;
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse composer.json")?;
     let applied = validate_supported_sources(&parsed, &path, allows)?;
