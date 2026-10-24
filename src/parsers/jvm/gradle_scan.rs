@@ -422,6 +422,7 @@ fn reject_getter_forms(name: &str, path: &Path) -> Result<()> {
                 | "pluginmanagement"
                 | "buildscript"
                 | "resolutionstrategy"
+                | "buildcache"
         ) {
             bail!(
                 "Unsupported Gradle accessor '{}' in {}: repositories and dependencies can only be verified when declared in literal blocks",
@@ -456,6 +457,12 @@ fn reject_unverifiable_ident(name: &str, opens_block: bool, path: &Path) -> Resu
     if name == "resolutionStrategy" || name.starts_with("resolutionStrategy.") {
         bail!(
             "Unsupported Gradle resolution rule in {}: resolutionStrategy can substitute or force dependency versions that cannot be verified",
+            path.display()
+        );
+    }
+    if name == "buildCache" || name.starts_with("buildCache.") {
+        bail!(
+            "Unsupported Gradle build cache in {}: a local or remote build cache supplies compiled outputs the scan cannot verify",
             path.display()
         );
     }
