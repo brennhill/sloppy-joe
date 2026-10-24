@@ -201,19 +201,7 @@ impl SimilarityException {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetadataException {
-    pub package: String,
-    pub check: String,
-    pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_publisher: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_publisher: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
+pub use crate::report::MetadataException;
 
 impl MetadataException {
     fn matches(
@@ -670,12 +658,12 @@ impl SloppyJoeConfig {
                         eco
                     ));
                 }
-                if rule.check != crate::checks::names::METADATA_MAINTAINER_CHANGE {
+                if rule.check != crate::names::METADATA_MAINTAINER_CHANGE {
                     errors.push(format!(
                         "Invalid metadata exception check '{}' in {}. Only '{}' is currently supported.",
                         rule.check,
                         eco,
-                        crate::checks::names::METADATA_MAINTAINER_CHANGE
+                        crate::names::METADATA_MAINTAINER_CHANGE
                     ));
                 }
                 if rule
@@ -2427,7 +2415,7 @@ version = "0.1.0"
                 "cargo".to_string(),
                 vec![MetadataException {
                     package: "colored".to_string(),
-                    check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                    check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                     version: "2.2.0".to_string(),
                     previous_publisher: Some("kurtlawrence".to_string()),
                     current_publisher: Some("hwittenborn".to_string()),
@@ -2473,7 +2461,7 @@ version = "0.1.0"
                 "cargo".to_string(),
                 vec![MetadataException {
                     package: "colored".to_string(),
-                    check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                    check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                     version: "2.2.0".to_string(),
                     previous_publisher: Some("kurtlawrence".to_string()),
                     current_publisher: Some("hwittenborn".to_string()),
@@ -2486,7 +2474,7 @@ version = "0.1.0"
         assert!(config.is_metadata_exception(
             "cargo",
             "colored",
-            crate::checks::names::METADATA_MAINTAINER_CHANGE,
+            crate::names::METADATA_MAINTAINER_CHANGE,
             "2.2.0",
             Some("kurtlawrence"),
             Some("hwittenborn"),
@@ -2494,7 +2482,7 @@ version = "0.1.0"
         assert!(!config.is_metadata_exception(
             "cargo",
             "colored",
-            crate::checks::names::METADATA_MAINTAINER_CHANGE,
+            crate::names::METADATA_MAINTAINER_CHANGE,
             "2.2.1",
             Some("kurtlawrence"),
             Some("hwittenborn"),
@@ -2502,7 +2490,7 @@ version = "0.1.0"
         assert!(!config.is_metadata_exception(
             "cargo",
             "colored",
-            crate::checks::names::METADATA_MAINTAINER_CHANGE,
+            crate::names::METADATA_MAINTAINER_CHANGE,
             "2.2.0",
             Some("someone-else"),
             Some("hwittenborn"),
@@ -2516,7 +2504,7 @@ version = "0.1.0"
                 "cargo".to_string(),
                 vec![MetadataException {
                     package: "colored".to_string(),
-                    check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                    check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                     version: "2.2.0".to_string(),
                     previous_publisher: None,
                     current_publisher: Some("hwittenborn".to_string()),

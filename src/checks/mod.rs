@@ -3,7 +3,7 @@ pub mod existence;
 pub(crate) mod lockfile_integrity;
 pub mod malicious;
 pub mod metadata;
-pub mod names;
+pub use crate::names;
 pub mod pipeline;
 pub(crate) mod signals;
 pub mod similarity;

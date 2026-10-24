@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+pub(crate) use crate::cache::canonicalize_with_existing_ancestors;
+pub use crate::cache::find_git_root;
+
 /// Return the platform-appropriate config home directory for sloppy-joe.
 ///
 /// Resolution order:
@@ -47,29 +50,6 @@ pub fn config_home() -> Result<PathBuf, String> {
     platform_default.ok_or_else(|| {
         "Could not determine config home directory.\n  Error: HOME environment variable is not set.\n  Fix: Set HOME or XDG_CONFIG_HOME.".to_string()
     })
-}
-
-/// Walk up from `dir` looking for a `.git` directory or file (worktrees/submodules
-/// use a `.git` file). Returns the canonicalized repo root.
-///
-/// Returns `Err` if `dir` cannot be canonicalized (permissions, deleted).
-/// Returns `Ok(None)` if no `.git` exists in the ancestry.
-pub fn find_git_root(dir: &Path) -> Result<Option<PathBuf>, String> {
-    let mut current = std::fs::canonicalize(dir).map_err(|e| {
-        format!(
-            "Could not resolve project directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists and is accessible.",
-            dir.display(),
-            e
-        )
-    })?;
-    loop {
-        if current.join(".git").exists() {
-            return Ok(Some(current));
-        }
-        if !current.pop() {
-            return Ok(None);
-        }
-    }
 }
 
 /// Read and parse `{config_home}/registry.json`.
@@ -128,48 +108,6 @@ fn save_registry_to(path: &Path, entries: &BTreeMap<String, String>) -> Result<(
 /// Canonicalizes both paths and validates the config path exists.
 pub fn register(repo_root: &Path, config_path: &Path) -> Result<(), String> {
     register_at_config_home(repo_root, config_path, &config_home()?)
-}
-
-/// Resolve `path` for boundary checks even when its tail does not exist yet.
-/// Fails closed when the missing tail cannot be resolved without guessing:
-/// `..` below a missing directory, or a dangling symlink.
-pub(crate) fn canonicalize_with_existing_ancestors(path: &Path) -> Result<PathBuf, String> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|e| format!("Could not resolve current directory: {}", e))?
-            .join(path)
-    };
-
-    let mut suffix = Vec::new();
-    let mut existing = absolute.as_path();
-    while !existing.exists() {
-        if std::fs::symlink_metadata(existing).is_ok() {
-            return Err(format!(
-                "Could not resolve path '{}': it is a dangling symlink",
-                existing.display()
-            ));
-        }
-        let Some(std::path::Component::Normal(name)) = existing.components().next_back() else {
-            return Err(format!(
-                "Could not resolve path '{}': '..' below a missing directory cannot be resolved safely",
-                absolute.display()
-            ));
-        };
-        suffix.push(name.to_os_string());
-        let Some(parent) = existing.parent() else {
-            return Err(format!("Could not resolve path '{}'", absolute.display()));
-        };
-        existing = parent;
-    }
-
-    let mut resolved = std::fs::canonicalize(existing)
-        .map_err(|e| format!("Could not resolve path '{}': {}", existing.display(), e))?;
-    for component in suffix.iter().rev() {
-        resolved.push(component);
-    }
-    Ok(resolved)
 }
 
 #[doc(hidden)]

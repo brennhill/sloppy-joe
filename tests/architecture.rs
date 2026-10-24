@@ -14,7 +14,7 @@ const LIB_PLACEMENT_KEY: &str = "lib-project-input-kind";
 
 // ---------------------------------------------------------------- layers
 
-const FOUNDATION: &[&str] = &["ecosystem", "cache", "version", "report"];
+const FOUNDATION: &[&str] = &["ecosystem", "cache", "version", "report", "names"];
 const CONFIG: &[&str] = &["config", "npm_config"];
 const ORCHESTRATION: &[&str] = &["gradle_plugin_scan", "lib", "main"];
 

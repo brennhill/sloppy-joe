@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
-
 pub mod cache;
 pub mod checks;
 pub mod ecosystem;
+pub mod names;
 pub use ecosystem::Ecosystem;
 pub mod config;
 mod gradle_plugin_scan;

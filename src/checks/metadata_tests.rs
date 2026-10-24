@@ -621,7 +621,7 @@ async fn exact_metadata_exception_suppresses_reviewed_maintainer_change_only() {
     let config = SloppyJoeConfig {
         metadata_exceptions: std::collections::HashMap::from([(
             "npm".to_string(),
-            vec![crate::config::MetadataException {
+            vec![crate::report::MetadataException {
                 package: "some-pkg".to_string(),
                 check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: "1.2.3".to_string(),
@@ -663,7 +663,7 @@ async fn metadata_exception_near_miss_does_not_suppress_maintainer_change() {
     let config = SloppyJoeConfig {
         metadata_exceptions: std::collections::HashMap::from([(
             "npm".to_string(),
-            vec![crate::config::MetadataException {
+            vec![crate::report::MetadataException {
                 package: "some-pkg".to_string(),
                 check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: "1.2.4".to_string(),
@@ -766,7 +766,7 @@ async fn review_candidates_skip_already_configured_metadata_exception() {
     let config = SloppyJoeConfig {
         metadata_exceptions: std::collections::HashMap::from([(
             "npm".to_string(),
-            vec![crate::config::MetadataException {
+            vec![crate::report::MetadataException {
                 package: "some-pkg".to_string(),
                 check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: "1.2.3".to_string(),

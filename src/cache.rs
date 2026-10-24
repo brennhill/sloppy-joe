@@ -190,6 +190,149 @@ pub fn epoch_millis_to_iso8601(millis: i64) -> Option<String> {
 }
 
 /// Convert current time to ISO 8601 string. Used by test helpers.
+/// Split an ISO 8601 timestamp into its local part and the UTC offset in seconds.
+fn split_utc_offset(date_str: &str) -> Option<(&str, i64)> {
+    if let Some(utc) = date_str.strip_suffix('Z') {
+        return Some((utc, 0));
+    }
+    let Some(offset_start) = date_str
+        .rfind(['+', '-'])
+        .filter(|index| date_str[..*index].contains('T'))
+    else {
+        // Legacy registry timestamps such as PyPI upload_time represent UTC without a suffix.
+        return Some((date_str, 0));
+    };
+    let (local, offset) = date_str.split_at(offset_start);
+    let (hours, minutes) = offset[1..].split_once(':')?;
+    if hours.len() != 2 || minutes.len() != 2 {
+        return None;
+    }
+    let hours: i64 = hours.parse().ok()?;
+    let minutes: i64 = minutes.parse().ok()?;
+    if !(0..=23).contains(&hours) || !(0..=59).contains(&minutes) {
+        return None;
+    }
+    let seconds = hours * 3600 + minutes * 60;
+    Some((
+        local,
+        if offset.starts_with('-') {
+            -seconds
+        } else {
+            seconds
+        },
+    ))
+}
+
+/// Parse an ISO 8601 date string and return the age in hours.
+pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
+    // Parse common ISO 8601 formats: "2026-03-21T10:30:00.000Z"
+    let (cleaned, offset_seconds) = split_utc_offset(date_str.trim())?;
+    // Try parsing with chrono-like manual parsing (avoid adding chrono dep)
+    // Format: YYYY-MM-DDTHH:MM:SS
+    let parts: Vec<&str> = cleaned.split('T').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    let time_parts: Vec<&str> = parts[1].split(':').collect();
+    if date_parts.len() != 3 || !(2..=3).contains(&time_parts.len()) {
+        return None;
+    }
+    let year: i64 = date_parts[0].parse().ok()?;
+    if !(1970..=9999).contains(&year) {
+        return None;
+    }
+    let month: i64 = date_parts[1].parse().ok()?;
+    let day: i64 = date_parts[2].parse().ok()?;
+    let hour: i64 = time_parts[0].parse().ok()?;
+    let min: i64 = time_parts[1].parse().ok()?;
+    let sec = time_parts.get(2).copied().unwrap_or("0");
+    let seconds = if let Some((seconds, fraction)) = sec.split_once('.') {
+        if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        seconds
+    } else {
+        sec
+    };
+    let sec: i64 = seconds.parse().ok()?;
+
+    let pkg_epoch =
+        crate::cache::checked_date_to_epoch(year, month, day, hour, min, sec)? - offset_seconds;
+    let now = crate::cache::now_epoch() as i64;
+
+    let diff_seconds = now - pkg_epoch;
+    if diff_seconds < 0 {
+        return None;
+    }
+    Some((diff_seconds / 3600) as u64)
+}
+
+/// Walk up from `dir` looking for a `.git` directory or file (worktrees/submodules
+/// use a `.git` file). Returns the canonicalized repo root.
+///
+/// Returns `Err` if `dir` cannot be canonicalized (permissions, deleted).
+/// Returns `Ok(None)` if no `.git` exists in the ancestry.
+pub fn find_git_root(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let mut current = std::fs::canonicalize(dir).map_err(|e| {
+        format!(
+            "Could not resolve project directory.\n  Path: {}\n  Error: {}\n  Fix: Check that the directory exists and is accessible.",
+            dir.display(),
+            e
+        )
+    })?;
+    loop {
+        if current.join(".git").exists() {
+            return Ok(Some(current));
+        }
+        if !current.pop() {
+            return Ok(None);
+        }
+    }
+}
+
+/// Resolve `path` for boundary checks even when its tail does not exist yet.
+/// Fails closed when the missing tail cannot be resolved without guessing:
+/// `..` below a missing directory, or a dangling symlink.
+pub(crate) fn canonicalize_with_existing_ancestors(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("Could not resolve current directory: {}", e))?
+            .join(path)
+    };
+
+    let mut suffix = Vec::new();
+    let mut existing = absolute.as_path();
+    while !existing.exists() {
+        if std::fs::symlink_metadata(existing).is_ok() {
+            return Err(format!(
+                "Could not resolve path '{}': it is a dangling symlink",
+                existing.display()
+            ));
+        }
+        let Some(std::path::Component::Normal(name)) = existing.components().next_back() else {
+            return Err(format!(
+                "Could not resolve path '{}': '..' below a missing directory cannot be resolved safely",
+                absolute.display()
+            ));
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return Err(format!("Could not resolve path '{}'", absolute.display()));
+        };
+        existing = parent;
+    }
+
+    let mut resolved = std::fs::canonicalize(existing)
+        .map_err(|e| format!("Could not resolve path '{}': {}", existing.display(), e))?;
+    for component in suffix.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
 #[cfg(test)]
 pub fn now_iso8601() -> String {
     let secs = std::time::SystemTime::now()

@@ -88,7 +88,7 @@ nearest place. Without a guardrail that keeps happening.
 
 | Layer | Modules | May depend on |
 |---|---|---|
-| foundation | `ecosystem`, `cache`, `version`, `report` | foundation |
+| foundation | `ecosystem`, `cache`, `version`, `report`, `names` | foundation |
 | config | `config`, `npm_config` | foundation, config |
 | parsers | `parsers` | foundation, config, parsers |
 | registry | `registry` | foundation, config, registry |

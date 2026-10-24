@@ -234,6 +234,38 @@ impl FromStr for Ecosystem {
     }
 }
 
+/// Validate that a package name is safe to use in registry URLs.
+/// Rejects path traversal, null bytes, control characters, percent-encoding,
+/// newlines, and URL-meaningful characters (?#\).
+pub(crate) fn validate_package_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains("..") {
+        return false;
+    }
+    for ch in name.chars() {
+        if ch == '\0'
+            || ch == '%'
+            || ch == '\n'
+            || ch == '\r'
+            || ch == '?'
+            || ch == '#'
+            || ch == '\\'
+        {
+            return false;
+        }
+        if ch.is_control() {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn validate_package_name_for_ecosystem(name: &str, ecosystem: Ecosystem) -> bool {
+    validate_package_name(name) && ecosystem.has_valid_package_name_shape(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
