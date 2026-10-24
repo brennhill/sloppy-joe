@@ -77,7 +77,7 @@ fn npm_lockfile_data_rejects_noncanonical_lockfile_version() {
     assert!(
         LockfileData::parse_for_kind_with_lockfile(
             &dir,
-            Some(crate::ProjectInputKind::Npm),
+            Some(LockfileKind::Ecosystem(Ecosystem::Npm)),
             &deps,
             Some(&lockfile),
         )
@@ -245,7 +245,7 @@ fn parse_ruby(lockfile: &str) -> Result<LockfileData> {
     std::fs::write(dir.join("Gemfile.lock"), lockfile).unwrap();
     let result = LockfileData::parse_for_kind(
         &dir,
-        Some(crate::ProjectInputKind::Ruby),
+        Some(LockfileKind::Ecosystem(Ecosystem::Ruby)),
         &[ruby_dep("rake")],
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -340,7 +340,7 @@ fn gemfile_lock_read_errors_propagate() {
     assert!(
         LockfileData::parse_for_kind(
             &dir,
-            Some(crate::ProjectInputKind::Ruby),
+            Some(LockfileKind::Ecosystem(Ecosystem::Ruby)),
             &[ruby_dep("rake")]
         )
         .is_err(),
@@ -357,7 +357,7 @@ fn bun_transitive_names(lockfile_content: &str, importer_dir: &str) -> Result<Ve
     let deps = vec![npm_dep("react", "18.3.1")];
     let result = LockfileData::parse_for_kind_with_lockfile(
         &dir.join(importer_dir),
-        Some(crate::ProjectInputKind::Npm),
+        Some(LockfileKind::Ecosystem(Ecosystem::Npm)),
         &deps,
         Some(&lockfile),
     )
@@ -433,7 +433,7 @@ fn bun_transitives_include_optional_dependencies() {
     let deps = vec![npm_dep("lodash", "^4.17.21")];
     let lock = LockfileData::parse_for_kind_with_lockfile(
         &dir,
-        Some(crate::ProjectInputKind::Npm),
+        Some(LockfileKind::Ecosystem(Ecosystem::Npm)),
         &deps,
         Some(&lockfile),
     )

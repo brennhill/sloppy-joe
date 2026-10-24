@@ -304,8 +304,12 @@ fn gradle_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
     .unwrap();
 
     let deps = parsers::jvm::parse_manifest(&dir.join("build.gradle")).unwrap();
-    let data = lockfiles::LockfileData::parse_for_kind(&dir, Some(ProjectInputKind::Gradle), &deps)
-        .unwrap();
+    let data = lockfiles::LockfileData::parse_for_kind(
+        &dir,
+        Some(ProjectInputKind::Gradle.lockfile_kind()),
+        &deps,
+    )
+    .unwrap();
 
     assert!(
         data.resolution.exact_version(&deps[0]).is_none(),
@@ -334,8 +338,12 @@ fn dotnet_lockfile_trust_requires_proven_sync_for_non_exact_direct_deps() {
     .unwrap();
 
     let deps = parsers::csproj::parse_file(&dir.join("app.csproj")).unwrap();
-    let data = lockfiles::LockfileData::parse_for_kind(&dir, Some(ProjectInputKind::Dotnet), &deps)
-        .unwrap();
+    let data = lockfiles::LockfileData::parse_for_kind(
+        &dir,
+        Some(ProjectInputKind::Dotnet.lockfile_kind()),
+        &deps,
+    )
+    .unwrap();
 
     assert!(
         data.resolution.exact_version(&deps[0]).is_none(),
@@ -379,7 +387,7 @@ lock-version = "2.0"
     let deps = parsers::pyproject_toml::parse_poetry(&dir).unwrap();
     let data = lockfiles::LockfileData::parse_for_kind(
         &dir,
-        Some(ProjectInputKind::PyProjectPoetry),
+        Some(ProjectInputKind::PyProjectPoetry.lockfile_kind()),
         &deps,
     )
     .unwrap();

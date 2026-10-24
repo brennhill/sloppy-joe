@@ -344,7 +344,7 @@ fn bun_direct_resolution_uses_importer_binding_when_lockfile_has_multiple_versio
 
     let lock = crate::lockfiles::LockfileData::parse_for_kind_with_lockfile(
         &dir,
-        Some(ProjectInputKind::Npm),
+        Some(ProjectInputKind::Npm.lockfile_kind()),
         &deps,
         Some(&lockfile),
     )
@@ -397,7 +397,7 @@ fn bun_workspace_child_does_not_inherit_sibling_transitives() {
 
     let lock = crate::lockfiles::LockfileData::parse_for_kind_with_lockfile(
         &dir.join("apps/web"),
-        Some(ProjectInputKind::Npm),
+        Some(ProjectInputKind::Npm.lockfile_kind()),
         &deps,
         Some(&lockfile),
     )

@@ -339,7 +339,7 @@ pub(crate) fn lockfile_data_for_scan(
         .then(|| active_python_lockfile_profile(opts, &project.python_root_extras));
     let mut data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
         project.spec.project_dir(),
-        Some(project.spec.kind),
+        Some(project.spec.kind.lockfile_kind()),
         deps,
         project.spec.lockfile_path_override.as_deref(),
         python_profile.as_ref(),

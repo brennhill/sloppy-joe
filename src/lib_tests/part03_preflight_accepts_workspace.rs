@@ -569,7 +569,7 @@ snapshots:
 
     let lock = crate::lockfiles::LockfileData::parse_for_kind_with_lockfile(
         &dir.join("apps/web"),
-        Some(ProjectInputKind::Npm),
+        Some(ProjectInputKind::Npm.lockfile_kind()),
         &deps,
         Some(&lockfile),
     )

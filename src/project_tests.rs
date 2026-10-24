@@ -83,3 +83,9 @@ fn named_lockfiles_belong_to_required_lockfile_kinds() {
         assert!(explicit_type.contains(&d.project_type), "{kind:?}");
     }
 }
+
+#[test]
+fn descriptor_rows_cover_every_kind_in_order() {
+    let rows: Vec<_> = DESCRIPTORS.iter().map(|(kind, _)| *kind).collect();
+    assert_eq!(rows, ProjectInputKind::ALL.to_vec());
+}

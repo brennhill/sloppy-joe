@@ -8,4 +8,3 @@ placement project-input-kind src/engine/parse_inputs.rs 8
 placement project-input-kind src/engine/python_warnings.rs 4
 placement project-input-kind src/engine/scan.rs 1
 placement project-input-kind src/gradle_plugin_scan.rs 2
-placement project-input-kind src/lockfiles/read.rs 16

@@ -43,7 +43,7 @@ pub(super) fn ensure_no_locked_packages_without_declarations(
     }
     let locked = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
         spec.project_dir(),
-        Some(spec.kind),
+        Some(spec.kind.lockfile_kind()),
         deps,
         spec.lockfile_path_override.as_deref(),
         None,

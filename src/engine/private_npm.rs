@@ -222,7 +222,7 @@ pub(crate) async fn scan_with_services_inner_for_kind(
     // Parse lockfile once
     let lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
         project_dir,
-        project_kind,
+        project_kind.map(|kind| kind.lockfile_kind()),
         &non_internal,
         None,
         python_profile.as_ref(),
@@ -252,7 +252,7 @@ pub(crate) async fn scan_with_services_inner_for_kind(
         let internal_resolution =
             lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
                 project_dir,
-                project_kind,
+                project_kind.map(|kind| kind.lockfile_kind()),
                 &internal,
                 None,
                 python_profile.as_ref(),

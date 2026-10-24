@@ -4,7 +4,7 @@ use super::*;
 pub(crate) fn read_lockfile(
     project_dir: &Path,
     ecosystem: Option<Ecosystem>,
-    project_kind: Option<crate::ProjectInputKind>,
+    project_kind: Option<LockfileKind>,
     lockfile_override: Option<&Path>,
 ) -> Result<ParsedLockfile> {
     if let Some(kind) = project_kind {
@@ -148,51 +148,22 @@ fn read_cargo_lockfile(
 
 pub(crate) fn read_lockfile_for_project_kind(
     project_dir: &Path,
-    project_kind: crate::ProjectInputKind,
+    kind: LockfileKind,
     lockfile_override: Option<&Path>,
 ) -> Result<ParsedLockfile> {
-    match project_kind {
-        crate::ProjectInputKind::Npm => {
-            read_lockfile(project_dir, Some(Ecosystem::Npm), None, lockfile_override)
+    match kind {
+        LockfileKind::Ecosystem(ecosystem) => {
+            read_lockfile(project_dir, Some(ecosystem), None, lockfile_override)
         }
-        crate::ProjectInputKind::PyProjectPoetry => {
-            read_lockfile(project_dir, Some(Ecosystem::PyPI), None, lockfile_override)
-        }
-        crate::ProjectInputKind::PyProjectUv => match uv::read_lockfile(project_dir)? {
+        LockfileKind::Uv => match uv::read_lockfile(project_dir)? {
             Some(value) => Ok(ParsedLockfile::Uv(value)),
             None => Ok(ParsedLockfile::None),
         },
-        crate::ProjectInputKind::PyPipfile => match pipfile_lock::read_lockfile(project_dir)? {
+        LockfileKind::Pipfile => match pipfile_lock::read_lockfile(project_dir)? {
             Some(value) => Ok(ParsedLockfile::Pipfile(value)),
             None => Ok(ParsedLockfile::None),
         },
-        crate::ProjectInputKind::PyRequirements
-        | crate::ProjectInputKind::PyRequirementsTrusted
-        | crate::ProjectInputKind::PyProjectLegacy
-        | crate::ProjectInputKind::PySetupPy
-        | crate::ProjectInputKind::PySetupCfg => Ok(ParsedLockfile::None),
-        crate::ProjectInputKind::Cargo => {
-            read_lockfile(project_dir, Some(Ecosystem::Cargo), None, lockfile_override)
-        }
-        crate::ProjectInputKind::Go => {
-            read_lockfile(project_dir, Some(Ecosystem::Go), None, lockfile_override)
-        }
-        crate::ProjectInputKind::Ruby => {
-            read_lockfile(project_dir, Some(Ecosystem::Ruby), None, lockfile_override)
-        }
-        crate::ProjectInputKind::Php => {
-            read_lockfile(project_dir, Some(Ecosystem::Php), None, lockfile_override)
-        }
-        crate::ProjectInputKind::Gradle => {
-            read_lockfile(project_dir, Some(Ecosystem::Jvm), None, lockfile_override)
-        }
-        crate::ProjectInputKind::Maven => Ok(ParsedLockfile::None),
-        crate::ProjectInputKind::Dotnet => read_lockfile(
-            project_dir,
-            Some(Ecosystem::Dotnet),
-            None,
-            lockfile_override,
-        ),
+        LockfileKind::Absent => Ok(ParsedLockfile::None),
     }
 }
 

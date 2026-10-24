@@ -62,7 +62,7 @@ fn layer_may_depend_on(from: &str, to: &str) -> bool {
             "registry",
             "checks",
         ],
-        "project" => &["foundation", "config", "parsers", "project"],
+        "project" => &["foundation", "config", "parsers", "lockfiles", "project"],
         "ecosystems" => &[
             "foundation",
             "config",

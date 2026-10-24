@@ -29,7 +29,7 @@ fn yarn_project(manifest: &str, lock: &str) -> Result<LockfileData> {
     let deps = crate::parsers::package_json::parse(&dir).unwrap();
     let result = LockfileData::parse_for_kind_with_lockfile(
         &dir,
-        Some(crate::ProjectInputKind::Npm),
+        Some(LockfileKind::Ecosystem(Ecosystem::Npm)),
         &deps,
         Some(&lockfile),
     );
@@ -456,7 +456,7 @@ fn yarn_workspace_member_neither_scans_nor_flags_root_orphans() {
     let deps = crate::parsers::package_json::parse(&dir.join("packages/web")).unwrap();
     let lock = LockfileData::parse_for_kind_with_lockfile(
         &dir.join("packages/web"),
-        Some(crate::ProjectInputKind::Npm),
+        Some(LockfileKind::Ecosystem(Ecosystem::Npm)),
         &deps,
         Some(&lockfile),
     )

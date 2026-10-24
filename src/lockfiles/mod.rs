@@ -1,3 +1,14 @@
+/// Which lockfile format a project reads. Chosen by the project's ecosystem plugin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LockfileKind {
+    /// The ecosystem's usual lockfile (Poetry's for Python).
+    Ecosystem(Ecosystem),
+    Uv,
+    Pipfile,
+    /// The project has no lockfile format sloppy-joe reads.
+    Absent,
+}
+
 mod nesting;
 pub(crate) use nesting::*;
 mod issues;
@@ -186,7 +197,7 @@ impl LockfileData {
     #[allow(dead_code)]
     pub fn parse_for_kind(
         project_dir: &Path,
-        project_kind: Option<crate::ProjectInputKind>,
+        project_kind: Option<LockfileKind>,
         direct_deps: &[Dependency],
     ) -> Result<Self> {
         Self::parse_for_kind_with_lockfile(project_dir, project_kind, direct_deps, None)
@@ -195,7 +206,7 @@ impl LockfileData {
     #[cfg(test)]
     pub fn parse_for_kind_with_lockfile(
         project_dir: &Path,
-        project_kind: Option<crate::ProjectInputKind>,
+        project_kind: Option<LockfileKind>,
         direct_deps: &[Dependency],
         lockfile_override: Option<&Path>,
     ) -> Result<Self> {
@@ -210,7 +221,7 @@ impl LockfileData {
 
     pub fn parse_for_kind_with_lockfile_and_profile(
         project_dir: &Path,
-        project_kind: Option<crate::ProjectInputKind>,
+        project_kind: Option<LockfileKind>,
         direct_deps: &[Dependency],
         lockfile_override: Option<&Path>,
         python_profile: Option<&PythonLockfileProfile>,
