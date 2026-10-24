@@ -1,7 +1,7 @@
 //! Architecture guardrails (docs/specs/architecture-guardrails.md).
 //!
 //! Pure source scanning: layer direction, file size, per-function cyclomatic complexity and
-//! `lib.rs` placement. Existing violations live in `tests/architecture_baseline.txt` and may only
+//! ecosystem-match placement. Existing violations live in `tests/architecture_baseline.txt` and may only
 //! shrink. Rewrite the baseline with smaller values via
 //! `UPDATE_ARCH_BASELINE=1 cargo test --test architecture`.
 
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_FILE_LINES: usize = 800;
 const MAX_COMPLEXITY: usize = 15;
-const LIB_PLACEMENT_KEY: &str = "lib-project-input-kind";
+const PLACEMENT_KEY_PREFIX: &str = "project-input-kind ";
 
 // ---------------------------------------------------------------- layers
 
@@ -24,7 +24,7 @@ const FOUNDATION: &[&str] = &[
     "fsutil",
 ];
 const CONFIG: &[&str] = &["config", "npm_config"];
-const ORCHESTRATION: &[&str] = &["bootstrap", "gradle_plugin_scan", "lib", "main"];
+const ORCHESTRATION: &[&str] = &["bootstrap", "engine", "gradle_plugin_scan", "lib", "main"];
 
 fn layer_of(module: &str) -> Option<&'static str> {
     if FOUNDATION.contains(&module) {
@@ -325,11 +325,11 @@ fn measure() -> Measures {
                 measures.complexity.insert(key, complexity);
             }
         }
-        if file.rel == "src/lib.rs" {
-            measures.placement.insert(
-                LIB_PLACEMENT_KEY.to_string(),
-                file.code.matches("ProjectInputKind::").count(),
-            );
+        let kind_uses = file.code.matches("ProjectInputKind::").count();
+        if kind_uses > 0 {
+            measures
+                .placement
+                .insert(format!("{PLACEMENT_KEY_PREFIX}{}", file.rel), kind_uses);
         }
     }
     measures.layer_edges.sort();
@@ -770,7 +770,7 @@ fn functions_stay_within_the_complexity_cap() {
 }
 
 #[test]
-fn lib_rs_does_not_accumulate_ecosystem_logic() {
+fn ecosystem_matches_do_not_spread() {
     if update_mode() {
         return;
     }

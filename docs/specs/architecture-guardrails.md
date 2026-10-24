@@ -20,7 +20,7 @@ nearest place. Without a guardrail that keeps happening.
 - The dependency direction between layers is checked on every `cargo test`.
 - No file grows past 800 lines and no function past cyclomatic complexity 15, except the existing
   offenders, which may only shrink.
-- New ecosystem-specific logic stops accumulating in `lib.rs`.
+- New ecosystem-specific logic stops accumulating in the orchestration code (`lib.rs`, `engine/`).
 - Existing violations are listed in one baseline file, so progress is visible and regressions fail.
 
 ### Alternatives Considered
@@ -56,8 +56,8 @@ nearest place. Without a guardrail that keeps happening.
 
 ### Placement
 
-- **Given** `src/lib.rs`, **then** it may not grow (its line count is baselined), and the number of
-  `ProjectInputKind::` occurrences in it may not grow. New ecosystem logic goes in its own module.
+- **Given** a non-test source file, **then** its number of `ProjectInputKind::` occurrences may not grow,
+  and a file without any may not gain one. New ecosystem logic goes in its own module.
 
 ### Baseline maintenance
 
@@ -78,7 +78,7 @@ nearest place. Without a guardrail that keeps happening.
 ## Scope Boundaries
 
 - **In scope**: `tests/architecture.rs`, `tests/architecture_baseline.txt`, this spec, a CLAUDE.md rule.
-- **Out of scope**: the refactors themselves (splitting `lib.rs`, an ecosystem trait, removing layer
+- **Out of scope**: the refactors themselves (an ecosystem trait, removing layer
   cycles). They follow as separate rounds, each protected by the existing tests and by these ratchets.
 - **Out of scope**: runtime behavior. No scan output changes.
 
@@ -94,7 +94,7 @@ nearest place. Without a guardrail that keeps happening.
 | registry | `registry` | foundation, config, registry |
 | lockfiles | `lockfiles` | foundation, config, parsers, lockfiles |
 | checks | `checks` | foundation, config, parsers, lockfiles, registry, checks |
-| orchestration | `bootstrap`, `gradle_plugin_scan`, `lib.rs`, `main.rs` | everything |
+| orchestration | `bootstrap`, `engine`, `gradle_plugin_scan`, `lib.rs`, `main.rs` | everything |
 
 `crate::<Item>` that is not a module (types re-exported from `lib.rs`, such as `Dependency`) is not
 checked here.
@@ -113,7 +113,7 @@ counted. Closures count toward the function that contains them.
 file-lines src/lib.rs 7810
 fn-complexity src/lib.rs::scan_with_config 41
 layer src/parsers/jvm.rs -> registry
-placement lib-project-input-kind 146
+placement project-input-kind src/engine/discovery.rs 12
 ```
 
 ## Context Anchors
@@ -125,6 +125,6 @@ placement lib-project-input-kind 146
 ## Architecture
 
 `tests/architecture.rs` walks `src/`, strips comments and strings, and computes four measures: layer
-edges, file lines, per-function complexity, and `lib.rs` placement counts. It compares each to the baseline
+edges, file lines, per-function complexity, and per-file `ProjectInputKind::` counts. It compares each to the baseline
 and fails on any worse value, any unclassified module, and any stale (now-better) entry. A single
 `#[test]` per rule keeps failures readable.
