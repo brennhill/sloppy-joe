@@ -159,6 +159,8 @@ impl EcosystemSupport for Python {
                 refusal.replace("{}", &spec.manifest_path.display().to_string())
             );
         }
-        Ok(SourcePolicy::LockfileBacked(Vec::new()))
+        Ok(SourcePolicy::EnforcedEarlier(
+            "manifest parse and lockfile validation",
+        ))
     }
 }

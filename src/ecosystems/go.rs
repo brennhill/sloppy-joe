@@ -110,7 +110,7 @@ impl EcosystemSupport for Go {
         _ctx: &PreflightCtx<'_>,
         _spec: &ProjectInputSpec,
     ) -> Result<SourcePolicy> {
-        Ok(SourcePolicy::LockfileBacked(Vec::new()))
+        Ok(SourcePolicy::EnforcedEarlier("manifest parse"))
     }
 }
 

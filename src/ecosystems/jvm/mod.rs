@@ -150,7 +150,7 @@ impl EcosystemSupport for Jvm {
         spec: &ProjectInputSpec,
     ) -> Result<SourcePolicy> {
         match spec.kind {
-            ProjectInputKind::Gradle => Ok(SourcePolicy::LockfileBacked(Vec::new())),
+            ProjectInputKind::Gradle => Ok(SourcePolicy::EnforcedEarlier("manifest parse")),
             ProjectInputKind::Maven => Ok(SourcePolicy::ReducedConfidence(
                 maven_no_lockfile_warning(spec),
             )),

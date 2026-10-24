@@ -677,3 +677,90 @@ fn only_npm_checks_transitive_similarity_without_deep() {
         );
     }
 }
+
+/// A plugin's source policy is a claim about where unsupported sources are rejected. Each
+/// unsupported-source fixture holds the claim to account: `EnforcedEarlier` must mean the parse
+/// stage rejected it, a lockfile-backed policy must itself reject it, and a policy that accepts a
+/// fixture neither parse nor itself rejected is a hole.
+#[test]
+fn source_policy_claims_match_where_unsupported_sources_are_rejected() {
+    let config = config::SloppyJoeConfig::default();
+    let opts = ScanOptions::default();
+    let mut wrong = Vec::new();
+    for row in registered(UNSUPPORTED, LockfilePolicy::Required, |row| row.kind) {
+        let fixture = Fixture {
+            kind: row.kind,
+            manifest: row.manifest,
+            content: row.content,
+            lockfile: FIXTURES
+                .iter()
+                .find(|fixture| fixture.kind == row.kind)
+                .map_or("", |fixture| fixture.lockfile),
+        };
+        let dir = fixture_dir(&fixture, row.lockfile);
+        let scan = ScanCtx {
+            scan_root: &dir,
+            config: &config,
+            opts: &opts,
+        };
+        let spec = ProjectInputSpec {
+            kind: row.kind,
+            manifest_path: dir.join(row.manifest),
+            lockfile_path_override: None,
+            js_binding: None,
+        };
+        let plugin = for_kind(row.kind);
+        let parse_blocked = match plugin.parse(&scan, &spec) {
+            Err(_) => true,
+            Ok(parsed) => parsed
+                .warnings
+                .iter()
+                .any(|w| w.severity == Severity::Error),
+        };
+        let policy = PreflightCtx::new(
+            scan,
+            std::slice::from_ref(&spec),
+            std::slice::from_ref(&spec),
+        )
+        .and_then(|pre| plugin.source_policy(&pre, &spec));
+        let verdict = match policy {
+            Err(_) => None,
+            Ok(SourcePolicy::EnforcedEarlier(_)) if parse_blocked => None,
+            Ok(SourcePolicy::EnforcedEarlier(stage)) => {
+                Some(format!("claims {stage} rejects it, but parse accepted it"))
+            }
+            Ok(_) => Some("accepted an unsupported source".to_string()),
+        };
+        if let Some(verdict) = verdict {
+            wrong.push(format!("{:?}: {verdict}", row.kind));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn only_cargo_checks_sources_in_its_own_policy_stage() {
+    // Every other lockfile-backed kind states where it enforces sources instead of returning an
+    // empty lockfile-backed policy, so "required" cannot hide a no-op.
+    let config = config::SloppyJoeConfig::default();
+    let opts = ScanOptions::default();
+    let root = std::env::temp_dir();
+    for kind in ProjectInputKind::ALL {
+        if kind.descriptor().lockfile != LockfilePolicy::Required || kind == ProjectInputKind::Cargo
+        {
+            continue;
+        }
+        let scan = ScanCtx {
+            scan_root: &root,
+            config: &config,
+            opts: &opts,
+        };
+        let ctx = PreflightCtx::new(scan, &[], &[]).unwrap();
+        let outcome = for_kind(kind).source_policy(&ctx, &spec(kind, "manifest"));
+        assert!(
+            matches!(outcome, Ok(SourcePolicy::EnforcedEarlier(_))),
+            "{kind:?} must state where sources are enforced"
+        );
+    }
+}

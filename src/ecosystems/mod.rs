@@ -69,8 +69,14 @@ impl<'a> PreflightCtx<'a> {
 
 /// What an ecosystem says about the sources of a project's packages.
 pub(crate) enum SourcePolicy {
-    /// A lockfile backs the scan; the issues are warnings about source configuration.
+    /// A lockfile backs the scan and this stage verified where packages may come from; the issues
+    /// are warnings about source configuration.
     LockfileBacked(Vec<Issue>),
+    /// A lockfile backs the scan, and sources were already verified by an earlier stage that
+    /// rejects non-registry sources outright (named here). The conformance suite checks the claim:
+    /// every unsupported-source fixture of such a kind must fail that earlier stage.
+    #[allow(dead_code)] // the stage is read by the conformance suite and by people
+    EnforcedEarlier(&'static str),
     /// No trusted lockfile exists, so resolution-sensitive checks run with reduced confidence.
     ReducedConfidence(Issue),
 }
@@ -155,6 +161,7 @@ pub(crate) trait EcosystemSupport: Sync {
         warnings.extend(self.validate_lockfile(ctx, spec, &parsed)?);
         match self.source_policy(ctx, spec)? {
             SourcePolicy::LockfileBacked(issues) => warnings.extend(issues),
+            SourcePolicy::EnforcedEarlier(_) => {}
             SourcePolicy::ReducedConfidence(issue) => warnings.push(issue),
         }
         Ok(warnings)

@@ -174,7 +174,9 @@ impl EcosystemSupport for Js {
         _spec: &ProjectInputSpec,
     ) -> Result<SourcePolicy> {
         // Registry, tarball and alias restrictions are enforced while the lockfile is validated.
-        Ok(SourcePolicy::LockfileBacked(Vec::new()))
+        Ok(SourcePolicy::EnforcedEarlier(
+            "manifest parse and lockfile validation",
+        ))
     }
 }
 
