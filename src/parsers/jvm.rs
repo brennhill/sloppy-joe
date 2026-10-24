@@ -8,6 +8,7 @@ use std::path::Path;
 
 mod gradle_plugins;
 pub(crate) mod maven_model;
+mod sysprops;
 
 /// Fill in the versions Maven derives from properties, management sections,
 /// imported BOMs and the parent chain (see [`maven_model`]).
@@ -134,9 +135,36 @@ fn reject_gradle_jvm_overrides(dir: &Path) -> Result<()> {
         let agent = ["-javaagent", "-agentpath", "-agentlib", "-Xbootclasspath"]
             .iter()
             .any(|flag| value.contains(flag));
-        if (key == "org.gradle.jvmargs" && agent) || key == "org.gradle.java.home" {
+        let redirecting_arg =
+            key == "org.gradle.jvmargs" && sysprops::redirecting_jvm_arg(&value).is_some();
+        let redirecting_prop = key
+            .strip_prefix("systemProp.")
+            .is_some_and(sysprops::is_redirecting_system_property);
+        if (key == "org.gradle.jvmargs" && agent)
+            || key == "org.gradle.java.home"
+            || redirecting_arg
+            || redirecting_prop
+        {
             bail!(
-                "Unsupported Gradle property '{key}' in {}: it changes the JVM that runs Gradle in ways the scan cannot verify",
+                "Unsupported Gradle property '{key}' in {}: it changes the JVM, trust store, proxy or repository endpoints Gradle uses in ways the scan cannot verify",
+                properties.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `gradle/gradle-daemon-jvm.properties` makes Gradle download and run a JDK from `toolchainUrl.*`.
+fn reject_daemon_jvm_download(dir: &Path) -> Result<()> {
+    let properties = dir.join("gradle/gradle-daemon-jvm.properties");
+    if std::fs::symlink_metadata(&properties).is_err() {
+        return Ok(());
+    }
+    let bytes = crate::fsutil::read_bytes_limited(&properties, super::MAX_MANIFEST_BYTES)?;
+    for (key, _) in crate::fsutil::parse_java_properties(&bytes) {
+        if key.starts_with("toolchainUrl") {
+            bail!(
+                "Unsupported Gradle daemon JVM download '{key}' in {}: Gradle would download and run a JDK from a URL the scan cannot verify",
                 properties.display()
             );
         }
@@ -243,6 +271,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
     {
         reject_untrusted_gradle_wrapper(ancestor)?;
         reject_gradle_jvm_overrides(ancestor)?;
+        reject_daemon_jvm_download(ancestor)?;
         reject_buildsrc_without_script(ancestor)?;
         for filename in ["settings.gradle", "settings.gradle.kts"] {
             let settings_path = ancestor.join(filename);
@@ -351,5 +380,7 @@ fn extract_gradle_dep(line: &str, source_path: &Path) -> Result<Option<Dependenc
 mod build_override_tests;
 #[cfg(test)]
 mod gradle_lexer_tests;
+#[cfg(test)]
+mod redirect_tests;
 #[cfg(test)]
 mod tests;

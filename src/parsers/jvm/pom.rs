@@ -430,6 +430,20 @@ fn check_mvn_dir(mvn: &Path) -> Result<()> {
         reject_maven_option(token, &mvn.join("maven.config"))?;
     }
     let jvm = read("jvm.config")?;
+    if let Some(property) = super::sysprops::redirecting_jvm_arg(&jvm) {
+        bail!(
+            "Unsupported Maven JVM option '-D{}' in {}: it redirects the repository, settings, trust store or proxy Maven uses",
+            crate::report::sanitize_for_terminal(&property),
+            mvn.join("jvm.config").display()
+        );
+    }
+    let cache_config = mvn.join("maven-build-cache-config.xml");
+    if std::fs::symlink_metadata(&cache_config).is_ok() {
+        bail!(
+            "Unsupported Maven build cache config {}: a local or remote build cache supplies build outputs the scan cannot verify",
+            cache_config.display()
+        );
+    }
     if [
         "-javaagent",
         "-agentpath",
@@ -486,13 +500,9 @@ fn reject_maven_option(token: &str, config: &Path) -> Result<()> {
     let long = name.len() >= 3
         && name.starts_with("--")
         && long_overrides.iter().any(|option| option.starts_with(name));
-    let property = [
-        "-Dmaven.repo.local",
-        "-Dmaven.ext.class.path",
-        "-Dmaven.home",
-    ]
-    .iter()
-    .any(|prefix| name.starts_with(prefix));
+    let property = name
+        .strip_prefix("-D")
+        .is_some_and(super::sysprops::is_redirecting_system_property);
     if short || long || property {
         bail!(
             "Unsupported Maven option '{}' in {}: it changes the settings, project file, repository or extensions Maven uses",
