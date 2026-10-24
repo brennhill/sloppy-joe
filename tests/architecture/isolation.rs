@@ -4,12 +4,12 @@ use super::*;
 
 /// The ecosystem plugin modules: every `src/ecosystems/<name>.rs` or `src/ecosystems/<name>/`
 /// except the shared helpers.
-fn plugin_names() -> Vec<String> {
+pub(crate) fn plugin_names() -> Vec<String> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(repo_root().join("src").join("ecosystems")).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        if !["mod", "common", "tests"].contains(&name.as_str()) {
+        if !["mod", "common", "tests", "tree"].contains(&name.as_str()) {
             names.push(name);
         }
     }
@@ -20,7 +20,7 @@ fn plugin_names() -> Vec<String> {
 
 /// `code` with the whitespace around every `::` removed, so `crate :: Ecosystem :: Npm` and
 /// `super\n::cargo` read like their tight forms.
-fn tight(code: &str) -> String {
+pub(crate) fn tight(code: &str) -> String {
     let chars: Vec<char> = code.chars().collect();
     let mut out = String::with_capacity(code.len());
     let mut i = 0;
@@ -112,7 +112,7 @@ fn group_elements(group: &str) -> Vec<&str> {
 }
 
 /// Whether `code` gives `name` another name: `name as Other` or `= path::name;`.
-fn renames(code: &str, name: &str) -> bool {
+pub(crate) fn renames(code: &str, name: &str) -> bool {
     code.match_indices(name).any(|(at, _)| {
         let before = &code[..at];
         let after = &code[at + name.len()..];
@@ -158,7 +158,7 @@ fn use_statements(code: &str) -> Vec<&str> {
 /// naming a concrete plugin, a plugin reaching a sibling plugin by any path (absolute, relative
 /// or bare through a glob import), and the registry re-exporting or importing plugin items
 /// (every plugin sees the registry's imports through `use super::*`).
-fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<String> {
+pub(crate) fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     for (rel, code) in files {
         let code = &tight(code);
@@ -298,29 +298,40 @@ fn module_redirect_violations(files: &[(String, String)]) -> Vec<String> {
 /// branch would avoid mentioning a variant.
 fn compares_ecosystem_name(code: &str) -> bool {
     let flat: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-    ["as_str()", "project_type"].iter().any(|subject| {
-        flat.match_indices(subject).any(|(at, _)| {
-            let after = &flat[at + subject.len()..];
-            let before = &flat[..at];
-            after.starts_with("==\"")
-                || after.starts_with("!=\"")
-                || after.starts_with(",\"")
-                    && before
-                        .rfind("matches!(")
-                        .is_some_and(|m| !before[m..].contains(';'))
-                || before.ends_with("\"==")
-                || before.ends_with("\"!=")
-                || (after.starts_with('{') && before.ends_with("match")
-                    || before[before.len().saturating_sub(40)..].contains("match")
-                        && after.starts_with('{'))
+    // `"npm".parse::<Ecosystem>()` turns a name into a variant without writing `Ecosystem::`.
+    if flat.contains("parse::<Ecosystem>") || flat.contains("parse::<JsPackageManager>") {
+        return true;
+    }
+    ["as_str()", "project_type", "to_string()"]
+        .iter()
+        .any(|subject| {
+            flat.match_indices(subject).any(|(at, _)| {
+                let after = &flat[at + subject.len()..];
+                let before = &flat[..at];
+                after.starts_with("==\"")
+                    || after.starts_with("!=\"")
+                    || after.starts_with(",\"")
+                        && before
+                            .rfind("matches!(")
+                            .is_some_and(|m| !before[m..].contains(';'))
+                    || {
+                        // `"" == e.to_string()`: look left past the receiver chain.
+                        let left = before.trim_end_matches(|c: char| {
+                            is_ident(c) || matches!(c, '.' | '(' | ')' | ':')
+                        });
+                        left.ends_with("\"==") || left.ends_with("\"!=")
+                    }
+                    || (after.starts_with('{') && before.ends_with("match")
+                        || before[before.len().saturating_sub(40)..].contains("match")
+                            && after.starts_with('{'))
+            })
         })
-    })
 }
 
 /// Orchestration code (engine, lib, main, bootstrap) must not name an ecosystem: it asks the
 /// plugin registry. `Ecosystem::<Variant>` and `JsPackageManager` are how a per-ecosystem branch
 /// would creep back in.
-fn engine_ecosystem_violations(files: &[(String, String)]) -> Vec<String> {
+pub(crate) fn engine_ecosystem_violations(files: &[(String, String)]) -> Vec<String> {
     let mut violations = Vec::new();
     for (rel, code) in files {
         let inside = rel.trim_start_matches("src/");

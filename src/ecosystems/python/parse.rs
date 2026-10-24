@@ -17,7 +17,7 @@ pub(crate) fn parse_python_project_dependencies(
         }
         _ => {
             return Ok(ParsedInput {
-                deps: parse_project_input(scan_root, spec)?,
+                deps: ecosystems::for_kind(spec.kind).parse_manifest(scan_root, spec)?,
                 ..ParsedInput::default()
             });
         }

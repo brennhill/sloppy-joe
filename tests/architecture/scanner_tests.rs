@@ -79,3 +79,116 @@ fn cfg_test_fields_and_variants_do_not_blind_the_scan_of_what_follows() {
         "{cut}"
     );
 }
+
+fn src(rel: &str, code: &str) -> (String, String) {
+    (rel.to_string(), code.to_string())
+}
+
+#[test]
+fn test_status_comes_from_the_cfg_test_declaration_not_the_file_name() {
+    let tests = test_files::test_only_files(&[
+        src(
+            "src/engine/mod.rs",
+            "#[cfg(test)]\nmod real_tests;\nmod leak_tests;\n// #[cfg(test)]\n// mod fake_tests;\nmod fake_tests;\n",
+        ),
+        src("src/engine/real_tests.rs", "mod nested;\n"),
+        src("src/engine/real_tests/nested.rs", ""),
+        src(
+            "src/ecosystems/mod.rs",
+            "#[cfg(test)]\n#[path = \"tests/registry.rs\"]\nmod registry;\n#[cfg(test)]\npub(crate) mod helpers;\n",
+        ),
+    ]);
+    assert!(tests.contains("src/engine/real_tests.rs"));
+    assert!(
+        tests.contains("src/engine/real_tests/nested.rs"),
+        "children of test files are test files"
+    );
+    assert!(tests.contains("src/ecosystems/tests/registry.rs"));
+    assert!(tests.contains("src/ecosystems/helpers.rs"));
+    assert!(
+        !tests.contains("src/engine/leak_tests.rs"),
+        "a plain `mod` is production"
+    );
+    assert!(
+        !tests.contains("src/engine/fake_tests.rs"),
+        "comments declare nothing"
+    );
+}
+
+#[test]
+fn the_real_tree_test_files_are_found_and_production_files_are_not() {
+    let files = load_sources();
+    let is_test = |rel: &str| files.iter().find(|f| f.rel == rel).map(|f| f.is_test);
+    assert_eq!(is_test("src/parsers/tests.rs"), Some(true));
+    assert_eq!(is_test("src/ecosystems/tests/registry.rs"), Some(true));
+    assert_eq!(is_test("src/engine/scan.rs"), Some(false));
+    assert_eq!(is_test("src/ecosystems/php/provenance.rs"), Some(false));
+    assert!(files.iter().filter(|f| f.is_test).count() > 20);
+}
+
+#[test]
+fn root_reexports_count_as_uses_of_the_module_that_defines_them() {
+    let files = load_sources();
+    let exports = roots::root_export_modules(&files);
+    assert_eq!(
+        exports.get("walk_project_tree"),
+        None,
+        "the walk lives below the engine now"
+    );
+    assert_eq!(
+        exports.get("scan_one_project").map(String::as_str),
+        Some("engine")
+    );
+    assert_eq!(
+        exports.get("selected_lockfile_path").map(String::as_str),
+        Some("ecosystems")
+    );
+    // A call through the crate root, a bare call via a glob import, and `super::engine` from a
+    // module root all reach the engine.
+    let modules: Vec<String> = files.iter().map(|f| f.module.clone()).collect();
+    assert!(crate_targets("crate::scan_one_project(x)").contains(&"scan_one_project".to_string()));
+    assert_eq!(
+        roots::bare_root_uses("fn f() { scan_one_project(x); }", &exports),
+        vec!["engine".to_string()]
+    );
+    assert!(roots::bare_root_uses("fn scan_one_project() {}", &exports).is_empty());
+    assert!(roots::bare_root_uses("fn f() { x.scan_one_project(); }", &exports).is_empty());
+    assert_eq!(
+        roots::super_root_targets("src/parsers/mod.rs", "super::engine::f()", &modules),
+        vec!["engine".to_string()]
+    );
+    assert!(
+        roots::super_root_targets("src/parsers/jvm/pom.rs", "super::engine::f()", &modules)
+            .is_empty()
+    );
+}
+
+/// The same calls injected into real lower-layer files fail the layer check.
+#[test]
+fn engine_calls_injected_into_lower_layers_fail_the_layer_check() {
+    for (target, injected) in [
+        (
+            "src/checks/pipeline.rs",
+            "\nfn leak() { crate::scan_one_project(x); }\n",
+        ),
+        (
+            "src/ecosystems/js/binding.rs",
+            "\nfn leak() { scan_one_project(x); }\n",
+        ),
+        (
+            "src/parsers/mod.rs",
+            "\nfn leak() { super::engine::f(); }\n",
+        ),
+    ] {
+        let mut files = load_sources();
+        let entry = files.iter_mut().find(|f| f.rel == target).unwrap();
+        entry.code.push_str(injected);
+        let edges = roots::layer_edges_of(&files);
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.starts_with(target) && edge.ends_with("engine")),
+            "{target}: {edges:?}"
+        );
+    }
+}

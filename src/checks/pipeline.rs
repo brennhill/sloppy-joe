@@ -98,11 +98,12 @@ impl Check for MetadataCheck {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             acc.issues.extend(ctx.resolution.issues.clone());
-            acc.issues.extend(crate::unresolved_version_policy_issues(
-                ctx.non_internal_deps,
-                ctx.resolution,
-                ctx.config,
-            ));
+            acc.issues
+                .extend(super::unresolved::unresolved_version_policy_issues(
+                    ctx.non_internal_deps,
+                    ctx.resolution,
+                    ctx.config,
+                ));
 
             // Always fetch metadata lookups and store in accumulator.
             // For metadata-supporting ecosystems (npm, pypi, cargo, ruby, jvm),

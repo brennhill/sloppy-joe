@@ -6,8 +6,11 @@
 //! `UPDATE_ARCH_BASELINE=1 cargo test --test architecture`.
 
 mod baseline;
+mod bypass_rules;
 mod isolation;
+mod roots;
 mod scanner_tests;
+mod test_files;
 
 use baseline::*;
 use std::collections::BTreeMap;
@@ -116,34 +119,32 @@ struct SourceFile {
     code: String,
 }
 
-fn is_test_file(rel: &str) -> bool {
-    let mut parts = rel.rsplit('/');
-    let name = parts.next().unwrap_or(rel);
-    let in_test_dir = parts.any(|dir| dir == "tests" || dir.ends_with("_tests"));
-    in_test_dir || name.ends_with("_tests.rs") || name == "tests.rs" || name.contains("test_utils")
-}
-
 fn load_sources() -> Vec<SourceFile> {
     let root = repo_root();
     let mut paths = Vec::new();
     collect_rs(&root.join("src"), &mut paths);
-    paths
-        .into_iter()
+    let raw: Vec<(String, String)> = paths
+        .iter()
         .map(|path| {
             let rel = path
                 .strip_prefix(&root)
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
+            (rel, std::fs::read_to_string(path).unwrap())
+        })
+        .collect();
+    let test_files = test_files::test_only_files(&raw);
+    raw.into_iter()
+        .map(|(rel, content)| {
             let inside = rel.trim_start_matches("src/");
             let module = match inside.split_once('/') {
                 Some((dir, _)) => dir.to_string(),
                 None => inside.trim_end_matches(".rs").to_string(),
             };
-            let content = std::fs::read_to_string(&path).unwrap();
             SourceFile {
                 raw_lines: content.lines().count(),
-                is_test: is_test_file(&rel),
+                is_test: test_files.contains(&rel),
                 code: cut_inline_tests(&strip(&content)),
                 rel,
                 module,
@@ -340,6 +341,8 @@ fn measure() -> Measures {
         .map(|file| file.module.clone())
         .collect();
 
+    let root_exports = roots::root_export_modules(&files);
+
     for file in &files {
         if file.raw_lines > MAX_FILE_LINES {
             measures.file_lines.insert(file.rel.clone(), file.raw_lines);
@@ -353,18 +356,9 @@ fn measure() -> Measures {
             }
             continue;
         };
-        for target in crate_targets(&file.code) {
-            if !modules.contains(&target) {
-                continue; // a root item such as `crate::Dependency`
-            }
-            let Some(to_layer) = layer_of(&target) else {
-                continue;
-            };
-            if !layer_may_depend_on(from_layer, to_layer) {
-                let edge = format!("{} -> {}", file.rel, target);
-                if !measures.layer_edges.contains(&edge) {
-                    measures.layer_edges.push(edge);
-                }
+        for edge in roots::edges_of_file(file, from_layer, &modules, &root_exports) {
+            if !measures.layer_edges.contains(&edge) {
+                measures.layer_edges.push(edge);
             }
         }
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();

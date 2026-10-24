@@ -463,7 +463,7 @@ pub(crate) fn npm_alias_targets_by_lockfile(
         let aliases = by_lockfile
             .entry(lockfile_path)
             .or_insert_with(std::collections::HashMap::new);
-        for (alias_name, raw_spec) in npm_dependency_entries(manifest) {
+        for (alias_name, raw_spec) in parsers::package_json::npm_dependency_entries(manifest) {
             let Some(alias_spec) = raw_spec.strip_prefix("npm:") else {
                 continue;
             };

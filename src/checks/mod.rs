@@ -8,6 +8,7 @@ pub mod pipeline;
 pub(crate) mod signals;
 pub mod similarity;
 pub(crate) mod tarball_verification;
+pub(crate) mod unresolved;
 
 use crate::config::SloppyJoeConfig;
 use crate::lockfiles::ResolutionResult;

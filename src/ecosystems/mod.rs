@@ -8,6 +8,7 @@
 
 use crate::*;
 use std::path::{Path, PathBuf};
+use tree::walk_project_tree;
 
 mod cargo;
 pub(crate) mod common;
@@ -18,6 +19,7 @@ mod jvm;
 mod php;
 mod python;
 mod ruby;
+pub(crate) mod tree;
 
 pub(crate) use common::first_existing_lockfile;
 use common::*;

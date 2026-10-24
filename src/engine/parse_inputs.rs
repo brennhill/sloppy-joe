@@ -1,24 +1,5 @@
 use crate::*;
 
-pub(crate) fn npm_dependency_entries(manifest: &serde_json::Value) -> Vec<(String, String)> {
-    [
-        "dependencies",
-        "devDependencies",
-        "optionalDependencies",
-        "peerDependencies",
-    ]
-    .into_iter()
-    .flat_map(|section| {
-        manifest
-            .get(section)
-            .and_then(|value| value.as_object())
-            .into_iter()
-            .flat_map(|section| section.iter())
-            .filter_map(|(name, value)| value.as_str().map(|spec| (name.clone(), spec.to_string())))
-    })
-    .collect()
-}
-
 #[cfg(test)]
 pub(crate) fn parse_project_inputs(
     scan_root: &std::path::Path,
@@ -70,6 +51,7 @@ pub(crate) fn parse_project_input_with_config(
     ecosystems::for_kind(spec.kind).parse(&ctx, spec)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_project_input(
     scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
