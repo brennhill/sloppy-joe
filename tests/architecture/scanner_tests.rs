@@ -58,3 +58,24 @@ fn cfg_test_items_are_cut_and_production_code_around_them_is_kept() {
     // `cfg(not(test))` is production code.
     assert!(cut_inline_tests("#[cfg(not(test))]\nfn p() {}").contains("fn p"));
 }
+
+#[test]
+fn cfg_test_fields_and_variants_do_not_blind_the_scan_of_what_follows() {
+    for code in [
+        "struct P { a: u8, #[cfg(test)] b: u8 }\nfn after() {}",
+        "struct P { a: u8, #[cfg(test)] b: u8, c: u8 }\nfn after() {}",
+        "enum E { A, #[cfg(test)] B }\nfn after() {}",
+        "enum E { A, #[cfg(test)] B(u8) }\nfn after() {}",
+        "struct P { #[cfg(test)] b: std::collections::HashMap<String, u8> }\nfn after() {}",
+        "fn f() { #[cfg(test)] let x = 1; y(); }\nfn after() {}",
+        "fn f() { match v { #[cfg(test)] A => 1, B => 2 } }\nfn after() {}",
+    ] {
+        let cut = cut_inline_tests(code);
+        assert!(cut.contains("fn after"), "{code} -> {cut}");
+    }
+    let cut = cut_inline_tests("struct P { a: u8, #[cfg(test)] b: u8, c: u8 }");
+    assert!(
+        cut.contains("a: u8") && cut.contains("c: u8") && !cut.contains("b: u8"),
+        "{cut}"
+    );
+}

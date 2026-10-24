@@ -274,13 +274,21 @@ fn cut_inline_tests(code: &str) -> String {
         let start = at + found;
         out.push_str(&code[at..start]);
         let (mut paren, mut brace) = (0i32, 0i32);
+        let mut generic = false;
         let mut end = code.len();
         let begin = start + marker.len();
         for &(offset, c) in chars.iter().filter(|(offset, _)| *offset >= begin) {
             match c {
                 '(' | '[' => paren += 1,
                 ')' | ']' => paren -= 1,
+                '<' if brace == 0 && paren == 0 => generic = true,
                 '{' => brace += 1,
+                '}' if brace == 0 && paren == 0 => {
+                    // The parent's closing brace: the marked item was a field, variant or
+                    // statement that ends here, not an item with a body.
+                    end = offset;
+                    break;
+                }
                 '}' => {
                     brace -= 1;
                     if brace == 0 && paren == 0 {
@@ -289,6 +297,12 @@ fn cut_inline_tests(code: &str) -> String {
                     }
                 }
                 ';' if brace == 0 && paren == 0 => {
+                    end = offset + 1;
+                    break;
+                }
+                // A field or variant ends at its comma (generic arguments have commas too, so
+                // those fall through to the parent's closing brace above).
+                ',' if brace == 0 && paren == 0 && !generic => {
                     end = offset + 1;
                     break;
                 }

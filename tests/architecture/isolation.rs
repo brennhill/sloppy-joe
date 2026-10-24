@@ -37,11 +37,90 @@ fn mentions_bare_path(code: &str, name: &str) -> bool {
     })
 }
 
+/// Whether `code` reaches `plugin` through `prefix`, either as a plain path (`prefix::plugin`) or
+/// inside a brace group (`prefix::{other, plugin as renamed}`), which a plain path search misses.
+fn reaches_via(code: &str, prefix: &str, plugin: &str) -> bool {
+    if mentions_path(code, &format!("{prefix}::{plugin}")) {
+        return true;
+    }
+    let open = format!("{prefix}::{{");
+    code.match_indices(&open).any(|(at, _)| {
+        let start = at + open.len();
+        let mut depth = 1;
+        let mut end = code.len();
+        for (offset, c) in code[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        group_elements(&code[start..end]).iter().any(|element| {
+            element.starts_with(plugin)
+                && !element[plugin.len()..].chars().next().is_some_and(is_ident)
+        })
+    })
+}
+
+/// The top-level, comma-separated elements of a `use` brace group, trimmed.
+fn group_elements(group: &str) -> Vec<&str> {
+    let mut elements = Vec::new();
+    let (mut depth, mut from) = (0, 0);
+    for (at, c) in group.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                elements.push(group[from..at].trim());
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    elements.push(group[from..].trim());
+    elements
+}
+
+/// Whether `code` gives `name` another name: `name as Other` or `= path::name;`.
+fn renames(code: &str, name: &str) -> bool {
+    code.match_indices(name).any(|(at, _)| {
+        let before = &code[..at];
+        let after = &code[at + name.len()..];
+        if before.chars().next_back().is_some_and(is_ident)
+            || after.chars().next().is_some_and(is_ident)
+        {
+            return false;
+        }
+        let rest = after.trim_start();
+        if rest.starts_with("as") && rest[2..].chars().next().is_some_and(char::is_whitespace) {
+            return true;
+        }
+        // `type K = crate::path::Name;`: strip the leading path segments, then expect `=`.
+        let mut head = before.trim_end();
+        while let Some(path) = head.strip_suffix("::") {
+            let path = path.trim_end();
+            head = path[..path.rfind(|c| !is_ident(c)).map_or(0, |i| i + 1)].trim_end();
+        }
+        head.ends_with('=') && rest.starts_with(';')
+    })
+}
+
 /// The text of every `use ...;` statement in `code`.
 fn use_statements(code: &str) -> Vec<&str> {
     let mut statements = Vec::new();
-    for (at, _) in code.match_indices("use ") {
-        if code[..at].chars().next_back().is_some_and(is_ident) {
+    for (at, _) in code.match_indices("use") {
+        if code[..at].chars().next_back().is_some_and(is_ident)
+            || !code[at + 3..]
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+        {
             continue;
         }
         if let Some(end) = code[at..].find(';') {
@@ -63,12 +142,13 @@ fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<S
             .map(|rest| rest.split(['/', '.']).next().unwrap().to_string());
         if rel == "src/ecosystems/mod.rs" {
             // The registry names every plugin as a module and in its table, but it must not
-            // `use` plugin items: that would hand them to every plugin and the engine.
+            // `use` plugin items (every plugin sees its imports through `use super::*`) and must
+            // keep the plugin modules private.
             for statement in use_statements(code) {
                 for plugin in plugins {
                     if mentions_bare_path(statement, plugin)
-                        || mentions_path(statement, &format!("self::{plugin}"))
-                        || mentions_path(statement, &format!("ecosystems::{plugin}"))
+                        || reaches_via(statement, "self", plugin)
+                        || reaches_via(statement, "ecosystems", plugin)
                     {
                         violations.push(format!(
                             "{rel} imports from ecosystem {plugin} (`{}`); the registry may declare plugins but not re-export their items",
@@ -77,20 +157,38 @@ fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<S
                     }
                 }
             }
+            for plugin in plugins {
+                let compact: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
+                let declared_public =
+                    compact
+                        .match_indices(&format!("mod {plugin}"))
+                        .any(|(at, _)| {
+                            let before = compact[..at].trim_end();
+                            before.ends_with("pub") || before.ends_with(')')
+                        });
+                if declared_public {
+                    violations.push(format!(
+                        "{rel} makes plugin module {plugin} visible outside the registry; keep it private"
+                    ));
+                }
+            }
             continue;
         }
+        // `super` is the registry for a flat plugin file and for a plugin's own `mod.rs`.
+        let in_registry_namespace = rel.strip_prefix("src/ecosystems/").is_some_and(|rest| {
+            !rest.contains('/') || rest.ends_with("/mod.rs") && rest.matches('/').count() == 1
+        });
         for plugin in plugins {
-            let reaches_in = mentions_path(code, &format!("ecosystems::{plugin}"));
+            let reaches_in = reaches_via(code, "ecosystems", plugin);
             match owner.as_deref() {
                 None if reaches_in => violations.push(format!(
                     "{rel} reaches into ecosystems::{plugin}; go through the EcosystemSupport trait"
                 )),
                 Some(own) if own != plugin => {
                     let sibling = reaches_in
-                        || mentions_path(code, &format!("super::super::{plugin}"))
+                        || reaches_via(code, "super::super", plugin)
                         || mentions_bare_path(code, plugin)
-                        || (rel.matches('/').count() == 2
-                            && mentions_path(code, &format!("super::{plugin}")));
+                        || (in_registry_namespace && reaches_via(code, "super", plugin));
                     if sibling {
                         violations.push(format!(
                             "{rel} (ecosystem {own}) imports ecosystem {plugin}; share code through ecosystems::common"
@@ -113,12 +211,21 @@ fn kind_alias_violations(files: &[(String, String)]) -> Vec<String> {
             continue;
         }
         let compact: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
-        for pattern in ["ProjectInputKind as ", "= ProjectInputKind;"] {
-            if compact.contains(pattern) {
-                violations.push(format!(
-                    "{rel} renames ProjectInputKind (`{pattern}`); name it directly so placement can be checked"
-                ));
-            }
+        let mut found = Vec::new();
+        if renames(code, "ProjectInputKind") {
+            found.push("a rename");
+        }
+        // `<ProjectInputKind>::X` and `Self::X` inside an impl hide the variant path.
+        if compact.contains("<ProjectInputKind>")
+            || compact.contains("impl ProjectInputKind")
+            || compact.contains("for ProjectInputKind")
+        {
+            found.push("an impl or qualified path");
+        }
+        for what in found {
+            violations.push(format!(
+                "{rel} hides ProjectInputKind behind {what}; name it directly so placement can be checked"
+            ));
         }
     }
     violations
@@ -129,14 +236,29 @@ fn kind_alias_violations(files: &[(String, String)]) -> Vec<String> {
 fn module_redirect_violations(files: &[(String, String)]) -> Vec<String> {
     let mut violations = Vec::new();
     for (rel, code) in files {
-        for (at, _) in code.match_indices("#[path") {
-            if !code[..at].trim_end().ends_with("#[cfg(test)]") {
+        let c: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        for (at, _) in c.match_indices("#[path") {
+            if !c[..at].ends_with("#[cfg(test)]") {
                 violations.push(format!(
                     "{rel} redirects a module with #[path]; module files must sit where the module tree says"
                 ));
             }
         }
-        if mentions_path(code, "include!") {
+        // `#[cfg_attr(cond, path = "..")]` redirects just the same.
+        for (at, _) in c.match_indices("#[cfg_attr(") {
+            let attribute = &c[at..c[at..].find(']').map_or(c.len(), |end| at + end)];
+            if attribute.contains("path=") {
+                violations.push(format!("{rel} redirects a module with cfg_attr(path)"));
+            }
+        }
+        let includes = c.contains("include!")
+            || ["::include", "{include", ",include"].iter().any(|needle| {
+                c.match_indices(needle).any(|(at, _)| {
+                    let rest = &c[at + needle.len()..];
+                    rest.starts_with("as") || !rest.chars().next().is_some_and(is_ident)
+                })
+            });
+        if includes {
             violations.push(format!(
                 "{rel} uses include!; the scan cannot see included code"
             ));
@@ -168,7 +290,8 @@ fn engine_ecosystem_violations(files: &[(String, String)]) -> Vec<String> {
                             .next()
                             .is_some_and(is_ident))
             });
-            if named {
+            let name = pattern.trim_end_matches("::");
+            if named || renames(code, name) {
                 violations.push(format!(
                     "{rel} names `{pattern}`; ask the ecosystem plugin (ecosystems::for_ecosystem or the EcosystemSupport trait) instead"
                 ));
@@ -452,4 +575,147 @@ fn engine_ecosystem_names_are_caught_in_the_real_tree() {
         .1
         .push_str("\nfn leak(e: Ecosystem) -> bool { e == Ecosystem::Npm }\n");
     assert_eq!(engine_ecosystem_violations(&files).len(), 1);
+}
+
+#[test]
+fn isolation_rule_flags_the_second_round_bypasses() {
+    let plugins = vec!["cargo".to_string(), "go".to_string(), "ruby".to_string()];
+    let file = |rel: &str, code: &str| vec![(rel.to_string(), code.to_string())];
+    let isolation = |rel: &str, code: &str| isolation_violations(&file(rel, code), &plugins).len();
+
+    // B1: `super` in a plugin's own mod.rs is the registry, like in a flat plugin file.
+    assert_eq!(
+        isolation("src/ecosystems/cargo/mod.rs", "use super::go::Go;"),
+        1
+    );
+    // ...but deeper in the plugin it is the plugin itself.
+    assert_eq!(
+        isolation("src/ecosystems/cargo/inner.rs", "use super::go;"),
+        0
+    );
+    // B2/B3: renames inside a brace group.
+    assert_eq!(
+        isolation("src/ecosystems/ruby.rs", "use super::{common, go as g};"),
+        1
+    );
+    assert_eq!(
+        isolation("src/engine/x.rs", "use crate::ecosystems::{cargo as cp};"),
+        1
+    );
+    assert_eq!(
+        isolation(
+            "src/engine/x.rs",
+            "use crate::ecosystems::{common, nested::{cargo}};"
+        ),
+        0
+    );
+    // B3: the registry may not expose a plugin module.
+    for decl in [
+        "pub(crate) mod cargo;",
+        "pub mod cargo;",
+        "pub(super) mod cargo;",
+    ] {
+        assert_eq!(isolation("src/ecosystems/mod.rs", decl), 1, "{decl}");
+    }
+    assert_eq!(isolation("src/ecosystems/mod.rs", "mod cargo;"), 0);
+    // B10: `use` followed by a newline.
+    assert_eq!(
+        isolation(
+            "src/ecosystems/mod.rs",
+            "pub(crate) use\n    cargo::helper as exposed;"
+        ),
+        1
+    );
+
+    // B4b: aliasing the ecosystem types in orchestration code.
+    for code in [
+        "use crate::Ecosystem as E; fn f(e: E) -> bool { e == E::Npm }",
+        "type E = crate::Ecosystem;",
+        "use crate::project::JsPackageManager as M;",
+    ] {
+        assert_eq!(
+            engine_ecosystem_violations(&file("src/engine/x.rs", code)).len(),
+            1,
+            "{code}"
+        );
+    }
+    // B5b/B6: qualified paths, impl blocks and path-qualified aliases of the kind type.
+    for code in [
+        "fn f() { <ProjectInputKind>::Npm; }",
+        "impl ProjectInputKind { fn x() -> Self { Self::Cargo } }",
+        "impl Trait for ProjectInputKind { }",
+        "type K = crate::project::ProjectInputKind;",
+        "use crate::project::{ProjectInputKind as K};",
+    ] {
+        assert_eq!(
+            kind_alias_violations(&file("src/engine/x.rs", code)).len(),
+            1,
+            "{code}"
+        );
+    }
+    // B7: cfg_attr and spaced path attributes, and include through an import.
+    for code in [
+        "#[cfg_attr(all(), path = \"../ecosystems/go.rs\")]\nmod x;",
+        "#[ path = \"../ecosystems/go.rs\" ]\nmod x;",
+        "#[\n    path = \"../x.rs\"\n]\nmod x;",
+        "use std::include as inc; fn f() { inc!(\"f.in\"); }",
+        "use std::{include as inc};",
+    ] {
+        assert_eq!(
+            module_redirect_violations(&file("src/engine/x.rs", code)).len(),
+            1,
+            "{code}"
+        );
+    }
+    assert!(
+        module_redirect_violations(&file("src/engine/x.rs", "use std::include_str;")).is_empty()
+    );
+}
+
+/// The same bypasses injected into real files are caught in the real tree.
+#[test]
+fn second_round_bypasses_are_caught_in_the_real_tree() {
+    let plugins = plugin_names();
+    let clean = scanned_sources();
+    let inject = |rel: &str, extra: &str| {
+        let mut files = clean.clone();
+        files
+            .iter_mut()
+            .find(|(path, _)| path == rel)
+            .unwrap_or_else(|| panic!("{rel} not found"))
+            .1
+            .push_str(extra);
+        files
+    };
+    let files = inject("src/ecosystems/cargo/mod.rs", "\nuse super::go::Go;\n");
+    assert_eq!(isolation_violations(&files, &plugins).len(), 1);
+    let files = inject("src/ecosystems/ruby.rs", "\nuse super::{go as g};\n");
+    assert_eq!(isolation_violations(&files, &plugins).len(), 1);
+    let files = inject(
+        "src/engine/scan.rs",
+        "\nuse crate::ecosystems::{cargo as cp};\n",
+    );
+    assert_eq!(isolation_violations(&files, &plugins).len(), 1);
+    let files = inject("src/engine/scan.rs", "\nuse crate::Ecosystem as E;\n");
+    assert_eq!(engine_ecosystem_violations(&files).len(), 1);
+    let files = inject(
+        "src/engine/scan.rs",
+        "\nfn leak() { <ProjectInputKind>::Npm; }\n",
+    );
+    assert_eq!(kind_alias_violations(&files).len(), 1);
+    let files = inject(
+        "src/engine/scan.rs",
+        "\n#[cfg_attr(all(), path = \"../ecosystems/go.rs\")]\nmod sneaky;\n",
+    );
+    assert_eq!(module_redirect_violations(&files).len(), 1);
+    // A #[cfg(test)] field in a production file must not hide what follows it.
+    let files = inject(
+        "src/engine/scan.rs",
+        "\nstruct Probe { a: u8, #[cfg(test)] b: u8 }\nfn leak(e: Ecosystem) -> bool { e == Ecosystem::Npm }\n",
+    );
+    let cut: Vec<(String, String)> = files
+        .into_iter()
+        .map(|(rel, code)| (rel, cut_inline_tests(&code)))
+        .collect();
+    assert_eq!(engine_ecosystem_violations(&cut).len(), 1);
 }
