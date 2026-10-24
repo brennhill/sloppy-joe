@@ -28,6 +28,8 @@ pub(crate) enum ValueRule {
     OneOf(&'static [&'static str]),
     /// A string accepted by the predicate; the text says what is accepted (shown on refusal).
     StrWhere(fn(&str) -> bool, &'static str),
+    /// Any value (a whole nested table included) accepted by the predicate.
+    ValueWhere(fn(&Value) -> bool, &'static str),
 }
 
 /// A key path (dotted; `*` matches one segment) and the values it may hold. A path that is a
@@ -46,7 +48,7 @@ impl std::fmt::Debug for ValueRule {
             ValueRule::BoolIs(value) => write!(f, "{value}"),
             ValueRule::Str => write!(f, "string"),
             ValueRule::OneOf(values) => write!(f, "one of {values:?}"),
-            ValueRule::StrWhere(_, what) => write!(f, "{what}"),
+            ValueRule::StrWhere(_, what) | ValueRule::ValueWhere(_, what) => write!(f, "{what}"),
         }
     }
 }
@@ -82,6 +84,7 @@ pub const KNOWN_SURFACES: &[&str] = &[
     "gradle-daemon-jvm.properties",
     "maven.config",
     "jvm.config",
+    "cargo-config",
     ".npmrc",
     ".yarnrc.yml",
     "bunfig.toml",
@@ -442,6 +445,7 @@ impl Walk<'_> {
             ValueRule::Str => node.is_string(),
             ValueRule::OneOf(values) => node.as_str().is_some_and(|text| values.contains(&text)),
             ValueRule::StrWhere(check, _) => node.as_str().is_some_and(check),
+            ValueRule::ValueWhere(check, _) => check(node),
         };
         if fits {
             return Ok(());
@@ -449,7 +453,7 @@ impl Walk<'_> {
         Err(self.refusal(
             path,
             &format!(
-                "its value must be {:?}; other values change what the package manager installs",
+                "its value must be {:?}; other values change what the package manager installs in ways the scan cannot verify",
                 rule.value
             ),
         ))

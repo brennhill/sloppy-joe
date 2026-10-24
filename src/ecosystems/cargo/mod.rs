@@ -1,5 +1,6 @@
 use super::*;
 
+mod cargo_surface;
 mod config_file;
 mod program_settings;
 mod rewrite;

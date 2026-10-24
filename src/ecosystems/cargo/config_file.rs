@@ -23,6 +23,8 @@ pub(crate) struct CargoConfigRewrites {
     pub(crate) source_replace_with: std::collections::HashMap<String, String>,
     pub(crate) source_definitions: std::collections::HashMap<String, CargoConfigSourceDefinition>,
     pub(crate) rewrite_targets: Vec<EffectiveCargoRewrite>,
+    /// Unlisted settings that the operator's `config_key_allow` permitted.
+    pub(crate) applied_allows: Vec<crate::config_surface::AppliedAllow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +41,7 @@ pub(crate) fn merge_cargo_config_rewrites(
     into.source_replace_with.extend(from.source_replace_with);
     into.source_definitions.extend(from.source_definitions);
     into.rewrite_targets.extend(from.rewrite_targets);
+    into.applied_allows.extend(from.applied_allows);
 }
 
 pub(crate) fn ensure_additive_cargo_config_rewrites(
@@ -254,48 +257,9 @@ pub(crate) fn apply_cargo_config_source_rewrite(
     )
 }
 
-/// Settings a repository-committed Cargo config can use to change where or how crates are fetched,
-/// or to run a program during the build, that this scan cannot verify. A proxy plus CA bundle
-/// redirects crates.io as effectively as `[source] replace-with`, which is already blocked.
-const UNVERIFIABLE_CARGO_SETTINGS: &[(&str, &str)] = &[
-    ("http", "proxy"),
-    ("http", "cainfo"),
-    ("http", "ssl-version"),
-    ("http", "check-revoke"),
-    ("net", "git-fetch-with-cli"),
-    ("build", "rustc-wrapper"),
-    ("build", "rustc-workspace-wrapper"),
-    ("registry", "credential-provider"),
-];
-
-fn reject_unverifiable_cargo_settings(
-    config_path: &std::path::Path,
-    value: &toml::Value,
-) -> Result<()> {
-    let mut found: Vec<String> = UNVERIFIABLE_CARGO_SETTINGS
-        .iter()
-        .filter(|(table, key)| value.get(table).and_then(|t| t.get(key)).is_some())
-        .map(|(table, key)| format!("{table}.{key}"))
-        .collect();
-    if value.get("credential-alias").is_some() {
-        found.push("credential-alias".to_string());
-    }
-    found.extend(super::program_settings::program_running_settings(value));
-    if found.is_empty() {
-        return Ok(());
-    }
-    Err(cargo_fail(
-        checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
-        format!(
-            "Cargo config '{}' sets {}, which changes how crates are fetched or built in a way sloppy-joe cannot verify. Remove it from the repository's Cargo config and set it in the environment instead.",
-            config_path.display(),
-            found.join(", ")
-        ),
-    ))
-}
-
 pub(crate) fn parse_cargo_config_rewrites(
     config_path: &std::path::Path,
+    allows: &[crate::config_surface::KeyAllow],
 ) -> Result<CargoConfigRewrites> {
     let content = parsers::read_file_limited(config_path, parsers::MAX_MANIFEST_BYTES)?;
     let value = toml::from_str::<toml::Value>(&content).map_err(|err| {
@@ -306,9 +270,18 @@ pub(crate) fn parse_cargo_config_rewrites(
         )
     })?;
 
-    reject_unverifiable_cargo_settings(config_path, &value)?;
+    let applied_allows =
+        super::cargo_surface::check(&value, config_path, allows).map_err(|err| {
+            cargo_fail(
+                checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+                err.to_string(),
+            )
+        })?;
 
-    let mut rewrites = CargoConfigRewrites::default();
+    let mut rewrites = CargoConfigRewrites {
+        applied_allows,
+        ..CargoConfigRewrites::default()
+    };
     let config_dir = config_path
         .parent()
         .expect("Cargo config file should always have a parent directory");
@@ -433,7 +406,7 @@ pub(crate) fn load_repo_visible_cargo_config_rewrites(
             if parsers::path_detected(&config_path)? {
                 merge_cargo_config_rewrites(
                     &mut rewrites,
-                    parse_cargo_config_rewrites(&config_path)?,
+                    parse_cargo_config_rewrites(&config_path, &config.config_key_allow)?,
                 );
             }
         }
@@ -461,7 +434,10 @@ pub(crate) fn load_host_local_cargo_config_rewrites_from_home(
         let path = cargo_home.join(config_name);
         if parsers::path_detected(&path)? {
             found.push(path.clone());
-            merge_cargo_config_rewrites(&mut rewrites, parse_cargo_config_rewrites(&path)?);
+            merge_cargo_config_rewrites(
+                &mut rewrites,
+                parse_cargo_config_rewrites(&path, &config.config_key_allow)?,
+            );
         }
     }
 
@@ -519,6 +495,7 @@ pub(crate) fn load_effective_cargo_config_rewrites_inner(
         merge_cargo_config_rewrites(&mut rewrites, host_rewrites);
         warnings.extend(host_warnings);
     }
+    warnings.extend(crate::config_surface::issues(&rewrites.applied_allows));
     Ok((rewrites, warnings))
 }
 
