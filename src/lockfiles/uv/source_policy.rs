@@ -59,8 +59,68 @@ pub(crate) fn validate_provenance(parsed: &toml::Value, source_path: &Path) -> R
                 name
             );
         }
+        let registry = source.get("registry").and_then(|value| value.as_str());
+        validate_artifact_hosts(pkg, name, registry.unwrap_or_default(), source_path)?;
     }
 
+    Ok(())
+}
+
+/// `uv sync` downloads the `url` of each locked sdist and wheel, not whatever the registry
+/// serves. The artifact must come from where the registry's files live: `files.pythonhosted.org`
+/// for PyPI, the registry's own host otherwise (and always over https for PyPI).
+fn validate_artifact_hosts(
+    pkg: &toml::value::Table,
+    name: &str,
+    registry: &str,
+    source_path: &Path,
+) -> Result<()> {
+    let is_pypi = crate::config::normalize_python_index_url(registry)
+        == crate::config::normalized_default_pypi_index();
+    let registry_url = reqwest::Url::parse(registry).ok();
+    let artifacts = pkg
+        .get("sdist")
+        .and_then(|value| value.as_table())
+        .into_iter()
+        .chain(
+            pkg.get("wheels")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_table()),
+        );
+    for artifact in artifacts {
+        let Some(url) = artifact.get("url").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let trusted = reqwest::Url::parse(url).ok().is_some_and(|artifact| {
+            artifact.username().is_empty()
+                && artifact.password().is_none()
+                && match (&registry_url, is_pypi) {
+                    (_, true) => {
+                        artifact.scheme() == "https"
+                            && artifact.port().is_none()
+                            && artifact.host_str().map(str::to_ascii_lowercase).as_deref()
+                                == Some("files.pythonhosted.org")
+                    }
+                    (Some(registry), false) => {
+                        artifact.host_str().map(str::to_ascii_lowercase)
+                            == registry.host_str().map(str::to_ascii_lowercase)
+                            && artifact.port_or_known_default() == registry.port_or_known_default()
+                    }
+                    (None, false) => false,
+                }
+        });
+        if !trusted {
+            bail!(
+                "Broken lockfile '{}': package '{}' downloads an artifact from '{}', which is not where its registry '{}' serves files. uv sync fetches that URL, not the registry's copy.",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(name),
+                crate::report::sanitize_for_terminal(url),
+                crate::report::sanitize_for_terminal(registry)
+            );
+        }
+    }
     Ok(())
 }
 

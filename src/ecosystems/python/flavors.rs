@@ -84,7 +84,10 @@ impl PythonFlavor for Poetry {
             ctx.scan.opts,
         )?;
         let mut warnings = validated.warnings;
-        warnings.extend(trusted_python_preference_warnings(spec)?);
+        warnings.extend(trusted_python_preference_warnings(
+            spec,
+            ctx.scan.opts.scan_mode == ScanMode::Ci,
+        )?);
         Ok(warnings)
     }
 
@@ -137,7 +140,10 @@ impl PythonFlavor for Uv {
             ctx.scan.config,
             ctx.scan.opts,
         )?;
-        warnings.extend(trusted_python_preference_warnings(spec)?);
+        warnings.extend(trusted_python_preference_warnings(
+            spec,
+            ctx.scan.opts.scan_mode == ScanMode::Ci,
+        )?);
         Ok(warnings)
     }
 

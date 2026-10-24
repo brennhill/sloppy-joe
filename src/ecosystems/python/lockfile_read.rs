@@ -64,7 +64,12 @@ pub(crate) fn read_validated_poetry_lockfile(
         deps,
         &path,
         &reachable_packages,
-        config.poetry_lock_policy,
+        // The CI scan gates a release: a lock without artifact hashes is an error, as it is for uv.lock.
+        if opts.scan_mode == ScanMode::Ci {
+            config::PoetryLockPolicy::Strict
+        } else {
+            config.poetry_lock_policy
+        },
     )?;
     let mut warnings = validation.warnings;
     let authorized_sources =

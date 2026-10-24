@@ -49,13 +49,18 @@ pub(crate) fn collect_included_paths(
     for entry in logical_requirement_lines(&content)? {
         let line = strip_inline_comment(&entry).trim();
         if let Some(include) = requirement_include_target(line) {
-            let include_target = match include {
-                IncludeDirective::Requirement(path) | IncludeDirective::Constraint(path) => path,
+            let (include_target, installs) = match include {
+                IncludeDirective::Requirement(path) => (path, true),
+                IncludeDirective::Constraint(path) => (path, false),
             };
             let include_path = resolve_include_path(&normalized_path, include_target, scan_root)?;
             let include_key =
                 std::fs::canonicalize(&include_path).unwrap_or_else(|_| include_path.clone());
-            includes.insert(include_key);
+            // Only `-r` targets are covered by the including file's scan. A `-c` file installs
+            // nothing by itself but its own entries must stay visible, so it is not pruned.
+            if installs {
+                includes.insert(include_key);
+            }
             collect_included_paths(&include_path, scan_root, visited, includes)?;
         }
     }

@@ -4,6 +4,7 @@ mod flavors;
 mod lockfile_read;
 mod parse;
 mod specs;
+mod tool_config;
 mod warnings;
 
 use flavors::flavor;
@@ -141,7 +142,9 @@ impl EcosystemSupport for Python {
         spec: &ProjectInputSpec,
         parsed: &ParsedInput,
     ) -> Result<Vec<Issue>> {
-        flavor(spec.kind).validate_lockfile(ctx, spec, parsed)
+        let mut issues = tool_config::check_tool_config(ctx, spec)?;
+        issues.extend(flavor(spec.kind).validate_lockfile(ctx, spec, parsed)?);
+        Ok(issues)
     }
 
     fn source_policy(
