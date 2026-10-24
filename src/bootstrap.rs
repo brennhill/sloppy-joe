@@ -4,6 +4,11 @@ use crate::config::{CanonicalGroupSuggestion, SloppyJoeConfig};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+/// Build the template config used by init.
+///
+/// This is a manual starting point, not a finished policy for an existing repo.
+/// Future onboarding should prefer explicit greenfield presets or a
+/// `--from-current` discovery flow over one generic example blob.
 pub(crate) fn template_config() -> SloppyJoeConfig {
     SloppyJoeConfig::default()
 }
