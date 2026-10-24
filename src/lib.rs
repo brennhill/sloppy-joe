@@ -16,7 +16,6 @@ mod http;
 pub mod names;
 pub use ecosystem::Ecosystem;
 pub mod config;
-mod gradle_plugin_scan;
 pub(crate) mod lockfiles;
 mod npm_config;
 pub mod parsers;

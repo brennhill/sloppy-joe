@@ -1,5 +1,3 @@
 # Architecture baseline (docs/specs/architecture-guardrails.md).
 # Existing violations only. Values may shrink, never grow.
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
-placement project-input-kind src/engine/scan.rs 1
-placement project-input-kind src/gradle_plugin_scan.rs 2

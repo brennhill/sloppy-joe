@@ -442,7 +442,7 @@ async fn vulnerable_implementation_artifact_is_reported() {
     );
     let server = mock_server(routes_with_pom(&pom)).await;
     let registry = registry(&[&server], "1.0.0");
-    let issues = crate::gradle_plugin_scan::implementation_advisory_issues(
+    let issues = crate::implementation_advisory_issues(
         &registry,
         &requested("1.0.0"),
         &FakeOsv(vec!["com.example:demo-gradle-plugin"]),
@@ -462,7 +462,7 @@ async fn clean_implementation_artifact_has_no_issues() {
     );
     let server = mock_server(routes_with_pom(&pom)).await;
     let registry = registry(&[&server], "1.0.0");
-    let issues = crate::gradle_plugin_scan::implementation_advisory_issues(
+    let issues = crate::implementation_advisory_issues(
         &registry,
         &requested("1.0.0"),
         &FakeOsv(vec![]),
@@ -477,7 +477,7 @@ async fn clean_implementation_artifact_has_no_issues() {
 async fn unreadable_marker_blocks() {
     let server = mock_server(HashMap::new()).await;
     let registry = registry(&[&server], "1.0.0");
-    let issues = crate::gradle_plugin_scan::implementation_advisory_issues(
+    let issues = crate::implementation_advisory_issues(
         &registry,
         &requested("1.0.0"),
         &FakeOsv(vec![]),

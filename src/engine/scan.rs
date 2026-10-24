@@ -97,27 +97,6 @@ fn fast_mode_full_scan_reasons(
     }
 }
 
-/// Maven versions come from properties, management sections, BOMs and the parent chain, not only
-/// from the declarations themselves. `None` means the project needs no resolution.
-async fn with_resolved_maven_versions(
-    project: &ParsedProject,
-    client: &reqwest::Client,
-) -> Result<Option<ParsedProject>> {
-    if project.spec.kind != ProjectInputKind::Maven || project.unlocked_tooling {
-        return Ok(None);
-    }
-    let deps = parsers::jvm::resolve_maven_versions(
-        &project.spec.manifest_path,
-        project.deps.clone(),
-        client.clone(),
-    )
-    .await?;
-    Ok(Some(ParsedProject {
-        deps,
-        ..project.clone()
-    }))
-}
-
 /// Run all checks for one project, including the Gradle plugin implementation checks.
 async fn scan_one_project(
     project: &ParsedProject,
@@ -128,19 +107,14 @@ async fn scan_one_project(
 ) -> Result<ScanReport> {
     // A project with no declared dependencies is still scanned: its
     // lockfile may list installable packages.
-    let registry = match gradle_plugin_scan::plugin_registry_for(project, client.clone())? {
+    let registry = match ecosystems::scan_registry(project, client.clone())? {
         Some(registry) => registry,
         None => registry::registry_for_with_client(project.spec.kind.ecosystem(), client.clone())?,
     };
     let mut report =
         scan_parsed_project(project, config.clone(), &*registry, osv_client, opts).await?;
-    let issues = gradle_plugin_scan::project_implementation_issues(
-        project,
-        client.clone(),
-        osv_client,
-        opts,
-    )
-    .await?;
+    let issues =
+        ecosystems::implementation_issues(project, client.clone(), osv_client, opts).await?;
     report.issues.extend(issues);
     Ok(report)
 }
@@ -252,7 +226,7 @@ pub(crate) async fn scan_with_config(
     let osv_client = checks::malicious::RealOsvClient::with_client(client.clone());
 
     for project in &projects {
-        let resolved = match with_resolved_maven_versions(project, &client).await {
+        let resolved = match ecosystems::resolve_versions(project, &client).await {
             Ok(resolved) => resolved,
             Err(error) => {
                 acc.record_failure(&project.spec, error)?;

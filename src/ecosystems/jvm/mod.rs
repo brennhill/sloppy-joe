@@ -1,7 +1,12 @@
 use super::*;
 
+mod gradle_plugin_scan;
+#[cfg(test)]
+pub(crate) use gradle_plugin_scan::implementation_advisory_issues;
+
 pub(super) struct Jvm;
 
+#[async_trait::async_trait]
 impl EcosystemSupport for Jvm {
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Gradle, ProjectInputKind::Maven]
@@ -58,6 +63,44 @@ impl EcosystemSupport for Jvm {
         vec![markers, classpath]
     }
 
+    fn scan_registry(
+        &self,
+        project: &ParsedProject,
+        client: reqwest::Client,
+    ) -> Result<Option<Box<dyn registry::Registry>>> {
+        gradle_plugin_scan::plugin_registry_for(project, client)
+    }
+
+    async fn resolve_versions(
+        &self,
+        project: &ParsedProject,
+        client: &reqwest::Client,
+    ) -> Result<Option<ParsedProject>> {
+        if project.spec.kind != ProjectInputKind::Maven || project.unlocked_tooling {
+            return Ok(None);
+        }
+        let deps = parsers::jvm::resolve_maven_versions(
+            &project.spec.manifest_path,
+            project.deps.clone(),
+            client.clone(),
+        )
+        .await?;
+        Ok(Some(ParsedProject {
+            deps,
+            ..project.clone()
+        }))
+    }
+
+    async fn implementation_issues(
+        &self,
+        project: &ParsedProject,
+        client: reqwest::Client,
+        osv_client: &dyn checks::malicious::OsvClient,
+        opts: &ScanOptions<'_>,
+    ) -> Result<Vec<Issue>> {
+        gradle_plugin_scan::project_implementation_issues(project, client, osv_client, opts).await
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let parsed = common::parse_for_preflight(self, ctx, spec)?;
         let mut warnings = parsed.warnings.clone();
@@ -68,6 +111,7 @@ impl EcosystemSupport for Jvm {
                     &common::named_lockfile(spec).expect("Gradle names gradle.lockfile"),
                 )?;
                 common::ensure_no_locked_packages_without_declarations(spec, &parsed.deps)?;
+                ensure_gradle_lockfile_pins_dependencies(spec, parsed.deps.len())?;
             }
             ProjectInputKind::Maven => warnings.push(maven_no_lockfile_warning(spec)),
             other => wrong_plugin(other),
@@ -89,4 +133,28 @@ fn maven_no_lockfile_warning(spec: &ProjectInputSpec) -> Issue {
     .fix(
         "Keep Maven and review resolution-sensitive findings manually, or move the build to Gradle with dependency locking if you need strict lockfile enforcement.",
     )
+}
+
+/// `gradle.lockfile` lines read `group:artifact:version=configurations`. A lockfile with none of
+/// them cannot back declared dependencies.
+fn ensure_gradle_lockfile_pins_dependencies(
+    spec: &ProjectInputSpec,
+    declared: usize,
+) -> Result<()> {
+    if declared == 0 {
+        return Ok(());
+    }
+    let path = common::named_lockfile(spec).expect("Gradle names gradle.lockfile");
+    let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
+    let pins = content.lines().any(|line| {
+        line.split_once('=')
+            .is_some_and(|(coordinates, _)| coordinates.matches(':').count() == 2)
+    });
+    if !pins {
+        anyhow::bail!(
+            "Required lockfile '{}' pins no dependencies although the build declares {declared}: the lockfile is malformed or stale. Fix: regenerate it with 'gradle dependencies --write-locks'.",
+            path.display()
+        );
+    }
+    Ok(())
 }

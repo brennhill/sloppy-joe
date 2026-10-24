@@ -56,8 +56,16 @@ nearest place. Without a guardrail that keeps happening.
 
 ### Placement
 
-- **Given** a non-test source file, **then** its number of `ProjectInputKind::` occurrences may not grow,
-  and a file without any may not gain one. New ecosystem logic goes in its own module.
+- **Given** a non-test source file outside `src/project.rs` and `src/ecosystems/`, **then** it contains
+  no `ProjectInputKind::` variant path. This rule is never baselined: ecosystem logic lives in its
+  plugin module behind the `EcosystemSupport` trait.
+- **Given** a file in `src/ecosystems/<a>/`, **then** it does not import ecosystem `<b>`; shared code
+  goes in `ecosystems::common`.
+- **Given** a file outside `src/ecosystems/`, **then** it does not name a concrete plugin module
+  (`ecosystems::cargo`, ...); it calls the facade functions in `ecosystems/mod.rs`.
+- **Given** every kind whose descriptor requires a lockfile, **then** the shared conformance suite in
+  `src/ecosystems/tests.rs` shows that a missing or malformed lockfile blocks preflight, and that Maven
+  states its reduced-confidence policy.
 
 ### Baseline maintenance
 
@@ -94,7 +102,9 @@ nearest place. Without a guardrail that keeps happening.
 | registry | `registry` | foundation, config, registry |
 | lockfiles | `lockfiles` | foundation, config, parsers, lockfiles |
 | checks | `checks` | foundation, config, parsers, lockfiles, registry, checks |
-| orchestration | `bootstrap`, `engine`, `gradle_plugin_scan`, `lib.rs`, `main.rs` | everything |
+| project | `project` | foundation, config, parsers, lockfiles, project |
+| ecosystems | `ecosystems` | foundation, config, parsers, registry, lockfiles, checks, project, ecosystems |
+| orchestration | `bootstrap`, `engine`, `lib.rs`, `main.rs` | everything |
 
 `crate::<Item>` that is not a module (types re-exported from `lib.rs`, such as `Dependency`) is not
 checked here.
@@ -113,7 +123,6 @@ counted. Closures count toward the function that contains them.
 file-lines src/lib.rs 7810
 fn-complexity src/lib.rs::scan_with_config 41
 layer src/parsers/jvm.rs -> registry
-placement project-input-kind src/engine/discovery.rs 12
 ```
 
 ## Context Anchors
@@ -125,6 +134,6 @@ placement project-input-kind src/engine/discovery.rs 12
 ## Architecture
 
 `tests/architecture.rs` walks `src/`, strips comments and strings, and computes four measures: layer
-edges, file lines, per-function complexity, and per-file `ProjectInputKind::` counts. It compares each to the baseline
+edges, file lines, per-function complexity, and `ProjectInputKind::` placement. It compares the first three to the baseline
 and fails on any worse value, any unclassified module, and any stale (now-better) entry. A single
 `#[test]` per rule keeps failures readable.

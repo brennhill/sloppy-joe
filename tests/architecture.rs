@@ -1,7 +1,7 @@
 //! Architecture guardrails (docs/specs/architecture-guardrails.md).
 //!
 //! Pure source scanning: layer direction, file size, per-function cyclomatic complexity and
-//! ecosystem-match placement. Existing violations live in `tests/architecture_baseline.txt` and may only
+//! ecosystem placement (never baselined). Existing violations live in `tests/architecture_baseline.txt` and may only
 //! shrink. Rewrite the baseline with smaller values via
 //! `UPDATE_ARCH_BASELINE=1 cargo test --test architecture`.
 
@@ -24,7 +24,7 @@ const FOUNDATION: &[&str] = &[
     "fsutil",
 ];
 const CONFIG: &[&str] = &["config", "npm_config"];
-const ORCHESTRATION: &[&str] = &["bootstrap", "engine", "gradle_plugin_scan", "lib", "main"];
+const ORCHESTRATION: &[&str] = &["bootstrap", "engine", "lib", "main"];
 
 fn layer_of(module: &str) -> Option<&'static str> {
     if FOUNDATION.contains(&module) {
@@ -578,7 +578,6 @@ struct Baseline {
     layer: Vec<String>,
     file_lines: BTreeMap<String, usize>,
     complexity: BTreeMap<String, usize>,
-    placement: BTreeMap<String, usize>,
     exists: bool,
 }
 
@@ -602,13 +601,12 @@ fn load_baseline() -> Baseline {
         let (kind, rest) = line.split_once(' ').expect("baseline line needs a kind");
         match kind {
             "layer" => baseline.layer.push(rest.to_string()),
-            "file-lines" | "fn-complexity" | "placement" => {
+            "file-lines" | "fn-complexity" => {
                 let (key, value) = rest.rsplit_once(' ').expect("baseline line needs a value");
                 let value: usize = value.parse().expect("baseline value must be a number");
                 let map = match kind {
                     "file-lines" => &mut baseline.file_lines,
-                    "fn-complexity" => &mut baseline.complexity,
-                    _ => &mut baseline.placement,
+                    _ => &mut baseline.complexity,
                 };
                 map.insert(key.to_string(), value);
             }
@@ -632,9 +630,6 @@ fn write_baseline(measures: &Measures) {
     }
     for (function, value) in &measures.complexity {
         out.push_str(&format!("fn-complexity {function} {value}\n"));
-    }
-    for (key, value) in &measures.placement {
-        out.push_str(&format!("placement {key} {value}\n"));
     }
     std::fs::write(baseline_path(), out).unwrap();
 }
@@ -708,7 +703,6 @@ fn all_comparisons(measures: &Measures, baseline: &Baseline) -> (Vec<String>, Ve
             &baseline.complexity,
             Some(MAX_COMPLEXITY),
         ),
-        compare_numbers("placement:", &measures.placement, &baseline.placement, None),
     ];
     for (w, s) in sets {
         worse.extend(w);
@@ -790,13 +784,16 @@ fn ecosystem_matches_do_not_spread() {
     if update_mode() {
         return;
     }
-    let (worse, stale) = compare_numbers(
-        "placement:",
-        &measure().placement,
-        &load_baseline().placement,
-        None,
-    );
-    fail_if_any(worse, stale);
+    let worse: Vec<String> = measure()
+        .placement
+        .iter()
+        .map(|(key, uses)| {
+            format!(
+                "placement: {key} matches on ProjectInputKind {uses} time(s); only src/project.rs and src/ecosystems/ may. Move the logic into the ecosystem plugin."
+            )
+        })
+        .collect();
+    fail_if_any(worse, Vec::new());
 }
 
 /// `UPDATE_ARCH_BASELINE=1 cargo test --test architecture` rewrites the baseline with smaller
@@ -820,6 +817,79 @@ fn update_baseline_when_requested() {
 }
 
 // ------------------------------------------- the scanner measures what it claims
+
+/// The ecosystem plugin modules: every `src/ecosystems/<name>.rs` or `src/ecosystems/<name>/`
+/// except the shared helpers.
+fn plugin_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(repo_root().join("src").join("ecosystems")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        if !["mod", "common", "tests"].contains(&name.as_str()) {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Whether `code` contains `path` followed by a non-identifier character.
+fn mentions_path(code: &str, path: &str) -> bool {
+    code.match_indices(path).any(|(at, _)| {
+        let before = code[..at].chars().next_back();
+        let after = code[at + path.len()..].chars().next();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
+}
+
+#[test]
+fn ecosystem_plugins_are_isolated() {
+    let plugins = plugin_names();
+    assert!(plugins.len() >= 8, "found plugins {plugins:?}");
+    let mut violations = Vec::new();
+    for file in load_sources().iter().filter(|f| !f.is_test) {
+        let owner = file
+            .rel
+            .strip_prefix("src/ecosystems/")
+            .map(|rest| rest.split(['/', '.']).next().unwrap().to_string())
+            // `ecosystems/mod.rs` is the registry: it names every plugin by design.
+            .filter(|own| own != "mod");
+        if file.rel == "src/ecosystems/mod.rs" {
+            continue;
+        }
+        for plugin in &plugins {
+            let reaches_in = mentions_path(&file.code, &format!("ecosystems::{plugin}"));
+            match owner.as_deref() {
+                None if reaches_in => violations.push(format!(
+                    "{} reaches into ecosystems::{plugin}; go through the EcosystemSupport trait",
+                    file.rel
+                )),
+                Some(own) if own != plugin => {
+                    let sibling = reaches_in
+                        || mentions_path(&file.code, &format!("super::super::{plugin}"))
+                        || (file.rel.matches('/').count() == 2
+                            && mentions_path(&file.code, &format!("super::{plugin}")));
+                    if sibling {
+                        violations.push(format!(
+                            "{} (ecosystem {own}) imports ecosystem {plugin}; share code through ecosystems::common",
+                            file.rel
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn scanner_finds_whole_path_mentions() {
+    assert!(mentions_path("use a::js;", "a::js"));
+    assert!(!mentions_path("use a::json;", "a::js"));
+    assert!(!mentions_path("use xa::js;", "a::js"));
+}
 
 #[test]
 fn scanner_ignores_comments_and_literals() {

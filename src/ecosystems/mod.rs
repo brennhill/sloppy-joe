@@ -27,6 +27,7 @@ use common::*;
 pub(crate) mod test_access {
     pub(crate) use super::cargo::*;
     pub(crate) use super::js::*;
+    pub(crate) use super::jvm::*;
     pub(crate) use super::python::*;
 }
 
@@ -66,6 +67,7 @@ impl<'a> PreflightCtx<'a> {
     }
 }
 
+#[async_trait::async_trait]
 pub(crate) trait EcosystemSupport: Sync {
     /// The project kinds this plugin owns. Every kind is owned by exactly one plugin.
     fn kinds(&self) -> &'static [ProjectInputKind];
@@ -123,6 +125,38 @@ pub(crate) trait EcosystemSupport: Sync {
     /// Verify the project's lockfile and policy before anything is scanned. An error blocks the
     /// project; the returned issues are warnings about reduced confidence.
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>>;
+
+    /// A registry client that replaces the ecosystem default for this project, when the project
+    /// resolves from somewhere else (Gradle plugin repositories).
+    fn scan_registry(
+        &self,
+        _project: &ParsedProject,
+        _client: reqwest::Client,
+    ) -> Result<Option<Box<dyn registry::Registry>>> {
+        Ok(None)
+    }
+
+    /// Declarations whose versions come from outside the manifest (Maven properties, BOMs, parent
+    /// chain). `None` means the project needs no resolution.
+    async fn resolve_versions(
+        &self,
+        _project: &ParsedProject,
+        _client: &reqwest::Client,
+    ) -> Result<Option<ParsedProject>> {
+        Ok(None)
+    }
+
+    /// Extra advisory checks on what the declared dependencies actually run (Gradle plugin
+    /// implementation artifacts).
+    async fn implementation_issues(
+        &self,
+        _project: &ParsedProject,
+        _client: reqwest::Client,
+        _osv_client: &dyn checks::malicious::OsvClient,
+        _opts: &ScanOptions<'_>,
+    ) -> Result<Vec<Issue>> {
+        Ok(Vec::new())
+    }
 }
 
 static PLUGINS: [&dyn EcosystemSupport; 8] = [
@@ -234,3 +268,30 @@ pub(crate) fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<PathBuf>
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+pub(crate) fn scan_registry(
+    project: &ParsedProject,
+    client: reqwest::Client,
+) -> Result<Option<Box<dyn registry::Registry>>> {
+    for_kind(project.spec.kind).scan_registry(project, client)
+}
+
+pub(crate) async fn resolve_versions(
+    project: &ParsedProject,
+    client: &reqwest::Client,
+) -> Result<Option<ParsedProject>> {
+    for_kind(project.spec.kind)
+        .resolve_versions(project, client)
+        .await
+}
+
+pub(crate) async fn implementation_issues(
+    project: &ParsedProject,
+    client: reqwest::Client,
+    osv_client: &dyn checks::malicious::OsvClient,
+    opts: &ScanOptions<'_>,
+) -> Result<Vec<Issue>> {
+    for_kind(project.spec.kind)
+        .implementation_issues(project, client, osv_client, opts)
+        .await
+}
