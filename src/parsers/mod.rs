@@ -103,6 +103,60 @@ fn parse_all_ecosystems_inner(
         return Ok(());
     }
 
+    parse_directory_manifests(current_dir, inside_node_modules, results, errors)?;
+
+    let inspect_error = |err: std::io::Error| {
+        anyhow::anyhow!(
+            "Failed to inspect {} for project manifests: {}",
+            current_dir.display(),
+            err
+        )
+    };
+    let mut entries: Vec<_> = std::fs::read_dir(current_dir)
+        .map_err(inspect_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(inspect_error)?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        if let Some((path, nested_in_node_modules)) =
+            child_directory(&entry, root, inside_node_modules)?
+        {
+            parse_all_ecosystems_inner(
+                &path,
+                root,
+                visited,
+                results,
+                errors,
+                nested_in_node_modules,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Record a manifest parse outcome: dependencies are kept, failures are collected with their path.
+fn record_parse(
+    path: &Path,
+    parsed: Result<Vec<Dependency>>,
+    results: &mut Vec<Vec<Dependency>>,
+    errors: &mut Vec<String>,
+) {
+    match parsed {
+        Ok(deps) if !deps.is_empty() => results.push(deps),
+        Ok(_) => {}
+        Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+    }
+}
+
+/// Parse every manifest kind present directly in `current_dir`.
+fn parse_directory_manifests(
+    current_dir: &Path,
+    inside_node_modules: bool,
+    results: &mut Vec<Vec<Dependency>>,
+    errors: &mut Vec<String>,
+) -> Result<()> {
     type Parser = (&'static str, fn(&Path) -> Result<Vec<Dependency>>);
     let parsers: Vec<Parser> = if inside_node_modules {
         if has_npm_lockfile(current_dir) {
@@ -123,20 +177,12 @@ fn parse_all_ecosystems_inner(
     for (manifest, parser) in parsers {
         let path = current_dir.join(manifest);
         if path_detected(&path)? {
-            match parser(current_dir) {
-                Ok(deps) if !deps.is_empty() => results.push(deps),
-                Ok(_) => {}
-                Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-            }
+            record_parse(&path, parser(current_dir), results, errors);
         }
     }
 
     if let Some(path) = first_python_manifest(current_dir)? {
-        match parse_python_project(current_dir) {
-            Ok(deps) if !deps.is_empty() => results.push(deps),
-            Ok(_) => {}
-            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-        }
+        record_parse(&path, parse_python_project(current_dir), results, errors);
     }
 
     let jvm_manifest = ["build.gradle", "build.gradle.kts", "pom.xml"]
@@ -149,89 +195,55 @@ fn parse_all_ecosystems_inner(
         })
         .transpose()?;
     if let Some(path) = jvm_manifest {
-        match jvm::parse(current_dir) {
-            Ok(deps) if !deps.is_empty() => results.push(deps),
-            Ok(_) => {}
-            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-        }
+        record_parse(&path, jvm::parse(current_dir), results, errors);
     }
     if let Some(path) = first_csproj(current_dir)? {
-        match csproj::parse(current_dir) {
-            Ok(deps) if !deps.is_empty() => results.push(deps),
-            Ok(_) => {}
-            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
-        }
+        record_parse(&path, csproj::parse(current_dir), results, errors);
     }
-
-    let mut entries: Vec<_> = std::fs::read_dir(current_dir)
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "Failed to inspect {} for project manifests: {}",
-                current_dir.display(),
-                err
-            )
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "Failed to inspect {} for project manifests: {}",
-                current_dir.display(),
-                err
-            )
-        })?;
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        let name = entry.file_name();
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            if name.to_str() == Some(".git") {
-                continue;
-            }
-            parse_all_ecosystems_inner(
-                &path,
-                root,
-                visited,
-                results,
-                errors,
-                inside_node_modules || name.to_str() == Some("node_modules"),
-            )?;
-            continue;
-        }
-        if file_type.is_symlink() {
-            let target = std::fs::canonicalize(&path).map_err(|err| {
-                anyhow::anyhow!(
-                    "Failed to resolve symlinked path '{}': {}",
-                    path.display(),
-                    err
-                )
-            })?;
-            if target.is_dir() {
-                if !target.starts_with(root) {
-                    bail!(
-                        "Refusing to follow symlinked directory '{}' outside the scan root.",
-                        path.display()
-                    );
-                }
-                parse_all_ecosystems_inner(
-                    &path,
-                    root,
-                    visited,
-                    results,
-                    errors,
-                    inside_node_modules
-                        || target.strip_prefix(root).ok().is_some_and(|relative| {
-                            relative
-                                .components()
-                                .any(|component| ignored_directory_component(component))
-                        }),
-                )?;
-            }
-        }
-    }
-
     Ok(())
+}
+
+/// Directory to descend into for `entry` (real or symlinked), with whether it sits in `node_modules`.
+fn child_directory(
+    entry: &std::fs::DirEntry,
+    root: &Path,
+    inside_node_modules: bool,
+) -> Result<Option<(std::path::PathBuf, bool)>> {
+    let name = entry.file_name();
+    let path = entry.path();
+    let file_type = entry.file_type()?;
+    if file_type.is_dir() {
+        if name.to_str() == Some(".git") {
+            return Ok(None);
+        }
+        let nested = inside_node_modules || name.to_str() == Some("node_modules");
+        return Ok(Some((path, nested)));
+    }
+    if !file_type.is_symlink() {
+        return Ok(None);
+    }
+    let target = std::fs::canonicalize(&path).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to resolve symlinked path '{}': {}",
+            path.display(),
+            err
+        )
+    })?;
+    if !target.is_dir() {
+        return Ok(None);
+    }
+    if !target.starts_with(root) {
+        bail!(
+            "Refusing to follow symlinked directory '{}' outside the scan root.",
+            path.display()
+        );
+    }
+    let nested = inside_node_modules
+        || target
+            .strip_prefix(root)
+            .ok()
+            .is_some_and(|relative| relative.components().any(ignored_directory_component));
+    Ok(Some((path, nested)))
 }
 
 fn ignored_directory_name(name: &std::ffi::OsStr) -> bool {
