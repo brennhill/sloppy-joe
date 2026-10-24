@@ -187,3 +187,73 @@ fn manifests_the_scan_does_not_read_block_instead_of_being_skipped() {
     assert!(detect(&broken).is_err());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Inside an installed `node_modules` tree each kind's descriptor decides whether a manifest is
+/// still a project. Pins the three policies so none can silently drop manifests.
+#[test]
+fn installed_tree_policy_decides_whether_a_manifest_stays_a_project() {
+    let dir = std::env::temp_dir().join(format!("sj-installed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut names: Vec<&str> = ProjectInputKind::ALL
+        .iter()
+        .flat_map(|kind| kind.descriptor().manifest_file_names.iter().copied())
+        .filter(|name| *name != "pyproject.toml")
+        .collect();
+    names.extend(["app.csproj", "requirements.txt"]);
+    let mut seen_policies = std::collections::HashSet::new();
+    for name in names {
+        let path = dir.join(name);
+        std::fs::write(&path, "").unwrap();
+        let kind = detect(&path).unwrap().unwrap_or_else(|| panic!("{name}"));
+        let kept = crate::project_input_from_path(&path, true)
+            .unwrap()
+            .is_some();
+        let policy = kind.descriptor().in_installed_tree;
+        seen_policies.insert(std::mem::discriminant(&policy));
+        match policy {
+            InstalledTreePolicy::Scan => assert!(kept, "{name} must stay a project"),
+            InstalledTreePolicy::Skip => assert!(!kept, "{name} must be skipped"),
+            InstalledTreePolicy::ScanWhenLocked => {
+                let locked = selected_lockfile_path(&ProjectInputSpec {
+                    kind,
+                    manifest_path: path.clone(),
+                    lockfile_path_override: None,
+                    js_binding: None,
+                })
+                .is_some();
+                assert_eq!(kept, locked, "{name}");
+            }
+        }
+        // Outside node_modules every detected manifest is a project.
+        assert!(
+            crate::project_input_from_path(&path, false)
+                .unwrap()
+                .is_some(),
+            "{name}"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+    // The descriptors exercise Scan (a manifest buried in node_modules still counts) and Skip.
+    assert!(seen_policies.len() >= 2, "{seen_policies:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Gradle plugin markers resolve from plugin repositories and buildscript classpath artifacts
+/// from Maven repositories: merging the groups would query one against the other's registry.
+#[test]
+fn gradle_tooling_dependencies_split_into_markers_and_classpath() {
+    let dep = |name: &str| Dependency {
+        name: name.to_string(),
+        version: Some("1.0.0".to_string()),
+        ecosystem: Ecosystem::Jvm,
+        actual_name: None,
+    };
+    let groups = for_kind(ProjectInputKind::Gradle).tooling_groups(vec![
+        dep("com.acme:com.acme.gradle.plugin"),
+        dep("org.example:tool"),
+    ]);
+    assert_eq!(groups.len(), 2, "{groups:?}");
+    let names = |group: &Vec<Dependency>| group.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&groups[0]), vec!["com.acme:com.acme.gradle.plugin"]);
+    assert_eq!(names(&groups[1]), vec!["org.example:tool"]);
+}

@@ -462,3 +462,41 @@ async fn implementation_checks_run_through_the_trait_for_plugin_projects_only() 
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+/// `implementation_issues` results must reach the report the engine returns. The plugin portal is
+/// a local mock that publishes nothing, so the marker POM cannot be read: that block comes only
+/// from the implementation check, not from the existence check.
+#[tokio::test]
+async fn implementation_issues_reach_the_engine_report() {
+    let base = plugin_portal_mock(&[]).await;
+    crate::registry::gradle_plugins::TEST_PORTAL_URL.with(|url| *url.borrow_mut() = Some(base));
+    let dir = gradle_project(
+        &build_with_plugins("id 'com.diffplug.spotless' version '6.25.0'"),
+        &[],
+    );
+    let config = config::SloppyJoeConfig::default();
+    let cache = unique_dir();
+    let specs = specs(&dir, &config);
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts(&cache)).unwrap();
+    let tooling = projects.iter().find(|p| p.unlocked_tooling).unwrap();
+    let report = crate::engine::scan_one_project(
+        tooling,
+        &config,
+        &registry::http_client(),
+        &NoAdvisories,
+        &opts(&cache),
+    )
+    .await
+    .unwrap();
+    crate::registry::gradle_plugins::TEST_PORTAL_URL.with(|url| *url.borrow_mut() = None);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("implementation artifacts")),
+        "{:?}",
+        report.issues
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+}

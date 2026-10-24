@@ -307,3 +307,42 @@ async fn npm_workspace_member_missing_from_the_root_lockfile_is_an_independent_i
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_manifest_blocks_even_beside_a_healthy_project() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    for sub in ["svc", "web", "real"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    std::fs::write(
+        dir.join("svc/go.mod"),
+        "module example.com/app\n\ngo 1.21\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("svc/go.sum"), "").unwrap();
+    std::fs::write(
+        dir.join("real/package.json"),
+        r#"{"name":"web","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("../real/package.json", dir.join("web/package.json")).unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        None,
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let blocked = match report {
+        Err(_) => true,
+        Ok(report) => report.has_incomplete_projects() || report.has_errors(),
+    };
+    assert!(blocked, "a symlinked manifest must not be skipped silently");
+    std::fs::remove_dir_all(dir).unwrap();
+}

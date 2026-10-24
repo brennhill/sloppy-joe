@@ -35,6 +35,22 @@ pub struct GradlePluginRegistry {
     requested: HashMap<String, String>,
 }
 
+/// Tests point the plugin portal at a local mock. Thread-local so parallel tests cannot see each
+/// other's override, and compiled out of release builds.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_PORTAL_URL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn plugin_portal_url() -> String {
+    #[cfg(test)]
+    if let Some(url) = TEST_PORTAL_URL.with(|url| url.borrow().clone()) {
+        return url;
+    }
+    GRADLE_PLUGIN_PORTAL_URL.to_string()
+}
+
 impl GradlePluginRegistry {
     /// Only public, known repositories can be queried; a custom repository's
     /// contents are never vetted against a public one.
@@ -46,7 +62,7 @@ impl GradlePluginRegistry {
         let mut base_urls = Vec::new();
         for repository in repositories {
             base_urls.push(match repository {
-                PluginRepository::GradlePluginPortal => GRADLE_PLUGIN_PORTAL_URL.to_string(),
+                PluginRepository::GradlePluginPortal => plugin_portal_url(),
                 PluginRepository::MavenCentral => MAVEN_CENTRAL_URL.to_string(),
                 PluginRepository::Custom(url) => bail!(
                     "custom Gradle plugin repository '{}' cannot be checked as a public registry",

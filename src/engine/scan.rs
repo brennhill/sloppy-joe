@@ -98,11 +98,11 @@ fn fast_mode_full_scan_reasons(
 }
 
 /// Run all checks for one project, including the Gradle plugin implementation checks.
-async fn scan_one_project(
+pub(crate) async fn scan_one_project(
     project: &ParsedProject,
     config: &config::SloppyJoeConfig,
     client: &reqwest::Client,
-    osv_client: &checks::malicious::RealOsvClient,
+    osv_client: &dyn checks::malicious::OsvClient,
     opts: &ScanOptions<'_>,
 ) -> Result<ScanReport> {
     // A project with no declared dependencies is still scanned: its
