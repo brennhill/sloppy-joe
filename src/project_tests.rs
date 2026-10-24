@@ -2,27 +2,8 @@ use super::*;
 
 #[test]
 fn all_lists_every_kind_once() {
-    // Exhaustive match: adding a variant fails to compile here until ALL is updated.
-    for kind in ProjectInputKind::ALL {
-        match kind {
-            ProjectInputKind::Npm
-            | ProjectInputKind::PyProjectPoetry
-            | ProjectInputKind::PyProjectUv
-            | ProjectInputKind::PyRequirements
-            | ProjectInputKind::PyRequirementsTrusted
-            | ProjectInputKind::PyProjectLegacy
-            | ProjectInputKind::PyPipfile
-            | ProjectInputKind::PySetupPy
-            | ProjectInputKind::PySetupCfg
-            | ProjectInputKind::Cargo
-            | ProjectInputKind::Go
-            | ProjectInputKind::Ruby
-            | ProjectInputKind::Php
-            | ProjectInputKind::Gradle
-            | ProjectInputKind::Maven
-            | ProjectInputKind::Dotnet => {}
-        }
-    }
+    // A kind missing from ALL has no descriptor row either (see
+    // descriptor_rows_cover_every_kind_in_order), so it cannot be used: descriptor() panics.
     for (index, kind) in ProjectInputKind::ALL.iter().enumerate() {
         assert!(
             !ProjectInputKind::ALL[..index].contains(kind),

@@ -217,3 +217,109 @@ fn maven_states_its_reduced_confidence_policy() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// Constructs the scan cannot verify must fail the parse stage, not pass silently.
+const UNSUPPORTED: &[(ProjectInputKind, &str, &str)] = &[
+    (
+        ProjectInputKind::Npm,
+        "package.json",
+        r#"{"name":"app","version":"1.0.0","dependencies":{"x":"git+https://example.com/x.git"}}"#,
+    ),
+    (
+        ProjectInputKind::Cargo,
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nx = { git = \"https://example.com/x\" }\n",
+    ),
+    (
+        ProjectInputKind::Go,
+        "go.mod",
+        "module example.com/app\n\ngo 1.21\n\nrequire github.com/pkg/errors v0.9.1\nreplace github.com/pkg/errors => ../errors\n",
+    ),
+    (
+        ProjectInputKind::Ruby,
+        "Gemfile",
+        "source 'https://rubygems.org'\ngem 'x', git: 'https://example.com/x.git'\n",
+    ),
+    (
+        ProjectInputKind::Php,
+        "composer.json",
+        r#"{"require":{"a/b":"dev-main"},"repositories":[{"type":"vcs","url":"https://example.com/b.git"}]}"#,
+    ),
+    (
+        ProjectInputKind::Gradle,
+        "build.gradle",
+        "dependencies {\n    implementation files('libs/x.jar')\n    implementation 'a:b:+'\n}\n",
+    ),
+    (
+        ProjectInputKind::Dotnet,
+        "app.csproj",
+        r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Bad?Package" Version="1.0.0" /></ItemGroup></Project>"#,
+    ),
+    (
+        ProjectInputKind::PyProjectPoetry,
+        "pyproject.toml",
+        "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\npython = \"3.11.0\"\nx = { git = \"https://example.com/x.git\" }\n",
+    ),
+    (
+        ProjectInputKind::PyProjectUv,
+        "pyproject.toml",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"x @ git+https://example.com/x.git\"]\n\n[tool.uv]\n",
+    ),
+];
+
+#[test]
+fn unsupported_constructs_do_not_pass_silently() {
+    for (kind, manifest, content) in UNSUPPORTED {
+        let fixture = Fixture {
+            kind: *kind,
+            manifest,
+            content,
+        };
+        let dir = fixture_dir(&fixture, None);
+        let config = config::SloppyJoeConfig::default();
+        let opts = ScanOptions::default();
+        let ctx = ScanCtx {
+            scan_root: &dir,
+            config: &config,
+            opts: &opts,
+        };
+        let spec = ProjectInputSpec {
+            kind: *kind,
+            manifest_path: dir.join(manifest),
+            lockfile_path_override: None,
+            js_binding: None,
+        };
+        // The parse and source-policy stages run without a lockfile, so only the construct can
+        // block here.
+        let plugin = for_kind(*kind);
+        let blocked = match plugin.parse(&ctx, &spec) {
+            Err(_) => true,
+            Ok(parsed) => {
+                parsed
+                    .warnings
+                    .iter()
+                    .any(|w| w.severity == Severity::Error)
+                    || PreflightCtx::new(
+                        ctx,
+                        std::slice::from_ref(&spec),
+                        std::slice::from_ref(&spec),
+                    )
+                    .and_then(|pre| plugin.source_policy(&pre, &spec))
+                    .is_err()
+            }
+        };
+        assert!(blocked, "{kind:?}: unsupported construct passed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn unsupported_fixtures_cover_every_conformance_fixture() {
+    for fixture in FIXTURES {
+        assert!(
+            UNSUPPORTED.iter().any(|(kind, ..)| *kind == fixture.kind),
+            "add an unsupported-construct fixture for {:?}",
+            fixture.kind
+        );
+    }
+}

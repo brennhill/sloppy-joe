@@ -135,7 +135,11 @@ pub(crate) trait EcosystemSupport: Sync {
 
     /// Where this project's packages may come from, and how far the scan can trust the answer.
     /// An ecosystem without a trusted lockfile states [`SourcePolicy::ReducedConfidence`].
-    fn source_policy(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<SourcePolicy>;
+    fn source_policy(
+        &self,
+        ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+    ) -> Result<SourcePolicy>;
 
     /// A registry client that replaces the ecosystem default for this project, when the project
     /// resolves from somewhere else (Gradle plugin repositories).

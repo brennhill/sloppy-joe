@@ -1,23 +1,35 @@
 use crate::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectInputKind {
-    Npm,
-    PyProjectPoetry,
-    PyProjectUv,
-    PyRequirements,
-    PyRequirementsTrusted,
-    PyProjectLegacy,
-    PyPipfile,
-    PySetupPy,
-    PySetupCfg,
-    Cargo,
-    Go,
-    Ruby,
-    Php,
-    Gradle,
-    Maven,
-    Dotnet,
+/// Opaque identity of a project kind. Everything else about a kind (names, policies, behavior)
+/// comes from its descriptor and its ecosystem plugin; only those two places name the constants.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProjectInputKind(&'static str);
+
+impl std::fmt::Debug for ProjectInputKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+#[allow(non_upper_case_globals)]
+impl ProjectInputKind {
+    pub(crate) const Npm: ProjectInputKind = ProjectInputKind("Npm");
+    pub(crate) const PyProjectPoetry: ProjectInputKind = ProjectInputKind("PyProjectPoetry");
+    pub(crate) const PyProjectUv: ProjectInputKind = ProjectInputKind("PyProjectUv");
+    pub(crate) const PyRequirements: ProjectInputKind = ProjectInputKind("PyRequirements");
+    pub(crate) const PyRequirementsTrusted: ProjectInputKind =
+        ProjectInputKind("PyRequirementsTrusted");
+    pub(crate) const PyProjectLegacy: ProjectInputKind = ProjectInputKind("PyProjectLegacy");
+    pub(crate) const PyPipfile: ProjectInputKind = ProjectInputKind("PyPipfile");
+    pub(crate) const PySetupPy: ProjectInputKind = ProjectInputKind("PySetupPy");
+    pub(crate) const PySetupCfg: ProjectInputKind = ProjectInputKind("PySetupCfg");
+    pub(crate) const Cargo: ProjectInputKind = ProjectInputKind("Cargo");
+    pub(crate) const Go: ProjectInputKind = ProjectInputKind("Go");
+    pub(crate) const Ruby: ProjectInputKind = ProjectInputKind("Ruby");
+    pub(crate) const Php: ProjectInputKind = ProjectInputKind("Php");
+    pub(crate) const Gradle: ProjectInputKind = ProjectInputKind("Gradle");
+    pub(crate) const Maven: ProjectInputKind = ProjectInputKind("Maven");
+    pub(crate) const Dotnet: ProjectInputKind = ProjectInputKind("Dotnet");
 }
 
 #[derive(Clone, Debug)]

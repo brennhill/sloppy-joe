@@ -64,7 +64,7 @@ nearest place. Without a guardrail that keeps happening.
 - **Given** a file outside `src/ecosystems/`, **then** it does not name a concrete plugin module
   (`ecosystems::cargo`, ...); it calls the facade functions in `ecosystems/mod.rs`.
 - **Given** every kind whose descriptor requires a lockfile, **then** the shared conformance suite in
-  `src/ecosystems/tests.rs` shows that a missing or malformed lockfile blocks preflight, and that Maven
+  `src/ecosystems/tests.rs` shows that a missing or malformed lockfile blocks preflight, that an unsupported construct blocks, and that Maven
   states its reduced-confidence policy.
 
 ### Baseline maintenance

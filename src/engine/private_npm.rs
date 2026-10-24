@@ -204,9 +204,10 @@ pub(crate) async fn scan_with_services_inner_for_kind(
         let preflight_warnings =
             preflight_project_inputs_with_options(project_dir, &specs, &config, opts)?;
         let projects = parse_project_inputs_with_options(project_dir, &specs, &config, opts)?;
-        if let Some(project) = projects.into_iter().find(|project| {
-            std::mem::discriminant(&project.spec.kind) == std::mem::discriminant(&project_kind)
-        }) {
+        if let Some(project) = projects
+            .into_iter()
+            .find(|project| project.spec.kind == project_kind)
+        {
             let mut report =
                 scan_parsed_project(&project, config, registry, osv_client, opts).await?;
             report.issues.splice(0..0, preflight_warnings);
