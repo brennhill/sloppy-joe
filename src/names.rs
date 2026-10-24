@@ -8,6 +8,7 @@ pub const EXISTENCE: &str = "existence";
 pub const EXISTENCE_REGISTRY_UNREACHABLE: &str = "existence/registry-unreachable";
 
 // -- Metadata signals --
+pub const STEERING_DISTRIBUTION_NAME: &str = "steering/distribution-name";
 pub const METADATA_VERSION_AGE: &str = "metadata/version-age";
 pub const METADATA_NEW_PACKAGE: &str = "metadata/new-package";
 pub const METADATA_LOW_DOWNLOADS: &str = "metadata/low-downloads";
@@ -117,6 +118,7 @@ mod tests {
             SCAN_INCOMPLETE_PROJECT,
             EXISTENCE,
             EXISTENCE_REGISTRY_UNREACHABLE,
+            STEERING_DISTRIBUTION_NAME,
             METADATA_VERSION_AGE,
             METADATA_NEW_PACKAGE,
             METADATA_LOW_DOWNLOADS,

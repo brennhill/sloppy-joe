@@ -77,6 +77,17 @@ impl Check for SimilarityCheck {
                 acc.similarity_flagged.insert(issue.package.clone());
             }
             acc.issues.extend(results);
+
+            // Names models guess (import or command names) get the same
+            // scrutiny as similarity hits downstream.
+            let steering = super::steering::check_wrong_distribution_names(
+                ctx.checkable_deps,
+                acc.metadata_lookups.as_deref().unwrap_or_default(),
+            );
+            for issue in &steering {
+                acc.similarity_flagged.insert(issue.package.clone());
+            }
+            acc.issues.extend(steering);
             Ok(())
         })
     }

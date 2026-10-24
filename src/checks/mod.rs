@@ -9,6 +9,7 @@ pub(crate) mod python_lockfile_hashes;
 pub(crate) mod release_cadence;
 pub(crate) mod signals;
 pub mod similarity;
+pub(crate) mod steering;
 pub(crate) mod tarball_verification;
 pub(crate) mod unresolved;
 pub(crate) mod wheel_verification;
