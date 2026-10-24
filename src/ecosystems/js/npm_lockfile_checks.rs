@@ -568,6 +568,16 @@ pub(crate) fn validate_npm_lockfile_entry_fields(
     lockfile_path: &std::path::Path,
     registries: &npm_config::NpmRegistries,
 ) -> Result<()> {
+    // npm treats any truthy `link`/`inBundle`/`bundled` as set, so only real booleans are modeled.
+    for flag in ["link", "inBundle", "bundled"] {
+        if entry.get(flag).is_some_and(|value| !value.is_boolean()) {
+            anyhow::bail!(
+                "Required lockfile '{}' entry '{}' has a non-boolean '{flag}' value; npm reads it differently than sloppy-joe, so the entry cannot be verified.",
+                lockfile_path.display(),
+                package_name
+            );
+        }
+    }
     if entry
         .get("link")
         .and_then(|value| value.as_bool())
@@ -655,4 +665,23 @@ pub(crate) fn validate_npm_lockfile_entry_fields(
 
 pub(crate) fn is_trusted_npm_resolved_source(resolved: &str) -> bool {
     npm_registry_tarball_path(resolved).is_some()
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    #[test]
+    fn non_boolean_link_and_bundle_flags_block() {
+        for flag in ["link", "inBundle", "bundled"] {
+            let entry = serde_json::json!({"version": "1.0.0", flag: "yes"});
+            let result = validate_npm_lockfile_entry_fields(
+                "left-pad",
+                entry.as_object().unwrap(),
+                std::path::Path::new("package-lock.json"),
+                &npm_config::NpmRegistries::default(),
+            );
+            assert!(result.is_err(), "{flag}");
+        }
+    }
 }

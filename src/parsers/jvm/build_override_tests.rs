@@ -204,3 +204,42 @@ fn a_buildsrc_without_a_build_script_blocks() {
     assert!(parse(&dir).is_ok());
     cleanup(&dir);
 }
+
+#[test]
+fn a_local_parent_written_with_cdata_blocks_instead_of_falling_back_to_central() {
+    use crate::parsers::jvm::maven_local_parent;
+    let dir = setup_pom("<project/>");
+    write_in(
+        &dir,
+        "parent/pom.xml",
+        "<project><groupId><![CDATA[org.example]]></groupId><artifactId>p</artifactId><version>1</version></project>",
+    );
+    let child = dir.join("pom.xml");
+    let result = maven_local_parent(
+        &child,
+        "org.example",
+        "p",
+        Some("1"),
+        Some("parent/pom.xml".to_string()),
+        true,
+    );
+    assert!(result.is_err());
+    write_in(
+        &dir,
+        "parent/pom.xml",
+        "<project><groupId>org.example</groupId><artifactId>p</artifactId><version>1</version></project>",
+    );
+    assert!(
+        maven_local_parent(
+            &child,
+            "org.example",
+            "p",
+            Some("1"),
+            Some("parent/pom.xml".to_string()),
+            true
+        )
+        .unwrap()
+        .is_some()
+    );
+    cleanup(&dir);
+}

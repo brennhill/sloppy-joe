@@ -268,17 +268,34 @@ async fn unavailable_parent_poms_fail_closed() {
 }
 
 #[tokio::test]
-async fn property_parent_versions_leave_managed_versions_unset() {
+async fn undefined_property_parent_versions_fail_closed() {
     let content = pom(
         &parent_ref("org.example", "parent", "${revision}"),
         &format!("<dependencies>{DEP}</dependency></dependencies>"),
     );
     let source = FakeSource::new(&[]);
-    let resolved = resolve(&content, &source).await.unwrap();
-    assert_eq!(version_of(&resolved, "com.google.guava:guava"), None);
-    assert!(
-        source.fetched.lock().unwrap().is_empty(),
-        "no fetch with an unresolved version"
+    assert!(resolve(&content, &source).await.is_err());
+    assert!(source.fetched.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn property_parent_versions_resolve_from_the_childs_properties() {
+    let parent = pom(
+        "",
+        "<properties><managed.v>31.1-jre</managed.v></properties>",
+    );
+    let source = FakeSource::new(&[("org.example", "parent", "7", &parent)]);
+    let content = pom(
+        &parent_ref("org.example", "parent", "${revision}"),
+        &format!(
+            "<properties><revision>7</revision></properties><dependencies>{DEP}</dependency></dependencies>"
+        ),
+    );
+    resolve(&content, &source).await.unwrap();
+    assert_eq!(
+        source.fetched.lock().unwrap().len(),
+        1,
+        "the parent was loaded"
     );
 }
 

@@ -199,11 +199,36 @@ pub(crate) fn resolved_path_inside_installed_node_modules(
     inside
 }
 
+/// On a case-insensitive filesystem (macOS, Windows) `Package.json` is read as `package.json`.
+/// A file that is not a manifest by its exact name but would be with another capitalization is
+/// therefore a manifest that discovery would skip.
+fn reject_case_variant_manifest(path: &std::path::Path) -> Result<()> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    let mut capitalized = name.to_ascii_lowercase();
+    if let Some(first) = capitalized.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    for candidate in [name.to_ascii_lowercase(), capitalized] {
+        if candidate != name && ecosystems::detect(&path.with_file_name(&candidate))?.is_some() {
+            anyhow::bail!(
+                "Manifest '{}' differs only in letter case from '{candidate}'; on a case-insensitive filesystem the package manager reads it, but discovery would skip it. Rename it.",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn project_input_from_path(
     path: &std::path::Path,
     inside_installed_node_modules: bool,
 ) -> Result<Option<ProjectInputSpec>> {
     let Some(kind) = ecosystems::detect(path)? else {
+        if !inside_installed_node_modules {
+            reject_case_variant_manifest(path)?;
+        }
         return Ok(None);
     };
     let spec = ProjectInputSpec {
@@ -225,4 +250,24 @@ pub(crate) fn project_input_from_path(
     }
 
     Ok(Some(spec))
+}
+
+#[cfg(test)]
+mod case_tests {
+    use super::*;
+
+    #[test]
+    fn case_variant_manifest_names_block_discovery() {
+        let dir = std::env::temp_dir().join(format!("sj-case-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["Package.json", "PACKAGE.JSON", "cargo.toml", "GO.MOD"] {
+            let path = dir.join(name);
+            std::fs::write(&path, "{}").unwrap();
+            assert!(project_input_from_path(&path, false).is_err(), "{name}");
+        }
+        let readme = dir.join("README.md");
+        std::fs::write(&readme, "x").unwrap();
+        assert!(project_input_from_path(&readme, false).unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

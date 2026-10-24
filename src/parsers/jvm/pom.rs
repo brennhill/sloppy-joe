@@ -251,25 +251,23 @@ pub(crate) fn maven_local_parent(
     if !crate::parsers::path_detected(&candidate)? {
         return Ok(None);
     }
-    let Ok(candidate) = std::fs::canonicalize(&candidate) else {
-        return Ok(None);
-    };
+    let candidate = std::fs::canonicalize(&candidate)?;
     let project_dir = std::fs::canonicalize(base)?;
     if let Some(root) = crate::cache::find_git_root(&project_dir).map_err(anyhow::Error::msg)?
         && !candidate.starts_with(&root)
     {
         return Ok(None);
     }
-    let Ok(parent_content) =
-        crate::parsers::read_file_limited(&candidate, crate::parsers::MAX_MANIFEST_BYTES)
-    else {
-        return Ok(None);
-    };
-    let Ok(parent_content) = strip_xml_comments(&parent_content) else {
-        return Ok(None);
-    };
+    // A local POM that exists but cannot be modeled must not silently fall back to the
+    // same-named POM on Maven Central: Maven itself would still read the local file.
+    let parent_content =
+        crate::parsers::read_file_limited(&candidate, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let parent_content = strip_xml_comments(&parent_content)?;
     let Some(project_body) = maven_project_body(&parent_content) else {
-        return Ok(None);
+        bail!(
+            "Local Maven parent {} has no readable <project> element; its declarations cannot be scanned",
+            candidate.display()
+        );
     };
     let children = xml_direct_children(project_body);
     let child = |name: &str| {
@@ -291,6 +289,24 @@ pub(crate) fn maven_local_parent(
         })
     };
     let local_group = child("groupId").or_else(|| inherited_child("groupId"));
+    // CDATA and character references decode to different text in Maven than the raw compare sees.
+    for value in [
+        local_group.as_deref(),
+        child("artifactId").as_deref(),
+        child("version")
+            .or_else(|| inherited_child("version"))
+            .as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value.contains("<![CDATA[") || value.contains('&') {
+            bail!(
+                "Local Maven parent {} writes its coordinates with CDATA or XML entities, which cannot be matched reliably",
+                candidate.display()
+            );
+        }
+    }
     let local_version = child("version").or_else(|| inherited_child("version"));
     let matches = local_group.as_deref() == Some(group)
         && child("artifactId").as_deref() == Some(artifact)

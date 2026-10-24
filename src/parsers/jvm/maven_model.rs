@@ -56,10 +56,9 @@ async fn load_chain(
         if levels.len() >= MAX_CHAIN_DEPTH {
             bail!("Maven parent chain is deeper than {MAX_CHAIN_DEPTH} levels");
         }
-        let coordinate = &parent.coordinate;
-        if coordinate.version.contains("${") {
-            break;
-        }
+        let mut coordinate = parent.coordinate.clone();
+        coordinate.version = interpolate_parent_version(&coordinate.version, &levels)?;
+        let coordinate = &coordinate;
         let local = match &path {
             Some(path) => maven_local_parent(
                 path,
@@ -82,6 +81,36 @@ async fn load_chain(
         path = next_path;
     }
     Ok(Chain { levels })
+}
+
+/// A parent's `<version>` may be a property (`${revision}`); Maven resolves it from the child's
+/// properties. One that cannot be resolved would hide the parent's declarations, so it blocks.
+fn interpolate_parent_version(version: &str, levels: &[PomLevel]) -> Result<String> {
+    let mut resolved = version.to_string();
+    for _ in 0..8 {
+        let Some(start) = resolved.find("${") else {
+            return Ok(resolved);
+        };
+        let Some(len) = resolved[start..].find('}') else {
+            break;
+        };
+        let name = &resolved[start + 2..start + len];
+        let Some(value) = levels
+            .iter()
+            .rev()
+            .find_map(|level| level.properties.get(name))
+        else {
+            bail!(
+                "Maven parent version '{}' uses a property ('{name}') that is not defined in the POM; the parent cannot be loaded, so its dependencies cannot be scanned",
+                crate::report::sanitize_for_terminal(version)
+            );
+        };
+        resolved.replace_range(start..=start + len, value);
+    }
+    bail!(
+        "Maven parent version '{}' cannot be resolved to a plain version",
+        crate::report::sanitize_for_terminal(version)
+    )
 }
 
 struct Effective {
