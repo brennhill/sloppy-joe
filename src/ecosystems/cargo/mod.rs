@@ -3,6 +3,7 @@ use super::*;
 mod ambient_inputs;
 mod cargo_surface;
 mod config_file;
+mod lock_schema;
 mod program_settings;
 mod rewrite;
 mod scope;
@@ -124,8 +125,9 @@ impl EcosystemSupport for Cargo {
         } = ctx.scan;
         let lockfile = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
         common::ensure_kind_lockfile(spec, &lockfile)?;
-        cargo_lockfile_value(&lockfile)?;
-        Ok(Vec::new())
+        let parsed = cargo_lockfile_value(&lockfile)?;
+        let applied = lock_schema::check_entry_keys(&parsed, &lockfile, &config.config_key_allow)?;
+        Ok(crate::config_surface::issues(&applied))
     }
 
     fn source_policy(
