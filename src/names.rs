@@ -98,6 +98,7 @@ pub const RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE: &str =
 pub const RESOLUTION_PYTHON_GROUPS_NOT_SCANNED: &str = "resolution/python-groups-not-scanned";
 pub const RESOLUTION_VENDORED_SOURCE_UNVERIFIED: &str = "resolution/vendored-source-unverified";
 pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
+pub const CONFIG_KEY_ALLOWED: &str = "config/key-allowed";
 
 #[cfg(test)]
 mod tests {
@@ -168,6 +169,7 @@ mod tests {
             RESOLUTION_PYTHON_GROUPS_NOT_SCANNED,
             RESOLUTION_VENDORED_SOURCE_UNVERIFIED,
             CONFIG_LOCAL_OVERLAY_RELAXATION,
+            CONFIG_KEY_ALLOWED,
         ]
     }
 

@@ -64,8 +64,11 @@ impl EcosystemSupport for Php {
     }
 
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput> {
+        let (deps, applied) =
+            parsers::composer_json::parse_with(spec.project_dir(), &ctx.config.config_key_allow)?;
         Ok(ParsedInput {
-            deps: self.parse_manifest(ctx.scan_root, spec)?,
+            deps,
+            warnings: crate::config_surface::issues(&applied),
             ..ParsedInput::default()
         })
     }

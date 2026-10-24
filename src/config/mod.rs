@@ -296,6 +296,11 @@ pub struct SloppyJoeConfig {
     pub python_enforcement: PythonEnforcement,
     #[serde(default = "default_poetry_lock_policy")]
     pub poetry_lock_policy: PoetryLockPolicy,
+    /// Config keys the built-in allowlists do not list but the operator accepts, one exact key
+    /// per entry. Each applied entry is reported as a warning. Read only from the out-of-repo
+    /// config, never from the local overlay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_key_allow: Vec<crate::config_surface::KeyAllow>,
     #[serde(default, skip_serializing_if = "BootstrapReview::is_empty")]
     pub bootstrap_review: BootstrapReview,
     #[serde(skip)]
@@ -372,6 +377,7 @@ impl Default for SloppyJoeConfig {
             cargo_git_policy: default_cargo_git_policy(),
             python_enforcement: default_python_enforcement(),
             poetry_lock_policy: default_poetry_lock_policy(),
+            config_key_allow: Vec::new(),
             bootstrap_review: BootstrapReview::default(),
             allow_host_local_cargo_config: false,
             active_local_overlay_relaxations: Vec::new(),

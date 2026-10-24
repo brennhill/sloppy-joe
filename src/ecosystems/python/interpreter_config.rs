@@ -3,6 +3,7 @@
 //! make the tool run or install something the lockfile hashes never covered.
 
 use super::*;
+use crate::config_surface::{Surface, ValueRule, rule};
 use anyhow::bail;
 
 /// The directories uv, Poetry and pipenv consult: the project directory and its parents up to the
@@ -24,14 +25,25 @@ fn exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+#[cfg(test)]
 pub(super) fn check_interpreter_config(
     spec: &ProjectInputSpec,
     strict: bool,
 ) -> Result<Vec<Issue>> {
+    check_interpreter_config_with(spec, strict, &[])
+}
+
+/// `allows` are the operator's `config_key_allow` entries; each one applied is a warning.
+pub(super) fn check_interpreter_config_with(
+    spec: &ProjectInputSpec,
+    strict: bool,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<Vec<Issue>> {
     let dirs = config_dirs(spec.project_dir())?;
+    let mut applied = Vec::new();
     for dir in &dirs {
         reject_python_version_path(&dir.join(".python-version"))?;
-        reject_poetry_toml(&dir.join("poetry.toml"))?;
+        applied.extend(check_poetry_toml(&dir.join("poetry.toml"), allows)?);
     }
     let is_pipfile = spec
         .manifest_path
@@ -41,7 +53,9 @@ pub(super) fn check_interpreter_config(
     if is_pipfile {
         reject_pipenv_dotenv(&spec.project_dir().join(".env"))?;
     }
-    committed_venv_issues(spec, &dirs, strict)
+    let mut issues = crate::config_surface::issues(&applied);
+    issues.extend(committed_venv_issues(spec, &dirs, strict)?);
+    Ok(issues)
 }
 
 /// uv accepts a path or executable in `.python-version` and runs it to query the interpreter.
@@ -67,67 +81,62 @@ fn reject_python_version_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Poetry settings that stay allowed in a project `poetry.toml`; none of them changes where
-/// packages come from or where installed artifacts are cached.
-const POETRY_ALLOWED_KEYS: &[&str] = &[
-    "virtualenvs.create",
-    "virtualenvs.in-project",
-    "virtualenvs.prefer-active-python",
-    "virtualenvs.use-poetry-python",
-    "virtualenvs.options.always-copy",
-    "virtualenvs.options.no-pip",
-    "virtualenvs.options.no-setuptools",
-    "virtualenvs.options.system-site-packages",
-    "installer.parallel",
-    "installer.max-workers",
-    "installer.no-binary",
-    "installer.only-binary",
-    "installer.re-resolve",
-    "installer.modern-installation",
-    "solver.lazy-wheel",
-    "requests.max-retries",
-    "system-git-client",
-    "keyring.enabled",
-];
-
-fn flatten_keys(prefix: &str, value: &toml::Value, out: &mut Vec<String>) {
-    match value {
-        toml::Value::Table(table) if !table.is_empty() => {
-            for (key, child) in table {
-                let dotted = if prefix.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{prefix}.{key}")
-                };
-                flatten_keys(&dotted, child, out);
-            }
-        }
-        _ => out.push(prefix.to_string()),
-    }
-}
-
 /// `poetry.toml` can move Poetry's cache (whose unpacked artifacts it installs without re-hashing),
-/// the virtualenv location, and its package repositories and credentials. Anything outside the
-/// allowlist blocks.
-fn reject_poetry_toml(path: &Path) -> Result<()> {
+/// the virtualenv location, and its package repositories and credentials. Those are denied and
+/// cannot be allowed by config. The settings listed here change none of that and stay allowed;
+/// any other key blocks unless the operator allows it (`config_key_allow`, file `poetry.toml`).
+const POETRY: Surface = Surface {
+    id: "poetry.toml",
+    subject: "Poetry setting",
+    why: "it changes the cache, environment or package repositories Poetry installs from, so the lockfile hashes no longer vouch for the install",
+    allow: &[
+        rule("virtualenvs.create", ValueRule::Any),
+        rule("virtualenvs.in-project", ValueRule::Any),
+        rule("virtualenvs.prefer-active-python", ValueRule::Any),
+        rule("virtualenvs.use-poetry-python", ValueRule::Any),
+        rule("virtualenvs.options.always-copy", ValueRule::Any),
+        rule("virtualenvs.options.no-pip", ValueRule::Any),
+        rule("virtualenvs.options.no-setuptools", ValueRule::Any),
+        rule("virtualenvs.options.system-site-packages", ValueRule::Any),
+        rule("installer.parallel", ValueRule::Any),
+        rule("installer.max-workers", ValueRule::Any),
+        rule("installer.no-binary", ValueRule::Any),
+        rule("installer.only-binary", ValueRule::Any),
+        rule("installer.re-resolve", ValueRule::Any),
+        rule("installer.modern-installation", ValueRule::Any),
+        rule("solver.lazy-wheel", ValueRule::Any),
+        rule("requests.max-retries", ValueRule::Any),
+        rule("system-git-client", ValueRule::Any),
+        rule("keyring.enabled", ValueRule::Any),
+    ],
+    deny: &[
+        "cache-dir",
+        "data-dir",
+        "virtualenvs.path",
+        "repositories",
+        "certificates",
+        "http-basic",
+        "pypi-token",
+    ],
+    deny_under: &[],
+};
+
+fn check_poetry_toml(
+    path: &Path,
+    allows: &[crate::config_surface::KeyAllow],
+) -> Result<Vec<crate::config_surface::AppliedAllow>> {
     if !exists(path) {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let content = crate::untrusted::read_line_file(path)?;
-    let parsed: toml::Value = toml::from_str(&content)
-        .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
-    let mut keys = Vec::new();
-    flatten_keys("", &parsed, &mut keys);
-    for key in keys.iter().filter(|key| !key.is_empty()) {
-        if !POETRY_ALLOWED_KEYS.contains(&key.as_str()) {
-            bail!(
-                "Unsupported Poetry setting '{}' in {}: it changes the cache, environment or package repositories Poetry installs from, so the lockfile hashes no longer vouch for the install",
-                crate::report::sanitize_for_terminal(key),
-                path.display()
-            );
-        }
-    }
-    Ok(())
+    let parsed = match crate::untrusted::read(
+        path,
+        crate::untrusted::Format::Toml,
+        crate::fsutil::MAX_MANIFEST_BYTES,
+    )? {
+        crate::untrusted::Untrusted::Toml(value) => value,
+        _ => unreachable!("TOML format produces TOML"),
+    };
+    crate::config_surface::check_toml(&POETRY, &parsed, path, allows)
 }
 
 const DOTENV_BLOCKED_PREFIXES: &[&str] = &[

@@ -1,4 +1,5 @@
 use super::*;
+use crate::config_surface::{AppliedAllow, KeyAllow, check_toml};
 
 pub(crate) fn parse_poetry_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
     let parsed = parse_toml(path)?;
@@ -140,49 +141,38 @@ pub(crate) fn parse_poetry_source_intents_scoped(
     Ok(intents)
 }
 
-/// uv settings that redirect resolution to indexes or directories outside the declared
-/// `[[tool.uv.index]]` entries, or the download of a managed interpreter that uv then executes.
-const UV_UNVERIFIABLE_KEYS: &[&str] = &[
-    "index-url",
-    "extra-index-url",
-    "find-links",
-    "no-index",
-    "index",
-    "index-strategy",
-    "default-index",
-    "python-install-mirror",
-    "pypy-install-mirror",
-    "python-downloads-json-url",
-    // uv installs unpacked artifacts from its cache without re-hashing them.
-    "cache-dir",
-    // Build requirements are not recorded in uv.lock, so these install unlocked code.
-    "extra-build-dependencies",
-];
+fn check_uv_table(
+    table: &toml::map::Map<String, toml::Value>,
+    source: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
+    check_toml(
+        &uv_surface::UV,
+        &toml::Value::Table(table.clone()),
+        source,
+        allows,
+    )
+}
 
-fn reject_uv_redirects(table: &toml::map::Map<String, toml::Value>, source: &Path) -> Result<()> {
-    let pip = table.get("pip").and_then(|value| value.as_table());
-    for key in UV_UNVERIFIABLE_KEYS {
-        if table.contains_key(*key) || pip.is_some_and(|pip| pip.contains_key(*key)) {
-            bail!(
-                "Unsupported uv setting '{key}' in {}: it redirects package resolution to an index or directory that cannot be verified",
-                source.display()
-            );
-        }
-    }
-    Ok(())
+/// Strict form of [`check_uv_config`]: no operator allows.
+#[cfg(test)]
+pub(crate) fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
+    check_uv_config(pyproject, &[]).map(|_| ())
 }
 
 /// `uv.toml` in the project directory or any parent configures uv for the project (and, when
-/// present, replaces `[tool.uv]`), so its index settings count the same as pyproject's.
-pub(crate) fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
+/// present, replaces `[tool.uv]`), so its settings are held to the same allowlist as pyproject's.
+/// Returns the operator allows that were applied, to be reported as warnings.
+pub(crate) fn check_uv_config(pyproject: &Path, allows: &[KeyAllow]) -> Result<Vec<AppliedAllow>> {
     let dir = std::fs::canonicalize(pyproject.parent().unwrap_or(Path::new(".")))?;
     let boundary = crate::cache::find_git_root(&dir).map_err(anyhow::Error::msg)?;
+    let mut applied = Vec::new();
     for ancestor in dir.ancestors() {
         let file = ancestor.join("uv.toml");
         if super::super::path_detected(&file)? {
             let parsed = parse_toml(&file)?;
             if let Some(table) = parsed.as_table() {
-                reject_uv_redirects(table, &file)?;
+                applied.extend(check_uv_table(table, &file, allows)?);
             }
         }
         // A parent's `[tool.uv]` applies to a project that has none of its own.
@@ -197,19 +187,28 @@ pub(crate) fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
                 // `index` is the supported `[[tool.uv.index]]` array, vetted for the project itself.
                 let mut legacy = uv.clone();
                 legacy.remove("index");
-                reject_uv_redirects(&legacy, &pyproject)?;
+                applied.extend(check_uv_table(&legacy, &pyproject, allows)?);
             }
         }
         if boundary.as_deref() == Some(ancestor) {
             break;
         }
     }
-    Ok(())
+    Ok(applied)
 }
 
 pub(crate) fn parse_uv_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
+    parse_uv_sources_with(path, &[])
+}
+
+/// Like [`parse_uv_sources`], with the operator's `config_key_allow` entries applied (the
+/// warnings for them are reported by the tool-config preflight).
+pub(crate) fn parse_uv_sources_with(
+    path: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<PythonSourceDecl>> {
     let parsed = parse_toml(path)?;
-    reject_uv_toml_redirects(path)?;
+    check_uv_config(path, allows)?;
     let Some(uv) = parsed.get("tool").and_then(|tool| tool.get("uv")) else {
         return Ok(Vec::new());
     };
@@ -219,7 +218,7 @@ pub(crate) fn parse_uv_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
     // `index` here is the supported `[[tool.uv.index]]` array; the legacy keys are not.
     let mut legacy = uv.clone();
     legacy.remove("index");
-    reject_uv_redirects(&legacy, path)?;
+    check_uv_table(&legacy, path, allows)?;
 
     let mut sources = Vec::new();
     let mut seen_names = std::collections::HashSet::new();

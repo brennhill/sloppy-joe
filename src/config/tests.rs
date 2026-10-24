@@ -32,3 +32,6 @@ mod part01_is_internal_exact;
 
 #[path = "tests/part02_parse_config_content.rs"]
 mod part02_parse_config_content;
+
+#[path = "tests/part03_config_key_allow.rs"]
+mod part03_config_key_allow;

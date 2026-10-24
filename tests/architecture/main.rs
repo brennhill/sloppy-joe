@@ -34,6 +34,7 @@ const FOUNDATION: &[&str] = &[
     "http",
     "fsutil",
     "untrusted",
+    "config_surface",
 ];
 const CONFIG: &[&str] = &["config", "npm_config"];
 const ORCHESTRATION: &[&str] = &["bootstrap", "engine", "lib", "main"];

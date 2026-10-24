@@ -1,5 +1,6 @@
 pub mod cargo_toml;
 pub mod composer_json;
+mod composer_surface;
 pub mod csproj;
 mod csproj_hooks;
 pub mod gemfile;

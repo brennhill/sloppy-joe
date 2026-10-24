@@ -1,14 +1,25 @@
 use crate::Dependency;
+use crate::config_surface::{AppliedAllow, KeyAllow, check_json};
 use anyhow::{Context, Result};
 use std::path::Path;
 
+/// Strict form of [`parse_with`]: no operator allows.
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
+    parse_with(project_dir, &[]).map(|(deps, _)| deps)
+}
+
+/// Parse `composer.json`, applying the operator's `config_key_allow` entries to its `config`
+/// object. Returns the allows that were applied, to be reported as warnings.
+pub(crate) fn parse_with(
+    project_dir: &Path,
+    allows: &[KeyAllow],
+) -> Result<(Vec<Dependency>, Vec<AppliedAllow>)> {
     let path = project_dir.join("composer.json");
     let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read composer.json")?;
     let parsed: serde_json::Value =
         serde_json::from_str(&content).context("Failed to parse composer.json")?;
-    validate_supported_sources(&parsed, &path)?;
+    let applied = validate_supported_sources(&parsed, &path, allows)?;
 
     let mut deps = Vec::new();
 
@@ -37,7 +48,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
     }
 
-    Ok(deps)
+    Ok((deps, applied))
 }
 
 /// Composer platform packages describe the runtime and are never downloaded
@@ -60,7 +71,11 @@ fn is_platform_package(name: &str) -> bool {
             || name.starts_with("lib-"))
 }
 
-fn validate_supported_sources(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+fn validate_supported_sources(
+    parsed: &serde_json::Value,
+    path: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
     let has_custom_repositories = parsed.get("repositories").is_some_and(|value| match value {
         serde_json::Value::Array(entries) => !entries.is_empty(),
         serde_json::Value::Object(entries) => !entries.is_empty(),
@@ -74,7 +89,7 @@ fn validate_supported_sources(parsed: &serde_json::Value, path: &Path) -> Result
         );
     }
 
-    reject_install_time_code(parsed, path)
+    reject_install_time_code(parsed, path, allows)
 }
 
 /// Whether a root script key names a Composer event rather than a custom `composer run` script.
@@ -86,7 +101,11 @@ fn is_event_name(key: &str) -> bool {
 }
 
 /// Scripts bound to install events and blanket plugin trust execute code that no scan sees.
-fn reject_install_time_code(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+fn reject_install_time_code(
+    parsed: &serde_json::Value,
+    path: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
     if let Some(scripts) = parsed.get("scripts").and_then(|value| value.as_object())
         && let Some(event) = scripts.keys().find(|key| {
             is_event_name(key)
@@ -116,53 +135,32 @@ fn reject_install_time_code(parsed: &serde_json::Value, path: &Path) -> Result<(
             path.display()
         );
     }
-    reject_fetch_steering_config(parsed, path)?;
-    reject_patches(parsed, path)
+    let applied = check_config_surface(parsed, path, allows)?;
+    reject_patches(parsed, path)?;
+    Ok(applied)
 }
 
-/// `config` keys that move Composer's caches (it installs a cached archive without re-hashing
-/// when the lock's `shasum` is empty), weaken TLS, or redirect where it fetches from.
-const COMPOSER_BLOCKED_CONFIG_KEYS: &[&str] = &[
-    "cache-dir",
-    "cache-files-dir",
-    "cache-repo-dir",
-    "cache-vcs-dir",
-    "data-dir",
-    "cafile",
-    "capath",
-    "github-domains",
-    "gitlab-domains",
-    "github-protocols",
-];
-
-fn reject_fetch_steering_config(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+/// The `config` object is held to the allowlist in `composer_surface`.
+fn check_config_surface(
+    parsed: &serde_json::Value,
+    path: &Path,
+    allows: &[KeyAllow],
+) -> Result<Vec<AppliedAllow>> {
     let Some(config) = parsed.get("config") else {
-        return Ok(());
+        return Ok(Vec::new());
     };
-    let Some(config) = config.as_object() else {
+    if !config.is_object() {
         anyhow::bail!(
             "Unsupported Composer config in {}: 'config' is not an object",
             path.display()
         );
-    };
-    let weakened = |key: &str, unsafe_value: bool| {
-        config
-            .get(key)
-            .is_some_and(|value| value.as_bool() != Some(!unsafe_value))
-    };
-    let key = COMPOSER_BLOCKED_CONFIG_KEYS
-        .iter()
-        .find(|key| config.contains_key(**key))
-        .copied()
-        .or_else(|| weakened("disable-tls", true).then_some("disable-tls"))
-        .or_else(|| weakened("secure-http", false).then_some("secure-http"));
-    if let Some(key) = key {
-        anyhow::bail!(
-            "Unsupported Composer config in {}: '{key}' moves caches or changes how packages are fetched, so the scanned lock no longer describes what is installed",
-            path.display()
-        );
     }
-    Ok(())
+    check_json(
+        &super::composer_surface::COMPOSER_CONFIG,
+        config,
+        path,
+        allows,
+    )
 }
 
 /// Patch plugins (cweagans/composer-patches, vaimo/composer-patches) change installed code
@@ -346,6 +344,31 @@ mod tests {
             r#"{"require": {"a/b": "^1.0"}, "config": {"sort-packages": true, "disable-tls": false, "secure-http": true, "optimize-autoloader": true}}"#,
         );
         parse(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unlisted_config_key_blocks_until_the_operator_allows_it() {
+        let dir = setup_dir(
+            r#"{"require": {"a/b": "^1.0"}, "config": {"github-oauth": {"github.com": "t"}}}"#,
+        );
+        let err = parse(&dir).unwrap_err().to_string();
+        assert!(
+            err.contains("Unsupported Composer config 'github-oauth.github.com'"),
+            "{err}"
+        );
+        let allow = |key: &str| KeyAllow {
+            file: "composer.json".to_string(),
+            key: key.to_string(),
+        };
+        let (deps, applied) = parse_with(&dir, &[allow("github-oauth.github.com")]).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(applied.len(), 1);
+        assert!(parse_with(&dir, &[allow("github-oauth")]).is_err());
+        cleanup(&dir);
+        // Denied keys stay blocked whatever the operator allows.
+        let dir = setup_dir(r#"{"require": {"a/b": "^1.0"}, "config": {"cache-dir": "c"}}"#);
+        assert!(parse_with(&dir, &[allow("cache-dir")]).is_err());
+        cleanup(&dir);
     }
 
     #[test]

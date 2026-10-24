@@ -9,11 +9,15 @@ pub(super) fn check_tool_config(
     spec: &ProjectInputSpec,
 ) -> Result<Vec<Issue>> {
     // uv reads `uv.toml` for `uv pip` and `uv sync` alike, whatever file declares the dependencies.
-    parsers::pyproject_toml::reject_uv_toml_redirects(&spec.manifest_path)?;
+    let allows = &ctx.scan.config.config_key_allow;
+    let uv_allowed = parsers::pyproject_toml::check_uv_config(&spec.manifest_path, allows)?;
     reject_pdm_config(spec, ctx.scan.config)?;
     reject_hatch_toml(spec.project_dir())?;
     let strict = ctx.scan.opts.scan_mode == ScanMode::Ci;
-    let mut issues = interpreter_config::check_interpreter_config(spec, strict)?;
+    let mut issues = crate::config_surface::issues(&uv_allowed);
+    issues.extend(interpreter_config::check_interpreter_config_with(
+        spec, strict, allows,
+    )?);
     issues.extend(unscanned_tool_files(spec, strict)?);
     Ok(issues)
 }

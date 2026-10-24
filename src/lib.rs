@@ -21,6 +21,7 @@ mod npm_config;
 pub mod parsers;
 mod project;
 pub(crate) use project::*;
+mod config_surface;
 pub mod registry;
 pub mod report;
 mod untrusted;

@@ -753,3 +753,45 @@ fn a_parent_pyproject_uv_redirect_blocks_a_child_project() {
     assert!(err.to_string().contains("index-url"), "{err}");
     cleanup(&parent);
 }
+
+#[test]
+fn an_unlisted_uv_setting_blocks_until_the_operator_allows_that_exact_key() {
+    let dir = setup_test_dir(
+        "pyproject-uv-unlisted",
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.uv]\nkeyring-provider = \"subprocess\"\n",
+    );
+    let path = dir.join("pyproject.toml");
+    let err = parse_uv_sources(&path).unwrap_err().to_string();
+    assert!(
+        err.contains("Unsupported uv setting 'keyring-provider'"),
+        "{err}"
+    );
+    let allow = |file: &str, key: &str| crate::config_surface::KeyAllow {
+        file: file.to_string(),
+        key: key.to_string(),
+    };
+    assert!(parse_uv_sources_with(&path, &[allow("uv", "keyring-provider")]).is_ok());
+    let applied = check_uv_config(&path, &[allow("uv", "keyring-provider")]).unwrap();
+    assert_eq!(applied.len(), 1);
+    // A different file id or key does not apply.
+    assert!(parse_uv_sources_with(&path, &[allow("poetry.toml", "keyring-provider")]).is_err());
+    assert!(parse_uv_sources_with(&path, &[allow("uv", "keyring")]).is_err());
+    cleanup(&dir);
+}
+
+#[test]
+fn uv_redirect_settings_cannot_be_allowed_by_config() {
+    let dir = setup_test_dir(
+        "pyproject-uv-denied",
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n[tool.uv]\ncache-dir = \"./c\"\n",
+    );
+    let path = dir.join("pyproject.toml");
+    let allow = crate::config_surface::KeyAllow {
+        file: "uv".to_string(),
+        key: "cache-dir".to_string(),
+    };
+    assert!(parse_uv_sources_with(&path, &[allow]).is_err());
+    cleanup(&dir);
+}

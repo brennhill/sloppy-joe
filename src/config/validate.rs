@@ -44,6 +44,9 @@ impl SloppyJoeConfig {
         validate_trusted_registries(&self.trusted_registries, &mut errors);
         validate_trusted_git_sources(&self.trusted_git_sources, &mut errors);
         validate_trusted_indexes(&self.trusted_indexes, &mut errors);
+        for allow in &self.config_key_allow {
+            errors.extend(allow.problems());
+        }
         self.validate_canonical_conflicts(&mut errors);
         errors
     }

@@ -131,7 +131,10 @@ pub(crate) fn read_validated_uv_lockfile(
     let declared = parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?;
     crate::lockfiles::uv::validate_root_declarations_are_declared(&lockfile, &declared, &path)?;
     crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
-    let declared_sources = parsers::pyproject_toml::parse_uv_sources(&spec.manifest_path)?;
+    let declared_sources = parsers::pyproject_toml::parse_uv_sources_with(
+        &spec.manifest_path,
+        &config.config_key_allow,
+    )?;
     let profile = active_python_profile(opts);
     let source_intents =
         parsers::pyproject_toml::parse_uv_source_intents_scoped(&spec.manifest_path)?

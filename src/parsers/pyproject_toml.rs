@@ -1,4 +1,5 @@
 mod sources;
+mod uv_surface;
 pub(crate) use sources::*;
 mod groups;
 pub(crate) use groups::*;

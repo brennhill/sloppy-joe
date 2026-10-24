@@ -172,3 +172,58 @@ fn an_undecidable_venv_warns_and_blocks_in_ci() {
         assert_eq!(ci[0].severity, Severity::Error);
     }
 }
+
+fn allow_poetry(key: &str) -> crate::config_surface::KeyAllow {
+    crate::config_surface::KeyAllow {
+        file: "poetry.toml".to_string(),
+        key: key.to_string(),
+    }
+}
+
+#[test]
+fn an_unlisted_poetry_setting_blocks_until_the_operator_allows_it() {
+    let spec = project(
+        &[
+            ("pyproject.toml", PYPROJECT),
+            ("poetry.toml", "[warnings]\nexport = false\n"),
+        ],
+        "pyproject.toml",
+    );
+    let err = check_interpreter_config(&spec, true)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("Unsupported Poetry setting 'warnings.export'"),
+        "{err}"
+    );
+    let issues =
+        check_interpreter_config_with(&spec, true, &[allow_poetry("warnings.export")]).unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].check, crate::names::CONFIG_KEY_ALLOWED);
+    assert_eq!(issues[0].severity, Severity::Warning);
+}
+
+#[test]
+fn denied_poetry_settings_cannot_be_allowed() {
+    for (content, key) in [
+        ("cache-dir = \".pcache\"\n", "cache-dir"),
+        ("[virtualenvs]\npath = \"v\"\n", "virtualenvs.path"),
+        (
+            "[repositories.evil]\nurl = \"https://evil.example\"\n",
+            "repositories.evil.url",
+        ),
+        (
+            "[http-basic.evil]\nusername = \"u\"\n",
+            "http-basic.evil.username",
+        ),
+    ] {
+        let spec = project(
+            &[("pyproject.toml", PYPROJECT), ("poetry.toml", content)],
+            "pyproject.toml",
+        );
+        assert!(
+            check_interpreter_config_with(&spec, true, &[allow_poetry(key)]).is_err(),
+            "{content}"
+        );
+    }
+}
