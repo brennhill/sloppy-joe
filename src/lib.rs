@@ -14,6 +14,8 @@ mod gradle_plugin_scan;
 pub(crate) mod lockfiles;
 mod npm_config;
 pub mod parsers;
+mod project;
+pub(crate) use project::*;
 pub mod registry;
 pub mod report;
 mod version;

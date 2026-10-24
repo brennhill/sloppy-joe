@@ -308,5 +308,5 @@ impl ProjectInputKind {
 }
 
 #[cfg(test)]
-#[path = "types_tests.rs"]
+#[path = "project_tests.rs"]
 mod tests;

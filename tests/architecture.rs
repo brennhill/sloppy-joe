@@ -41,6 +41,7 @@ fn layer_of(module: &str) -> Option<&'static str> {
         "registry" => Some("registry"),
         "lockfiles" => Some("lockfiles"),
         "checks" => Some("checks"),
+        "project" => Some("project"),
         _ => None,
     }
 }
@@ -60,6 +61,7 @@ fn layer_may_depend_on(from: &str, to: &str) -> bool {
             "registry",
             "checks",
         ],
+        "project" => &["foundation", "config", "parsers", "project"],
         "orchestration" => return true,
         _ => &[],
     };

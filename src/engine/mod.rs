@@ -17,7 +17,6 @@ mod preflight;
 mod private_npm;
 mod python_warnings;
 mod scan;
-mod types;
 
 pub(crate) use cargo_config::*;
 pub(crate) use cargo_rewrite::*;
@@ -36,4 +35,3 @@ pub(crate) use preflight::*;
 pub(crate) use private_npm::*;
 pub(crate) use python_warnings::*;
 pub(crate) use scan::*;
-pub(crate) use types::*;
