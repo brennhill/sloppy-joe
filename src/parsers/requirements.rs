@@ -258,27 +258,19 @@ pub(crate) fn strip_utf8_bom(content: &str) -> &str {
     content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
-/// pip decodes a requirements file with the codec a `# -*- coding: X -*-` line in its first
-/// two lines declares. Only codecs that read ASCII bytes as ASCII are modeled; anything else
-/// (UTF-7 can hide a newline behind a comment) would make pip see different lines.
+/// pip decodes a requirements file with the codec its `auto_decode` finds: for each of the first
+/// two lines that begin with `#`, the leftmost match of `coding[:=]\s*([-\w.]+)` names the codec.
+/// Only codecs that read ASCII bytes as ASCII are modeled; anything else (UTF-7 can hide a
+/// newline behind a comment) would make pip see different lines.
 fn ensure_modeled_encoding(content: &str) -> Result<()> {
-    for line in content.lines().take(2) {
+    for line in content.split('\n').take(2) {
         let line = line.trim_start_matches('\u{feff}');
         if !line.starts_with('#') {
             continue;
         }
-        let Some(position) = line.find("coding") else {
+        let Some(name) = declared_codec(line) else {
             continue;
         };
-        let rest = &line[position + "coding".len()..];
-        let Some(rest) = rest.strip_prefix(':').or_else(|| rest.strip_prefix('=')) else {
-            continue;
-        };
-        let name: String = rest
-            .trim_start()
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            .collect();
         let normalized = name.to_ascii_lowercase().replace('_', "-");
         if !matches!(
             normalized.as_str(),
@@ -292,40 +284,53 @@ fn ensure_modeled_encoding(content: &str) -> Result<()> {
     Ok(())
 }
 
+/// The codec name of the leftmost `coding[:=]\s*([-\w.]+)` match in `line`.
+fn declared_codec(line: &str) -> Option<String> {
+    line.match_indices("coding").find_map(|(at, _)| {
+        let rest = line[at + "coding".len()..]
+            .strip_prefix([':', '='])?
+            .trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        (!name.is_empty()).then_some(name)
+    })
+}
+
+/// Join continuation lines the way pip's `join_lines` does: a line continues only when it ends
+/// with a backslash as written (trailing spaces after it end the continuation), the backslashes
+/// at both ends of a continued line are dropped, and the parts are concatenated with nothing
+/// between them. A comment line ends a continuation.
 fn logical_requirement_lines(content: &str) -> Result<Vec<String>> {
     crate::fsutil::reject_unmodeled_line_breaks(content, Path::new("requirements file"))?;
     ensure_modeled_encoding(content)?;
     let mut entries = Vec::new();
-    let mut current = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    let mut finish = |parts: &mut Vec<String>| {
+        let joined = parts.concat();
+        parts.clear();
+        let joined = joined.trim();
+        if !joined.is_empty() && !joined.starts_with('#') {
+            entries.push(joined.to_string());
+        }
+    };
 
     for raw_line in strip_utf8_bom(content).lines() {
-        let trimmed = raw_line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            // pip ends a backslash continuation at a blank or comment line.
-            if !current.trim().is_empty() {
-                entries.push(current.trim().to_string());
-            }
-            current.clear();
+        let is_comment = raw_line.trim_start().starts_with('#');
+        if raw_line.ends_with('\\') && !is_comment {
+            parts.push(raw_line.trim_matches('\\').to_string());
             continue;
         }
-
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(trimmed);
-
-        if current.ends_with('\\') {
-            current.pop();
-            current = current.trim_end().to_string();
-            continue;
-        }
-
-        entries.push(current.trim().to_string());
-        current.clear();
+        parts.push(if is_comment {
+            format!(" {raw_line}")
+        } else {
+            raw_line.to_string()
+        });
+        finish(&mut parts);
     }
-
-    if !current.trim().is_empty() {
-        entries.push(current.trim().to_string());
+    if !parts.is_empty() {
+        finish(&mut parts);
     }
 
     Ok(entries)
@@ -421,6 +426,10 @@ impl RequirementsSourceProvenance {
 #[cfg(test)]
 #[path = "requirements_coverage_tests.rs"]
 mod coverage_tests;
+
+#[cfg(test)]
+#[path = "requirements_round5_tests.rs"]
+mod round5_tests;
 
 #[cfg(test)]
 mod tests;
