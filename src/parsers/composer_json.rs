@@ -116,6 +116,84 @@ fn reject_install_time_code(parsed: &serde_json::Value, path: &Path) -> Result<(
             path.display()
         );
     }
+    reject_fetch_steering_config(parsed, path)?;
+    reject_patches(parsed, path)
+}
+
+/// `config` keys that move Composer's caches (it installs a cached archive without re-hashing
+/// when the lock's `shasum` is empty), weaken TLS, or redirect where it fetches from.
+const COMPOSER_BLOCKED_CONFIG_KEYS: &[&str] = &[
+    "cache-dir",
+    "cache-files-dir",
+    "cache-repo-dir",
+    "cache-vcs-dir",
+    "data-dir",
+    "cafile",
+    "capath",
+    "github-domains",
+    "gitlab-domains",
+    "github-protocols",
+];
+
+fn reject_fetch_steering_config(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+    let Some(config) = parsed.get("config") else {
+        return Ok(());
+    };
+    let Some(config) = config.as_object() else {
+        anyhow::bail!(
+            "Unsupported Composer config in {}: 'config' is not an object",
+            path.display()
+        );
+    };
+    let weakened = |key: &str, unsafe_value: bool| {
+        config
+            .get(key)
+            .is_some_and(|value| value.as_bool() != Some(!unsafe_value))
+    };
+    let key = COMPOSER_BLOCKED_CONFIG_KEYS
+        .iter()
+        .find(|key| config.contains_key(**key))
+        .copied()
+        .or_else(|| weakened("disable-tls", true).then_some("disable-tls"))
+        .or_else(|| weakened("secure-http", false).then_some("secure-http"));
+    if let Some(key) = key {
+        anyhow::bail!(
+            "Unsupported Composer config in {}: '{key}' moves caches or changes how packages are fetched, so the scanned lock no longer describes what is installed",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Patch plugins (cweagans/composer-patches, vaimo/composer-patches) change installed code
+/// after download; no scan sees the patch.
+fn reject_patches(parsed: &serde_json::Value, path: &Path) -> Result<()> {
+    let Some(extra) = parsed.get("extra").and_then(|value| value.as_object()) else {
+        return Ok(());
+    };
+    let non_empty = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::Array(entries) => !entries.is_empty(),
+        serde_json::Value::Object(entries) => !entries.is_empty(),
+        serde_json::Value::String(text) => !text.is_empty(),
+        serde_json::Value::Number(_) => true,
+    };
+    for key in [
+        "patches",
+        "patches-file",
+        "patches-ignore",
+        "patches-dev",
+        "patcher",
+        "enable-patching",
+    ] {
+        if extra.get(key).is_some_and(non_empty) {
+            anyhow::bail!(
+                "Unsupported Composer extra in {}: '{key}' patches installed packages with code no scan sees",
+                path.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -240,5 +318,53 @@ mod tests {
         );
         assert!(parse(&dir).is_ok());
         cleanup(&dir);
+    }
+
+    #[test]
+    fn cache_and_fetch_steering_config_blocks() {
+        for config in [
+            r#"{"cache-dir": "repo-cache"}"#,
+            r#"{"cache-files-dir": "x"}"#,
+            r#"{"cache-repo-dir": "x"}"#,
+            r#"{"cache-vcs-dir": "x"}"#,
+            r#"{"data-dir": "x"}"#,
+            r#"{"disable-tls": true}"#,
+            r#"{"disable-tls": "yes"}"#,
+            r#"{"secure-http": false}"#,
+            r#"{"cafile": "ca.pem"}"#,
+            r#"{"capath": "certs"}"#,
+            r#"{"github-domains": ["evil.example"]}"#,
+            r#"{"gitlab-domains": ["evil.example"]}"#,
+            r#"{"github-protocols": ["git"]}"#,
+        ] {
+            let dir = setup_dir(&format!(
+                r#"{{"require": {{"a/b": "^1.0"}}, "config": {config}}}"#
+            ));
+            assert!(parse(&dir).is_err(), "{config}");
+        }
+        let dir = setup_dir(
+            r#"{"require": {"a/b": "^1.0"}, "config": {"sort-packages": true, "disable-tls": false, "secure-http": true, "optimize-autoloader": true}}"#,
+        );
+        parse(&dir).unwrap();
+    }
+
+    #[test]
+    fn patch_plugin_configuration_blocks() {
+        for extra in [
+            r#"{"patches": {"a/b": {"x": "patches/evil.patch"}}}"#,
+            r#"{"patches-file": "patches.json"}"#,
+            r#"{"patches-ignore": {"c/d": {"a/b": {"x": "y"}}}}"#,
+            r#"{"patcher": {"search": "patches"}}"#,
+            r#"{"enable-patching": true}"#,
+        ] {
+            let dir = setup_dir(&format!(
+                r#"{{"require": {{"a/b": "^1.0"}}, "extra": {extra}}}"#
+            ));
+            assert!(parse(&dir).is_err(), "{extra}");
+        }
+        let dir = setup_dir(
+            r#"{"require": {"a/b": "^1.0"}, "extra": {"patches": {}, "branch-alias": {"dev-main": "1.x-dev"}}}"#,
+        );
+        parse(&dir).unwrap();
     }
 }

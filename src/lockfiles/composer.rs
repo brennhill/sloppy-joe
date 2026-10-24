@@ -109,11 +109,37 @@ pub(crate) fn validate_provenance(parsed: &serde_json::Value, lockfile_path: &Pa
             let name = entry
                 .get("name")
                 .and_then(|value| value.as_str())
-                .unwrap_or("<unnamed>");
+                .unwrap_or("");
+            if !crate::ecosystem::validate_package_name(name) {
+                anyhow::bail!(
+                    "Invalid package name '{}' in '{}': composer.lock entries with names the scanner cannot check are not skipped.",
+                    crate::report::sanitize_for_terminal(name),
+                    lockfile_path.display()
+                );
+            }
+            if entry.get("transport-options").is_some() {
+                anyhow::bail!(
+                    "Unsupported composer.lock entry '{name}' in '{}': 'transport-options' changes how it is downloaded.",
+                    lockfile_path.display()
+                );
+            }
             for field in ["dist", "source"] {
                 let Some(location) = entry.get(field).filter(|value| !value.is_null()) else {
                     continue;
                 };
+                // Composer fetches `mirrors` (preferred ones first) instead of `url`, and an
+                // empty `shasum` leaves what they serve unverified.
+                if let Some(key) = location.as_object().and_then(|fields| {
+                    fields.keys().find(|key| {
+                        !matches!(key.as_str(), "type" | "url" | "reference" | "shasum")
+                    })
+                }) {
+                    anyhow::bail!(
+                        "Unsupported composer.lock {field} field '{}' for '{name}' in '{}': composer install may download from locations other than the scanned URL.",
+                        crate::report::sanitize_for_terminal(key),
+                        lockfile_path.display()
+                    );
+                }
                 let url = location.get("url").and_then(|value| value.as_str());
                 let trusted = url.is_some_and(|url| {
                     url.strip_prefix("https://")
@@ -193,6 +219,52 @@ mod provenance_tests {
             "https://github.com/Seldaek/monolog.git",
         );
         validate_provenance(&parsed, Path::new("composer.lock")).unwrap();
+    }
+
+    #[test]
+    fn mirrors_and_unknown_location_fields_block() {
+        for field in ["dist", "source"] {
+            for (key, value) in [
+                (
+                    "mirrors",
+                    serde_json::json!([{"url": "https://evil.invalid/%package%", "preferred": true}]),
+                ),
+                ("transport", serde_json::json!("x")),
+            ] {
+                let mut parsed = lock(
+                    "https://api.github.com/repos/Seldaek/monolog/zipball/abc",
+                    "https://github.com/Seldaek/monolog.git",
+                );
+                parsed["packages"][0][field][key] = value;
+                assert!(
+                    validate_provenance(&parsed, Path::new("composer.lock")).is_err(),
+                    "{field} {key}"
+                );
+            }
+        }
+        let mut parsed = lock(
+            "https://api.github.com/repos/Seldaek/monolog/zipball/abc",
+            "https://github.com/Seldaek/monolog.git",
+        );
+        parsed["packages"][0]["dist"]["shasum"] = serde_json::json!("");
+        validate_provenance(&parsed, Path::new("composer.lock")).unwrap();
+        parsed["packages"][0]["transport-options"] = serde_json::json!({"ssl": {}});
+        assert!(validate_provenance(&parsed, Path::new("composer.lock")).is_err());
+    }
+
+    #[test]
+    fn entries_with_invalid_names_block_instead_of_being_skipped() {
+        let mut parsed = lock(
+            "https://api.github.com/repos/Seldaek/monolog/zipball/abc",
+            "https://github.com/Seldaek/monolog.git",
+        );
+        parsed["packages"][0]["name"] = serde_json::json!("../evil");
+        assert!(validate_provenance(&parsed, Path::new("composer.lock")).is_err());
+        parsed["packages"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("name");
+        assert!(validate_provenance(&parsed, Path::new("composer.lock")).is_err());
     }
 
     #[test]
