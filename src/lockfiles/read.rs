@@ -1,42 +1,12 @@
 use super::*;
 
-/// Read and parse the lockfile from disk (once).
+/// Read and parse the lockfile from disk (once) with the project's reader.
 pub(crate) fn read_lockfile(
     project_dir: &Path,
-    ecosystem: Option<Ecosystem>,
-    project_kind: Option<LockfileKind>,
+    kind: LockfileKind,
     lockfile_override: Option<&Path>,
 ) -> Result<ParsedLockfile> {
-    if let Some(kind) = project_kind {
-        return (kind.0)(project_dir, lockfile_override);
-    }
-
-    match ecosystem {
-        Some(Ecosystem::Npm) => read_npm_lockfile(project_dir, lockfile_override),
-        Some(Ecosystem::Cargo) => read_cargo_lockfile(project_dir, lockfile_override),
-        Some(Ecosystem::Php) => match composer::read_lockfile(project_dir)? {
-            Some(value) => Ok(ParsedLockfile::Composer(value)),
-            None => Ok(ParsedLockfile::None),
-        },
-        Some(Ecosystem::Jvm) => match gradle::read_lockfile(project_dir)? {
-            Some(content) => Ok(ParsedLockfile::Gradle(content)),
-            None => Ok(ParsedLockfile::None),
-        },
-        Some(Ecosystem::Dotnet) => match dotnet::read_lockfile(project_dir)? {
-            Some(value) => Ok(ParsedLockfile::Dotnet(value)),
-            None => Ok(ParsedLockfile::None),
-        },
-        Some(Ecosystem::Ruby) => match ruby::read_lockfile(project_dir)? {
-            Some(content) => Ok(ParsedLockfile::Ruby(content)),
-            None => Ok(ParsedLockfile::None),
-        },
-        Some(Ecosystem::PyPI) => match python::read_lockfile(project_dir)? {
-            Some(value) => Ok(ParsedLockfile::Python(value)),
-            None => Ok(ParsedLockfile::None),
-        },
-        // Go records checksums in go.sum, which preflight checks separately.
-        Some(Ecosystem::Go) | None => Ok(ParsedLockfile::None),
-    }
+    (kind.0)(project_dir, lockfile_override)
 }
 
 fn read_npm_lockfile(
@@ -146,22 +116,41 @@ fn read_cargo_lockfile(
     Ok(ParsedLockfile::Cargo(value))
 }
 
-macro_rules! ecosystem_reader {
-    ($name:ident, $ecosystem:expr) => {
-        fn $name(project_dir: &Path, lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
-            read_lockfile(project_dir, Some($ecosystem), None, lockfile_override)
-        }
-    };
+fn read_npm(project_dir: &Path, lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    read_npm_lockfile(project_dir, lockfile_override)
 }
 
-ecosystem_reader!(read_npm, Ecosystem::Npm);
-ecosystem_reader!(read_pypi, Ecosystem::PyPI);
-ecosystem_reader!(read_cargo, Ecosystem::Cargo);
-ecosystem_reader!(read_go, Ecosystem::Go);
-ecosystem_reader!(read_ruby, Ecosystem::Ruby);
-ecosystem_reader!(read_php, Ecosystem::Php);
-ecosystem_reader!(read_jvm, Ecosystem::Jvm);
-ecosystem_reader!(read_dotnet, Ecosystem::Dotnet);
+fn read_cargo(project_dir: &Path, lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    read_cargo_lockfile(project_dir, lockfile_override)
+}
+
+fn read_php(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(
+        composer::read_lockfile(project_dir)?
+            .map_or(ParsedLockfile::None, ParsedLockfile::Composer),
+    )
+}
+
+fn read_jvm(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(gradle::read_lockfile(project_dir)?.map_or(ParsedLockfile::None, ParsedLockfile::Gradle))
+}
+
+fn read_dotnet(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(dotnet::read_lockfile(project_dir)?.map_or(ParsedLockfile::None, ParsedLockfile::Dotnet))
+}
+
+fn read_ruby(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(ruby::read_lockfile(project_dir)?.map_or(ParsedLockfile::None, ParsedLockfile::Ruby))
+}
+
+fn read_pypi(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(python::read_lockfile(project_dir)?.map_or(ParsedLockfile::None, ParsedLockfile::Python))
+}
+
+/// Go records checksums in go.sum, which preflight checks separately.
+fn read_go(_project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(ParsedLockfile::None)
+}
 
 fn read_uv(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
     Ok(uv::read_lockfile(project_dir)?.map_or(ParsedLockfile::None, ParsedLockfile::Uv))
@@ -325,6 +314,24 @@ pub(crate) fn resolve_versions(
             let mut result = ResolutionResult::default();
             add_manifest_exact_fallbacks(&mut result, deps);
             Ok(result)
+        }
+    }
+}
+
+#[cfg(test)]
+impl LockfileKind {
+    /// The reader for an ecosystem's usual lockfile; tests that name no project kind use it.
+    pub(crate) fn for_ecosystem(ecosystem: Option<Ecosystem>) -> LockfileKind {
+        match ecosystem {
+            Some(Ecosystem::Npm) => LockfileKind::NPM,
+            Some(Ecosystem::Cargo) => LockfileKind::CARGO,
+            Some(Ecosystem::Php) => LockfileKind::PHP,
+            Some(Ecosystem::Jvm) => LockfileKind::JVM,
+            Some(Ecosystem::Dotnet) => LockfileKind::DOTNET,
+            Some(Ecosystem::Ruby) => LockfileKind::RUBY,
+            Some(Ecosystem::PyPI) => LockfileKind::PYPI,
+            Some(Ecosystem::Go) => LockfileKind::GO,
+            None => LockfileKind::ABSENT,
         }
     }
 }

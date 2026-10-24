@@ -922,6 +922,40 @@ fn isolation_rule_flags_engine_and_sibling_imports() {
     assert!(violations[0].contains("src/engine/scan.rs"));
 }
 
+/// The rule run over the real source tree with a violation injected into real files: an engine
+/// file importing a concrete plugin and a plugin file importing a sibling must both be flagged,
+/// and nothing else may be.
+#[test]
+fn isolation_rule_catches_violations_injected_into_the_real_tree() {
+    let plugins = plugin_names();
+    let mut files: Vec<(String, String)> = load_sources()
+        .into_iter()
+        .filter(|f| !f.is_test)
+        .map(|f| (f.rel, f.code))
+        .collect();
+    assert!(isolation_violations(&files, &plugins).is_empty());
+    for (rel, code) in files.iter_mut() {
+        if rel == "src/engine/scan.rs" {
+            code.push_str("\nuse crate::ecosystems::cargo::Cargo;\n");
+        }
+        if rel == "src/ecosystems/go.rs" {
+            code.push_str("\nuse super::cargo::Cargo;\n");
+        }
+    }
+    let violations = isolation_violations(&files, &plugins);
+    assert_eq!(violations.len(), 2, "{violations:?}");
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.starts_with("src/engine/scan.rs"))
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.starts_with("src/ecosystems/go.rs"))
+    );
+}
+
 #[test]
 fn scanner_finds_whole_path_mentions() {
     assert!(mentions_path("use a::js;", "a::js"));

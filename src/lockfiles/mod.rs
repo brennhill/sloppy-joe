@@ -212,7 +212,9 @@ impl LockfileData {
     ) -> Result<Self> {
         Self::parse_for_kind_with_lockfile_and_profile(
             project_dir,
-            project_kind,
+            project_kind.unwrap_or_else(|| {
+                LockfileKind::for_ecosystem(direct_deps.first().map(|d| d.ecosystem))
+            }),
             direct_deps,
             lockfile_override,
             None,
@@ -221,15 +223,13 @@ impl LockfileData {
 
     pub fn parse_for_kind_with_lockfile_and_profile(
         project_dir: &Path,
-        project_kind: Option<LockfileKind>,
+        project_kind: LockfileKind,
         direct_deps: &[Dependency],
         lockfile_override: Option<&Path>,
         python_profile: Option<&PythonLockfileProfile>,
     ) -> Result<Self> {
-        let ecosystem = direct_deps.first().map(|d| d.ecosystem);
-
         // Read and parse the lockfile once
-        let parsed = read_lockfile(project_dir, ecosystem, project_kind, lockfile_override)?;
+        let parsed = read_lockfile(project_dir, project_kind, lockfile_override)?;
 
         // Resolve direct dep versions from the parsed data
         let mut resolution =
