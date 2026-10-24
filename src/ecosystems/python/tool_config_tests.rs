@@ -168,3 +168,42 @@ fn other_tox_configuration_files_are_flagged_like_tox_ini() {
     );
     assert!(unscanned_tool_files(&spec, true).unwrap().is_empty());
 }
+
+#[test]
+fn tox_dependency_declarations_cannot_hide() {
+    for (file, content) in [
+        ("tox.toml", "env_run_base = { deps = [\"evil\"] }\n"),
+        ("tox.toml", "env_run_base.deps = [\"evil\"]\n"),
+        ("tox.toml", "[env_run_base]\n\"deps\" = [\"evil\"]\n"),
+        (
+            "pyproject.toml",
+            "[project]\nname = \"d\"\nversion = \"1\"\n[tool.tox]\nenv_run_base = { deps = [\"evil\"] }\n",
+        ),
+        (
+            "pyproject.toml",
+            "[project]\nname = \"d\"\nversion = \"1\"\n[tool.tox]\nlegacy_tox_ini = \"\"\"\n[testenv]\ndeps = evil\n\"\"\"\n",
+        ),
+    ] {
+        let spec = project(
+            &[(file, content)],
+            "pyproject.toml",
+            ProjectInputKind::PyProjectLegacy,
+        );
+        let issues = unscanned_tool_files(&spec, true).unwrap();
+        assert_eq!(issues.len(), 1, "{file}: {content}");
+    }
+    // A lone carriage return hides `deps` from a line scanner but not from configparser.
+    let spec = project(
+        &[("tox.ini", "[testenv]\r deps = evil\n")],
+        "pyproject.toml",
+        ProjectInputKind::PyProjectLegacy,
+    );
+    assert!(unscanned_tool_files(&spec, true).is_err());
+    // A tox.toml without dependencies stays quiet.
+    let spec = project(
+        &[("tox.toml", "env_list = [\"py\"]\n")],
+        "pyproject.toml",
+        ProjectInputKind::PyProjectLegacy,
+    );
+    assert!(unscanned_tool_files(&spec, true).unwrap().is_empty());
+}

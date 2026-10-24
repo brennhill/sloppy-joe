@@ -8,6 +8,8 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
 pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
+    // Python's tokenizer ends a line (and a comment) at a lone `\r`; the scanner below does not.
+    crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
     // shortcut: the literal scanner cannot model triple-quoted strings; reject until tokenized properly.
     if content.contains("\"\"\"") || content.contains("'''") {
         bail!(

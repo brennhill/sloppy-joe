@@ -13,7 +13,9 @@ pub(super) fn check_tool_config(
     reject_pdm_config(spec, ctx.scan.config)?;
     reject_hatch_toml(spec.project_dir())?;
     let strict = ctx.scan.opts.scan_mode == ScanMode::Ci;
-    unscanned_tool_files(spec, strict)
+    let mut issues = interpreter_config::check_interpreter_config(spec, strict)?;
+    issues.extend(unscanned_tool_files(spec, strict)?);
+    Ok(issues)
 }
 
 fn read_toml(path: &Path) -> Result<toml::Value> {
@@ -96,10 +98,47 @@ fn reject_hatch_toml(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether an INI-style tox configuration has a `deps` or `requires` key.
+fn ini_declares_packages(content: &str) -> bool {
+    content.lines().any(|line| {
+        let line = line.trim_start();
+        ["deps", "requires"].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with(['=', ':']))
+        })
+    })
+}
+
+/// Whether any table in a TOML value, at any depth, has a `deps` or `requires` key. Inline
+/// tables, dotted keys and quoted keys all arrive here as ordinary table entries.
+fn toml_declares_packages(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::Table(table) => table.iter().any(|(key, child)| {
+            matches!(key.as_str(), "deps" | "requires") || toml_declares_packages(child)
+        }),
+        toml::Value::Array(items) => items.iter().any(toml_declares_packages),
+        _ => false,
+    }
+}
+
 /// Whether a tox configuration declares environment `deps` or `requires`. In `setup.cfg` and
 /// `pyproject.toml` only a tox section counts; `tox.ini` and `tox.toml` are tox's own files.
 fn tox_installs_packages(path: &Path, shared_file_section: Option<&str>) -> Result<bool> {
     let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
+    crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
+    if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+        let parsed: toml::Value = toml::from_str(&content)
+            .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
+        let tox = match shared_file_section {
+            Some(_) => parsed.get("tool").and_then(|tool| tool.get("tox")),
+            None => Some(&parsed),
+        };
+        let legacy_ini = tox
+            .and_then(|tox| tox.get("legacy_tox_ini"))
+            .and_then(|ini| ini.as_str());
+        return Ok(tox.is_some_and(toml_declares_packages)
+            || legacy_ini.is_some_and(ini_declares_packages));
+    }
     if let Some(section) = shared_file_section {
         let lowered = content.to_ascii_lowercase();
         let has_tox = lowered.contains("[tox:tox]")
@@ -109,13 +148,7 @@ fn tox_installs_packages(path: &Path, shared_file_section: Option<&str>) -> Resu
             return Ok(false);
         }
     }
-    Ok(content.lines().any(|line| {
-        let line = line.trim_start();
-        ["deps", "requires"].iter().any(|key| {
-            line.strip_prefix(key)
-                .is_some_and(|rest| rest.trim_start().starts_with(['=', ':']))
-        })
-    }))
+    Ok(ini_declares_packages(&content))
 }
 
 /// Files that install Python packages but that no scan reads: conda environments and tox

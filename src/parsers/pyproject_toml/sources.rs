@@ -153,6 +153,10 @@ const UV_UNVERIFIABLE_KEYS: &[&str] = &[
     "python-install-mirror",
     "pypy-install-mirror",
     "python-downloads-json-url",
+    // uv installs unpacked artifacts from its cache without re-hashing them.
+    "cache-dir",
+    // Build requirements are not recorded in uv.lock, so these install unlocked code.
+    "extra-build-dependencies",
 ];
 
 fn reject_uv_redirects(table: &toml::map::Map<String, toml::Value>, source: &Path) -> Result<()> {
@@ -179,6 +183,21 @@ pub(crate) fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
             let parsed = parse_toml(&file)?;
             if let Some(table) = parsed.as_table() {
                 reject_uv_redirects(table, &file)?;
+            }
+        }
+        // A parent's `[tool.uv]` applies to a project that has none of its own.
+        let pyproject = ancestor.join("pyproject.toml");
+        if super::super::path_detected(&pyproject)? {
+            let parsed = parse_toml(&pyproject)?;
+            if let Some(uv) = parsed
+                .get("tool")
+                .and_then(|tool| tool.get("uv"))
+                .and_then(|uv| uv.as_table())
+            {
+                // `index` is the supported `[[tool.uv.index]]` array, vetted for the project itself.
+                let mut legacy = uv.clone();
+                legacy.remove("index");
+                reject_uv_redirects(&legacy, &pyproject)?;
             }
         }
         if boundary.as_deref() == Some(ancestor) {

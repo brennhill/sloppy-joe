@@ -198,3 +198,11 @@ fn unmodeled_extras_require_forms_block() {
         assert_blocks(source);
     }
 }
+
+#[test]
+fn a_lone_carriage_return_blocks() {
+    // Python ends the first line at the `\r`, so the next statement rebinds `setup`.
+    let source = "from setuptools import setup # c\rsetup = lambda **kw: kw\nsetup(name=\"d\", install_requires=[\"six==1.16.0\"])\n";
+    let err = parse_source(source).unwrap_err().to_string();
+    assert!(err.contains("line terminator"), "{err}");
+}

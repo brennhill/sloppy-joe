@@ -709,7 +709,47 @@ fn a_uv_toml_with_index_settings_blocks_even_without_tool_uv() {
     )
     .unwrap();
     assert!(parse_uv_sources(&dir.join("pyproject.toml")).is_err());
-    std::fs::write(dir.join("uv.toml"), "cache-dir = \"/tmp/uv\"\n").unwrap();
+    std::fs::write(dir.join("uv.toml"), "native-tls = true\n").unwrap();
     assert!(parse_uv_sources(&dir.join("pyproject.toml")).is_ok());
     cleanup(&dir);
+}
+
+#[test]
+fn uv_cache_and_build_dependency_settings_block() {
+    let base = "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n";
+    for extra in [
+        "[tool.uv]\ncache-dir = \"./.uvcache\"\n",
+        "[tool.uv.extra-build-dependencies]\nsix = [\"evil\"]\n",
+    ] {
+        let dir = setup_test_dir(
+            "pyproject-uv-cache",
+            "pyproject.toml",
+            &format!("{base}{extra}"),
+        );
+        let err = parse_uv_sources(&dir.join("pyproject.toml")).unwrap_err();
+        assert!(
+            err.to_string().contains("Unsupported uv setting"),
+            "{extra}: {err}"
+        );
+        cleanup(&dir);
+    }
+}
+
+#[test]
+fn a_parent_pyproject_uv_redirect_blocks_a_child_project() {
+    let parent = setup_test_dir(
+        "pyproject-uv-parent",
+        "pyproject.toml",
+        "[tool.uv]\nindex-url = \"https://evil.example/simple\"\n",
+    );
+    let child = parent.join("sub");
+    std::fs::create_dir_all(&child).unwrap();
+    std::fs::write(
+        child.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let err = reject_uv_toml_redirects(&child.join("pyproject.toml")).unwrap_err();
+    assert!(err.to_string().contains("index-url"), "{err}");
+    cleanup(&parent);
 }

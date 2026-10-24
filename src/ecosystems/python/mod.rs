@@ -1,6 +1,7 @@
 use super::*;
 
 mod flavors;
+mod interpreter_config;
 mod lockfile_read;
 mod parse;
 mod specs;
