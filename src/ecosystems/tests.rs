@@ -108,6 +108,8 @@ struct Fixture {
     kind: ProjectInputKind,
     manifest: &'static str,
     content: &'static str,
+    /// File name the lockfile is written under; empty for kinds without one.
+    lockfile: &'static str,
 }
 
 const FIXTURES: &[Fixture] = &[
@@ -115,46 +117,55 @@ const FIXTURES: &[Fixture] = &[
         kind: ProjectInputKind::Npm,
         manifest: "package.json",
         content: r#"{"name":"app","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}"#,
+        lockfile: "package-lock.json",
     },
     Fixture {
         kind: ProjectInputKind::Cargo,
         manifest: "Cargo.toml",
         content: "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"=1.0.200\"\n",
+        lockfile: "Cargo.lock",
     },
     Fixture {
         kind: ProjectInputKind::Go,
         manifest: "go.mod",
         content: "module example.com/app\n\ngo 1.21\n\nrequire github.com/pkg/errors v0.9.1\n",
+        lockfile: "go.sum",
     },
     Fixture {
         kind: ProjectInputKind::Ruby,
         manifest: "Gemfile",
         content: "source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n",
+        lockfile: "Gemfile.lock",
     },
     Fixture {
         kind: ProjectInputKind::Php,
         manifest: "composer.json",
         content: r#"{"require":{"monolog/monolog":"3.5.0"}}"#,
+        lockfile: "composer.lock",
     },
     Fixture {
         kind: ProjectInputKind::Gradle,
         manifest: "build.gradle",
         content: "dependencies {\n    implementation 'com.google.guava:guava:33.0.0-jre'\n}\n",
+        lockfile: "gradle.lockfile",
     },
     Fixture {
         kind: ProjectInputKind::Dotnet,
         manifest: "app.csproj",
         content: r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+        lockfile: "packages.lock.json",
     },
     Fixture {
         kind: ProjectInputKind::PyProjectPoetry,
         manifest: "pyproject.toml",
         content: "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\npython = \"3.11.0\"\nrequests = \"2.31.0\"\n",
+        lockfile: "poetry.lock",
     },
     Fixture {
         kind: ProjectInputKind::PyProjectUv,
         manifest: "pyproject.toml",
         content: "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"requests==2.31.0\"]\n\n[tool.uv]\n",
+        lockfile: "uv.lock",
     },
 ];
 
@@ -168,16 +179,25 @@ fn fixture_dir(fixture: &Fixture, lockfile: Option<&str>) -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(fixture.manifest), fixture.content).unwrap();
-    if let (Some(name), Some(content)) = (fixture.kind.descriptor().lockfile_name, lockfile) {
-        std::fs::write(dir.join(name), content).unwrap();
+    if let Some(content) = lockfile {
+        assert!(
+            !fixture.lockfile.is_empty(),
+            "{:?} has no lockfile",
+            fixture.kind
+        );
+        std::fs::write(dir.join(fixture.lockfile), content).unwrap();
     }
     dir
 }
 
-fn blocks(dir: &Path) -> bool {
+/// Why a preflight of `dir` blocks, `None` when it does not.
+fn block_reason(dir: &Path) -> Option<String> {
     match crate::preflight_scan_inputs(dir, None) {
-        Err(_) => true,
-        Ok(issues) => issues.iter().any(|issue| issue.severity == Severity::Error),
+        Err(err) => Some(err.to_string()),
+        Ok(issues) => issues
+            .iter()
+            .find(|issue| issue.severity == Severity::Error)
+            .map(|issue| issue.message.clone()),
     }
 }
 
@@ -197,9 +217,10 @@ fn fixtures_cover_every_kind_that_requires_a_lockfile() {
 fn a_missing_required_lockfile_blocks() {
     for fixture in registered(FIXTURES, LockfilePolicy::Required, |f| f.kind) {
         let dir = fixture_dir(fixture, None);
+        let reason = block_reason(&dir);
         assert!(
-            blocks(&dir),
-            "{:?} must block without a lockfile",
+            reason.as_deref().is_some_and(|r| r.contains("is missing")),
+            "{:?} must block because the lockfile is missing, got {reason:?}",
             fixture.kind
         );
         let _ = std::fs::remove_dir_all(dir);
@@ -210,9 +231,14 @@ fn a_missing_required_lockfile_blocks() {
 fn a_malformed_lockfile_blocks() {
     for fixture in registered(FIXTURES, LockfilePolicy::Required, |f| f.kind) {
         let dir = fixture_dir(fixture, Some("\u{1}{ not a lockfile ]["));
+        // The lockfile exists, so the block must be about its content, not its absence.
+        let reason = block_reason(&dir);
         assert!(
-            blocks(&dir),
-            "{:?} must block on a malformed lockfile",
+            reason.as_deref().is_some_and(|r| {
+                !r.contains("is missing")
+                    && (r.contains("Broken lockfile") || r.contains("malformed or stale"))
+            }),
+            "{:?} must block because the lockfile is malformed, got {reason:?}",
             fixture.kind
         );
         let _ = std::fs::remove_dir_all(dir);
@@ -238,98 +264,143 @@ fn maven_states_its_reduced_confidence_policy() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-// Constructs the scan cannot verify must fail the parse stage, not pass silently.
-const UNSUPPORTED: &[(ProjectInputKind, &str, &str)] = &[
-    (
-        ProjectInputKind::Npm,
-        "package.json",
-        r#"{"name":"app","version":"1.0.0","dependencies":{"x":"git+https://example.com/x.git"}}"#,
-    ),
-    (
-        ProjectInputKind::Cargo,
-        "Cargo.toml",
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nx = { git = \"https://example.com/x\" }\n",
-    ),
-    (
-        ProjectInputKind::Go,
-        "go.mod",
-        "module example.com/app\n\ngo 1.21\n\nrequire github.com/pkg/errors v0.9.1\nreplace github.com/pkg/errors => ../errors\n",
-    ),
-    (
-        ProjectInputKind::Ruby,
-        "Gemfile",
-        "source 'https://rubygems.org'\ngem 'x', git: 'https://example.com/x.git'\n",
-    ),
-    (
-        ProjectInputKind::Php,
-        "composer.json",
-        r#"{"require":{"a/b":"dev-main"},"repositories":[{"type":"vcs","url":"https://example.com/b.git"}]}"#,
-    ),
-    (
-        ProjectInputKind::Gradle,
-        "build.gradle",
-        "dependencies {\n    implementation files('libs/x.jar')\n    implementation 'a:b:+'\n}\n",
-    ),
-    (
-        ProjectInputKind::Dotnet,
-        "app.csproj",
-        r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Bad?Package" Version="1.0.0" /></ItemGroup></Project>"#,
-    ),
-    (
-        ProjectInputKind::PyProjectPoetry,
-        "pyproject.toml",
-        "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\npython = \"3.11.0\"\nx = { git = \"https://example.com/x.git\" }\n",
-    ),
-    (
-        ProjectInputKind::PyProjectUv,
-        "pyproject.toml",
-        "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"x @ git+https://example.com/x.git\"]\n\n[tool.uv]\n",
-    ),
+// Constructs the scan cannot verify must block, and for the stated reason: a fixture that blocks
+// for another reason (a missing lockfile) proves nothing about the construct. Rows carry a valid
+// lockfile when the plugin only sees the construct there.
+struct Unsupported {
+    kind: ProjectInputKind,
+    manifest: &'static str,
+    content: &'static str,
+    lockfile: Option<&'static str>,
+    reason: &'static str,
+}
+
+const UNSUPPORTED: &[Unsupported] = &[
+    Unsupported {
+        kind: ProjectInputKind::Npm,
+        manifest: "package.json",
+        content: r#"{"name":"app","version":"1.0.0","dependencies":{"x":"git+https://example.com/x.git"}}"#,
+        lockfile: None,
+        reason: "Unsupported non-registry npm dependency",
+    },
+    // The Cargo parse stage drops git dependencies; the lockfile-backed source policy blocks them.
+    Unsupported {
+        kind: ProjectInputKind::Cargo,
+        manifest: "Cargo.toml",
+        content: "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nx = { git = \"https://example.com/x\" }\n",
+        lockfile: Some(
+            "version = 3\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"x\"]\n\n[[package]]\nname = \"x\"\nversion = \"0.1.0\"\nsource = \"git+https://example.com/x#0000000000000000000000000000000000000000\"\n",
+        ),
+        reason: "cargo_git_policy blocks git dependencies",
+    },
+    Unsupported {
+        kind: ProjectInputKind::Go,
+        manifest: "go.mod",
+        content: "module example.com/app\n\ngo 1.21\n\nrequire github.com/pkg/errors v0.9.1\nreplace github.com/pkg/errors => ../errors\n",
+        lockfile: None,
+        reason: "local replace directives are not trusted",
+    },
+    Unsupported {
+        kind: ProjectInputKind::Ruby,
+        manifest: "Gemfile",
+        content: "source 'https://rubygems.org'\ngem 'x', git: 'https://example.com/x.git'\n",
+        lockfile: None,
+        reason: "Unsupported non-registry Gemfile dependency source",
+    },
+    Unsupported {
+        kind: ProjectInputKind::Php,
+        manifest: "composer.json",
+        content: r#"{"require":{"a/b":"dev-main"},"repositories":[{"type":"vcs","url":"https://example.com/b.git"}]}"#,
+        lockfile: None,
+        reason: "custom package sources are not supported",
+    },
+    Unsupported {
+        kind: ProjectInputKind::Gradle,
+        manifest: "build.gradle",
+        content: "dependencies {\n    implementation files('libs/x.jar')\n    implementation 'a:b:+'\n}\n",
+        lockfile: None,
+        reason: "local project or file dependencies are not supported",
+    },
+    Unsupported {
+        kind: ProjectInputKind::Dotnet,
+        manifest: "app.csproj",
+        content: r#"<Project Sdk="Some.Custom.Sdk/1.0.0"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>"#,
+        lockfile: None,
+        reason: "NuGet-resolved project SDKs cannot be verified",
+    },
+    Unsupported {
+        kind: ProjectInputKind::PyProjectPoetry,
+        manifest: "pyproject.toml",
+        content: "[tool.poetry]\nname = \"app\"\nversion = \"0.1.0\"\n\n[tool.poetry.dependencies]\npython = \"3.11.0\"\nx = { git = \"https://example.com/x.git\" }\n",
+        lockfile: None,
+        reason: "git sources are not supported",
+    },
+    Unsupported {
+        kind: ProjectInputKind::PyProjectUv,
+        manifest: "pyproject.toml",
+        content: "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"x @ git+https://example.com/x.git\"]\n\n[tool.uv]\n",
+        lockfile: None,
+        reason: "Unsupported direct requirement",
+    },
 ];
 
+/// The first error the parse or source-policy stage raises for `row`, `None` when both pass.
+fn unsupported_block(row: &Unsupported) -> (Option<String>, PathBuf) {
+    let fixture = Fixture {
+        kind: row.kind,
+        manifest: row.manifest,
+        content: row.content,
+        lockfile: FIXTURES
+            .iter()
+            .find(|fixture| fixture.kind == row.kind)
+            .map_or("", |fixture| fixture.lockfile),
+    };
+    let dir = fixture_dir(&fixture, row.lockfile);
+    let config = config::SloppyJoeConfig::default();
+    let opts = ScanOptions::default();
+    let ctx = ScanCtx {
+        scan_root: &dir,
+        config: &config,
+        opts: &opts,
+    };
+    let spec = ProjectInputSpec {
+        kind: row.kind,
+        manifest_path: dir.join(row.manifest),
+        lockfile_path_override: None,
+        js_binding: None,
+    };
+    let plugin = for_kind(row.kind);
+    let reason = match plugin.parse(&ctx, &spec) {
+        Err(err) => Some(err.to_string()),
+        Ok(parsed) => match parsed
+            .warnings
+            .iter()
+            .find(|w| w.severity == Severity::Error)
+        {
+            Some(issue) => Some(issue.message.clone()),
+            None => PreflightCtx::new(
+                ctx,
+                std::slice::from_ref(&spec),
+                std::slice::from_ref(&spec),
+            )
+            .and_then(|pre| plugin.source_policy(&pre, &spec))
+            .err()
+            .map(|err| err.to_string()),
+        },
+    };
+    (reason, dir)
+}
+
 #[test]
-fn unsupported_constructs_do_not_pass_silently() {
-    for (kind, manifest, content) in registered(UNSUPPORTED, LockfilePolicy::Required, |row| row.0)
-    {
-        let fixture = Fixture {
-            kind: *kind,
-            manifest,
-            content,
-        };
-        let dir = fixture_dir(&fixture, None);
-        let config = config::SloppyJoeConfig::default();
-        let opts = ScanOptions::default();
-        let ctx = ScanCtx {
-            scan_root: &dir,
-            config: &config,
-            opts: &opts,
-        };
-        let spec = ProjectInputSpec {
-            kind: *kind,
-            manifest_path: dir.join(manifest),
-            lockfile_path_override: None,
-            js_binding: None,
-        };
-        // The parse and source-policy stages run without a lockfile, so only the construct can
-        // block here.
-        let plugin = for_kind(*kind);
-        let blocked = match plugin.parse(&ctx, &spec) {
-            Err(_) => true,
-            Ok(parsed) => {
-                parsed
-                    .warnings
-                    .iter()
-                    .any(|w| w.severity == Severity::Error)
-                    || PreflightCtx::new(
-                        ctx,
-                        std::slice::from_ref(&spec),
-                        std::slice::from_ref(&spec),
-                    )
-                    .and_then(|pre| plugin.source_policy(&pre, &spec))
-                    .is_err()
-            }
-        };
-        assert!(blocked, "{kind:?}: unsupported construct passed");
+fn unsupported_constructs_block_for_the_construct() {
+    for row in registered(UNSUPPORTED, LockfilePolicy::Required, |row| row.kind) {
+        let (reason, dir) = unsupported_block(row);
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains(row.reason)),
+            "{:?}: expected a block naming {:?}, got {reason:?}",
+            row.kind,
+            row.reason
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -338,7 +409,7 @@ fn unsupported_constructs_do_not_pass_silently() {
 fn unsupported_fixtures_cover_every_conformance_fixture() {
     for fixture in FIXTURES {
         assert!(
-            UNSUPPORTED.iter().any(|(kind, ..)| *kind == fixture.kind),
+            UNSUPPORTED.iter().any(|row| row.kind == fixture.kind),
             "add an unsupported-construct fixture for {:?}",
             fixture.kind
         );
@@ -444,6 +515,7 @@ fn lockfile_less_kinds_state_their_policy() {
             kind: *kind,
             manifest,
             content,
+            lockfile: "",
         };
         let dir = fixture_dir(&fixture, None);
         let scan = ScanCtx {
@@ -481,41 +553,48 @@ fn lockfile_less_kinds_state_their_policy() {
 
 // Unsupported constructs for the kinds with no lockfile: with nothing else to fail on, the whole
 // preflight must block.
-const UNSUPPORTED_LOCKFILE_LESS: &[(ProjectInputKind, &str, &str)] = &[
+const UNSUPPORTED_LOCKFILE_LESS: &[(ProjectInputKind, &str, &str, &str)] = &[
     (
         ProjectInputKind::PyRequirements,
         "requirements.txt",
         "x @ git+https://example.com/x.git\n",
+        "Unsupported direct requirement 'x @ git+",
     ),
     (
         ProjectInputKind::PyRequirementsTrusted,
         "requirements.txt",
         "x @ git+https://example.com/x.git \\\n    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000\n",
+        "Unsupported direct requirement 'x @ git+",
     ),
     (
         ProjectInputKind::PyProjectLegacy,
         "pyproject.toml",
         "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"x @ git+https://example.com/x.git\"]\n",
+        "Unsupported direct requirement 'x @ git+",
     ),
     (
         ProjectInputKind::PyPipfile,
         "Pipfile",
         "[packages]\nx = {git = \"https://example.com/x.git\"}\n",
+        "git sources are not supported",
     ),
     (
         ProjectInputKind::PySetupPy,
         "setup.py",
         "from setuptools import setup\nsetup(name='app', install_requires=['x @ git+https://example.com/x.git'])\n",
+        "Unsupported direct requirement 'x @ git+",
     ),
     (
         ProjectInputKind::PySetupCfg,
         "setup.cfg",
         "[options]\ninstall_requires =\n    x @ git+https://example.com/x.git\n",
+        "Unsupported direct requirement 'x @ git+",
     ),
     (
         ProjectInputKind::Maven,
         "pom.xml",
         "<project><dependencies><dependency><groupId>a</groupId><artifactId>b</artifactId><version>1.0</version><scope>system</scope><systemPath>/opt/b.jar</systemPath></dependency></dependencies></project>",
+        "systemPath dependencies are not supported",
     ),
 ];
 
@@ -523,7 +602,8 @@ const UNSUPPORTED_LOCKFILE_LESS: &[(ProjectInputKind, &str, &str)] = &[
 fn lockfile_less_kinds_block_unsupported_constructs() {
     let config = config::SloppyJoeConfig::default();
     let opts = ScanOptions::default();
-    for (kind, manifest, content) in registered(
+    let mut mismatches = Vec::new();
+    for (kind, manifest, content, reason) in registered(
         UNSUPPORTED_LOCKFILE_LESS,
         LockfilePolicy::Unsupported,
         |row| row.0,
@@ -532,6 +612,7 @@ fn lockfile_less_kinds_block_unsupported_constructs() {
             kind: *kind,
             manifest,
             content,
+            lockfile: "",
         };
         let dir = fixture_dir(&fixture, None);
         let scan = ScanCtx {
@@ -552,18 +633,24 @@ fn lockfile_less_kinds_block_unsupported_constructs() {
         )
         .unwrap();
         let blocked = match preflight(&ctx, &spec) {
-            Err(err) => err.to_string().contains("nsupported"),
-            Ok(issues) => issues.iter().any(|i| i.severity == Severity::Error),
+            Err(err) => Some(err.to_string()),
+            Ok(issues) => issues
+                .iter()
+                .find(|i| i.severity == Severity::Error)
+                .map(|i| i.message.clone()),
         };
-        assert!(blocked, "{kind:?}: unsupported construct passed preflight");
+        if !blocked.as_deref().is_some_and(|text| text.contains(reason)) {
+            mismatches.push(format!("{kind:?}: expected {reason:?}, got {blocked:?}"));
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
+    assert!(mismatches.is_empty(), "{mismatches:#?}");
 }
 
 #[test]
 fn every_kind_has_an_unsupported_construct_fixture() {
     for kind in ProjectInputKind::ALL {
-        let covered = UNSUPPORTED.iter().any(|(k, ..)| *k == kind)
+        let covered = UNSUPPORTED.iter().any(|row| row.kind == kind)
             || UNSUPPORTED_LOCKFILE_LESS.iter().any(|(k, ..)| *k == kind);
         assert!(covered, "add an unsupported-construct fixture for {kind:?}");
     }
