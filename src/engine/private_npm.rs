@@ -10,15 +10,14 @@ pub(crate) fn private_npm_issue(
     source: &str,
     registries: &npm_config::NpmRegistries,
     config: &config::SloppyJoeConfig,
-    opts: &ScanOptions<'_>,
 ) -> Issue {
     let (route, registry) = registries
         .private_route(dep.package_name())
         .expect("private npm issue requires a private route");
     let version = dep.version.as_deref().unwrap_or("locked version");
-    let mut issue = if matches!(opts.scan_mode, ScanMode::Ci)
-        && !config.is_trusted_npm_registry(route, registry)
-    {
+    // A route the repository controls and the out-of-repo config does not allowlist blocks in
+    // every mode (like yarn's `npmRegistryServer`); an allowlisted route is trusted but unvetted.
+    let mut issue = if !config.is_trusted_npm_registry(route, registry) {
         Issue::new(&dep.name, checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE, Severity::Error)
             .message(format!("Package '{}' at {} is routed by the project's .npmrc ({} route) to a registry that is not allowlisted in the sloppy-joe config. A repository-controlled registry redirect cannot opt packages out of public existence, similarity, metadata, and advisory checks.", dep.package_name(), version, route))
             .fix(format!("If this registry is approved, add {{\"name\": \"{route}\", \"source\": \"<registry URL>\"}} to trusted_registries.npm in the out-of-repo sloppy-joe config. Otherwise remove the registry route from .npmrc."))
@@ -74,7 +73,7 @@ pub(crate) async fn scan_parsed_project(
                     .exact_version(dep)
                     .map(str::to_string),
             ));
-            private_issues.push(private_npm_issue(dep, "direct", &registries, &config, opts));
+            private_issues.push(private_npm_issue(dep, "direct", &registries, &config));
         } else {
             public_deps.push(dep.clone());
         }
@@ -84,13 +83,7 @@ pub(crate) async fn scan_parsed_project(
             return true;
         }
         if !private_direct.contains(&(dep.package_name().to_string(), dep.version.clone())) {
-            private_issues.push(private_npm_issue(
-                dep,
-                "transitive",
-                &registries,
-                &config,
-                opts,
-            ));
+            private_issues.push(private_npm_issue(dep, "transitive", &registries, &config));
         }
         false
     });

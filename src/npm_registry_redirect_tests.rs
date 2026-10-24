@@ -264,26 +264,25 @@ async fn ci_blocks_unallowlisted_repo_npmrc_registry_redirect() {
 }
 
 #[tokio::test]
-async fn non_ci_unallowlisted_registry_redirect_warns_and_stays_private() {
-    let dir = unique_dir();
-    write_redirected_project(&dir, "registry=https://npm.example.com/\n");
-    let osv = RecordingOsv::vulnerable(&["lodahs", "helpr"]);
-    let report = scan(
-        &dir,
-        config::SloppyJoeConfig::default(),
-        &osv,
-        ScanMode::Full,
-    )
-    .await;
-    assert!(!report.has_errors(), "{:?}", report.issues);
-    assert!(osv.queried().is_empty(), "{:?}", osv.queried());
-    assert!(has(
-        &report,
-        "lodahs",
-        checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED,
-        Severity::Warning
-    ));
-    std::fs::remove_dir_all(dir).unwrap();
+async fn unallowlisted_registry_redirect_blocks_in_every_mode_and_stays_private() {
+    for mode in [ScanMode::Fast, ScanMode::Full, ScanMode::Ci] {
+        let dir = unique_dir();
+        write_redirected_project(&dir, "registry=https://npm.example.com/\n");
+        let osv = RecordingOsv::vulnerable(&["lodahs", "helpr"]);
+        let report = scan(&dir, config::SloppyJoeConfig::default(), &osv, mode).await;
+        assert!(
+            has(
+                &report,
+                "lodahs",
+                checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+                Severity::Error
+            ),
+            "{mode:?}: {:?}",
+            report.issues
+        );
+        assert!(osv.queried().is_empty(), "{:?}", osv.queried());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tokio::test]
