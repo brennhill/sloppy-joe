@@ -7,6 +7,7 @@ pub mod npm;
 pub mod npm_tarball;
 pub mod nuget;
 pub mod packagist;
+pub(crate) mod packagist_lock;
 pub mod pypi;
 pub mod rubygems;
 

@@ -22,12 +22,20 @@ impl EcosystemSupport for Php {
 
     async fn implementation_issues(
         &self,
-        _project: &ParsedProject,
-        _client: reqwest::Client,
+        project: &ParsedProject,
+        client: reqwest::Client,
         _osv_client: &dyn checks::malicious::OsvClient,
-        _opts: &ScanOptions<'_>,
+        opts: &ScanOptions<'_>,
     ) -> Result<Vec<Issue>> {
-        Ok(Vec::new())
+        // The online scans cross-check where the lock downloads each package from.
+        if opts.scan_mode == ScanMode::Fast {
+            return Ok(Vec::new());
+        }
+        let Some(lockfile) = common::named_lockfile(&project.spec).filter(|path| path.is_file())
+        else {
+            return Ok(Vec::new());
+        };
+        registry::packagist_lock::verify_lock_locations(&client, &lockfile).await
     }
 
     fn similarity_on_transitives(&self) -> bool {

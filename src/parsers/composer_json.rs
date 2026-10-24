@@ -77,32 +77,24 @@ fn validate_supported_sources(parsed: &serde_json::Value, path: &Path) -> Result
     reject_install_time_code(parsed, path)
 }
 
-/// Composer events that run during `composer install`/`update`.
-const INSTALL_EVENTS: &[&str] = &[
-    "pre-install-cmd",
-    "post-install-cmd",
-    "pre-update-cmd",
-    "post-update-cmd",
-    "pre-autoload-dump",
-    "post-autoload-dump",
-    "post-root-package-install",
-    "post-create-project-cmd",
-    "pre-operations-exec",
-    "pre-package-install",
-    "post-package-install",
-    "pre-package-update",
-    "post-package-update",
-];
+/// Whether a root script key names a Composer event rather than a custom `composer run` script.
+/// Composer runs root scripts for every event it dispatches, including the command and
+/// plugin events (`pre-command-run`, `post-file-download`, `pre-pool-create`, ...), so every
+/// `pre-`/`post-` key and the bare `init`/`command` events count.
+fn is_event_name(key: &str) -> bool {
+    key.starts_with("pre-") || key.starts_with("post-") || matches!(key, "init" | "command")
+}
 
 /// Scripts bound to install events and blanket plugin trust execute code that no scan sees.
 fn reject_install_time_code(parsed: &serde_json::Value, path: &Path) -> Result<()> {
     if let Some(scripts) = parsed.get("scripts").and_then(|value| value.as_object())
-        && let Some(event) = INSTALL_EVENTS.iter().find(|event| {
-            scripts.get(**event).is_some_and(|value| match value {
-                serde_json::Value::Array(entries) => !entries.is_empty(),
-                serde_json::Value::String(text) => !text.is_empty(),
-                _ => true,
-            })
+        && let Some(event) = scripts.keys().find(|key| {
+            is_event_name(key)
+                && scripts.get(*key).is_some_and(|value| match value {
+                    serde_json::Value::Array(entries) => !entries.is_empty(),
+                    serde_json::Value::String(text) => !text.is_empty(),
+                    _ => true,
+                })
         })
     {
         anyhow::bail!(
@@ -114,8 +106,8 @@ fn reject_install_time_code(parsed: &serde_json::Value, path: &Path) -> Result<(
     let blanket = match parsed.pointer("/config/allow-plugins") {
         Some(serde_json::Value::Bool(allowed)) => *allowed,
         Some(serde_json::Value::Object(plugins)) => plugins
-            .get("*")
-            .is_some_and(|value| value.as_bool() == Some(true)),
+            .iter()
+            .any(|(pattern, value)| pattern.contains('*') && value.as_bool() == Some(true)),
         _ => false,
     };
     if blanket {
@@ -206,6 +198,31 @@ mod tests {
 
         let dir = setup_dir(r#"{"require": {"a/b": "^1.0"}, "scripts": {"test": "phpunit"}}"#);
         assert!(parse(&dir).is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn plugin_and_command_events_block_like_install_events() {
+        for event in [
+            "pre-command-run",
+            "post-file-download",
+            "pre-pool-create",
+            "init",
+        ] {
+            let dir = setup_dir(&format!(
+                r#"{{"require": {{"a/b": "^1.0"}}, "scripts": {{"{event}": "curl x | sh"}}}}"#
+            ));
+            assert!(parse(&dir).is_err(), "{event}");
+            cleanup(&dir);
+        }
+    }
+
+    #[test]
+    fn wildcard_allow_plugins_patterns_block() {
+        let dir = setup_dir(
+            r#"{"require": {"a/b": "^1.0"}, "config": {"allow-plugins": {"*/*": true}}}"#,
+        );
+        assert!(parse(&dir).is_err());
         cleanup(&dir);
     }
 
