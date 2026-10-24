@@ -323,3 +323,36 @@ fn unsupported_fixtures_cover_every_conformance_fixture() {
         );
     }
 }
+
+#[test]
+fn poetry_only_refusals_are_descriptor_facts_that_source_policy_enforces() {
+    let mut config = config::SloppyJoeConfig::default();
+    config.python_enforcement = config::PythonEnforcement::PoetryOnly;
+    let opts = ScanOptions::default();
+    let root = std::env::temp_dir();
+    for kind in ProjectInputKind::ALL {
+        let refusal = kind.descriptor().poetry_only_refusal;
+        assert!(
+            kind.is_python() || refusal.is_none(),
+            "{kind:?}: only Python kinds can be refused by poetry_only"
+        );
+        if let Some(text) = refusal {
+            assert!(
+                text.contains("{}"),
+                "{kind:?} refusal must name the manifest"
+            );
+        }
+        if !kind.is_python() {
+            continue;
+        }
+        let spec = spec(kind, "manifest");
+        let scan = ScanCtx {
+            scan_root: &root,
+            config: &config,
+            opts: &opts,
+        };
+        let ctx = PreflightCtx::new(scan, &[], &[]).unwrap();
+        let outcome = for_kind(kind).source_policy(&ctx, &spec);
+        assert_eq!(outcome.is_err(), refusal.is_some(), "{kind:?}");
+    }
+}

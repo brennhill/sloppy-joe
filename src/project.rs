@@ -145,6 +145,9 @@ pub(crate) struct KindDescriptor {
     pub(crate) lockfile_kind: lockfiles::LockfileKind,
     /// Remedy shown when the required lockfile is missing; `Some` exactly when `lockfile` is `Required`.
     pub(crate) missing_lockfile_help: Option<&'static str>,
+    /// Why `python_enforcement: poetry_only` refuses this kind (`{}` is the manifest path);
+    /// `None` when the kind is allowed there.
+    pub(crate) poetry_only_refusal: Option<&'static str>,
 }
 
 /// One row per project kind: the facts the rest of the scan reads instead of matching on the kind.
@@ -166,6 +169,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: None,
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Npm),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Run `npm install --package-lock-only` or `npm shrinkwrap`, then commit the lockfile.",
                 ),
@@ -183,6 +187,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("poetry"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::PyPI),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Run `poetry lock` and commit poetry.lock alongside pyproject.toml.",
                 ),
@@ -200,6 +205,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("uv"),
                 lockfile: Required,
                 lockfile_kind: Uv,
+                poetry_only_refusal: Some(
+                    "Python manifest '{}' uses the uv workflow, which is not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: Some(
                     "Run `uv lock` and commit uv.lock alongside pyproject.toml.",
                 ),
@@ -217,6 +225,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("pip"),
                 lockfile: Unsupported,
                 lockfile_kind: Absent,
+                poetry_only_refusal: Some(
+                    "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: None,
             },
         ),
@@ -232,6 +243,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("pip"),
                 lockfile: Unsupported,
                 lockfile_kind: Absent,
+                poetry_only_refusal: Some(
+                    "Python manifest '{}' uses hash-locked pip-tools requirements, which are not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: None,
             },
         ),
@@ -247,6 +261,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("pip"),
                 lockfile: Unsupported,
                 lockfile_kind: Absent,
+                poetry_only_refusal: Some(
+                    "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: None,
             },
         ),
@@ -262,6 +279,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("pipenv"),
                 lockfile: Unsupported,
                 lockfile_kind: Pipfile,
+                poetry_only_refusal: Some(
+                    "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: None,
             },
         ),
@@ -277,6 +297,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("pip"),
                 lockfile: Unsupported,
                 lockfile_kind: Absent,
+                poetry_only_refusal: Some(
+                    "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: None,
             },
         ),
@@ -292,6 +315,9 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("pip"),
                 lockfile: Unsupported,
                 lockfile_kind: Absent,
+                poetry_only_refusal: Some(
+                    "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
+                ),
                 missing_lockfile_help: None,
             },
         ),
@@ -307,6 +333,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("cargo"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Cargo),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some("Run `cargo generate-lockfile` and commit Cargo.lock."),
             },
         ),
@@ -322,6 +349,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("go"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Go),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Run `go mod tidy` so Go records dependency checksums in go.sum.",
                 ),
@@ -339,6 +367,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("bundler"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Ruby),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Run `bundle lock` or `bundle install`, then commit Gemfile.lock.",
                 ),
@@ -356,6 +385,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("composer"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Php),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Run `composer update` or `composer install`, then commit composer.lock.",
                 ),
@@ -373,6 +403,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("gradle"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Jvm),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
                 ),
@@ -390,6 +421,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("maven"),
                 lockfile: Unsupported,
                 lockfile_kind: Absent,
+                poetry_only_refusal: None,
                 missing_lockfile_help: None,
             },
         ),
@@ -405,6 +437,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 manager: Some("nuget"),
                 lockfile: Required,
                 lockfile_kind: LockEcosystem(Ecosystem::Dotnet),
+                poetry_only_refusal: None,
                 missing_lockfile_help: Some(
                     "Run `dotnet restore --use-lock-file` and commit packages.lock.json.",
                 ),
