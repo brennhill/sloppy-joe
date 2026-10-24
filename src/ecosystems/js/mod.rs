@@ -9,6 +9,7 @@ mod lockfile_validate;
 mod managers;
 mod npm_lock_schema;
 mod npm_lockfile_checks;
+mod pnpm_lock_schema;
 mod workspace;
 
 pub(crate) use binding::*;

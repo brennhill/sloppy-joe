@@ -55,7 +55,8 @@ pub(crate) fn read_validated_npm_lockfile(
 pub(crate) fn read_validated_pnpm_lockfile(
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
-) -> Result<serde_yaml::Value> {
+    config: &config::SloppyJoeConfig,
+) -> Result<(serde_yaml::Value, Vec<Issue>)> {
     let path =
         selected_lockfile_path(spec).expect("pnpm preflight should guarantee a lockfile exists");
     let content =
@@ -78,7 +79,8 @@ pub(crate) fn read_validated_pnpm_lockfile(
             .map(|b| b.npm_registries.clone())
             .unwrap_or_default(),
     )?;
-    Ok(lockfile)
+    let applied = pnpm_lock_schema::check_entry_keys(&lockfile, &path, &config.config_key_allow)?;
+    Ok((lockfile, crate::config_surface::issues(&applied)))
 }
 
 pub(crate) fn read_validated_bun_lockfile(

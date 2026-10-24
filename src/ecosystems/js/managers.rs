@@ -180,7 +180,7 @@ impl JsManager for Pnpm {
         manifest: &serde_json::Value,
         scope_root: &Path,
     ) -> Result<Vec<Issue>> {
-        let lockfile = read_validated_pnpm_lockfile(spec, manifest)?;
+        let (lockfile, warnings) = read_validated_pnpm_lockfile(spec, manifest, ctx.scan.config)?;
         validate_local_pnpm_dependencies(
             scope_root,
             spec,
@@ -189,7 +189,7 @@ impl JsManager for Pnpm {
             &ctx.js.index,
             &ctx.scan.config.ignore_dirs,
         )?;
-        Ok(Vec::new())
+        Ok(warnings)
     }
 }
 
