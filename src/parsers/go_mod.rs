@@ -17,7 +17,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
     }
     let path = project_dir.join("go.mod");
-    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+    let content = super::read_line_oriented_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read go.mod")?;
     validate_replace_targets(&content, &path)?;
 
@@ -393,6 +393,19 @@ mod tests {
 
     fn setup_dir(content: &str) -> std::path::PathBuf {
         setup_test_dir("gomod", "go.mod", content)
+    }
+
+    #[test]
+    fn a_lone_cr_cannot_hide_go_mod_directives() {
+        for body in [
+            "replace\rgithub.com/google/uuid => github.com/attacker/uuid v1.6.0\n",
+            "replace\r(\ngithub.com/google/uuid => github.com/attacker/uuid v1.6.0\n)\n",
+            "require\rgithub.com/google/uuid v1.6.0\n",
+        ] {
+            let content = format!("module example.com/app\n\ngo 1.21\n\n{body}");
+            let dir = setup_dir(&content);
+            assert!(parse(&dir).is_err(), "{body:?}");
+        }
     }
 
     #[test]

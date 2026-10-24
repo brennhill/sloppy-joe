@@ -102,7 +102,7 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<String>> {
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).map(Some)
+    crate::parsers::read_line_oriented_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).map(Some)
 }
 
 #[cfg(test)]
@@ -166,4 +166,20 @@ fn parse_entries(content: &str) -> Vec<(String, String)> {
     }
 
     entries
+}
+
+#[cfg(test)]
+mod lone_cr_tests {
+    #[test]
+    fn a_lone_cr_in_gradle_lockfile_is_refused() {
+        let dir = std::env::temp_dir().join(format!("sj-gl-cr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("gradle.lockfile"),
+            "a:b:1.0=compileClasspath\rc:d:2.0=runtimeClasspath\n",
+        )
+        .unwrap();
+        assert!(super::read_lockfile(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -14,6 +14,12 @@ fn classic_resolved_property_line_handles_colons_inside_urls() {
 }
 
 #[test]
+fn a_lone_cr_in_yarn_lock_is_refused() {
+    let content = "# yarn lockfile v1\n\nreact@^18.0.0:\n  version \"18.3.1\"\rreact-evil@^1.0.0:\n  version \"1.0.0\"\n";
+    assert!(parse_lockfile(content, PathBuf::from("yarn.lock"), Path::new(".")).is_err());
+}
+
+#[test]
 fn classic_provenance_rejects_wrong_tarball_identity() {
     let parsed = parse_lockfile(
         r#"# yarn lockfile v1

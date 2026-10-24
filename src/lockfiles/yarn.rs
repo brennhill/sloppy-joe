@@ -39,6 +39,8 @@ pub(crate) fn parse_lockfile(
     path: PathBuf,
     _project_dir: &Path,
 ) -> Result<ParsedYarnLock> {
+    // Yarn's lexer (and Berry's YAML) end a line at a lone `\r`; `lines()` does not.
+    crate::fsutil::reject_unmodeled_line_breaks(content, &path)?;
     let mut entries = Vec::new();
     let mut by_selector = HashMap::new();
     let lines = content.lines().collect::<Vec<_>>();

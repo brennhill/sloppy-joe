@@ -88,7 +88,7 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<String>> {
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)
+    crate::parsers::read_line_oriented_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)
         .map(Some)
         .map_err(|err| {
             anyhow::anyhow!(

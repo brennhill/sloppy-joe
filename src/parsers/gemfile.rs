@@ -20,7 +20,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
     }
     let path = project_dir.join("Gemfile");
-    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+    let content = super::read_line_oriented_limited(&path, super::MAX_MANIFEST_BYTES)
         .context("Failed to read Gemfile")?;
 
     for line in content.lines() {
@@ -242,7 +242,7 @@ fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependenc
             path.display()
         );
     }
-    let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)
+    let content = super::read_line_oriented_limited(&path, super::MAX_MANIFEST_BYTES)
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let text: String = content
         .lines()

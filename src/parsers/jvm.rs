@@ -350,4 +350,6 @@ fn extract_gradle_dep(line: &str, source_path: &Path) -> Result<Option<Dependenc
 #[cfg(test)]
 mod build_override_tests;
 #[cfg(test)]
+mod gradle_lexer_tests;
+#[cfg(test)]
 mod tests;

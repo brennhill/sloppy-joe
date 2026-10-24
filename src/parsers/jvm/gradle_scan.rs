@@ -7,10 +7,10 @@ pub(crate) enum GradleToken {
     Symbol(char),
 }
 
-/// Index just past the line comment starting at `i`.
+/// Index just past the line comment starting at `i`. Groovy ends a line at a lone `\r` too.
 fn skip_line_comment(chars: &[char], mut i: usize) -> usize {
     i += 2;
-    while i < chars.len() && chars[i] != '\n' {
+    while i < chars.len() && !matches!(chars[i], '\n' | '\r') {
         i += 1;
     }
     i
@@ -25,6 +25,79 @@ fn skip_block_comment(chars: &[char], mut i: usize) -> usize {
     (i + 2).min(chars.len())
 }
 
+/// Index just past the `${ ... }` interpolation whose `$` is at `i`; nested literals are skipped.
+fn skip_interpolation(chars: &[char], mut i: usize) -> usize {
+    i += 2;
+    let mut depth = 1usize;
+    while i < chars.len() && depth > 0 {
+        match chars[i] {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            '"' | '\'' => {
+                i = skip_quoted_literal(chars, i);
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i.min(chars.len())
+}
+
+/// Index just past the triple-quoted literal (three single or three double quotes) starting at `i`.
+fn skip_triple_literal(chars: &[char], mut i: usize) -> usize {
+    let quote = chars[i];
+    i += 3;
+    while i < chars.len() {
+        if chars[i] == '\\' {
+            i += 2;
+        } else if quote == '"' && chars[i] == '$' && chars.get(i + 1) == Some(&'{') {
+            i = skip_interpolation(chars, i);
+        } else if chars[i] == quote
+            && chars.get(i + 1) == Some(&quote)
+            && chars.get(i + 2) == Some(&quote)
+        {
+            return i + 3;
+        } else {
+            i += 1;
+        }
+    }
+    chars.len()
+}
+
+/// Index just past the slashy (`/.../`) or dollar-slashy (`$/.../$`) string starting at `i`.
+fn skip_slashy_literal(chars: &[char], mut i: usize) -> usize {
+    let dollar = chars[i] == '$';
+    i += if dollar { 2 } else { 1 };
+    while i < chars.len() {
+        if chars[i] == '\\' && !dollar {
+            i += 2;
+        } else if dollar && chars[i] == '/' && chars.get(i + 1) == Some(&'$') {
+            return i + 2;
+        } else if !dollar && chars[i] == '/' {
+            return i + 1;
+        } else {
+            i += 1;
+        }
+    }
+    chars.len()
+}
+
+/// Groovy reads `/` as the start of a slashy string, not a division, unless the previous token
+/// ends an expression (identifier, literal, closing bracket, number).
+fn slashy_starts_here(tokens: &[GradleToken], chars: &[char], i: usize) -> bool {
+    match chars[..i].iter().rev().find(|c| !c.is_whitespace()) {
+        None => true,
+        Some(c) if matches!(c, ')' | ']' | '}' | '"' | '\'') || c.is_ascii_digit() => false,
+        Some(c) if c.is_ascii_alphanumeric() || *c == '_' => matches!(
+            tokens.last(),
+            Some(GradleToken::Ident(word))
+                if matches!(word.as_str(), "return" | "case" | "in" | "assert" | "throw" | "else")
+        ),
+        Some(_) => true,
+    }
+}
+
 /// Index just past the quoted literal starting at `i`; unterminated literals run to the end.
 fn skip_quoted_literal(chars: &[char], mut i: usize) -> usize {
     let quote = chars[i];
@@ -32,6 +105,10 @@ fn skip_quoted_literal(chars: &[char], mut i: usize) -> usize {
     while i < chars.len() {
         if chars[i] == '\\' {
             i += 2;
+            continue;
+        }
+        if quote == '"' && chars[i] == '$' && chars.get(i + 1) == Some(&'{') {
+            i = skip_interpolation(chars, i);
             continue;
         }
         i += 1;
@@ -52,20 +129,39 @@ fn skip_identifier(chars: &[char], mut i: usize) -> usize {
     i
 }
 
+/// End of the string literal starting at `i`, if a literal starts there.
+fn literal_end(tokens: &[GradleToken], chars: &[char], i: usize) -> Option<usize> {
+    let next = chars.get(i + 1).copied();
+    match chars[i] {
+        '/' if slashy_starts_here(tokens, chars, i) => Some(skip_slashy_literal(chars, i)),
+        '$' if next == Some('/') => Some(skip_slashy_literal(chars, i)),
+        quote @ ('"' | '\'') => {
+            let triple = next == Some(quote) && chars.get(i + 2) == Some(&quote);
+            Some(if triple {
+                skip_triple_literal(chars, i)
+            } else {
+                skip_quoted_literal(chars, i)
+            })
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn tokenize_gradle(content: &str) -> Vec<GradleToken> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = content.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
         let next = chars.get(i + 1).copied();
+        let comment = chars[i] == '/' && matches!(next, Some('/' | '*'));
+        if !comment && let Some(end) = literal_end(&tokens, &chars, i) {
+            tokens.push(GradleToken::Literal(chars[i..end].iter().collect()));
+            i = end;
+            continue;
+        }
         match chars[i] {
             '/' if next == Some('/') => i = skip_line_comment(&chars, i),
             '/' if next == Some('*') => i = skip_block_comment(&chars, i),
-            '"' | '\'' => {
-                let end = skip_quoted_literal(&chars, i);
-                tokens.push(GradleToken::Literal(chars[i..end].iter().collect()));
-                i = end;
-            }
             c @ ('{' | '}' | '(' | ')') => {
                 tokens.push(GradleToken::Symbol(c));
                 i += 1;
@@ -309,8 +405,37 @@ struct GradleScope {
     buildscript: bool,
 }
 
+/// `getRepositories()`, `getBuildscript().repositories` and friends reach the same models as the
+/// property syntax but would slip past the name checks.
+fn reject_getter_forms(name: &str, path: &Path) -> Result<()> {
+    for part in name.split('.') {
+        let Some(target) = part
+            .strip_prefix("get")
+            .or_else(|| part.strip_prefix("set"))
+        else {
+            continue;
+        };
+        if matches!(
+            target.to_ascii_lowercase().as_str(),
+            "repositories"
+                | "dependencies"
+                | "pluginmanagement"
+                | "buildscript"
+                | "resolutionstrategy"
+        ) {
+            bail!(
+                "Unsupported Gradle accessor '{}' in {}: repositories and dependencies can only be verified when declared in literal blocks",
+                crate::report::sanitize_for_terminal(name),
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Fail closed on constructs that can change dependencies or repositories outside literal blocks.
 fn reject_unverifiable_ident(name: &str, opens_block: bool, path: &Path) -> Result<()> {
+    reject_getter_forms(name, path)?;
     let mut parts = name.split('.');
     if parts.clone().any(|part| part == "dependencies") && (name != "dependencies" || !opens_block)
     {

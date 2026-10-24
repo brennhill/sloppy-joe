@@ -555,7 +555,7 @@ async fn empty_direct_graph_with_locked_packages_is_unsupported() {
     for (manifest, content, lockfile, locked) in [
         (
             "build.gradle",
-            "plugins { id 'java' }\ngetDependencies().add('implementation', 'com.example:payload:1.0.0')",
+            "plugins { id 'java' }\n// payload arrives through a convention plugin",
             "gradle.lockfile",
             "com.example:payload:1.0.0=runtimeClasspath\n",
         ),
