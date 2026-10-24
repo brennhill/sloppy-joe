@@ -2,7 +2,34 @@ use super::*;
 
 pub(super) struct Dotnet;
 
+#[async_trait::async_trait]
 impl EcosystemSupport for Dotnet {
+    fn scan_registry(
+        &self,
+        _project: &ParsedProject,
+        _client: reqwest::Client,
+    ) -> Result<Option<Box<dyn registry::Registry>>> {
+        Ok(None)
+    }
+
+    async fn resolve_versions(
+        &self,
+        _project: &ParsedProject,
+        _client: &reqwest::Client,
+    ) -> Result<Option<ParsedProject>> {
+        Ok(None)
+    }
+
+    async fn implementation_issues(
+        &self,
+        _project: &ParsedProject,
+        _client: reqwest::Client,
+        _osv_client: &dyn checks::malicious::OsvClient,
+        _opts: &ScanOptions<'_>,
+    ) -> Result<Vec<Issue>> {
+        Ok(Vec::new())
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Dotnet]
     }

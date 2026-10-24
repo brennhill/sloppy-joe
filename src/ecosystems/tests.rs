@@ -84,6 +84,26 @@ fn unsupported_bundler_files_block_instead_of_being_skipped() {
 // missing or unreadable, and Maven must state its reduced-confidence policy instead of passing
 // silently.
 
+/// The fixture rows for every kind the registry exposes with `policy`, found by walking `all()`.
+/// A registered kind without a row fails the test, so a new ecosystem cannot join the registry
+/// without a fixture.
+fn registered<T>(
+    rows: &'static [T],
+    policy: LockfilePolicy,
+    kind_of: impl Fn(&T) -> ProjectInputKind,
+) -> Vec<&'static T> {
+    all()
+        .iter()
+        .flat_map(|plugin| plugin.kinds().iter().copied())
+        .filter(|kind| kind.descriptor().lockfile == policy)
+        .map(|kind| {
+            rows.iter()
+                .find(|row| kind_of(row) == kind)
+                .unwrap_or_else(|| panic!("registered kind {kind:?} has no conformance fixture"))
+        })
+        .collect()
+}
+
 struct Fixture {
     kind: ProjectInputKind,
     manifest: &'static str,
@@ -175,7 +195,7 @@ fn fixtures_cover_every_kind_that_requires_a_lockfile() {
 
 #[test]
 fn a_missing_required_lockfile_blocks() {
-    for fixture in FIXTURES {
+    for fixture in registered(FIXTURES, LockfilePolicy::Required, |f| f.kind) {
         let dir = fixture_dir(fixture, None);
         assert!(
             blocks(&dir),
@@ -188,7 +208,7 @@ fn a_missing_required_lockfile_blocks() {
 
 #[test]
 fn a_malformed_lockfile_blocks() {
-    for fixture in FIXTURES {
+    for fixture in registered(FIXTURES, LockfilePolicy::Required, |f| f.kind) {
         let dir = fixture_dir(fixture, Some("\u{1}{ not a lockfile ]["));
         assert!(
             blocks(&dir),
@@ -269,7 +289,8 @@ const UNSUPPORTED: &[(ProjectInputKind, &str, &str)] = &[
 
 #[test]
 fn unsupported_constructs_do_not_pass_silently() {
-    for (kind, manifest, content) in UNSUPPORTED {
+    for (kind, manifest, content) in registered(UNSUPPORTED, LockfilePolicy::Required, |row| row.0)
+    {
         let fixture = Fixture {
             kind: *kind,
             manifest,
@@ -411,7 +432,9 @@ fn every_kind_has_a_conformance_fixture() {
 fn lockfile_less_kinds_state_their_policy() {
     let config = config::SloppyJoeConfig::default();
     let opts = ScanOptions::default();
-    for (kind, manifest, content) in LOCKFILE_LESS {
+    for (kind, manifest, content) in
+        registered(LOCKFILE_LESS, LockfilePolicy::Unsupported, |row| row.0)
+    {
         assert_eq!(
             kind.descriptor().lockfile,
             LockfilePolicy::Unsupported,
@@ -500,7 +523,11 @@ const UNSUPPORTED_LOCKFILE_LESS: &[(ProjectInputKind, &str, &str)] = &[
 fn lockfile_less_kinds_block_unsupported_constructs() {
     let config = config::SloppyJoeConfig::default();
     let opts = ScanOptions::default();
-    for (kind, manifest, content) in UNSUPPORTED_LOCKFILE_LESS {
+    for (kind, manifest, content) in registered(
+        UNSUPPORTED_LOCKFILE_LESS,
+        LockfilePolicy::Unsupported,
+        |row| row.0,
+    ) {
         let fixture = Fixture {
             kind: *kind,
             manifest,

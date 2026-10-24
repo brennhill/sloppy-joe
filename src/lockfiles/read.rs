@@ -8,7 +8,7 @@ pub(crate) fn read_lockfile(
     lockfile_override: Option<&Path>,
 ) -> Result<ParsedLockfile> {
     if let Some(kind) = project_kind {
-        return read_lockfile_for_project_kind(project_dir, kind, lockfile_override);
+        return (kind.0)(project_dir, lockfile_override);
     }
 
     match ecosystem {
@@ -146,25 +146,51 @@ fn read_cargo_lockfile(
     Ok(ParsedLockfile::Cargo(value))
 }
 
-pub(crate) fn read_lockfile_for_project_kind(
-    project_dir: &Path,
-    kind: LockfileKind,
-    lockfile_override: Option<&Path>,
-) -> Result<ParsedLockfile> {
-    match kind {
-        LockfileKind::Ecosystem(ecosystem) => {
-            read_lockfile(project_dir, Some(ecosystem), None, lockfile_override)
+macro_rules! ecosystem_reader {
+    ($name:ident, $ecosystem:expr) => {
+        fn $name(project_dir: &Path, lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+            read_lockfile(project_dir, Some($ecosystem), None, lockfile_override)
         }
-        LockfileKind::Uv => match uv::read_lockfile(project_dir)? {
-            Some(value) => Ok(ParsedLockfile::Uv(value)),
-            None => Ok(ParsedLockfile::None),
-        },
-        LockfileKind::Pipfile => match pipfile_lock::read_lockfile(project_dir)? {
-            Some(value) => Ok(ParsedLockfile::Pipfile(value)),
-            None => Ok(ParsedLockfile::None),
-        },
-        LockfileKind::Absent => Ok(ParsedLockfile::None),
-    }
+    };
+}
+
+ecosystem_reader!(read_npm, Ecosystem::Npm);
+ecosystem_reader!(read_pypi, Ecosystem::PyPI);
+ecosystem_reader!(read_cargo, Ecosystem::Cargo);
+ecosystem_reader!(read_go, Ecosystem::Go);
+ecosystem_reader!(read_ruby, Ecosystem::Ruby);
+ecosystem_reader!(read_php, Ecosystem::Php);
+ecosystem_reader!(read_jvm, Ecosystem::Jvm);
+ecosystem_reader!(read_dotnet, Ecosystem::Dotnet);
+
+fn read_uv(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(uv::read_lockfile(project_dir)?.map_or(ParsedLockfile::None, ParsedLockfile::Uv))
+}
+
+fn read_pipfile(project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(pipfile_lock::read_lockfile(project_dir)?
+        .map_or(ParsedLockfile::None, ParsedLockfile::Pipfile))
+}
+
+/// The project has no lockfile format sloppy-joe reads.
+fn read_absent(_project_dir: &Path, _lockfile_override: Option<&Path>) -> Result<ParsedLockfile> {
+    Ok(ParsedLockfile::None)
+}
+
+#[allow(dead_code)]
+impl LockfileKind {
+    pub(crate) const NPM: LockfileKind = LockfileKind(read_npm);
+    /// Poetry's lockfile for Python.
+    pub(crate) const PYPI: LockfileKind = LockfileKind(read_pypi);
+    pub(crate) const CARGO: LockfileKind = LockfileKind(read_cargo);
+    pub(crate) const GO: LockfileKind = LockfileKind(read_go);
+    pub(crate) const RUBY: LockfileKind = LockfileKind(read_ruby);
+    pub(crate) const PHP: LockfileKind = LockfileKind(read_php);
+    pub(crate) const JVM: LockfileKind = LockfileKind(read_jvm);
+    pub(crate) const DOTNET: LockfileKind = LockfileKind(read_dotnet);
+    pub(crate) const UV: LockfileKind = LockfileKind(read_uv);
+    pub(crate) const PIPFILE: LockfileKind = LockfileKind(read_pipfile);
+    pub(crate) const ABSENT: LockfileKind = LockfileKind(read_absent);
 }
 
 /// Resolve versions from a pre-parsed lockfile.

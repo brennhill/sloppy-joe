@@ -534,10 +534,9 @@ fn python_poetry_projects_use_poetry_lock() {
     )
     .unwrap();
     let deps = vec![pypi_dep("requests", "==2.31.0")];
-    let result =
-        LockfileData::parse_for_kind(&dir, Some(LockfileKind::Ecosystem(Ecosystem::PyPI)), &deps)
-            .unwrap()
-            .resolution;
+    let result = LockfileData::parse_for_kind(&dir, Some(LockfileKind::PYPI), &deps)
+        .unwrap()
+        .resolution;
     assert_eq!(
         result.resolved_version(&deps[0]).unwrap().source,
         ResolutionSource::Lockfile
@@ -572,7 +571,7 @@ requires-dist = [{ name = "requests", specifier = "==2.32.3" }]
     )
     .unwrap();
     let deps = vec![pypi_dep("requests", "==2.32.3")];
-    let result = LockfileData::parse_for_kind(&dir, Some(LockfileKind::Uv), &deps)
+    let result = LockfileData::parse_for_kind(&dir, Some(LockfileKind::UV), &deps)
         .unwrap()
         .resolution;
     assert_eq!(
@@ -590,7 +589,7 @@ fn legacy_python_projects_do_not_use_poetry_lock() {
     )
     .unwrap();
     let deps = vec![pypi_dep("requests", "==2.31.0")];
-    let result = LockfileData::parse_for_kind(&dir, Some(LockfileKind::Absent), &deps)
+    let result = LockfileData::parse_for_kind(&dir, Some(LockfileKind::ABSENT), &deps)
         .unwrap()
         .resolution;
     assert_eq!(
@@ -633,7 +632,7 @@ fn maven_projects_do_not_read_gradle_lockfiles() {
     .unwrap();
     let deps = vec![jvm_dep("com.google.guava:guava", Some("31.1-jre"))];
 
-    let data = LockfileData::parse_for_kind(&dir, Some(LockfileKind::Absent), &deps)
+    let data = LockfileData::parse_for_kind(&dir, Some(LockfileKind::ABSENT), &deps)
         .expect("Maven projects must not consume gradle.lockfile");
 
     assert_eq!(

@@ -1,12 +1,12 @@
-/// Which lockfile format a project reads. Chosen by the project's ecosystem plugin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LockfileKind {
-    /// The ecosystem's usual lockfile (Poetry's for Python).
-    Ecosystem(Ecosystem),
-    Uv,
-    Pipfile,
-    /// The project has no lockfile format sloppy-joe reads.
-    Absent,
+/// How a project reads its lockfile: the parser itself, chosen by the project's descriptor.
+/// There is no tag to match on; the format is the function.
+#[derive(Clone, Copy)]
+pub(crate) struct LockfileKind(pub(crate) fn(&Path, Option<&Path>) -> Result<ParsedLockfile>);
+
+impl std::fmt::Debug for LockfileKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LockfileKind")
+    }
 }
 
 mod nesting;

@@ -161,33 +161,27 @@ pub(crate) trait EcosystemSupport: Sync {
     /// resolves from somewhere else (Gradle plugin repositories).
     fn scan_registry(
         &self,
-        _project: &ParsedProject,
-        _client: reqwest::Client,
-    ) -> Result<Option<Box<dyn registry::Registry>>> {
-        Ok(None)
-    }
+        project: &ParsedProject,
+        client: reqwest::Client,
+    ) -> Result<Option<Box<dyn registry::Registry>>>;
 
     /// Declarations whose versions come from outside the manifest (Maven properties, BOMs, parent
     /// chain). `None` means the project needs no resolution.
     async fn resolve_versions(
         &self,
-        _project: &ParsedProject,
-        _client: &reqwest::Client,
-    ) -> Result<Option<ParsedProject>> {
-        Ok(None)
-    }
+        project: &ParsedProject,
+        client: &reqwest::Client,
+    ) -> Result<Option<ParsedProject>>;
 
     /// Extra advisory checks on what the declared dependencies actually run (Gradle plugin
     /// implementation artifacts).
     async fn implementation_issues(
         &self,
-        _project: &ParsedProject,
-        _client: reqwest::Client,
-        _osv_client: &dyn checks::malicious::OsvClient,
-        _opts: &ScanOptions<'_>,
-    ) -> Result<Vec<Issue>> {
-        Ok(Vec::new())
-    }
+        project: &ParsedProject,
+        client: reqwest::Client,
+        osv_client: &dyn checks::malicious::OsvClient,
+        opts: &ScanOptions<'_>,
+    ) -> Result<Vec<Issue>>;
 }
 
 static PLUGINS: [&dyn EcosystemSupport; 8] = [

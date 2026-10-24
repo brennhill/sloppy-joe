@@ -158,7 +158,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
     use InstalledTreePolicy::{Scan, ScanWhenLocked, Skip};
     use LockfilePolicy::{Required, Unsupported};
     use ProjectInputKind as K;
-    use lockfiles::LockfileKind::{Absent, Ecosystem as LockEcosystem, Pipfile, Uv};
+    use lockfiles::LockfileKind as L;
     [
         (
             K::Npm,
@@ -171,7 +171,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: ScanWhenLocked,
                 manager: None,
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Npm),
+                lockfile_kind: L::NPM,
                 missing_manifest_message: Some(
                     "Required manifest 'package.json' is missing for this project type.",
                 ),
@@ -192,7 +192,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("poetry"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::PyPI),
+                lockfile_kind: L::PYPI,
                 missing_manifest_message: Some(
                     "Required Python manifest is missing for this project type. Expected one of: pyproject.toml, requirements*.txt, Pipfile, setup.cfg, or setup.py.",
                 ),
@@ -213,7 +213,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("uv"),
                 lockfile: Required,
-                lockfile_kind: Uv,
+                lockfile_kind: L::UV,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Python manifest '{}' uses the uv workflow, which is not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -234,7 +234,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("pip"),
                 lockfile: Unsupported,
-                lockfile_kind: Absent,
+                lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -253,7 +253,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("pip"),
                 lockfile: Unsupported,
-                lockfile_kind: Absent,
+                lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Python manifest '{}' uses hash-locked pip-tools requirements, which are not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -272,7 +272,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("pip"),
                 lockfile: Unsupported,
-                lockfile_kind: Absent,
+                lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -291,7 +291,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("pipenv"),
                 lockfile: Unsupported,
-                lockfile_kind: Pipfile,
+                lockfile_kind: L::PIPFILE,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -310,7 +310,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("pip"),
                 lockfile: Unsupported,
-                lockfile_kind: Absent,
+                lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -329,7 +329,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Skip,
                 manager: Some("pip"),
                 lockfile: Unsupported,
-                lockfile_kind: Absent,
+                lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
@@ -348,7 +348,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("cargo"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Cargo),
+                lockfile_kind: L::CARGO,
                 missing_manifest_message: Some(
                     "Required manifest 'Cargo.toml' is missing for this project type.",
                 ),
@@ -367,7 +367,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("go"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Go),
+                lockfile_kind: L::GO,
                 missing_manifest_message: Some(
                     "Required manifest 'go.mod' is missing for this project type.",
                 ),
@@ -388,7 +388,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("bundler"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Ruby),
+                lockfile_kind: L::RUBY,
                 missing_manifest_message: Some(
                     "Required manifest 'Gemfile' is missing for this project type.",
                 ),
@@ -409,7 +409,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("composer"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Php),
+                lockfile_kind: L::PHP,
                 missing_manifest_message: Some(
                     "Required manifest 'composer.json' is missing for this project type.",
                 ),
@@ -430,7 +430,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("gradle"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Jvm),
+                lockfile_kind: L::JVM,
                 missing_manifest_message: Some(
                     "Required manifest 'build.gradle, build.gradle.kts, or pom.xml' is missing for this project type.",
                 ),
@@ -451,7 +451,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("maven"),
                 lockfile: Unsupported,
-                lockfile_kind: Absent,
+                lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: None,
                 missing_lockfile_help: None,
@@ -468,7 +468,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 in_installed_tree: Scan,
                 manager: Some("nuget"),
                 lockfile: Required,
-                lockfile_kind: LockEcosystem(Ecosystem::Dotnet),
+                lockfile_kind: L::DOTNET,
                 missing_manifest_message: Some(
                     "Required manifest '.csproj' is missing for this project type.",
                 ),
