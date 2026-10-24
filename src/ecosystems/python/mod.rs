@@ -130,18 +130,43 @@ impl EcosystemSupport for Python {
         Ok(())
     }
 
-    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
-        let parsed = common::parse_for_preflight(self, ctx, spec)?;
-        let mut warnings = parsed.warnings.clone();
-        check_python_lockfile(ctx, spec, &parsed, &mut warnings)?;
-        self.validate_lockfile(ctx, spec)?;
+    fn bind(
+        &self,
+        _scan_root: &Path,
+        _specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+        std::collections::HashMap::new()
+    }
+
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
+        vec![unlocked]
+    }
+
+    fn validate_lockfile(
+        &self,
+        ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+        parsed: &ParsedInput,
+    ) -> Result<Vec<Issue>> {
+        let mut warnings = Vec::new();
+        check_python_lockfile(ctx, spec, parsed, &mut warnings)?;
+        self.revalidate_lockfile(ctx, spec)?;
         Ok(warnings)
+    }
+
+    fn source_policy(
+        &self,
+        _ctx: &PreflightCtx<'_>,
+        _spec: &ProjectInputSpec,
+    ) -> Result<SourcePolicy> {
+        // Index and source restrictions are enforced while the lockfile is validated.
+        Ok(SourcePolicy::LockfileBacked(Vec::new()))
     }
 }
 
 impl Python {
     /// Poetry and uv lockfiles are re-read against the resolved dependency set.
-    fn validate_lockfile(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<()> {
+    fn revalidate_lockfile(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<()> {
         let (config, opts) = (ctx.scan.config, ctx.scan.opts);
         match spec.kind {
             ProjectInputKind::PyProjectPoetry => {

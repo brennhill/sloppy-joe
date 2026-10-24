@@ -56,6 +56,23 @@ impl EcosystemSupport for Jvm {
         Ok(common::kind_for_file_name(self.kinds(), path))
     }
 
+    fn refine_specs(
+        &self,
+        _scan_root: &Path,
+        _config: &config::SloppyJoeConfig,
+        _specs: &mut Vec<ProjectInputSpec>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn bind(
+        &self,
+        _scan_root: &Path,
+        _specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+        std::collections::HashMap::new()
+    }
+
     fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
         // Gradle plugin markers and buildscript classpath artifacts resolve from
         // different repositories, so each group gets its own project.
@@ -101,9 +118,12 @@ impl EcosystemSupport for Jvm {
         gradle_plugin_scan::project_implementation_issues(project, client, osv_client, opts).await
     }
 
-    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
-        let parsed = common::parse_for_preflight(self, ctx, spec)?;
-        let mut warnings = parsed.warnings.clone();
+    fn validate_lockfile(
+        &self,
+        _ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+        parsed: &ParsedInput,
+    ) -> Result<Vec<Issue>> {
         match spec.kind {
             ProjectInputKind::Gradle => {
                 common::ensure_kind_lockfile(
@@ -113,10 +133,25 @@ impl EcosystemSupport for Jvm {
                 common::ensure_no_locked_packages_without_declarations(spec, &parsed.deps)?;
                 ensure_gradle_lockfile_pins_dependencies(spec, parsed.deps.len())?;
             }
-            ProjectInputKind::Maven => warnings.push(maven_no_lockfile_warning(spec)),
+            // Maven has no lockfile to validate; source_policy states what that means.
+            ProjectInputKind::Maven => {}
             other => wrong_plugin(other),
         }
-        Ok(warnings)
+        Ok(Vec::new())
+    }
+
+    fn source_policy(
+        &self,
+        _ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+    ) -> Result<SourcePolicy> {
+        match spec.kind {
+            ProjectInputKind::Gradle => Ok(SourcePolicy::LockfileBacked(Vec::new())),
+            ProjectInputKind::Maven => Ok(SourcePolicy::ReducedConfidence(
+                maven_no_lockfile_warning(spec),
+            )),
+            other => wrong_plugin(other),
+        }
     }
 }
 

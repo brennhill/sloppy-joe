@@ -1,16 +1,5 @@
 use super::*;
 
-/// Parse for preflight, naming the manifest in the error.
-pub(super) fn parse_for_preflight(
-    plugin: &dyn EcosystemSupport,
-    ctx: &PreflightCtx<'_>,
-    spec: &ProjectInputSpec,
-) -> Result<ParsedInput> {
-    plugin
-        .parse(&ctx.scan, spec)
-        .map_err(|err| broken_manifest(spec, err))
-}
-
 pub(super) fn broken_manifest(spec: &ProjectInputSpec, err: anyhow::Error) -> anyhow::Error {
     anyhow::anyhow!(
         "Broken manifest '{}': {}",

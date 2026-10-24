@@ -62,17 +62,44 @@ impl EcosystemSupport for Cargo {
         expand_cargo_project_inputs(scan_root, specs, config)
     }
 
-    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+    fn bind(
+        &self,
+        _scan_root: &Path,
+        _specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+        std::collections::HashMap::new()
+    }
+
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
+        vec![unlocked]
+    }
+
+    fn validate_lockfile(
+        &self,
+        ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+        _parsed: &ParsedInput,
+    ) -> Result<Vec<Issue>> {
         let ScanCtx {
             scan_root, config, ..
         } = ctx.scan;
-        let parsed = common::parse_for_preflight(self, ctx, spec)?;
-        let mut warnings = parsed.warnings;
         let lockfile = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
         common::ensure_kind_lockfile(spec, &lockfile)?;
-        warnings.extend(validate_cargo_source_policy(scan_root, spec, config)?);
         cargo_lockfile_value(&lockfile)?;
-        Ok(warnings)
+        Ok(Vec::new())
+    }
+
+    fn source_policy(
+        &self,
+        ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+    ) -> Result<SourcePolicy> {
+        let ScanCtx {
+            scan_root, config, ..
+        } = ctx.scan;
+        Ok(SourcePolicy::LockfileBacked(validate_cargo_source_policy(
+            scan_root, spec, config,
+        )?))
     }
 }
 

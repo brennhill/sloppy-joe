@@ -67,6 +67,14 @@ impl<'a> PreflightCtx<'a> {
     }
 }
 
+/// What an ecosystem says about the sources of a project's packages.
+pub(crate) enum SourcePolicy {
+    /// A lockfile backs the scan; the issues are warnings about source configuration.
+    LockfileBacked(Vec<Issue>),
+    /// No trusted lockfile exists, so resolution-sensitive checks run with reduced confidence.
+    ReducedConfidence(Issue),
+}
+
 #[async_trait::async_trait]
 pub(crate) trait EcosystemSupport: Sync {
     /// The project kinds this plugin owns. Every kind is owned by exactly one plugin.
@@ -96,35 +104,38 @@ pub(crate) trait EcosystemSupport: Sync {
     fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>>;
 
     /// Adjust the discovered projects after `--type` filtering: add local path dependencies,
-    /// drop manifests another one owns, refuse ambiguity. No-op for most ecosystems.
+    /// drop manifests another one owns, refuse ambiguity. Ecosystems with nothing to adjust say so.
     fn refine_specs(
         &self,
-        _scan_root: &Path,
-        _config: &config::SloppyJoeConfig,
-        _specs: &mut Vec<ProjectInputSpec>,
-    ) -> Result<()> {
-        Ok(())
-    }
+        scan_root: &Path,
+        config: &config::SloppyJoeConfig,
+        specs: &mut Vec<ProjectInputSpec>,
+    ) -> Result<()>;
 
     /// Bind projects to their package manager and lockfile. Projects that cannot be bound are
-    /// returned with the reason; the scan reports them as incomplete. No-op for most ecosystems.
+    /// returned with the reason; the scan reports them as incomplete.
     fn bind(
         &self,
-        _scan_root: &Path,
-        _specs: &mut [ProjectInputSpec],
-    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
-        std::collections::HashMap::new()
-    }
+        scan_root: &Path,
+        specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error>;
 
     /// Split build/tooling dependencies that no lockfile records into the groups that resolve
-    /// from separate repositories. One group by default.
-    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
-        vec![unlocked]
-    }
+    /// from separate repositories.
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>>;
 
-    /// Verify the project's lockfile and policy before anything is scanned. An error blocks the
-    /// project; the returned issues are warnings about reduced confidence.
-    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>>;
+    /// Verify the project's lockfile: it exists, is readable, is well formed and backs the
+    /// declared dependencies. An error blocks the project; the returned issues are warnings.
+    fn validate_lockfile(
+        &self,
+        ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+        parsed: &ParsedInput,
+    ) -> Result<Vec<Issue>>;
+
+    /// Where this project's packages may come from, and how far the scan can trust the answer.
+    /// An ecosystem without a trusted lockfile states [`SourcePolicy::ReducedConfidence`].
+    fn source_policy(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<SourcePolicy>;
 
     /// A registry client that replaces the ecosystem default for this project, when the project
     /// resolves from somewhere else (Gradle plugin repositories).
@@ -248,9 +259,19 @@ pub(crate) fn tooling_groups(
     for_kind(kind).tooling_groups(unlocked)
 }
 
-/// Verify one project's lockfile and policy; see [`EcosystemSupport::preflight`].
+/// Verify one project's lockfile and policy; see [`EcosystemSupport::validate_lockfile`] and [`EcosystemSupport::source_policy`].
 pub(crate) fn preflight(ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
-    for_kind(spec.kind).preflight(ctx, spec)
+    let plugin = for_kind(spec.kind);
+    let parsed = plugin
+        .parse(&ctx.scan, spec)
+        .map_err(|err| common::broken_manifest(spec, err))?;
+    let mut warnings = parsed.warnings.clone();
+    warnings.extend(plugin.validate_lockfile(ctx, spec, &parsed)?);
+    match plugin.source_policy(ctx, spec)? {
+        SourcePolicy::LockfileBacked(issues) => warnings.extend(issues),
+        SourcePolicy::ReducedConfidence(issue) => warnings.push(issue),
+    }
+    Ok(warnings)
 }
 
 /// A plugin was handed a project it does not own: an engine bug, never user input.

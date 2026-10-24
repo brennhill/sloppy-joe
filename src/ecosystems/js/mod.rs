@@ -66,6 +66,10 @@ impl EcosystemSupport for Js {
         Ok(common::kind_for_file_name(self.kinds(), path))
     }
 
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
+        vec![unlocked]
+    }
+
     fn bind(
         &self,
         scan_root: &Path,
@@ -106,19 +110,39 @@ impl EcosystemSupport for Js {
         binding_errors
     }
 
-    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+    fn refine_specs(
+        &self,
+        _scan_root: &Path,
+        _config: &config::SloppyJoeConfig,
+        _specs: &mut Vec<ProjectInputSpec>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn validate_lockfile(
+        &self,
+        ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+        _parsed: &ParsedInput,
+    ) -> Result<Vec<Issue>> {
         let manifest = ctx
             .js
             .manifests
             .get(&spec.manifest_path)
             .expect("npm manifests should be parsed during preflight");
-        // Parsed from the already-loaded manifest value.
-        parsers::package_json::parse_manifest_value(&spec.manifest_path, manifest)
-            .map_err(|err| common::broken_manifest(spec, err))?;
         ensure_authoritative_js_lockfile_readable(spec)?;
         let mut warnings = Vec::new();
         preflight_js_project(ctx, spec, manifest, &mut warnings)?;
         Ok(warnings)
+    }
+
+    fn source_policy(
+        &self,
+        _ctx: &PreflightCtx<'_>,
+        _spec: &ProjectInputSpec,
+    ) -> Result<SourcePolicy> {
+        // Registry, tarball and alias restrictions are enforced while the lockfile is validated.
+        Ok(SourcePolicy::LockfileBacked(Vec::new()))
     }
 }
 

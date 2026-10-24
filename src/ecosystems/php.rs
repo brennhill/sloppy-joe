@@ -43,11 +43,44 @@ impl EcosystemSupport for Php {
         Ok(common::kind_for_file_name(self.kinds(), path))
     }
 
-    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
-        let parsed = common::parse_for_preflight(self, ctx, spec)?;
+    fn refine_specs(
+        &self,
+        _scan_root: &Path,
+        _config: &config::SloppyJoeConfig,
+        _specs: &mut Vec<ProjectInputSpec>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn bind(
+        &self,
+        _scan_root: &Path,
+        _specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+        std::collections::HashMap::new()
+    }
+
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
+        vec![unlocked]
+    }
+
+    fn validate_lockfile(
+        &self,
+        _ctx: &PreflightCtx<'_>,
+        spec: &ProjectInputSpec,
+        _parsed: &ParsedInput,
+    ) -> Result<Vec<Issue>> {
         let lockfile = common::named_lockfile(spec).expect("Php names composer.lock");
         common::ensure_kind_lockfile(spec, &lockfile)?;
         common::read_json_lockfile(&lockfile)?;
-        Ok(parsed.warnings)
+        Ok(Vec::new())
+    }
+
+    fn source_policy(
+        &self,
+        _ctx: &PreflightCtx<'_>,
+        _spec: &ProjectInputSpec,
+    ) -> Result<SourcePolicy> {
+        Ok(SourcePolicy::LockfileBacked(Vec::new()))
     }
 }
