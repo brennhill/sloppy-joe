@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Cargo: a registry crate in `Cargo.lock` without a checksum now blocks (Cargo would trust whatever the index serves for it); lockfile v1 `[metadata]` checksums count. A repository's `.cargo/config.toml` that sets `http.proxy`, `http.cainfo`, `http.ssl-version`, `http.check-revoke`, `net.git-fetch-with-cli`, `build.rustc-wrapper`, `build.rustc-workspace-wrapper`, `registry.credential-provider` or `credential-alias` now blocks, since those redirect fetches or run programs the scan cannot verify.
 - Go: a `vendor/modules.txt` no longer switches off the go.sum check by merely existing. While vendoring is in effect (go 1.14 or later), the listing must contain every required module version (`# <module> <version>`) or the scan blocks; before go 1.14, or without a listing, go.sum is enforced. go.sum must also carry the content hash (the entry without `/go.mod`) for every direct requirement, not just the `/go.mod` hash; `// indirect` requirements keep needing only the `/go.mod` hash.
 - JavaScript: a `package.json5`, or a `package.yaml` that declares npm-style `dependencies`/`devDependencies` as a mapping, now blocks discovery instead of being skipped, so a repo no longer reports "0 packages, no issues" while a project's dependencies go unread. Haskell hpack `package.yaml` files (a list of dependencies) are still ignored; `ignore_dirs` excludes a directory outright.
 - Scan: a lockfile that cannot be read for internal packages now blocks instead of scanning them with no resolved versions (which skipped their advisory checks).

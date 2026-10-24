@@ -254,6 +254,45 @@ pub(crate) fn apply_cargo_config_source_rewrite(
     )
 }
 
+/// Settings a repository-committed Cargo config can use to change where or how crates are fetched,
+/// or to run a program during the build, that this scan cannot verify. A proxy plus CA bundle
+/// redirects crates.io as effectively as `[source] replace-with`, which is already blocked.
+const UNVERIFIABLE_CARGO_SETTINGS: &[(&str, &str)] = &[
+    ("http", "proxy"),
+    ("http", "cainfo"),
+    ("http", "ssl-version"),
+    ("http", "check-revoke"),
+    ("net", "git-fetch-with-cli"),
+    ("build", "rustc-wrapper"),
+    ("build", "rustc-workspace-wrapper"),
+    ("registry", "credential-provider"),
+];
+
+fn reject_unverifiable_cargo_settings(
+    config_path: &std::path::Path,
+    value: &toml::Value,
+) -> Result<()> {
+    let mut found: Vec<String> = UNVERIFIABLE_CARGO_SETTINGS
+        .iter()
+        .filter(|(table, key)| value.get(table).and_then(|t| t.get(key)).is_some())
+        .map(|(table, key)| format!("{table}.{key}"))
+        .collect();
+    if value.get("credential-alias").is_some() {
+        found.push("credential-alias".to_string());
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    Err(cargo_fail(
+        checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+        format!(
+            "Cargo config '{}' sets {}, which changes how crates are fetched or built in a way sloppy-joe cannot verify. Remove it from the repository's Cargo config and set it in the environment instead.",
+            config_path.display(),
+            found.join(", ")
+        ),
+    ))
+}
+
 pub(crate) fn parse_cargo_config_rewrites(
     config_path: &std::path::Path,
 ) -> Result<CargoConfigRewrites> {
@@ -265,6 +304,8 @@ pub(crate) fn parse_cargo_config_rewrites(
             err
         )
     })?;
+
+    reject_unverifiable_cargo_settings(config_path, &value)?;
 
     let mut rewrites = CargoConfigRewrites::default();
     let config_dir = config_path

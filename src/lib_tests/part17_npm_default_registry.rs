@@ -544,7 +544,7 @@ async fn repository_reports_separate_node_and_rust_dependency_chains() {
         "[package]\nname = \"backend\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"=1.0.0\"\n",
     )
     .unwrap();
-    std::fs::write(dir.join("backend/Cargo.lock"), "version = 4\n[[package]]\nname = \"backend\"\nversion = \"0.1.0\"\ndependencies = [\"serde\"]\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n").unwrap();
+    std::fs::write(dir.join("backend/Cargo.lock"), "version = 4\n[[package]]\nname = \"backend\"\nversion = \"0.1.0\"\ndependencies = [\"serde\"]\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"abababababababababababababababababababababababababababababababab\"\n").unwrap();
     let report = scan_with_source_full_options(
         &dir,
         None,

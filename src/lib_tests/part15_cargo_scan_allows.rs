@@ -27,6 +27,7 @@ shared = {{ git = "https://github.com/yourorg/shared-crate", rev = "{rev}" }}
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abababababababababababababababababababababababababababababababab"
 
 [[package]]
 name = "shared"

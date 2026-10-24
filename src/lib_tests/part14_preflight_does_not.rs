@@ -30,6 +30,7 @@ serde = "=1.0.229"
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -131,6 +132,7 @@ serde = "=1.0.228"
 name = "serde"
 version = "9.9.9"
 source = "registry+https://cargo.company.example/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -239,6 +241,7 @@ foo = "=1.0.0"
 name = "foo"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abababababababababababababababababababababababababababababababab"
 
 [[package]]
 name = "serde"
@@ -290,6 +293,7 @@ internal-crate = { registry-index = "https://cargo.company.example/index", versi
 name = "internal-crate"
 version = "1.2.3"
 source = "registry+https://cargo.company.example/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -547,6 +551,7 @@ internal-crate = "=1.2.3"
 name = "internal-crate"
 version = "1.2.3"
 source = "registry+https://cargo.company.example/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();

@@ -452,6 +452,55 @@ pub(crate) fn validate_cargo_effective_rewrite(
     }
 }
 
+/// Every crate Cargo.lock takes from a registry carries the checksum Cargo verifies the download
+/// against. Cargo tolerates a missing one and trusts whatever the index serves, so an entry
+/// without it is unverified. Lockfile v1 keeps checksums in `[metadata]`.
+fn ensure_registry_packages_have_checksums(
+    lockfile: &toml::Value,
+    lockfile_path: &std::path::Path,
+) -> Result<()> {
+    let metadata = lockfile.get("metadata").and_then(|value| value.as_table());
+    let mut missing = Vec::new();
+    for package in cargo_lockfile_entries(lockfile) {
+        let source = package.get("source").and_then(|value| value.as_str());
+        if !source
+            .is_some_and(|source| source.starts_with("registry+") || source.starts_with("sparse+"))
+        {
+            continue;
+        }
+        let name = package
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("?");
+        let version = package
+            .get("version")
+            .and_then(|value| value.as_str())
+            .unwrap_or("?");
+        let own = package
+            .get("checksum")
+            .and_then(|value| value.as_str())
+            .is_some_and(|checksum| !checksum.trim().is_empty());
+        let legacy_prefix = format!("checksum {name} {version} (");
+        let legacy =
+            metadata.is_some_and(|table| table.keys().any(|key| key.starts_with(&legacy_prefix)));
+        if !own && !legacy {
+            missing.push(format!("{name} {version}"));
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    Err(cargo_fail(
+        checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY,
+        format!(
+            "Cargo.lock '{}' lists registry crate(s) without a checksum: {}. Cargo would trust whatever the registry serves for them. Fix: regenerate the lockfile with `cargo generate-lockfile` and commit it.",
+            lockfile_path.display(),
+            missing.join(", ")
+        ),
+    ))
+}
+
 pub(crate) fn validate_cargo_source_policy(
     scan_root: &std::path::Path,
     spec: &ProjectInputSpec,
@@ -465,6 +514,7 @@ pub(crate) fn validate_cargo_source_policy(
         spec.kind.missing_lockfile_help().unwrap(),
     )?;
     let lockfile = cargo_lockfile_value(&authoritative_lockfile)?;
+    ensure_registry_packages_have_checksums(&lockfile, &authoritative_lockfile)?;
     let (cargo_config_rewrites, config_warnings) =
         load_effective_cargo_config_rewrites(scan_root, &spec.manifest_path, config)?;
     let rewrites =

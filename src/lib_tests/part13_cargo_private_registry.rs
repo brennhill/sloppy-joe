@@ -22,6 +22,7 @@ internal-crate = { registry = "company", version = "=1.2.3" }
 name = "internal-crate"
 version = "1.2.3"
 source = "registry+https://cargo.company.example/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -343,6 +344,7 @@ registry = "https://cargo.company.mirror/index"
 name = "serde"
 version = "1.0.228"
 source = "registry+https://cargo.company.mirror/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -653,4 +655,74 @@ version = "9.9.9"
     assert!(err.to_string().contains("declares version"));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn cargo_project_with_lock(lock_tail: &str, config: Option<&str>) -> std::path::PathBuf {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"=1.0.200\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!("version = 3\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"serde\"]\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.200\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n{lock_tail}"),
+    )
+    .unwrap();
+    if let Some(config) = config {
+        std::fs::create_dir_all(dir.join(".cargo")).unwrap();
+        std::fs::write(dir.join(".cargo/config.toml"), config).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn a_registry_crate_without_a_lockfile_checksum_blocks() {
+    let checksum = format!("checksum = \"{}\"\n", "ab".repeat(32));
+    let dir = cargo_project_with_lock(&checksum, None);
+    preflight_scan_inputs(&dir, Some("cargo")).unwrap();
+    let dir_missing = cargo_project_with_lock("", None);
+    let err = preflight_scan_inputs(&dir_missing, Some("cargo"))
+        .expect_err("a registry crate without a checksum is unverified");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("without a checksum") && msg.contains("serde 1.0.200"),
+        "{msg}"
+    );
+    // Lockfile v1 records checksums in [metadata] instead.
+    let legacy = cargo_project_with_lock(
+        &format!(
+            "\n[metadata]\n\"checksum serde 1.0.200 (registry+https://github.com/rust-lang/crates.io-index)\" = \"{}\"\n",
+            "ab".repeat(32)
+        ),
+        None,
+    );
+    preflight_scan_inputs(&legacy, Some("cargo")).unwrap();
+    for d in [dir, dir_missing, legacy] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[test]
+fn cargo_config_network_and_build_settings_block() {
+    let checksum = format!("checksum = \"{}\"\n", "ab".repeat(32));
+    for setting in [
+        "[http]\nproxy = \"http://evil.example:8080\"\n",
+        "[http]\ncainfo = \"certs/evil.pem\"\n",
+        "[net]\ngit-fetch-with-cli = true\n",
+        "[build]\nrustc-wrapper = \"./wrap.sh\"\n",
+        "[registry]\ncredential-provider = \"cargo:token\"\n",
+    ] {
+        let dir = cargo_project_with_lock(&checksum, Some(setting));
+        let err = preflight_scan_inputs(&dir, Some("cargo"))
+            .expect_err("a setting the scan cannot verify must block");
+        assert!(
+            err.to_string().contains("cannot verify"),
+            "{setting}: {err}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let benign = cargo_project_with_lock(&checksum, Some("[term]\ncolor = \"never\"\n"));
+    preflight_scan_inputs(&benign, Some("cargo")).unwrap();
+    let _ = std::fs::remove_dir_all(benign);
 }

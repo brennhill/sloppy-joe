@@ -200,6 +200,7 @@ serde = { workspace = true }
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -573,6 +574,7 @@ serde = {{ path = "{}" }}
 name = "serde"
 version = "1.0.0"
 source = "registry+https://cargo.company.example/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -628,6 +630,7 @@ serde_yaml = "=0.9.34"
 name = "serde_yaml"
 version = "0.9.34+deprecated"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
@@ -665,6 +668,7 @@ internal-crate = { registry = "company", version = "=1.2.3" }
 name = "internal-crate"
 version = "1.2.3"
 source = "registry+https://cargo.company.example/index"
+checksum = "abababababababababababababababababababababababababababababababab"
 "#,
     )
     .unwrap();
