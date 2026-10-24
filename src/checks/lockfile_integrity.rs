@@ -21,9 +21,9 @@
 use crate::Dependency;
 use crate::Ecosystem;
 use crate::checks::metadata::MetadataLookup;
-use crate::checks::names;
 use crate::lockfiles::integrity::LockedSource;
 use crate::lockfiles::{ResolutionResult, ResolutionSource};
+use crate::names;
 use crate::registry::npm_tarball::base64_encode;
 use crate::report::{Issue, Severity, sanitize_for_terminal};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

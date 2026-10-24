@@ -16,7 +16,7 @@ use super::*;
 use crate::registry::gradle_plugins::{GradlePluginRegistry, PluginRepository, plugin_marker_id};
 
 /// `trusted_registries.jvm[].name` for allowlisted Gradle plugin repositories.
-pub(crate) const TRUSTED_PLUGIN_REPOSITORY_NAME: &str = "gradle-plugins";
+pub(crate) use crate::config::TRUSTED_PLUGIN_REPOSITORY_NAME;
 
 fn is_trusted_plugin_repository(config: &config::SloppyJoeConfig, url: &str) -> bool {
     let url = config::normalize_python_index_url(url);

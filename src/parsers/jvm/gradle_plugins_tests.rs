@@ -4,9 +4,9 @@
 //! down statically must fail closed.
 
 use crate::Dependency;
+use crate::config::PluginRepository;
 use crate::parsers::jvm::{parse, parse_gradle_build};
 use crate::parsers::test_utils::{cleanup, empty_test_dir};
-use crate::registry::gradle_plugins::PluginRepository;
 use std::path::{Path, PathBuf};
 
 /// A temp git repository (so ancestor settings/build scripts are in scope)

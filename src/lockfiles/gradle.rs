@@ -158,7 +158,7 @@ fn parse_entries(content: &str) -> Vec<(String, String)> {
         };
 
         let name = format!("{}:{}", group, artifact);
-        if !crate::registry::validate_package_name(&name) {
+        if !crate::ecosystem::validate_package_name(&name) {
             continue;
         }
 

@@ -10,7 +10,7 @@ fn valid_scope(scope: &str) -> bool {
     scope.starts_with('@')
         && scope.len() > 1
         && !scope.contains('/')
-        && crate::registry::validate_package_name(&format!("{scope}/package"))
+        && crate::ecosystem::validate_package_name(&format!("{scope}/package"))
 }
 
 /// Validate a `trusted_registries.npm` route name: `default` or `@scope`.
@@ -56,7 +56,7 @@ pub(crate) struct NpmRegistries(pub(crate) BTreeMap<String, String>);
 
 impl NpmRegistries {
     pub(crate) fn read(&mut self, path: &Path) -> Result<()> {
-        let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+        let content = crate::fsutil::read_file_limited(path, crate::fsutil::MAX_MANIFEST_BYTES)?;
         for (line_number, line) in content.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with(['#', ';']) {

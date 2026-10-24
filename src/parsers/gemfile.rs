@@ -4,7 +4,7 @@ use std::path::Path;
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let project_dir = std::fs::canonicalize(project_dir)?;
-    let boundary = crate::config::registry::find_git_root(&project_dir)
+    let boundary = crate::cache::find_git_root(&project_dir)
         .map_err(anyhow::Error::msg)?
         .unwrap_or_else(|| project_dir.clone());
     for ancestor in project_dir

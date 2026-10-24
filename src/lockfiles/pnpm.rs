@@ -99,7 +99,7 @@ pub(super) fn parse_all_from_value(parsed: &serde_yaml::Value) -> Result<Vec<Dep
         let Some((name, version)) = pnpm_package_key_parts(key) else {
             continue;
         };
-        if !crate::registry::validate_package_name(name) {
+        if !crate::ecosystem::validate_package_name(name) {
             anyhow::bail!(
                 "pnpm-lock.yaml package '{}' has an invalid package name '{}'.",
                 crate::report::sanitize_for_terminal(key),
@@ -239,7 +239,7 @@ fn walk_from_importers<'a>(
         if reachable.contains(&(name.clone(), version.clone())) {
             continue;
         }
-        if !crate::registry::validate_package_name(&name) {
+        if !crate::ecosystem::validate_package_name(&name) {
             anyhow::bail!(
                 "pnpm-lock.yaml dependency '{}@{}' has an invalid package name.",
                 crate::report::sanitize_for_terminal(&name),
@@ -278,7 +278,7 @@ fn locked_package_identities(
                 unattributable = true;
                 continue;
             };
-            if !crate::registry::validate_package_name(name) {
+            if !crate::ecosystem::validate_package_name(name) {
                 anyhow::bail!(
                     "pnpm-lock.yaml package '{}' has an invalid package name '{}'.",
                     crate::report::sanitize_for_terminal(key.as_str().unwrap_or_default()),

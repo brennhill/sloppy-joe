@@ -226,7 +226,7 @@ pub(crate) async fn review_candidates_from_lookups(
             repository_url: meta.repository_url.clone(),
             metadata_exception: crate::report::MetadataException {
                 package: lookup.package.clone(),
-                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: version.to_string(),
                 previous_publisher: Some(previous_publisher.to_string()),
                 current_publisher: Some(current_publisher.to_string()),

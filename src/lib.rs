@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
+pub mod bootstrap;
 pub mod cache;
 pub mod checks;
 pub mod ecosystem;
+mod fsutil;
+mod http;
 pub mod names;
 pub use ecosystem::Ecosystem;
 pub mod config;
@@ -1591,9 +1594,7 @@ fn js_ancestry_root(
     scan_root: &std::path::Path,
     project_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    if let Some(git_root) =
-        crate::config::registry::find_git_root(project_dir).map_err(anyhow::Error::msg)?
-    {
+    if let Some(git_root) = crate::cache::find_git_root(project_dir).map_err(anyhow::Error::msg)? {
         return Ok(git_root);
     }
     std::fs::canonicalize(scan_root)
@@ -2549,8 +2550,7 @@ fn ensure_no_cargo_workspace_above_scan_root(
     if parsers::cargo_toml::parse_manifest_file(manifest_path)?.has_workspace {
         return Ok(());
     }
-    let Some(git_root) =
-        crate::config::registry::find_git_root(trusted_root).map_err(anyhow::Error::msg)?
+    let Some(git_root) = crate::cache::find_git_root(trusted_root).map_err(anyhow::Error::msg)?
     else {
         return Ok(());
     };
@@ -2707,23 +2707,6 @@ struct CargoConfigRewrites {
 enum CargoConfigSourceDefinition {
     Registry(String),
     Unsupported { kind: String, detail: String },
-}
-
-fn cargo_package_name_from_manifest(manifest_path: &std::path::Path) -> Result<Option<String>> {
-    let content = parsers::read_file_limited(manifest_path, parsers::MAX_MANIFEST_BYTES)?;
-    let value = toml::from_str::<toml::Value>(&content).map_err(|err| {
-        anyhow::anyhow!(
-            "Broken manifest '{}': failed to parse TOML: {}",
-            manifest_path.display(),
-            err
-        )
-    })?;
-    Ok(value
-        .get("package")
-        .and_then(|value| value.as_table())
-        .and_then(|package| package.get("name"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string))
 }
 
 fn merge_cargo_config_rewrites(into: &mut CargoConfigRewrites, from: CargoConfigRewrites) {
@@ -3140,7 +3123,8 @@ fn parse_cargo_config_rewrites(config_path: &std::path::Path) -> Result<CargoCon
             if !parsers::path_detected(&manifest_path)? {
                 continue;
             }
-            if let Some(package_name) = cargo_package_name_from_manifest(&manifest_path)?
+            if let Some(package_name) =
+                parsers::cargo_toml::package_name_from_manifest(&manifest_path)?
                 && let Some(existing) = rewrites
                     .local_paths
                     .insert(package_name.clone(), candidate.clone())
@@ -3643,7 +3627,9 @@ fn cargo_local_target_manifest(
     if !parsers::path_detected(&manifest_path)? {
         return Ok(None);
     }
-    if cargo_package_name_from_manifest(&manifest_path)?.as_deref() != Some(expected_package_name) {
+    if parsers::cargo_toml::package_name_from_manifest(&manifest_path)?.as_deref()
+        != Some(expected_package_name)
+    {
         return Ok(None);
     }
 
@@ -5482,7 +5468,7 @@ fn ensure_valid_npm_lockfile_names(
     lockfile_path: &std::path::Path,
 ) -> Result<()> {
     for candidate in std::iter::once(installed_name).chain(locked_name) {
-        if !crate::registry::validate_package_name(candidate) {
+        if !crate::ecosystem::validate_package_name(candidate) {
             anyhow::bail!(
                 "Required lockfile '{}' entry '{}' has an invalid package name '{}'.",
                 lockfile_path.display(),

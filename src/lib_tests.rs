@@ -472,7 +472,7 @@ fn repo_self_check_config_has_reviewed_cargo_metadata_exceptions() {
         assert!(
             cargo_rules.iter().any(|rule| {
                 rule.package == package
-                    && rule.check == crate::checks::names::METADATA_MAINTAINER_CHANGE
+                    && rule.check == crate::names::METADATA_MAINTAINER_CHANGE
                     && rule.version == version
                     && rule.previous_publisher.as_deref() == Some(previous_publisher)
                     && rule.current_publisher.as_deref() == Some(current_publisher)
@@ -5385,7 +5385,7 @@ async fn npm_fixture_private_scope_typo_uses_configured_trusted_scope() {
     assert!(
         report.issues.iter().any(|issue| {
             issue.package == "@acmf/widget"
-                && issue.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING
+                && issue.check == crate::names::SIMILARITY_SCOPE_SQUATTING
         }),
         "repo-configured trusted scopes should participate in npm scope-squatting detection"
     );
@@ -5414,7 +5414,7 @@ async fn npm_fixture_long_tail_combo_squat_uses_configured_package_roots() {
     assert!(
         report.issues.iter().any(|issue| {
             issue.package == "acme-widget-utils"
-                && issue.check == crate::checks::names::SIMILARITY_SEGMENT_OVERLAP
+                && issue.check == crate::names::SIMILARITY_SEGMENT_OVERLAP
         }),
         "repo-configured trusted package roots should participate in npm combo-squatting detection"
     );
@@ -11386,7 +11386,7 @@ async fn planning_spikes_are_ignored_by_default_but_application_manifests_are_sc
         .await
         .expect("planning spikes are outside the application scan");
     assert!(!report.has_errors());
-    config::discover_current_config(&dir)
+    crate::bootstrap::discover_current_config(&dir)
         .expect("bootstrap discovery must also ignore planning spikes");
     let app = dir.join("web");
     std::fs::create_dir_all(&app).unwrap();

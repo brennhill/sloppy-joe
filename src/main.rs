@@ -310,7 +310,7 @@ fn init_config_json(
     project_dir: &std::path::Path,
 ) -> String {
     if greenfield {
-        return sloppy_joe::config::greenfield_json(
+        return sloppy_joe::bootstrap::greenfield_json(
             ecosystem.expect("--greenfield requires --ecosystem"),
         )
         .unwrap_or_else(|e| {
@@ -320,13 +320,13 @@ fn init_config_json(
     }
 
     if from_current {
-        return sloppy_joe::config::discover_current_json(project_dir).unwrap_or_else(|e| {
+        return sloppy_joe::bootstrap::discover_current_json(project_dir).unwrap_or_else(|e| {
             eprintln!("Error: {}", e);
             process::exit(2);
         });
     }
 
-    sloppy_joe::config::template_json()
+    sloppy_joe::bootstrap::template_json()
 }
 
 fn create_registered_init_config(
@@ -607,7 +607,7 @@ async fn main() {
                 }
 
                 if let Err(e) =
-                    write_config_json(&config_path, &sloppy_joe::config::template_json())
+                    write_config_json(&config_path, &sloppy_joe::bootstrap::template_json())
                 {
                     eprintln!("Error: {}", e);
                     process::exit(2);
@@ -628,7 +628,7 @@ async fn main() {
                 );
             } else {
                 // No flags: print template to stdout (backward compat)
-                sloppy_joe::config::print_template();
+                sloppy_joe::bootstrap::print_template();
             }
         }
         Commands::Register { dir, config } => {
@@ -1058,7 +1058,7 @@ mod tests {
         let (git_root, config_path) = create_registered_init_config(
             &repo,
             &config_home,
-            &sloppy_joe::config::template_json(),
+            &sloppy_joe::bootstrap::template_json(),
         )
         .expect("register helper should write config and registry");
         let canonical_config_path = std::fs::canonicalize(&config_path).unwrap();
@@ -1088,7 +1088,7 @@ mod tests {
         let err = create_registered_init_config(
             &repo,
             &config_home,
-            &sloppy_joe::config::template_json(),
+            &sloppy_joe::bootstrap::template_json(),
         )
         .expect_err("existing config path must not be overwritten");
         assert!(err.contains("Config already exists"));
@@ -1105,7 +1105,7 @@ mod tests {
         let err = create_registered_init_config(
             &repo,
             &repo.join(".config-home"),
-            &sloppy_joe::config::template_json(),
+            &sloppy_joe::bootstrap::template_json(),
         )
         .expect_err("config path under repo must be rejected before writes");
         assert!(err.contains("outside the project directory"));

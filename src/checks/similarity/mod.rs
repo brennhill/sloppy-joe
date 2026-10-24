@@ -363,7 +363,7 @@ pub(crate) async fn check_similarity_with_options(
             issues.push(
                 Issue::new(
                     dep.package_name().chars().take(64).collect::<String>() + "...",
-                    crate::checks::names::SIMILARITY_NAME_TOO_LONG,
+                    crate::names::SIMILARITY_NAME_TOO_LONG,
                     Severity::Error,
                 )
                 .message(format!(
@@ -476,7 +476,7 @@ pub(crate) async fn check_similarity_with_options(
                 });
             }
             mutations.retain(|candidate, _| {
-                crate::registry::validate_package_name_for_ecosystem(candidate, ecosystem)
+                crate::ecosystem::validate_package_name_for_ecosystem(candidate, ecosystem)
             });
             all_mutations.insert(dep.package_name().to_string(), mutations);
         }
@@ -607,7 +607,7 @@ pub(crate) async fn check_similarity_with_options(
         issues.push(
             Issue::new(
                 "<registry>",
-                crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE,
+                crate::names::SIMILARITY_REGISTRY_UNREACHABLE,
                 Severity::Error,
             )
             .message(format!(
@@ -768,7 +768,7 @@ pub(crate) async fn check_similarity_with_options(
             issues.push(
                 Issue::new(
                     "<registry>",
-                    crate::checks::names::SIMILARITY_REGISTRY_UNREACHABLE,
+                    crate::names::SIMILARITY_REGISTRY_UNREACHABLE,
                     Severity::Error,
                 )
                 .message(format!(
@@ -828,7 +828,7 @@ pub(crate) fn download_disparity_note(
 fn make_issue(package: &str, popular: &str, check_type: &str, message: &str, fix: &str) -> Issue {
     Issue::new(
         package,
-        crate::checks::names::similarity_check_name(check_type),
+        crate::names::similarity_check_name(check_type),
         Severity::Error,
     )
     .message(message)

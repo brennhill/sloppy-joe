@@ -71,6 +71,25 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     Ok(deps)
 }
 
+pub(crate) fn package_name_from_manifest(
+    manifest_path: &std::path::Path,
+) -> Result<Option<String>> {
+    let content = super::read_file_limited(manifest_path, super::MAX_MANIFEST_BYTES)?;
+    let value = toml::from_str::<toml::Value>(&content).map_err(|err| {
+        anyhow::anyhow!(
+            "Broken manifest '{}': failed to parse TOML: {}",
+            manifest_path.display(),
+            err
+        )
+    })?;
+    Ok(value
+        .get("package")
+        .and_then(|value| value.as_table())
+        .and_then(|package| package.get("name"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string))
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn parse_manifest(project_dir: &Path) -> Result<CargoManifest> {

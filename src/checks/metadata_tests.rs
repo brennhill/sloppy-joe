@@ -623,7 +623,7 @@ async fn exact_metadata_exception_suppresses_reviewed_maintainer_change_only() {
             "npm".to_string(),
             vec![crate::report::MetadataException {
                 package: "some-pkg".to_string(),
-                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: "1.2.3".to_string(),
                 previous_publisher: Some("original-author".to_string()),
                 current_publisher: Some("new-person".to_string()),
@@ -665,7 +665,7 @@ async fn metadata_exception_near_miss_does_not_suppress_maintainer_change() {
             "npm".to_string(),
             vec![crate::report::MetadataException {
                 package: "some-pkg".to_string(),
-                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: "1.2.4".to_string(),
                 previous_publisher: Some("original-author".to_string()),
                 current_publisher: Some("new-person".to_string()),
@@ -731,7 +731,7 @@ async fn review_candidates_include_owner_evidence_and_exact_exception_object() {
     assert_eq!(candidate.metadata_exception.package, "some-pkg");
     assert_eq!(
         candidate.metadata_exception.check,
-        crate::checks::names::METADATA_MAINTAINER_CHANGE
+        crate::names::METADATA_MAINTAINER_CHANGE
     );
     assert_eq!(candidate.metadata_exception.version, "1.2.3");
     assert_eq!(
@@ -768,7 +768,7 @@ async fn review_candidates_skip_already_configured_metadata_exception() {
             "npm".to_string(),
             vec![crate::report::MetadataException {
                 package: "some-pkg".to_string(),
-                check: crate::checks::names::METADATA_MAINTAINER_CHANGE.to_string(),
+                check: crate::names::METADATA_MAINTAINER_CHANGE.to_string(),
                 version: "1.2.3".to_string(),
                 previous_publisher: Some("original-author".to_string()),
                 current_publisher: Some("new-person".to_string()),
@@ -837,7 +837,7 @@ async fn install_script_with_no_repo_flagged() {
     assert!(
         issues
             .iter()
-            .any(|i| i.check == crate::checks::names::METADATA_INSTALL_SCRIPT_RISK),
+            .any(|i| i.check == crate::names::METADATA_INSTALL_SCRIPT_RISK),
         "Expected install-script-risk when install scripts + no repo URL"
     );
 }
@@ -866,7 +866,7 @@ async fn install_script_with_repo_not_amplified() {
     assert!(
         !issues
             .iter()
-            .any(|i| i.check == crate::checks::names::METADATA_INSTALL_SCRIPT_RISK),
+            .any(|i| i.check == crate::names::METADATA_INSTALL_SCRIPT_RISK),
         "Should not flag install scripts on old popular package WITH repo"
     );
 }
@@ -897,7 +897,7 @@ async fn no_repository_on_new_package_flagged() {
     assert!(
         issues
             .iter()
-            .any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+            .any(|i| i.check == crate::names::METADATA_NO_REPOSITORY),
         "Expected no-repository warning for new+low-download package without repo URL"
     );
 }
@@ -928,7 +928,7 @@ async fn spoofed_repo_url_still_flagged() {
     assert!(
         issues
             .iter()
-            .any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+            .any(|i| i.check == crate::names::METADATA_NO_REPOSITORY),
         "Non-code-host repo URL should still trigger no-repository warning"
     );
 }
@@ -959,7 +959,7 @@ async fn has_repository_not_flagged() {
     assert!(
         !issues
             .iter()
-            .any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+            .any(|i| i.check == crate::names::METADATA_NO_REPOSITORY),
         "Should not flag package with repository URL"
     );
 }
@@ -987,7 +987,7 @@ async fn no_repository_on_old_popular_package_not_flagged() {
     assert!(
         !issues
             .iter()
-            .any(|i| i.check == crate::checks::names::METADATA_NO_REPOSITORY),
+            .any(|i| i.check == crate::names::METADATA_NO_REPOSITORY),
         "Should not flag old popular package even without repo URL"
     );
 }

@@ -227,7 +227,7 @@ pub async fn check_malicious_with_cache(
         issues.push(
             Issue::new(
                 "<registry>",
-                crate::checks::names::MALICIOUS_REGISTRY_UNREACHABLE,
+                crate::names::MALICIOUS_REGISTRY_UNREACHABLE,
                 Severity::Error,
             )
             .message(format!(
@@ -257,7 +257,7 @@ pub async fn check_malicious_with_cache(
 
         if !vuln_ids.is_empty() {
             issues.push(
-                Issue::new(dep.package_name(), crate::checks::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
+                Issue::new(dep.package_name(), crate::names::MALICIOUS_KNOWN_VULNERABILITY, Severity::Error)
                     .message(format!(
                         "'{}' has known security vulnerabilities in the OSV database. Vulnerability IDs: {}",
                         dep.package_name(),

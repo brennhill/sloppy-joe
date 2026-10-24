@@ -102,7 +102,7 @@ impl MavenWithGoogleRegistry {
                     .collect()
             })
             .unwrap_or_default();
-        let last_updated = crate::parsers::extract_xml_value(&body, "lastUpdated")
+        let last_updated = crate::fsutil::extract_xml_value(&body, "lastUpdated")
             .and_then(|value| maven_timestamp_to_iso8601(value.trim()));
         Ok(Some((versions, last_updated)))
     }

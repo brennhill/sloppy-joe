@@ -1,49 +1,23 @@
 # Architecture baseline (docs/specs/architecture-guardrails.md).
 # Existing violations only. Values may shrink, never grow.
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
-layer src/cache.rs -> config
-layer src/config/mod.rs -> checks
-layer src/config/mod.rs -> gradle_plugin_scan
-layer src/config/mod.rs -> parsers
-layer src/lockfiles/bun.rs -> registry
-layer src/lockfiles/composer.rs -> registry
-layer src/lockfiles/dotnet.rs -> registry
-layer src/lockfiles/gradle.rs -> registry
-layer src/lockfiles/mod.rs -> checks
-layer src/lockfiles/mod.rs -> registry
-layer src/lockfiles/npm.rs -> registry
-layer src/lockfiles/pipfile_lock.rs -> registry
-layer src/lockfiles/pnpm.rs -> registry
-layer src/lockfiles/python.rs -> checks
-layer src/lockfiles/yarn.rs -> registry
-layer src/npm_config.rs -> parsers
-layer src/npm_config.rs -> registry
-layer src/parsers/jvm.rs -> registry
-layer src/parsers/jvm/gradle_plugins.rs -> registry
-layer src/parsers/jvm/maven_model.rs -> registry
-layer src/parsers/mod.rs -> registry
-layer src/parsers/python_scope.rs -> lockfiles
-layer src/parsers/requirements.rs -> checks
-layer src/registry/google_maven.rs -> parsers
-layer src/registry/gradle_plugins.rs -> parsers
-layer src/registry/npm.rs -> checks
 file-lines src/checks/metadata_tests.rs 1052
 file-lines src/checks/signals.rs 830
 file-lines src/checks/similarity/generators.rs 816
 file-lines src/checks/similarity/mod.rs 1527
-file-lines src/config/mod.rs 2776
+file-lines src/config/mod.rs 2132
 file-lines src/config/registry.rs 835
-file-lines src/lib.rs 7810
+file-lines src/lib.rs 7796
 file-lines src/lib_tests.rs 12109
 file-lines src/lockfiles/mod.rs 1860
 file-lines src/lockfiles/python.rs 1718
-file-lines src/lockfiles/uv.rs 2069
+file-lines src/lockfiles/uv.rs 1978
 file-lines src/lockfiles/yarn.rs 1089
 file-lines src/main.rs 1141
 file-lines src/parsers/gemfile.rs 981
-file-lines src/parsers/jvm.rs 1674
-file-lines src/parsers/jvm/maven_model.rs 887
-file-lines src/parsers/mod.rs 970
+file-lines src/parsers/jvm.rs 1673
+file-lines src/parsers/jvm/maven_model.rs 885
+file-lines src/parsers/mod.rs 899
 file-lines src/parsers/pyproject_toml.rs 1934
 file-lines src/parsers/python_scope.rs 1048
 file-lines src/parsers/requirements.rs 1319
@@ -52,7 +26,6 @@ file-lines src/registry/npm.rs 823
 file-lines src/registry/npm_tarball_tests.rs 821
 fn-complexity src/checks/similarity/mod.rs::check_similarity_with_options 61
 fn-complexity src/checks/tarball_verification.rs::verify_npm_tarballs 22
-fn-complexity src/config/mod.rs::discover_repo_state 18
 fn-complexity src/config/mod.rs::validate 56
 fn-complexity src/lib.rs::preflight_selected_project_inputs 32
 fn-complexity src/lib.rs::project_input_kind_from_path 20

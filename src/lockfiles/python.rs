@@ -455,7 +455,7 @@ fn handle_poetry_missing_proof(
             warnings.push(
                 Issue::new(
                     "<lockfile>",
-                    crate::checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE,
+                    crate::names::RESOLUTION_NO_TRUSTED_LOCKFILE,
                     Severity::Warning,
                 )
                 .message(format!(

@@ -161,7 +161,7 @@ impl PythonScopedDependency {
                     "Poetry python shorthand requires an explicit Python version for trusted evaluation"
                 )
             })?;
-            if !crate::lockfiles::uv::version_matches_uv_specifier(version, Some(constraint))? {
+            if !super::python_version::version_matches_uv_specifier(version, Some(constraint))? {
                 return Ok(false);
             }
         }

@@ -4,8 +4,8 @@
 use super::*;
 use crate::Ecosystem;
 use crate::checks::metadata::{MetadataLookup, issues_from_lookups};
-use crate::checks::names;
 use crate::config::SloppyJoeConfig;
+use crate::names;
 use crate::registry::npm_tarball::{IntegrityMismatch, NpmManifestFacts, NpmTarballRef};
 use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
 use crate::report::{Issue, Severity};

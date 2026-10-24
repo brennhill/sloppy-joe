@@ -23,7 +23,7 @@ pub(crate) async fn resolve_maven_versions(
 pub(crate) struct GradleBuild {
     pub deps: Vec<Dependency>,
     pub plugins: Vec<Dependency>,
-    pub plugin_repositories: Vec<crate::registry::gradle_plugins::PluginRepository>,
+    pub plugin_repositories: Vec<crate::config::PluginRepository>,
     /// A build or settings script lists `google()`, so dependencies may also
     /// resolve from Google's Maven repository.
     pub uses_google_maven: bool,
@@ -69,7 +69,7 @@ fn parse_gradle(path: &Path) -> Result<Vec<Dependency>> {
         .plugin_repositories
         .iter()
         .find_map(|repository| match repository {
-            crate::registry::gradle_plugins::PluginRepository::Custom(url) => Some(url),
+            crate::config::PluginRepository::Custom(url) => Some(url),
             _ => None,
         })
     {
@@ -99,7 +99,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
         );
     }
     let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
-    let boundary = crate::config::registry::find_git_root(&project_dir)
+    let boundary = crate::cache::find_git_root(&project_dir)
         .map_err(anyhow::Error::msg)?
         .unwrap_or_else(|| project_dir.clone());
     let mut settings = Vec::new();
@@ -464,8 +464,7 @@ pub(crate) fn maven_local_parent(
         return Ok(None);
     };
     let project_dir = std::fs::canonicalize(base)?;
-    if let Some(root) =
-        crate::config::registry::find_git_root(&project_dir).map_err(anyhow::Error::msg)?
+    if let Some(root) = crate::cache::find_git_root(&project_dir).map_err(anyhow::Error::msg)?
         && !candidate.starts_with(&root)
     {
         return Ok(None);

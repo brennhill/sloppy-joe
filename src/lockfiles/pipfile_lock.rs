@@ -105,7 +105,8 @@ fn checked_entries<'a>(
                 crate::report::sanitize_for_terminal(section),
                 crate::report::sanitize_for_terminal(name)
             );
-            if !crate::registry::validate_package_name_for_ecosystem(name, crate::Ecosystem::PyPI) {
+            if !crate::ecosystem::validate_package_name_for_ecosystem(name, crate::Ecosystem::PyPI)
+            {
                 return Err(fail(format!("{label} has an invalid package name")));
             }
             let entry = entry

@@ -14,7 +14,6 @@ use crate::Ecosystem;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
-use std::time::Duration;
 
 /// 12-month lookback window for version history extraction and publisher-script combo signal.
 pub const VERSION_HISTORY_WINDOW_HOURS: u64 = 365 * 24; // 8760 hours
@@ -167,7 +166,7 @@ pub fn registry_for_with_client(
     }
 }
 
-pub(crate) use crate::ecosystem::{validate_package_name, validate_package_name_for_ecosystem};
+pub(crate) use crate::ecosystem::validate_package_name;
 
 /// A package name that has passed basic safety validation.
 /// Guarantees the name is safe for use in registry URLs
@@ -282,85 +281,14 @@ pub(crate) fn strip_version_prefix(version: &str) -> String {
         .to_string()
 }
 
-/// Maximum number of retry attempts for transient HTTP errors.
-const MAX_RETRIES: u32 = 3;
-/// Base delay for exponential backoff (doubled each retry).
-const RETRY_BASE_DELAY_MS: u64 = 200;
-
-/// Send a GET request with retry on transient failures (5xx, timeouts, connection errors).
-/// Returns the response on success, or the last error after exhausting retries.
-pub(crate) async fn retry_get(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
-    // A 429 means "slow down", not "failed": wait as the registry asks (bounded) and ask again.
-    // Exhausting the attempts hands the 429 to the caller, which fails closed.
-    for attempt in 0..MAX_RATE_LIMIT_RETRIES {
-        let response = retry_get_once(client, url).await?;
-        if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
-            || attempt == MAX_RATE_LIMIT_RETRIES - 1
-        {
-            return Ok(response);
-        }
-        let asked = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .map(Duration::from_secs);
-        let wait = asked
-            .unwrap_or_else(|| Duration::from_millis(RATE_LIMIT_BASE_DELAY_MS << attempt))
-            .min(MAX_RATE_LIMIT_WAIT);
-        tokio::time::sleep(wait).await;
-    }
-    unreachable!("the loop returns on its last attempt")
-}
-
-/// Maximum times a rate-limited (HTTP 429) request is repeated.
-const MAX_RATE_LIMIT_RETRIES: u32 = 8;
-const RATE_LIMIT_BASE_DELAY_MS: u64 = 1000;
-const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(15);
-
-async fn retry_get_once(client: &reqwest::Client, url: &str) -> Result<reqwest::Response> {
-    let mut last_err = None;
-    for attempt in 0..MAX_RETRIES {
-        match client.get(url).send().await {
-            Ok(resp) if resp.status().is_server_error() && attempt < MAX_RETRIES - 1 => {
-                let delay = RETRY_BASE_DELAY_MS * 2u64.pow(attempt);
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                last_err = Some(anyhow::anyhow!(
-                    "server error HTTP {} (attempt {}/{})",
-                    resp.status(),
-                    attempt + 1,
-                    MAX_RETRIES
-                ));
-            }
-            Ok(resp) => return Ok(resp),
-            Err(e) if attempt < MAX_RETRIES - 1 && is_transient(&e) => {
-                let delay = RETRY_BASE_DELAY_MS * 2u64.pow(attempt);
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                last_err = Some(e.into());
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("retry exhausted")))
-}
-
-/// Check if a reqwest error is transient (worth retrying).
-fn is_transient(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
-}
-
-pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent("sloppy-joe (https://github.com/brennhill/sloppy-joe)")
-        .timeout(Duration::from_secs(15))
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("failed to build HTTP client")
-}
+pub use crate::http::http_client;
+pub(crate) use crate::http::retry_get;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecosystem::validate_package_name_for_ecosystem;
+    use crate::http::{MAX_RETRIES, RETRY_BASE_DELAY_MS, is_transient};
 
     #[test]
     fn registry_for_all_ecosystems() {
@@ -642,51 +570,5 @@ mod tests {
             "Total retry delay exceeds 5s: {}ms",
             total_delay
         );
-    }
-}
-
-#[cfg(test)]
-mod rate_limit_tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    async fn serve(throttled: usize) -> (String, Arc<AtomicUsize>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let hits = Arc::new(AtomicUsize::new(0));
-        let counter = hits.clone();
-        tokio::spawn(async move {
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let seen = counter.fetch_add(1, Ordering::SeqCst);
-                let mut buffer = [0u8; 2048];
-                let _ = stream.read(&mut buffer).await;
-                let reply = if seen < throttled {
-                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                } else {
-                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
-                };
-                let _ = stream.write_all(reply.as_bytes()).await;
-            }
-        });
-        (origin, hits)
-    }
-
-    #[tokio::test]
-    async fn rate_limited_requests_are_repeated_until_the_registry_answers() {
-        let (origin, hits) = serve(2).await;
-        let response = retry_get(&http_client(), &origin).await.unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        assert_eq!(hits.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn persistent_rate_limiting_is_handed_back_so_callers_fail_closed() {
-        let (origin, hits) = serve(usize::MAX).await;
-        let response = retry_get(&http_client(), &origin).await.unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(hits.load(Ordering::SeqCst), MAX_RATE_LIMIT_RETRIES as usize);
     }
 }

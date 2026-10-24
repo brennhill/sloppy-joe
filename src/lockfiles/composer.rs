@@ -161,7 +161,7 @@ fn extract_packages(parsed: &serde_json::Value) -> std::collections::HashMap<Str
             let Some(name) = entry.get("name").and_then(|value| value.as_str()) else {
                 continue;
             };
-            if !crate::registry::validate_package_name(name) {
+            if !crate::ecosystem::validate_package_name(name) {
                 continue;
             }
             let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {

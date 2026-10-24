@@ -32,16 +32,13 @@ pub(crate) fn user_cache_dir_from(env: impl Fn(&str) -> Option<std::ffi::OsStrin
 /// root when there is no git root). Committed files there could forge cached
 /// OSV, similarity, and scan-state results.
 pub fn ensure_cache_dir_outside_project(cache_dir: &Path, project_dir: &Path) -> Result<()> {
-    let boundary = match crate::config::registry::find_git_root(project_dir)
-        .map_err(|e| anyhow::anyhow!(e))?
-    {
+    let boundary = match crate::cache::find_git_root(project_dir).map_err(|e| anyhow::anyhow!(e))? {
         Some(root) => root,
         None => std::fs::canonicalize(project_dir)?,
     };
-    let resolved = crate::config::registry::canonicalize_with_existing_ancestors(cache_dir)
-        .map_err(|e| {
-            anyhow::anyhow!("Could not resolve cache directory for security validation: {e}")
-        })?;
+    let resolved = crate::cache::canonicalize_with_existing_ancestors(cache_dir).map_err(|e| {
+        anyhow::anyhow!("Could not resolve cache directory for security validation: {e}")
+    })?;
     if resolved.starts_with(&boundary) {
         anyhow::bail!(
             "Cache directory must live outside the project directory.\n  Cache: {}\n  Project: {}\n  Fix: Pass --cache-dir with a path outside the repository, or set XDG_CACHE_HOME to an absolute path outside it.",

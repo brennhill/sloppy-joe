@@ -44,7 +44,7 @@ impl CentralPomSource {
     pub(crate) fn new(client: reqwest::Client) -> Self {
         Self {
             client,
-            base: crate::registry::gradle_plugins::MAVEN_CENTRAL_URL.to_string(),
+            base: crate::config::MAVEN_CENTRAL_URL.to_string(),
         }
     }
 }
@@ -74,7 +74,7 @@ impl PomSource for CentralPomSource {
             self.base,
             group.replace('.', "/")
         );
-        let mut resp = crate::registry::retry_get(&self.client, &url).await?;
+        let mut resp = crate::http::retry_get(&self.client, &url).await?;
         if !resp.status().is_success() {
             bail!(
                 "POM {group}:{artifact}:{version} could not be fetched from Maven Central (HTTP {}); its managed versions cannot be verified",
@@ -676,9 +676,7 @@ fn maven_config_defines(pom_path: &Path) -> Vec<String> {
         return Vec::new();
     };
     let start = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
-    let root = crate::config::registry::find_git_root(&start)
-        .ok()
-        .flatten();
+    let root = crate::cache::find_git_root(&start).ok().flatten();
     let mut names = Vec::new();
     let mut current = Some(start.as_path());
     while let Some(dir) = current {

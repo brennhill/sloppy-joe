@@ -88,13 +88,13 @@ nearest place. Without a guardrail that keeps happening.
 
 | Layer | Modules | May depend on |
 |---|---|---|
-| foundation | `ecosystem`, `cache`, `version`, `report`, `names` | foundation |
+| foundation | `ecosystem`, `cache`, `version`, `report`, `names`, `http`, `fsutil` | foundation |
 | config | `config`, `npm_config` | foundation, config |
 | parsers | `parsers` | foundation, config, parsers |
 | registry | `registry` | foundation, config, registry |
 | lockfiles | `lockfiles` | foundation, config, parsers, lockfiles |
 | checks | `checks` | foundation, config, parsers, lockfiles, registry, checks |
-| orchestration | `gradle_plugin_scan`, `lib.rs`, `main.rs` | everything |
+| orchestration | `bootstrap`, `gradle_plugin_scan`, `lib.rs`, `main.rs` | everything |
 
 `crate::<Item>` that is not a module (types re-exported from `lib.rs`, such as `Dependency`) is not
 checked here.

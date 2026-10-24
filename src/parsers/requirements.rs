@@ -95,7 +95,7 @@ pub(crate) fn ensure_trusted_indexes(
             .unwrap_or_else(|| path.display().to_string());
         bail!(
             "Untrusted Python index ({}): requirements file '{}' declares untrusted Python index '{}': it is not the default PyPI index and is not allowlisted in trusted_indexes.pypi. pip would install from that index while sloppy-joe vetted the public PyPI package. Add the exact URL to trusted_indexes.pypi in the out-of-repo sloppy-joe config, or remove the index option.",
-            crate::checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+            crate::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
             declared_in,
             crate::report::sanitize_for_terminal(index),
         );

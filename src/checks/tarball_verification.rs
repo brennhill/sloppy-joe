@@ -25,8 +25,8 @@
 use crate::Ecosystem;
 use crate::cache;
 use crate::checks::metadata::{MetadataLookup, age_in_hours, issues_from_lookups};
-use crate::checks::names;
 use crate::config::SloppyJoeConfig;
+use crate::names;
 use crate::registry::npm_tarball::{
     IntegrityMismatch, NpmManifestFacts, NpmTarballRef, compare_facts,
 };
@@ -38,7 +38,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Per-scan cap on tarball downloads (cache hits do not count).
-pub(crate) const DEFAULT_MAX_TARBALL_FETCHES: usize = 100;
+#[cfg(test)]
+pub(crate) use crate::config::DEFAULT_MAX_TARBALL_FETCHES;
 const TARBALL_CONCURRENCY: usize = 8;
 /// Versions and packages younger than this are always verified.
 const RECENT_HOURS: u64 = 30 * 24;

@@ -62,9 +62,17 @@ fn shipped_example_config_still_parses() {
 
 #[test]
 fn rendered_templates_still_parse() {
-    parse_config_content(&render_config_json(&template_config()), "template").unwrap();
+    parse_config_content(
+        &crate::bootstrap::render_config_json(&crate::bootstrap::template_config()),
+        "template",
+    )
+    .unwrap();
     for ecosystem in ["npm", "pypi", "cargo"] {
-        parse_config_content(&greenfield_json(ecosystem).unwrap(), ecosystem).unwrap();
+        parse_config_content(
+            &crate::bootstrap::greenfield_json(ecosystem).unwrap(),
+            ecosystem,
+        )
+        .unwrap();
     }
 }
 

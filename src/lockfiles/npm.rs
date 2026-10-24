@@ -241,7 +241,7 @@ fn parse_dependencies_from_value(
                 .unwrap_or(installed_name);
             // Never silently drop an entry: an unscannable name is a blocking error.
             for candidate in [installed_name, name] {
-                if !crate::registry::validate_package_name(candidate) {
+                if !crate::ecosystem::validate_package_name(candidate) {
                     anyhow::bail!(
                         "npm lockfile entry '{}' has an invalid package name '{}'.",
                         crate::report::sanitize_for_terminal(key),
@@ -281,7 +281,7 @@ fn collect_v1_dependencies(
             .and_then(|value| value.as_str())
             .unwrap_or(name);
         for candidate in [name.as_str(), package_name] {
-            if !crate::registry::validate_package_name(candidate) {
+            if !crate::ecosystem::validate_package_name(candidate) {
                 anyhow::bail!(
                     "npm lockfile dependency entry '{}' has an invalid package name '{}'.",
                     crate::report::sanitize_for_terminal(name),

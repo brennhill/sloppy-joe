@@ -118,7 +118,7 @@ pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dep
         let Some((name, version)) = bun_descriptor_parts(descriptor) else {
             continue;
         };
-        if !crate::registry::validate_package_name(name) {
+        if !crate::ecosystem::validate_package_name(name) {
             anyhow::bail!(
                 "bun.lock package '{}' has an invalid package name.",
                 crate::report::sanitize_for_terminal(name)
@@ -187,7 +187,7 @@ pub(super) fn parse_all_from_value_for_importer(
         let Some((name, version)) = bun_descriptor_parts(descriptor) else {
             continue;
         };
-        if !crate::registry::validate_package_name(name) {
+        if !crate::ecosystem::validate_package_name(name) {
             anyhow::bail!(
                 "bun.lock package '{}' has an invalid package name '{}'.",
                 crate::report::sanitize_for_terminal(&package_key),
@@ -480,7 +480,7 @@ pub(crate) fn validate_provenance(parsed: &serde_json::Value, lockfile_path: &Pa
         let Some(installed_name) = split_package_key(key).and_then(|segments| {
             segments
                 .iter()
-                .all(|segment| crate::registry::validate_package_name(segment))
+                .all(|segment| crate::ecosystem::validate_package_name(segment))
                 .then(|| segments.last().copied())
                 .flatten()
         }) else {

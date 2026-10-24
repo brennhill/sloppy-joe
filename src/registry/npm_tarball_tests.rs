@@ -787,12 +787,12 @@ async fn end_to_end_hidden_postinstall_is_blocked() {
     let checks: Vec<_> = issues.iter().map(|i| i.check.as_str()).collect();
     let inconsistency = issues
         .iter()
-        .find(|i| i.check == crate::checks::names::METADATA_MANIFEST_INCONSISTENCY)
+        .find(|i| i.check == crate::names::METADATA_MANIFEST_INCONSISTENCY)
         .unwrap_or_else(|| panic!("{checks:?}"));
     assert_eq!(inconsistency.severity, crate::report::Severity::Error);
     // Tarball truth drives the install-script risk signal.
     assert!(
-        checks.contains(&crate::checks::names::METADATA_INSTALL_SCRIPT_RISK),
+        checks.contains(&crate::names::METADATA_INSTALL_SCRIPT_RISK),
         "{checks:?}"
     );
 }
@@ -803,10 +803,10 @@ async fn end_to_end_matching_tarball_raises_no_tarball_issue() {
     assert!(requests.contains(&TARBALL_PATH.to_string()), "{requests:?}");
     let checks: Vec<_> = issues.iter().map(|i| i.check.as_str()).collect();
     for check in [
-        crate::checks::names::METADATA_MANIFEST_INCONSISTENCY,
-        crate::checks::names::METADATA_TARBALL_UNVERIFIED,
-        crate::checks::names::METADATA_TARBALL_INTEGRITY,
-        crate::checks::names::METADATA_INSTALL_SCRIPT_RISK,
+        crate::names::METADATA_MANIFEST_INCONSISTENCY,
+        crate::names::METADATA_TARBALL_UNVERIFIED,
+        crate::names::METADATA_TARBALL_INTEGRITY,
+        crate::names::METADATA_INSTALL_SCRIPT_RISK,
     ] {
         assert!(!checks.contains(&check), "{checks:?}");
     }

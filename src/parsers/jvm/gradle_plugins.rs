@@ -10,7 +10,7 @@
 
 use super::{GradleToken, find_gradle_block_end, gradle_literal_value, is_gradle_core_plugin};
 use crate::Dependency;
-use crate::registry::gradle_plugins::PluginRepository;
+use crate::config::PluginRepository;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 

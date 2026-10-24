@@ -152,7 +152,7 @@ fn extract_packages(parsed: &serde_json::Value) -> Vec<(String, String)> {
         };
 
         for (name, entry) in entries {
-            if !crate::registry::validate_package_name(name) {
+            if !crate::ecosystem::validate_package_name(name) {
                 continue;
             }
             let Some(resolved) = entry.get("resolved").and_then(|value| value.as_str()) else {

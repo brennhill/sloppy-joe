@@ -69,6 +69,8 @@
 - Keep private identities and authentication values out of public registry/advisory requests, and redact rejected registry source credentials.
 - Invalidate scan guidance when effective registry routing changes.
 - Resolve npm workspace dependency ranges from the authoritative root lockfile.
+- Internal: removed every layer-direction violation from the architecture baseline. Shared helpers moved to foundation modules (`names`, `http`, `fsutil`, plus `ecosystem`/`cache`/`report`), `config` bootstrap and repo discovery moved to a `bootstrap` module (`sloppy_joe::bootstrap::{template_json, greenfield_json, discover_current_json, print_template}`, previously under `sloppy_joe::config`), and the Python version-specifier matcher moved to `parsers`. No scan behavior changes.
+
 
 ## 1.2.0
 

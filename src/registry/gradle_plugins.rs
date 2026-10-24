@@ -19,22 +19,10 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use std::collections::HashMap;
 
-/// Base URL of the Gradle Plugin Portal's Maven repository.
-pub(crate) const GRADLE_PLUGIN_PORTAL_URL: &str = "https://plugins.gradle.org/m2/";
-/// Base URL of Maven Central's Maven repository.
-pub(crate) const MAVEN_CENTRAL_URL: &str = "https://repo1.maven.org/maven2/";
+pub(crate) use crate::config::{GRADLE_PLUGIN_PORTAL_URL, MAVEN_CENTRAL_URL, PluginRepository};
 
 /// Upper bound for a `maven-metadata.xml` body.
 const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
-
-/// A repository Gradle consults for plugin marker artifacts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PluginRepository {
-    GradlePluginPortal,
-    MavenCentral,
-    /// A repository-controlled URL (`maven { url ... }`).
-    Custom(String),
-}
 
 /// Registry for one Gradle build's plugin markers. Names that are not plugin
 /// markers (`<id>:<id>.gradle.plugin`) never resolve as plugins.
@@ -183,7 +171,7 @@ impl GradlePluginRegistry {
                     .collect()
             })
             .unwrap_or_default();
-        let last_updated = crate::parsers::extract_xml_value(&body, "lastUpdated")
+        let last_updated = crate::fsutil::extract_xml_value(&body, "lastUpdated")
             .and_then(|value| maven_timestamp_to_iso8601(value.trim()));
         Ok(Some((versions, last_updated)))
     }

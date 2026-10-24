@@ -328,7 +328,7 @@ fn build_version_history(
 
         // Filter by age: if date is available and older than threshold, skip
         if let Some(ref d) = date_str
-            && let Some(age) = crate::checks::metadata::age_in_hours(d)
+            && let Some(age) = crate::cache::age_in_hours(d)
             && age > max_age_hours
         {
             continue;

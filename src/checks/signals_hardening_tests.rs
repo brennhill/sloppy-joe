@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::Ecosystem;
-use crate::checks::names;
+use crate::names;
 use std::collections::HashSet;
 
 fn lookup(meta: PackageMetadata) -> MetadataLookup {

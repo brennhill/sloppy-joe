@@ -1,9 +1,9 @@
 //! Lockfile integrity vs registry packument hashes.
 
 use super::*;
-use crate::checks::names;
 use crate::lockfiles::integrity::{LockedSource, NpmLockfileIntegrity};
 use crate::lockfiles::{ResolutionKey, ResolutionSource, ResolvedVersion};
+use crate::names;
 use crate::registry::PackageMetadata;
 use crate::registry::npm_tarball::NpmTarballRef;
 use crate::report::Severity;

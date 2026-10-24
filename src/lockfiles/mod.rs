@@ -704,7 +704,7 @@ pub(crate) fn parse_pnpm_lock_guarded(content: &str) -> Result<serde_yaml::Value
                     crate::report::sanitize_for_terminal(key)
                 );
             };
-            if !crate::registry::validate_package_name_for_ecosystem(name, Ecosystem::Npm) {
+            if !crate::ecosystem::validate_package_name_for_ecosystem(name, Ecosystem::Npm) {
                 anyhow::bail!(
                     "environment package '{}' in pnpm-lock.yaml has an invalid package name",
                     crate::report::sanitize_for_terminal(key)
@@ -992,7 +992,7 @@ fn add_manifest_exact_fallback(result: &mut ResolutionResult, dep: &Dependency) 
 }
 
 fn parse_failed_issue(lockfile: &str, detail: String) -> Issue {
-    Issue::new("<lockfile>", crate::checks::names::RESOLUTION_PARSE_FAILED, Severity::Error)
+    Issue::new("<lockfile>", crate::names::RESOLUTION_PARSE_FAILED, Severity::Error)
         .message(format!(
             "Could not parse '{}'. Exact lockfile resolution is unavailable, so version-sensitive checks cannot trust this project state. {}",
             lockfile, detail
@@ -1004,7 +1004,7 @@ fn parse_failed_issue(lockfile: &str, detail: String) -> Issue {
 }
 
 fn missing_entry_issue(dep: &Dependency, lockfile: &str) -> Issue {
-    Issue::new(&dep.name, crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY, Severity::Error)
+    Issue::new(&dep.name, crate::names::RESOLUTION_MISSING_LOCKFILE_ENTRY, Severity::Error)
         .message(format!(
             "'{}' is declared in the manifest but was not found in '{}'. Exact version-sensitive checks cannot trust this lockfile state.",
             dep.name, lockfile
@@ -1016,7 +1016,7 @@ fn missing_entry_issue(dep: &Dependency, lockfile: &str) -> Issue {
 }
 
 fn out_of_sync_issue(dep: &Dependency, resolved_version: &str) -> Issue {
-    Issue::new(&dep.name, crate::checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC, Severity::Error)
+    Issue::new(&dep.name, crate::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC, Severity::Error)
         .message(format!(
             "'{}' is pinned to '{}' in the manifest but resolves to '{}' in the lockfile. Exact version-sensitive checks cannot trust this project state.",
             dep.name,
@@ -1027,7 +1027,7 @@ fn out_of_sync_issue(dep: &Dependency, resolved_version: &str) -> Issue {
 }
 
 fn ambiguous_issue(dep: &Dependency) -> Issue {
-    Issue::new(&dep.name, crate::checks::names::RESOLUTION_AMBIGUOUS, Severity::Error)
+    Issue::new(&dep.name, crate::names::RESOLUTION_AMBIGUOUS, Severity::Error)
         .message(format!(
             "'{}' resolves to multiple locked versions and the direct dependency version cannot be proven exactly from the manifest.",
             dep.name
@@ -1038,7 +1038,7 @@ fn ambiguous_issue(dep: &Dependency) -> Issue {
 fn no_trusted_lockfile_sync_issue(dep: &Dependency, lockfile: &str) -> Issue {
     Issue::new(
         &dep.name,
-        crate::checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC,
+        crate::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC,
         Severity::Error,
     )
     .message(format!(
@@ -1236,7 +1236,7 @@ mod tests {
             result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC)
+                .any(|i| i.check == crate::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC)
         );
     }
 
@@ -1255,7 +1255,7 @@ mod tests {
             result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
+                .any(|i| i.check == crate::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
         );
     }
 
@@ -1273,7 +1273,7 @@ mod tests {
             result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED)
+                .any(|i| i.check == crate::names::RESOLUTION_PARSE_FAILED)
         );
     }
 
@@ -1343,7 +1343,7 @@ mod tests {
             !result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS),
+                .any(|i| i.check == crate::names::RESOLUTION_AMBIGUOUS),
             "Should not emit ambiguous issue when version matches"
         );
     }
@@ -1359,7 +1359,7 @@ mod tests {
             result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_AMBIGUOUS)
+                .any(|i| i.check == crate::names::RESOLUTION_AMBIGUOUS)
         );
     }
 
@@ -1378,7 +1378,7 @@ mod tests {
             result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
+                .any(|i| i.check == crate::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
         );
     }
 
@@ -1440,7 +1440,7 @@ mod tests {
             result
                 .issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::RESOLUTION_PARSE_FAILED)
+                .any(|i| i.check == crate::names::RESOLUTION_PARSE_FAILED)
         );
     }
 
@@ -1491,7 +1491,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let data = LockfileData::parse(&dir, &direct).unwrap();
 
         assert!(data.resolution.issues.iter().any(|issue| issue.check
-            == crate::checks::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
+            == crate::names::RESOLUTION_NO_TRUSTED_LOCKFILE_SYNC
             && issue.package == "rand"));
         assert!(
             data.transitive_deps.iter().any(|dep| dep.name == "libc"),

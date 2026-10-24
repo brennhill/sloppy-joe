@@ -241,7 +241,7 @@ fn registry_package(entry: &YarnLockEntry, path: &Path) -> Result<Option<(String
     if source != "registry" {
         return Ok(None);
     }
-    if !crate::registry::validate_package_name(name) {
+    if !crate::ecosystem::validate_package_name(name) {
         anyhow::bail!(
             "Broken lockfile '{}': entry '{}' has an invalid package name '{}'.",
             path.display(),

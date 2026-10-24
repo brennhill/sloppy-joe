@@ -8,6 +8,7 @@ pub mod package_json;
 pub mod pipfile;
 pub mod pyproject_toml;
 pub mod python_scope;
+pub(crate) mod python_version;
 pub mod requirements;
 pub mod setup_cfg;
 pub mod setup_py;
@@ -16,70 +17,9 @@ use crate::Dependency;
 use anyhow::{Result, bail};
 use std::path::Path;
 
-/// Read a file with a size limit to prevent memory exhaustion on huge files.
-pub(crate) fn read_file_limited(path: &std::path::Path, max_bytes: u64) -> Result<String> {
-    let bytes = read_bytes_limited(path, max_bytes)?;
-    String::from_utf8(bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to decode {} as UTF-8: {}", path.display(), e))
-}
-
-/// Read raw bytes from a regular file with a hard size limit.
-#[cfg(unix)]
-pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>> {
-    use std::fs::OpenOptions;
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(err) if err.raw_os_error() == Some(libc::ELOOP) => {
-            anyhow::bail!("Refusing to read symlinked file: {}", path.display())
-        }
-        Err(err) => return Err(err.into()),
-    };
-
-    let meta = file.metadata()?;
-    if !meta.is_file() {
-        anyhow::bail!("Refusing to read non-regular file: {}", path.display());
-    }
-    let mut reader = file.take(max_bytes.saturating_add(1));
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max_bytes {
-        anyhow::bail!("File too large: {} bytes (max {})", bytes.len(), max_bytes);
-    }
-    Ok(bytes)
-}
-
-/// Read raw bytes from a regular file with a hard size limit.
-#[cfg(not(unix))]
-pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>> {
-    use std::io::Read;
-
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        anyhow::bail!("Refusing to read symlinked file: {}", path.display());
-    }
-    if !meta.file_type().is_file() {
-        anyhow::bail!("Refusing to read non-regular file: {}", path.display());
-    }
-
-    let file = std::fs::File::open(path)?;
-    let mut reader = file.take(max_bytes.saturating_add(1));
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max_bytes {
-        anyhow::bail!("File too large: {} bytes (max {})", bytes.len(), max_bytes);
-    }
-    Ok(bytes)
-}
-
-/// Maximum file size for manifest/lockfile parsing (100 MB).
-pub(crate) const MAX_MANIFEST_BYTES: u64 = 100 * 1024 * 1024;
+#[cfg(test)]
+pub(crate) use crate::fsutil::extract_xml_value;
+pub(crate) use crate::fsutil::{MAX_MANIFEST_BYTES, read_bytes_limited, read_file_limited};
 
 pub(crate) fn path_detected(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
@@ -87,17 +27,6 @@ pub(crate) fn path_detected(path: &Path) -> Result<bool> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err.into()),
     }
-}
-
-/// Shared XML value extractor: `<tag>value</tag>` on a single line.
-/// Searches for the close tag starting AFTER the open tag to avoid
-/// matching a close tag that appears before the open tag.
-pub(crate) fn extract_xml_value(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = line.find(&open)? + open.len();
-    let end = line[start..].find(&close).map(|i| i + start)?;
-    Some(line[start..end].to_string())
 }
 
 /// Auto-detect the project type and parse dependencies, or use the specified type.
@@ -463,7 +392,7 @@ pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Resul
         .flat_map(|ch| ch.escape_default())
         .collect();
 
-    if !crate::registry::validate_package_name(&dep.name) {
+    if !crate::ecosystem::validate_package_name(&dep.name) {
         bail!(
             "invalid package name '{}' in {}",
             escaped_name,
@@ -471,7 +400,7 @@ pub(crate) fn validate_dependency(dep: &Dependency, source_path: &Path) -> Resul
         );
     }
 
-    if !crate::registry::validate_package_name_for_ecosystem(&dep.name, dep.ecosystem) {
+    if !crate::ecosystem::validate_package_name_for_ecosystem(&dep.name, dep.ecosystem) {
         bail!(
             "invalid package name '{}' in {}: unexpected shape for {}",
             escaped_name,

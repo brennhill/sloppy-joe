@@ -277,7 +277,7 @@ async fn exact_known_scope_is_never_a_scope_squat() {
         assert!(
             !issues
                 .iter()
-                .any(|i| i.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING),
+                .any(|i| i.check == crate::names::SIMILARITY_SCOPE_SQUATTING),
             "{name}: {issues:?}"
         );
     }
@@ -296,7 +296,7 @@ async fn near_known_scope_is_still_a_scope_squat() {
     assert!(
         issues
             .iter()
-            .any(|i| i.check == crate::checks::names::SIMILARITY_SCOPE_SQUATTING)
+            .any(|i| i.check == crate::names::SIMILARITY_SCOPE_SQUATTING)
     );
 }
 
@@ -315,7 +315,7 @@ async fn npm_case_variant_is_checked() {
     assert!(
         issues
             .iter()
-            .any(|i| i.check == crate::checks::names::SIMILARITY_CASE_VARIANT),
+            .any(|i| i.check == crate::names::SIMILARITY_CASE_VARIANT),
         "{issues:?}"
     );
 }
