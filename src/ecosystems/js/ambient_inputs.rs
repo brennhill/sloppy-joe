@@ -2,6 +2,10 @@
 
 use crate::ecosystems::ambient::{AmbientInput as Row, Disposition::*, Scope::*};
 
+// Yarn Plug'n'Play: `.pnp.cjs` is generated code that node runs at start-up and that maps package
+// names to locations; a committed copy is not checked against the lockfile.
+const PNP_WHY: &str = "a committed Plug'n'Play map is executable code that decides where packages load from and is not checked against the lockfile. Fix: do not commit it; let `yarn install` generate it in CI.";
+
 pub(super) const AMBIENT: &[Row] = &[
     Row::new(
         ".npmrc",
@@ -40,5 +44,32 @@ pub(super) const AMBIENT: &[Row] = &[
         "bunfig.toml",
         ProjectDir,
         ModeledElsewhere("js::config_surfaces (bunfig.toml allowlist), with config_key_allow"),
+    ),
+    Row::new(".pnp.cjs", ProjectDir, BlockedIfTracked(PNP_WHY)),
+    Row::new(".pnp.loader.mjs", ProjectDir, BlockedIfTracked(PNP_WHY)),
+    // Yarn only runs a release or plugin that `.yarnrc.yml` names through `yarnPath` or
+    // `plugins`, and both keys are denied by the .yarnrc.yml allowlist.
+    Row::new(
+        ".yarn/releases/*",
+        ProjectDir,
+        Irrelevant(
+            "Yarn runs a committed release only when .yarnrc.yml sets yarnPath, which the allowlist denies",
+        ),
+    ),
+    Row::new(
+        ".yarn/plugins/*",
+        ProjectDir,
+        Irrelevant(
+            "Yarn loads a committed plugin only when .yarnrc.yml lists it under plugins, which the allowlist denies",
+        ),
+    ),
+    // Zero-install archives are checked against the checksums in yarn.lock on every install
+    // (`checksumBehavior: ignore` is denied), so a swapped archive fails the install.
+    Row::new(
+        ".yarn/cache",
+        ProjectDir,
+        Irrelevant(
+            "committed archives are verified against the yarn.lock checksums; weakening that behavior is denied in .yarnrc.yml",
+        ),
     ),
 ];

@@ -75,6 +75,7 @@ const PROBES: &[Probe] = &[
     probe(K::Ruby, "*.gemspec", &[("app.gemspec", "Gem::Specification.new { |s| s.send(:dependency_x) }\n"), ("Gemfile", "source 'https://rubygems.org'\ngemspec\n")], "gemspec"),
     probe(K::Ruby, "gems.rb", &[("gems.rb", "source 'https://rubygems.org'\n")], "Unsupported Bundler file"),
     probe(K::Ruby, "gems.locked", &[("gems.locked", "GEM\n")], "Unsupported Bundler file"),
+    probe(K::Ruby, "vendor/cache", &[("vendor/cache/rake-13.0.6.gem", "x")], ""),
     // PHP
     probe(K::Php, "vendor/composer/installed.json", &[("vendor/composer/installed.json", "{\"packages\":[]}")], ""),
     // JVM
@@ -91,7 +92,14 @@ const PROBES: &[Probe] = &[
     probe(K::Maven, ".mvn/maven.config", &[(".mvn/maven.config", "-Dmaven.repo.local=.m2\n")], "maven.repo.local"),
     probe(K::Maven, ".mvn/jvm.config", &[(".mvn/jvm.config", "-Duser.home=.\n")], "user.home"),
     probe(K::Maven, ".mvn/wrapper/maven-wrapper.properties", &[(".mvn/wrapper/maven-wrapper.properties", "distributionUrl=https://evil.example/maven.zip\n")], "Untrusted Maven wrapper"),
+    probe(K::Gradle, "gradle/verification-metadata.xml", &[("gradle/verification-metadata.xml", "<verification-metadata><configuration><verify-metadata>false</verify-metadata></configuration></verification-metadata>")], "dependency verification"),
+    probe(K::Gradle, "gradle/*.versions.toml", &[("gradle/libs.versions.toml", "[versions]\na = \"1\"\na = \"2\"\n")], "version catalog"),
+    probe(K::Gradle, "init.gradle", &[("init.gradle", "allprojects { }\n")], ""),
+    probe(K::Gradle, "init.gradle.kts", &[("init.gradle.kts", "allprojects { }\n")], ""),
+    probe(K::Gradle, "init.d/*", &[("init.d/a.gradle", "allprojects { }\n")], ""),
     // JavaScript
+    probe(K::Npm, ".pnp.cjs", &[(".pnp.cjs", "module.exports = {};\n")], ""),
+    probe(K::Npm, ".pnp.loader.mjs", &[(".pnp.loader.mjs", "export {};\n")], ""),
     probe(K::Npm, ".npmrc", &[(".npmrc", "strict-ssl=false\n"), ("package-lock.json", NPM_LOCK)], "strict-ssl"),
     probe(K::Npm, ".yarnrc.yml", &[(".yarnrc.yml", "yarnPath: .yarn/releases/evil.cjs\n"), ("yarn.lock", "__metadata:\n  version: 8\n  cacheKey: 10c0\n")], "yarnPath"),
     probe(K::Npm, ".yarnrc", &[(".yarnrc", "registry \"https://evil.example\"\n"), ("package-lock.json", NPM_LOCK)], ".yarnrc"),
@@ -108,6 +116,9 @@ const PROBES: &[Probe] = &[
     probe(K::Dotnet, "nuget.config", &[("nuget.config", "<configuration><packageSources><add key=\"x\" value=\"https://evil.example/v3/index.json\"/></packageSources></configuration>")], "nuget.org v3 feed"),
     probe(K::Dotnet, "global.json", &[("global.json", "{\"msbuild-sdks\":{\"X.Sdk\":\"1.0.0\"}}")], "msbuild-sdks"),
     probe(K::Dotnet, ".config/dotnet-tools.json", &[(".config/dotnet-tools.json", "{\"version\":1,\"tools\":{\"dotnet-ef\":{\"version\":\"9.0.0\",\"commands\":[\"dotnet-ef\"]}}}")], "dotnet tool manifest"),
+    probe(K::Dotnet, "*.csproj.user", &[("app.csproj.user", "<Project/>")], "MSBuild user file"),
+    probe(K::Dotnet, "obj/*.nuget.g.props", &[("obj/app.csproj.nuget.g.props", "<Project/>")], ""),
+    probe(K::Dotnet, "obj/*.nuget.g.targets", &[("obj/app.csproj.nuget.g.targets", "<Project/>")], ""),
     probe(K::Dotnet, "obj/*.props", &[("obj/app.csproj.evil.props", "<Project/>")], "obj"),
     probe(K::Dotnet, "obj/*.targets", &[("obj/app.csproj.evil.targets", "<Project/>")], "obj"),
 ];

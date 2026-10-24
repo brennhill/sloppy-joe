@@ -176,6 +176,7 @@ fn check_project_references(scan_root: &Path, manifest: &Path) -> Result<()> {
 mod ambient_inputs {
     use crate::ecosystems::ambient::{AmbientInput as Row, Disposition::*, Scope::*};
 
+    const GENERATED_WHY: &str = "MSBuild imports NuGet's generated props and targets from obj/ during build, and a committed copy can carry any content. Fix: do not commit obj/.";
     const IMPLICIT_IMPORT: &str = "implicit dependency imports are not trusted yet";
 
     pub(super) const AMBIENT: &[Row] = &[
@@ -225,6 +226,23 @@ mod ambient_inputs {
             ".config/dotnet-tools.json",
             AncestorsToRepoRoot,
             ModeledElsewhere("parsers::csproj_hooks::reject_local_tools"),
+        ),
+        Row::new(
+            "*.csproj.user",
+            ProjectDir,
+            ModeledElsewhere(
+                "parsers::csproj::reject_user_file (MSBuild imports it unconditionally)",
+            ),
+        ),
+        Row::new(
+            "obj/*.nuget.g.props",
+            ProjectDir,
+            BlockedIfTracked(GENERATED_WHY),
+        ),
+        Row::new(
+            "obj/*.nuget.g.targets",
+            ProjectDir,
+            BlockedIfTracked(GENERATED_WHY),
         ),
         Row::new(
             "obj/*.props",

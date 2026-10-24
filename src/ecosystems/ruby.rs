@@ -152,6 +152,13 @@ mod ambient_inputs {
             Blocked("registry mirrors and local overrides cannot be verified"),
         ),
         Row::new(
+            "vendor/cache",
+            ProjectDir,
+            BlockedIfTracked(
+                "Bundler installs the .gem files in vendor/cache instead of downloading them, and Gemfile.lock does not checksum them. Fix: do not commit vendor/cache.",
+            ),
+        ),
+        Row::new(
             "*.gemspec",
             ProjectDir,
             ModeledElsewhere(

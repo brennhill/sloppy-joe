@@ -10,6 +10,10 @@ mod gradle_plugins;
 pub(crate) mod maven_model;
 mod surfaces;
 mod sysprops;
+mod verification_metadata;
+pub(crate) use verification_metadata::{
+    reject_unreadable_version_catalog, reject_weakened_verification_metadata,
+};
 
 /// Fill in the versions Maven derives from properties, management sections,
 /// imported BOMs and the parent chain (see [`maven_model`]).
