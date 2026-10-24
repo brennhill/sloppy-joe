@@ -17,6 +17,7 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
     let content = strip_xml_comments(&content);
 
     reject_ancestor_overrides(csproj)?;
+    reject_user_file(csproj)?;
     for tag in content.split('<').skip(1) {
         check_tag(tag, csproj)?;
     }
@@ -79,12 +80,15 @@ fn check_tag(tag: &str, csproj: &Path) -> Result<()> {
         .next()
         .unwrap_or_default();
     let local_name = name.rsplit(':').next().unwrap_or_default();
+    // MSBuild item and property names are case-insensitive.
+    let folded = local_name.to_ascii_lowercase();
+    reject_lockfile_overrides(&folded, tag, csproj)?;
     if matches!(
-        local_name,
-        "RestoreSources"
-            | "RestoreAdditionalProjectSources"
-            | "RestoreFallbackFolders"
-            | "RestoreAdditionalProjectFallbackFolders"
+        folded.as_str(),
+        "restoresources"
+            | "restoreadditionalprojectsources"
+            | "restorefallbackfolders"
+            | "restoreadditionalprojectfallbackfolders"
     ) {
         bail!(
             "Unsupported MSBuild {} in {}: restore would fetch packages from sources sloppy-joe cannot verify",
@@ -92,10 +96,10 @@ fn check_tag(tag: &str, csproj: &Path) -> Result<()> {
             csproj.display()
         );
     }
-    let unmodeled_reference = local_name == "PackageReference" && name != "PackageReference";
+    let unmodeled_reference = folded == "packagereference" && name != "PackageReference";
     if matches!(
-        local_name,
-        "Import" | "PackageDownload" | "DotNetCliToolReference"
+        folded.as_str(),
+        "import" | "packagedownload" | "dotnetclitoolreference"
     ) || unmodeled_reference
     {
         bail!(
@@ -111,6 +115,35 @@ fn check_tag(tag: &str, csproj: &Path) -> Result<()> {
         "Sdk" => check_sdk_element(name, attrs, csproj),
         _ => Ok(()),
     }
+}
+
+/// `packages.lock.json` only protects the restore when NuGet actually uses it.
+fn reject_lockfile_overrides(folded_name: &str, tag: &str, csproj: &Path) -> Result<()> {
+    let value = tag.split_once('>').map_or("", |(_, rest)| rest).trim();
+    let disables =
+        folded_name == "restorepackageswithlockfile" && !value.eq_ignore_ascii_case("true");
+    if folded_name == "nugetlockfilepath" || disables {
+        bail!(
+            "Unsupported MSBuild {} in {}: the committed packages.lock.json may not be the lockfile NuGet restores with",
+            folded_name,
+            csproj.display()
+        );
+    }
+    Ok(())
+}
+
+/// MSBuild imports `<project file>.user` unconditionally; its package references are unscanned.
+fn reject_user_file(csproj: &Path) -> Result<()> {
+    let mut user = csproj.as_os_str().to_os_string();
+    user.push(".user");
+    if std::fs::symlink_metadata(&user).is_ok() {
+        bail!(
+            "Unsupported MSBuild user file {}: it is imported into {} but its dependencies cannot be verified",
+            std::path::Path::new(&user).display(),
+            csproj.display()
+        );
+    }
+    Ok(())
 }
 
 fn check_project_sdk_attribute(attrs: &str, csproj: &Path) -> Result<()> {

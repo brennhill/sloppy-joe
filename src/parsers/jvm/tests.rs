@@ -723,3 +723,56 @@ fn a_parent_settings_script_is_found_without_a_git_checkout() {
     assert!(err.is_err(), "the parent settings repository must be seen");
     cleanup(&dir);
 }
+
+fn write_in(dir: &std::path::Path, path: &str, content: &str) {
+    let full = dir.join(path);
+    std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+    std::fs::write(full, content).unwrap();
+}
+
+#[test]
+fn maven_build_overrides_under_mvn_block() {
+    let pom = "<project><dependencies><dependency><groupId>a</groupId><artifactId>b</artifactId><version>1</version></dependency></dependencies></project>";
+    for (path, content) in [
+        (".mvn/settings.xml", "<settings/>"),
+        (".mvn/maven.config", "-B\n-s .mvn/settings.xml\n"),
+        (".mvn/maven.config", "--settings=evil.xml\n"),
+        (".mvn/jvm.config", "-Xmx1g -javaagent:/tmp/a.jar\n"),
+        (
+            ".mvn/wrapper/maven-wrapper.properties",
+            "distributionUrl=https\\://evil.example/apache-maven-3.9.6-bin.zip\n",
+        ),
+    ] {
+        let dir = setup_pom(pom);
+        write_in(&dir, path, content);
+        assert!(parse(&dir).is_err(), "{path}: {content}");
+        cleanup(&dir);
+    }
+    let dir = setup_pom(pom);
+    write_in(&dir, ".mvn/maven.config", "-B\n-Dfoo=bar\n");
+    write_in(
+        &dir,
+        ".mvn/wrapper/maven-wrapper.properties",
+        "distributionUrl=https\\://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.6/apache-maven-3.9.6-bin.zip\n",
+    );
+    assert!(parse(&dir).is_ok());
+    cleanup(&dir);
+}
+
+#[test]
+fn an_untrusted_gradle_wrapper_distribution_blocks() {
+    let dir = setup_gradle("dependencies { implementation 'a:b:1' }");
+    write_in(
+        &dir,
+        "gradle/wrapper/gradle-wrapper.properties",
+        "distributionUrl=https\\://evil.example/gradle-8.10-bin.zip\n",
+    );
+    assert!(parse(&dir).is_err());
+    write_in(
+        &dir,
+        "gradle/wrapper/gradle-wrapper.properties",
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip\n",
+    );
+    assert!(parse(&dir).is_ok());
+    cleanup(&dir);
+}

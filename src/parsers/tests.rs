@@ -449,3 +449,56 @@ fn parse_all_ecosystems_recurses_into_nested_projects() {
     assert!(ecosystems.contains(&crate::Ecosystem::PyPI));
     cleanup(&dir);
 }
+
+fn setup_csproj(content: &str) -> std::path::PathBuf {
+    setup_test_dir("csproj-hardening", "test.csproj", content)
+}
+
+#[test]
+fn dependencies_the_parser_could_miss_block() {
+    let project = |body: &str| {
+        format!(r#"<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>{body}</ItemGroup></Project>"#)
+    };
+    for body in [
+        r#"<packagereference Include="Evil.Pkg" Version="1.0.0" />"#,
+        r#"<PACKAGEREFERENCE Include="Evil.Pkg" Version="1.0.0" />"#,
+    ] {
+        let dir = setup_csproj(&project(body));
+        assert!(crate::parsers::csproj::parse(&dir).is_err(), "{body}");
+        cleanup(&dir);
+    }
+    for property in [
+        "<RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>",
+        "<NuGetLockFilePath>locks/other.json</NuGetLockFilePath>",
+    ] {
+        let dir = setup_csproj(&format!(
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>{property}</PropertyGroup></Project>"#
+        ));
+        assert!(crate::parsers::csproj::parse(&dir).is_err(), "{property}");
+        cleanup(&dir);
+    }
+    let dir = setup_csproj(
+        r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><RestorePackagesWithLockFile>true</RestorePackagesWithLockFile></PropertyGroup></Project>"#,
+    );
+    assert!(crate::parsers::csproj::parse(&dir).is_ok());
+    cleanup(&dir);
+}
+
+#[test]
+fn a_csproj_user_file_blocks() {
+    let dir = setup_csproj(r#"<Project Sdk="Microsoft.NET.Sdk"></Project>"#);
+    let manifest = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .next()
+        .unwrap();
+    let mut user = manifest.clone().into_os_string();
+    user.push(".user");
+    std::fs::write(
+        &user,
+        r#"<Project><ItemGroup><PackageReference Include="X" Version="1"/></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    assert!(crate::parsers::csproj::parse(&dir).is_err());
+    cleanup(&dir);
+}

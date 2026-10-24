@@ -18,6 +18,30 @@ fn plugin_names() -> Vec<String> {
     names
 }
 
+/// `code` with the whitespace around every `::` removed, so `crate :: Ecosystem :: Npm` and
+/// `super\n::cargo` read like their tight forms.
+fn tight(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == ':' && chars.get(i + 1) == Some(&':') {
+            while out.ends_with(char::is_whitespace) {
+                out.pop();
+            }
+            out.push_str("::");
+            i += 2;
+            while chars.get(i).is_some_and(|c| c.is_whitespace()) {
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Whether `code` contains `path` followed by a non-identifier character.
 fn mentions_path(code: &str, path: &str) -> bool {
     code.match_indices(path).any(|(at, _)| {
@@ -137,6 +161,7 @@ fn use_statements(code: &str) -> Vec<&str> {
 fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     for (rel, code) in files {
+        let code = &tight(code);
         let owner = rel
             .strip_prefix("src/ecosystems/")
             .map(|rest| rest.split(['/', '.']).next().unwrap().to_string());
@@ -149,6 +174,7 @@ fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<S
                     if mentions_bare_path(statement, plugin)
                         || reaches_via(statement, "self", plugin)
                         || reaches_via(statement, "ecosystems", plugin)
+                        || reaches_via(statement, "super", plugin)
                     {
                         violations.push(format!(
                             "{rel} imports from ecosystem {plugin} (`{}`); the registry may declare plugins but not re-export their items",
@@ -174,10 +200,9 @@ fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<S
             }
             continue;
         }
-        // `super` is the registry for a flat plugin file and for a plugin's own `mod.rs`.
-        let in_registry_namespace = rel.strip_prefix("src/ecosystems/").is_some_and(|rest| {
-            !rest.contains('/') || rest.ends_with("/mod.rs") && rest.matches('/').count() == 1
-        });
+        // `super::<plugin>` resolves through the registry's imports at any depth: a nested file
+        // sees them via its parent's `use super::*`.
+        let supers: Vec<String> = (1..=4).map(|n| vec!["super"; n].join("::")).collect();
         for plugin in plugins {
             let reaches_in = reaches_via(code, "ecosystems", plugin);
             match owner.as_deref() {
@@ -186,9 +211,10 @@ fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<S
                 )),
                 Some(own) if own != plugin => {
                     let sibling = reaches_in
-                        || reaches_via(code, "super::super", plugin)
-                        || mentions_bare_path(code, plugin)
-                        || (in_registry_namespace && reaches_via(code, "super", plugin));
+                        || supers
+                            .iter()
+                            .any(|prefix| reaches_via(code, prefix, plugin))
+                        || mentions_bare_path(code, plugin);
                     if sibling {
                         violations.push(format!(
                             "{rel} (ecosystem {own}) imports ecosystem {plugin}; share code through ecosystems::common"
@@ -267,6 +293,30 @@ fn module_redirect_violations(files: &[(String, String)]) -> Vec<String> {
     violations
 }
 
+/// Whether `code` compares `as_str()` or a descriptor's `project_type` with a string literal
+/// (literal contents are already stripped, leaving `""`), which is how a name-based ecosystem
+/// branch would avoid mentioning a variant.
+fn compares_ecosystem_name(code: &str) -> bool {
+    let flat: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    ["as_str()", "project_type"].iter().any(|subject| {
+        flat.match_indices(subject).any(|(at, _)| {
+            let after = &flat[at + subject.len()..];
+            let before = &flat[..at];
+            after.starts_with("==\"")
+                || after.starts_with("!=\"")
+                || after.starts_with(",\"")
+                    && before
+                        .rfind("matches!(")
+                        .is_some_and(|m| !before[m..].contains(';'))
+                || before.ends_with("\"==")
+                || before.ends_with("\"!=")
+                || (after.starts_with('{') && before.ends_with("match")
+                    || before[before.len().saturating_sub(40)..].contains("match")
+                        && after.starts_with('{'))
+        })
+    })
+}
+
 /// Orchestration code (engine, lib, main, bootstrap) must not name an ecosystem: it asks the
 /// plugin registry. `Ecosystem::<Variant>` and `JsPackageManager` are how a per-ecosystem branch
 /// would creep back in.
@@ -280,6 +330,12 @@ fn engine_ecosystem_violations(files: &[(String, String)]) -> Vec<String> {
         };
         if !ORCHESTRATION.contains(&module) {
             continue;
+        }
+        let code = &tight(code);
+        if compares_ecosystem_name(code) {
+            violations.push(format!(
+                "{rel} branches on an ecosystem name string (`as_str()` / `project_type` against a literal); ask the plugin instead"
+            ));
         }
         for pattern in ["Ecosystem::", "JsPackageManager"] {
             let named = code.match_indices(pattern).any(|(at, _)| {
@@ -588,10 +644,10 @@ fn isolation_rule_flags_the_second_round_bypasses() {
         isolation("src/ecosystems/cargo/mod.rs", "use super::go::Go;"),
         1
     );
-    // ...but deeper in the plugin it is the plugin itself.
+    // ...and deeper in the plugin it still resolves through the parent's glob import.
     assert_eq!(
         isolation("src/ecosystems/cargo/inner.rs", "use super::go;"),
-        0
+        1
     );
     // B2/B3: renames inside a brace group.
     assert_eq!(
@@ -718,4 +774,62 @@ fn second_round_bypasses_are_caught_in_the_real_tree() {
         .map(|(rel, code)| (rel, cut_inline_tests(&code)))
         .collect();
     assert_eq!(engine_ecosystem_violations(&cut).len(), 1);
+}
+
+#[test]
+fn isolation_rule_flags_the_third_round_bypasses() {
+    let plugins = vec!["cargo".to_string(), "go".to_string()];
+    let file = |rel: &str, code: &str| vec![(rel.to_string(), code.to_string())];
+    // A nested plugin file reaching a sibling through the parent's glob import.
+    assert_eq!(
+        isolation_violations(
+            &file(
+                "src/ecosystems/go/workspace.rs",
+                "fn f() { super::cargo::normalize(); }"
+            ),
+            &plugins
+        )
+        .len(),
+        1
+    );
+    // The registry re-exporting a plugin through a nested module.
+    assert_eq!(
+        isolation_violations(
+            &file(
+                "src/ecosystems/mod.rs",
+                "pub(crate) mod rt { pub(crate) use super::cargo::*; }"
+            ),
+            &plugins
+        )
+        .len(),
+        1
+    );
+    // Whitespace around `::` must not hide a path or a variant.
+    assert_eq!(
+        isolation_violations(
+            &file(
+                "src/engine/scan.rs",
+                "use crate :: ecosystems :: cargo :: Cargo;"
+            ),
+            &plugins
+        )
+        .len(),
+        1
+    );
+    let engine = |code: &str| engine_ecosystem_violations(&file("src/engine/scan.rs", code));
+    assert_eq!(engine("fn f() { crate::Ecosystem :: Npm; }").len(), 1);
+    // String branching on a name.
+    assert_eq!(engine("fn f(e: E) { if e.as_str() == \"\" {} }").len(), 1);
+    assert_eq!(
+        engine("fn f(s: S) { s.kind.descriptor().project_type == \"\" }").len(),
+        1
+    );
+    assert_eq!(
+        engine("fn f(e: E) { match e.as_str() { \"\" => 1, _ => 2 } }").len(),
+        1
+    );
+    // Comparing against a variable (a user's `--type` selection) stays fine.
+    assert!(
+        engine("fn f(k: K, sel: &str) -> bool { k.descriptor().project_type == sel }").is_empty()
+    );
 }

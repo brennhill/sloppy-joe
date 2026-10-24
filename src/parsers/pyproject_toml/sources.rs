@@ -140,14 +140,64 @@ pub(crate) fn parse_poetry_source_intents_scoped(
     Ok(intents)
 }
 
+/// uv settings that redirect resolution to indexes or directories outside the declared
+/// `[[tool.uv.index]]` entries.
+const UV_UNVERIFIABLE_KEYS: &[&str] = &[
+    "index-url",
+    "extra-index-url",
+    "find-links",
+    "no-index",
+    "index",
+    "index-strategy",
+    "default-index",
+];
+
+fn reject_uv_redirects(table: &toml::map::Map<String, toml::Value>, source: &Path) -> Result<()> {
+    let pip = table.get("pip").and_then(|value| value.as_table());
+    for key in UV_UNVERIFIABLE_KEYS {
+        if table.contains_key(*key) || pip.is_some_and(|pip| pip.contains_key(*key)) {
+            bail!(
+                "Unsupported uv setting '{key}' in {}: it redirects package resolution to an index or directory that cannot be verified",
+                source.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `uv.toml` in the project directory or any parent configures uv for the project (and, when
+/// present, replaces `[tool.uv]`), so its index settings count the same as pyproject's.
+fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
+    let dir = std::fs::canonicalize(pyproject.parent().unwrap_or(Path::new(".")))?;
+    let boundary = crate::cache::find_git_root(&dir).map_err(anyhow::Error::msg)?;
+    for ancestor in dir.ancestors() {
+        let file = ancestor.join("uv.toml");
+        if super::super::path_detected(&file)? {
+            let parsed = parse_toml(&file)?;
+            if let Some(table) = parsed.as_table() {
+                reject_uv_redirects(table, &file)?;
+            }
+        }
+        if boundary.as_deref() == Some(ancestor) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_uv_sources(path: &Path) -> Result<Vec<PythonSourceDecl>> {
     let parsed = parse_toml(path)?;
+    reject_uv_toml_redirects(path)?;
     let Some(uv) = parsed.get("tool").and_then(|tool| tool.get("uv")) else {
         return Ok(Vec::new());
     };
     let uv = uv
         .as_table()
         .ok_or_else(|| anyhow::anyhow!("Invalid uv metadata in {}", path.display()))?;
+    // `index` here is the supported `[[tool.uv.index]]` array; the legacy keys are not.
+    let mut legacy = uv.clone();
+    legacy.remove("index");
+    reject_uv_redirects(&legacy, path)?;
 
     let mut sources = Vec::new();
     let mut seen_names = std::collections::HashSet::new();

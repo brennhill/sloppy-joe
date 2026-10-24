@@ -10,9 +10,12 @@ pub(crate) fn validate_js_manifest_security_policy(
             spec.manifest_path.display()
         );
     }
-    if manifest.get("resolutions").is_some() || manifest.get("pnpm").is_some() {
+    if manifest.get("resolutions").is_some()
+        || manifest.get("pnpm").is_some()
+        || manifest.get("patchedDependencies").is_some()
+    {
         anyhow::bail!(
-            "Unsupported JS dependency rewrite configuration in '{}': resolutions and pnpm settings cannot be verified against the lockfile",
+            "Unsupported JS dependency rewrite configuration in '{}': resolutions, pnpm settings and patchedDependencies cannot be verified against the lockfile",
             spec.manifest_path.display()
         );
     }
@@ -122,4 +125,27 @@ pub(crate) fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec)
         );
     };
     ensure_lockfile_readable(path, &help)
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn patched_dependencies_block_like_other_rewrites() {
+        let spec = ProjectInputSpec {
+            kind: ProjectInputKind::Npm,
+            manifest_path: std::path::PathBuf::from("/p/package.json"),
+            lockfile_path_override: None,
+            js_binding: None,
+        };
+        let patched = serde_json::json!({"dependencies": {"left-pad": "1.3.0"},
+            "patchedDependencies": {"left-pad@1.3.0": "patches/left-pad@1.3.0.patch"}});
+        let err = validate_js_manifest_security_policy(&spec, &patched)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("patchedDependencies"), "{err}");
+        let plain = serde_json::json!({"dependencies": {"left-pad": "1.3.0"}});
+        assert!(validate_js_manifest_security_policy(&spec, &plain).is_ok());
+    }
 }

@@ -670,3 +670,43 @@ url = "https://mirror.example.com/simple"
     assert!(err.to_string().contains("duplicate index names"));
     cleanup(&dir);
 }
+
+#[test]
+fn uv_settings_that_redirect_resolution_block() {
+    let base = "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n";
+    for extra in [
+        "[tool.uv]\nindex-url = \"https://evil.example/simple\"\n",
+        "[tool.uv]\nfind-links = [\"./wheels\"]\n",
+        "[tool.uv.pip]\nextra-index-url = [\"https://evil.example/simple\"]\n",
+    ] {
+        let dir = setup_test_dir(
+            "pyproject-uv-legacy",
+            "pyproject.toml",
+            &format!("{base}{extra}"),
+        );
+        let err = parse_uv_sources(&dir.join("pyproject.toml")).unwrap_err();
+        assert!(
+            err.to_string().contains("Unsupported uv setting"),
+            "{extra}: {err}"
+        );
+        cleanup(&dir);
+    }
+}
+
+#[test]
+fn a_uv_toml_with_index_settings_blocks_even_without_tool_uv() {
+    let dir = setup_test_dir(
+        "pyproject-uv-toml",
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    );
+    std::fs::write(
+        dir.join("uv.toml"),
+        "no-index = true\nfind-links = [\"./wheels\"]\n",
+    )
+    .unwrap();
+    assert!(parse_uv_sources(&dir.join("pyproject.toml")).is_err());
+    std::fs::write(dir.join("uv.toml"), "cache-dir = \"/tmp/uv\"\n").unwrap();
+    assert!(parse_uv_sources(&dir.join("pyproject.toml")).is_ok());
+    cleanup(&dir);
+}

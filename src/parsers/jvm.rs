@@ -103,6 +103,35 @@ fn gradle_boundary(project_dir: &Path) -> Result<std::path::PathBuf> {
     }))
 }
 
+/// The Gradle wrapper downloads and runs a Gradle distribution; only Gradle's own hosts count.
+fn reject_untrusted_gradle_wrapper(dir: &Path) -> Result<()> {
+    let properties = dir.join("gradle/wrapper/gradle-wrapper.properties");
+    let Ok(content) = std::fs::read_to_string(&properties) else {
+        return Ok(());
+    };
+    for line in content.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().replace('\\', "");
+        if key.trim() == "distributionUrl"
+            && ![
+                "https://services.gradle.org/",
+                "https://downloads.gradle.org/",
+            ]
+            .iter()
+            .any(|trusted| value.starts_with(trusted))
+        {
+            bail!(
+                "Untrusted Gradle wrapper distributionUrl in {}: '{}' is not a Gradle-hosted distribution",
+                properties.display(),
+                crate::report::sanitize_for_terminal(&value)
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Whether Gradle enforces `gradle.lockfile` for the build at `path`.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum GradleLocking {
@@ -166,6 +195,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
         .ancestors()
         .take_while(|dir| dir.starts_with(&boundary))
     {
+        reject_untrusted_gradle_wrapper(ancestor)?;
         for filename in ["settings.gradle", "settings.gradle.kts"] {
             let settings_path = ancestor.join(filename);
             if super::path_detected(&settings_path)? {

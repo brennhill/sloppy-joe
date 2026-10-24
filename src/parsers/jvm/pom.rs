@@ -356,8 +356,15 @@ pub(crate) fn xml_contains_open_tag(content: &str, target: &str) -> bool {
     false
 }
 
-/// `.mvn/extensions.xml` (in the project or an ancestor up to the repository root) loads core
-/// extensions into Maven itself before the build; they are fetched and run unscanned.
+/// Hosts the Maven wrapper may download Maven and its own jar from.
+const TRUSTED_MAVEN_WRAPPER_URLS: &[&str] = &[
+    "https://repo.maven.apache.org/maven2/",
+    "https://repo1.maven.org/maven2/",
+];
+
+/// Everything under `.mvn/` (in the project or an ancestor up to the repository root) that
+/// changes what Maven itself runs or fetches from: core extensions, project settings, a wrapper
+/// download from an untrusted host, command-line settings files and JVM agents.
 fn reject_core_extensions(pom_path: &Path) -> Result<()> {
     let Some(start) = pom_path.parent() else {
         return Ok(());
@@ -366,17 +373,81 @@ fn reject_core_extensions(pom_path: &Path) -> Result<()> {
     let root = crate::cache::find_git_root(&start).ok().flatten();
     let mut current = Some(start.as_path());
     while let Some(dir) = current {
-        let extensions = dir.join(".mvn").join("extensions.xml");
-        if std::fs::symlink_metadata(&extensions).is_ok() {
-            bail!(
-                "Unsupported Maven core extensions in {}: extensions loaded by Maven itself are not scanned",
-                extensions.display()
-            );
-        }
+        check_mvn_dir(&dir.join(".mvn"))?;
         if root.as_deref() == Some(dir) {
             break;
         }
         current = dir.parent();
+    }
+    Ok(())
+}
+
+fn check_mvn_dir(mvn: &Path) -> Result<()> {
+    for (name, why) in [
+        (
+            "extensions.xml",
+            "core extensions loaded by Maven itself are not scanned",
+        ),
+        (
+            "settings.xml",
+            "project settings can redirect every repository through a mirror",
+        ),
+        (
+            "toolchains.xml",
+            "toolchains select build tools that are not scanned",
+        ),
+    ] {
+        let file = mvn.join(name);
+        if std::fs::symlink_metadata(&file).is_ok() {
+            bail!("Unsupported Maven {name} in {}: {why}", file.display());
+        }
+    }
+    let read = |name: &str| std::fs::read_to_string(mvn.join(name)).unwrap_or_default();
+    let config = read("maven.config");
+    for token in config.split_whitespace() {
+        let name = token.split('=').next().unwrap_or(token);
+        if matches!(
+            name,
+            "-s" | "--settings"
+                | "-gs"
+                | "--global-settings"
+                | "-t"
+                | "--toolchains"
+                | "-gt"
+                | "--global-toolchains"
+        ) {
+            bail!(
+                "Unsupported Maven option '{name}' in {}: settings and toolchains files are not scanned",
+                mvn.join("maven.config").display()
+            );
+        }
+    }
+    if read("jvm.config").contains("-javaagent") || read("jvm.config").contains("-agentpath") {
+        bail!(
+            "Unsupported Maven JVM agent in {}: agents run inside Maven unscanned",
+            mvn.join("jvm.config").display()
+        );
+    }
+    let wrapper = mvn.join("wrapper").join("maven-wrapper.properties");
+    if let Ok(properties) = std::fs::read_to_string(&wrapper) {
+        for line in properties.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim().replace('\\', "");
+            if matches!(key.trim(), "distributionUrl" | "wrapperUrl")
+                && !TRUSTED_MAVEN_WRAPPER_URLS
+                    .iter()
+                    .any(|trusted| value.starts_with(trusted))
+            {
+                bail!(
+                    "Untrusted Maven wrapper {} in {}: '{}' is not on Maven Central",
+                    key.trim(),
+                    wrapper.display(),
+                    crate::report::sanitize_for_terminal(&value)
+                );
+            }
+        }
     }
     Ok(())
 }
