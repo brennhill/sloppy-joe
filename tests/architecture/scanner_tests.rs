@@ -1,0 +1,46 @@
+//! The scanner measures what it claims.
+
+use super::*;
+
+#[test]
+fn scanner_ignores_comments_and_literals() {
+    let code = strip("fn a() { // if if if\n let s = \"if && ||\"; let c = '{'; /* for */ }");
+    let f = function_complexities(&code);
+    assert_eq!(f, vec![("a".to_string(), 1)]);
+}
+
+#[test]
+fn scanner_counts_branches_boolean_operators_and_match_arms() {
+    let code = strip(
+        "fn a(x: i32) -> i32 { if x > 0 && x < 9 || x == 20 { 1 } else if x < 0 { 2 } else { \
+         match x { 1 => 1, 2 => 2, _ => 3 } } }",
+    );
+    // 1 + if + && + || + else-if + (3 arms - 1)
+    assert_eq!(function_complexities(&code), vec![("a".to_string(), 7)]);
+}
+
+#[test]
+fn scanner_does_not_count_closures_or_reference_types_as_operators() {
+    let code = strip("fn a(v: &&str) { let f = || 1; let g = move || 2; let h = |&&x| x; }");
+    assert_eq!(function_complexities(&code), vec![("a".to_string(), 1)]);
+}
+
+#[test]
+fn scanner_finds_crate_targets_in_paths_and_groups() {
+    let targets = crate_targets(
+        "use crate::registry::Registry; use crate::{checks::x, cache}; crate::Dependency",
+    );
+    assert_eq!(targets, vec!["registry", "checks", "cache", "Dependency"]);
+}
+
+#[test]
+fn inline_test_modules_are_cut() {
+    let code = cut_inline_tests("fn a() {}\n#[cfg(test)]\nmod tests { fn b() {} }");
+    assert!(code.contains("fn a") && !code.contains("fn b"));
+    let kept = cut_inline_tests("#[cfg(test)]\n#[path = \"x\"]\nmod x;\nfn c() {}");
+    assert!(kept.contains("fn c"));
+    let after = cut_inline_tests(
+        "fn a() {}\n#[cfg(test)]\npub(crate) mod t { fn b() { if x { } } }\nfn c() {}",
+    );
+    assert!(after.contains("fn a") && after.contains("fn c") && !after.contains("fn b"));
+}

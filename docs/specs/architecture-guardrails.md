@@ -59,12 +59,21 @@ nearest place. Without a guardrail that keeps happening.
 - **Given** a non-test source file outside `src/project.rs` and `src/ecosystems/`, **then** it contains
   no `ProjectInputKind::` variant path. This rule is never baselined: ecosystem logic lives in its
   plugin module behind the `EcosystemSupport` trait.
-- **Given** a file in `src/ecosystems/<a>/`, **then** it does not import ecosystem `<b>`; shared code
-  goes in `ecosystems::common`.
+- **Given** a file in `src/ecosystems/<a>/`, **then** it does not reach ecosystem `<b>` by any path
+  (`ecosystems::b`, `super::b`, `super::super::b`, or a bare `b::` through a glob import); shared
+  code goes in `ecosystems::common`.
+- **Given** `src/ecosystems/mod.rs`, **then** it declares and tabulates the plugins but has no `use`
+  of a plugin item: every plugin sees the registry's imports, and the engine sees its re-exports.
+- **Given** a file outside `src/project.rs` and `src/ecosystems/`, **then** it does not rename
+  `ProjectInputKind` (`use ... as K`, `type K = ...`), so variant names cannot evade the placement
+  count.
+- **Given** any non-test source file, **then** it has no `#[path]` redirect (other than on a
+  `#[cfg(test)]` module) and no `include!`, so every module path is the one the scan sees.
 - **Given** a file outside `src/ecosystems/`, **then** it does not name a concrete plugin module
   (`ecosystems::cargo`, ...); it calls the facade functions in `ecosystems/mod.rs`.
 - **Given** every kind whose descriptor requires a lockfile, **then** the shared conformance suite in
-  `src/ecosystems/tests.rs` shows that a missing or malformed lockfile blocks preflight, that an unsupported construct blocks, and that Maven
+  `src/ecosystems/tests.rs` shows that a missing or malformed lockfile blocks preflight (each for its own stated reason), that an unsupported construct blocks
+  for the construct (not for a missing lockfile), that the `lockfile_data` stage surfaces lockfile-only packages, and that Maven
   states its reduced-confidence policy.
 
 ### Baseline maintenance
@@ -85,7 +94,7 @@ nearest place. Without a guardrail that keeps happening.
 
 ## Scope Boundaries
 
-- **In scope**: `tests/architecture.rs`, `tests/architecture_baseline.txt`, this spec, a CLAUDE.md rule.
+- **In scope**: `tests/architecture/`, `tests/architecture_baseline.txt`, this spec, a CLAUDE.md rule.
 - **Out of scope**: the refactors themselves (an ecosystem trait, removing layer
   cycles). They follow as separate rounds, each protected by the existing tests and by these ratchets.
 - **Out of scope**: runtime behavior. No scan output changes.
@@ -133,7 +142,7 @@ layer src/parsers/jvm.rs -> registry
 
 ## Architecture
 
-`tests/architecture.rs` walks `src/`, strips comments and strings, and computes four measures: layer
+`tests/architecture/` walks `src/`, strips comments and strings, and computes four measures: layer
 edges, file lines, per-function complexity, and `ProjectInputKind::` placement. It compares the first three to the baseline
 and fails on any worse value, any unclassified module, and any stale (now-better) entry. A single
 `#[test]` per rule keeps failures readable.

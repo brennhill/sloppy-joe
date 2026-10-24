@@ -5,6 +5,9 @@
 //! shrink. Rewrite the baseline with smaller values via
 //! `UPDATE_ARCH_BASELINE=1 cargo test --test architecture`.
 
+mod isolation;
+mod scanner_tests;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -257,22 +260,50 @@ fn strip(src: &str) -> String {
     out
 }
 
-/// Drop everything from the first inline `#[cfg(test)] mod name { ... }` onward.
+/// Drop every inline `#[cfg(test)] mod name { ... }` block, and only those: code after a test
+/// module is still production code.
 fn cut_inline_tests(code: &str) -> String {
     let marker = "#[cfg(test)]";
-    let mut search = 0;
-    while let Some(found) = code[search..].find(marker) {
-        let at = search + found;
-        let rest = code[at + marker.len()..].trim_start();
-        if let Some(after_mod) = rest.strip_prefix("mod ") {
+    let mut out = String::with_capacity(code.len());
+    let mut at = 0;
+    while let Some(found) = code[at..].find(marker) {
+        let start = at + found;
+        out.push_str(&code[at..start]);
+        let mut rest = start + marker.len();
+        // Further attributes (`#[allow(..)]`, `pub(crate)`) may sit between the marker and `mod`.
+        let item = code[rest..].trim_start();
+        let item = item.strip_prefix("pub(crate) ").unwrap_or(item);
+        let item = item.strip_prefix("pub(super) ").unwrap_or(item);
+        let item = item.strip_prefix("pub ").unwrap_or(item);
+        let braced_mod = item.strip_prefix("mod ").and_then(|after_mod| {
             let name_len = after_mod.chars().take_while(|c| is_ident(*c)).count();
-            if after_mod[name_len..].trim_start().starts_with('{') {
-                return code[..at].to_string();
+            let brace = after_mod[name_len..].trim_start().strip_prefix('{')?;
+            Some(code.len() - brace.len())
+        });
+        match braced_mod {
+            Some(body_start) => {
+                let mut depth = 1;
+                let mut end = body_start;
+                for (offset, c) in code[body_start..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth == 0 {
+                        end = body_start + offset + 1;
+                        break;
+                    }
+                }
+                rest = end;
             }
+            // Not an inline module (`#[cfg(test)] use ..;`, `mod x;`): keep it for the scan.
+            None => out.push_str(marker),
         }
-        search = at + marker.len();
+        at = rest;
     }
-    code.to_string()
+    out.push_str(&code[at..]);
+    out
 }
 
 // ---------------------------------------------------------------- measures
@@ -737,7 +768,7 @@ fn every_source_module_is_classified_into_a_layer() {
     let measures = measure();
     assert!(
         measures.unclassified.is_empty(),
-        "classify these src/ modules in tests/architecture.rs and docs/specs/architecture-guardrails.md: {:?}",
+        "classify these src/ modules in tests/architecture/ and docs/specs/architecture-guardrails.md: {:?}",
         measures.unclassified
     );
 }
@@ -817,187 +848,3 @@ fn update_baseline_when_requested() {
 }
 
 // ------------------------------------------- the scanner measures what it claims
-
-/// The ecosystem plugin modules: every `src/ecosystems/<name>.rs` or `src/ecosystems/<name>/`
-/// except the shared helpers.
-fn plugin_names() -> Vec<String> {
-    let mut names = Vec::new();
-    for entry in std::fs::read_dir(repo_root().join("src").join("ecosystems")).unwrap() {
-        let path = entry.unwrap().path();
-        let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        if !["mod", "common", "tests"].contains(&name.as_str()) {
-            names.push(name);
-        }
-    }
-    names.sort();
-    names.dedup();
-    names
-}
-
-/// Whether `code` contains `path` followed by a non-identifier character.
-fn mentions_path(code: &str, path: &str) -> bool {
-    code.match_indices(path).any(|(at, _)| {
-        let before = code[..at].chars().next_back();
-        let after = code[at + path.len()..].chars().next();
-        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
-    })
-}
-
-/// Isolation violations among `(relative path, code)` pairs: code outside `src/ecosystems/`
-/// naming a concrete plugin, and a plugin importing a sibling plugin.
-fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<String> {
-    let mut violations = Vec::new();
-    for (rel, code) in files {
-        // `ecosystems/mod.rs` is the registry: it names every plugin by design.
-        if rel == "src/ecosystems/mod.rs" {
-            continue;
-        }
-        let owner = rel
-            .strip_prefix("src/ecosystems/")
-            .map(|rest| rest.split(['/', '.']).next().unwrap().to_string());
-        for plugin in plugins {
-            let reaches_in = mentions_path(code, &format!("ecosystems::{plugin}"));
-            match owner.as_deref() {
-                None if reaches_in => violations.push(format!(
-                    "{rel} reaches into ecosystems::{plugin}; go through the EcosystemSupport trait"
-                )),
-                Some(own) if own != plugin => {
-                    let sibling = reaches_in
-                        || mentions_path(code, &format!("super::super::{plugin}"))
-                        || (rel.matches('/').count() == 2
-                            && mentions_path(code, &format!("super::{plugin}")));
-                    if sibling {
-                        violations.push(format!(
-                            "{rel} (ecosystem {own}) imports ecosystem {plugin}; share code through ecosystems::common"
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    violations
-}
-
-#[test]
-fn ecosystem_plugins_are_isolated() {
-    let plugins = plugin_names();
-    assert!(plugins.len() >= 8, "found plugins {plugins:?}");
-    let files: Vec<(String, String)> = load_sources()
-        .into_iter()
-        .filter(|f| !f.is_test)
-        .map(|f| (f.rel, f.code))
-        .collect();
-    let violations = isolation_violations(&files, &plugins);
-    assert!(violations.is_empty(), "{}", violations.join("\n"));
-}
-
-#[test]
-fn isolation_rule_flags_engine_and_sibling_imports() {
-    let plugins = vec!["cargo".to_string(), "go".to_string()];
-    let files = vec![
-        (
-            "src/engine/scan.rs".to_string(),
-            "use crate::ecosystems::cargo::Cargo;".to_string(),
-        ),
-        (
-            "src/ecosystems/go.rs".to_string(),
-            "use super::cargo::helper;".to_string(),
-        ),
-        (
-            "src/ecosystems/go/inner.rs".to_string(),
-            "use super::super::cargo::helper;".to_string(),
-        ),
-        (
-            "src/ecosystems/cargo/mod.rs".to_string(),
-            "use super::common::x; use crate::ecosystems::first_existing_lockfile;".to_string(),
-        ),
-        (
-            "src/engine/ok.rs".to_string(),
-            "use crate::ecosystems::bind;".to_string(),
-        ),
-    ];
-    let violations = isolation_violations(&files, &plugins);
-    assert_eq!(violations.len(), 3, "{violations:?}");
-    assert!(violations[0].contains("src/engine/scan.rs"));
-}
-
-/// The rule run over the real source tree with a violation injected into real files: an engine
-/// file importing a concrete plugin and a plugin file importing a sibling must both be flagged,
-/// and nothing else may be.
-#[test]
-fn isolation_rule_catches_violations_injected_into_the_real_tree() {
-    let plugins = plugin_names();
-    let mut files: Vec<(String, String)> = load_sources()
-        .into_iter()
-        .filter(|f| !f.is_test)
-        .map(|f| (f.rel, f.code))
-        .collect();
-    assert!(isolation_violations(&files, &plugins).is_empty());
-    for (rel, code) in files.iter_mut() {
-        if rel == "src/engine/scan.rs" {
-            code.push_str("\nuse crate::ecosystems::cargo::Cargo;\n");
-        }
-        if rel == "src/ecosystems/go.rs" {
-            code.push_str("\nuse super::cargo::Cargo;\n");
-        }
-    }
-    let violations = isolation_violations(&files, &plugins);
-    assert_eq!(violations.len(), 2, "{violations:?}");
-    assert!(
-        violations
-            .iter()
-            .any(|v| v.starts_with("src/engine/scan.rs"))
-    );
-    assert!(
-        violations
-            .iter()
-            .any(|v| v.starts_with("src/ecosystems/go.rs"))
-    );
-}
-
-#[test]
-fn scanner_finds_whole_path_mentions() {
-    assert!(mentions_path("use a::js;", "a::js"));
-    assert!(!mentions_path("use a::json;", "a::js"));
-    assert!(!mentions_path("use xa::js;", "a::js"));
-}
-
-#[test]
-fn scanner_ignores_comments_and_literals() {
-    let code = strip("fn a() { // if if if\n let s = \"if && ||\"; let c = '{'; /* for */ }");
-    let f = function_complexities(&code);
-    assert_eq!(f, vec![("a".to_string(), 1)]);
-}
-
-#[test]
-fn scanner_counts_branches_boolean_operators_and_match_arms() {
-    let code = strip(
-        "fn a(x: i32) -> i32 { if x > 0 && x < 9 || x == 20 { 1 } else if x < 0 { 2 } else { \
-         match x { 1 => 1, 2 => 2, _ => 3 } } }",
-    );
-    // 1 + if + && + || + else-if + (3 arms - 1)
-    assert_eq!(function_complexities(&code), vec![("a".to_string(), 7)]);
-}
-
-#[test]
-fn scanner_does_not_count_closures_or_reference_types_as_operators() {
-    let code = strip("fn a(v: &&str) { let f = || 1; let g = move || 2; let h = |&&x| x; }");
-    assert_eq!(function_complexities(&code), vec![("a".to_string(), 1)]);
-}
-
-#[test]
-fn scanner_finds_crate_targets_in_paths_and_groups() {
-    let targets = crate_targets(
-        "use crate::registry::Registry; use crate::{checks::x, cache}; crate::Dependency",
-    );
-    assert_eq!(targets, vec!["registry", "checks", "cache", "Dependency"]);
-}
-
-#[test]
-fn inline_test_modules_are_cut() {
-    let code = cut_inline_tests("fn a() {}\n#[cfg(test)]\nmod tests { fn b() {} }");
-    assert!(code.contains("fn a") && !code.contains("fn b"));
-    let kept = cut_inline_tests("#[cfg(test)]\n#[path = \"x\"]\nmod x;\nfn c() {}");
-    assert!(kept.contains("fn c"));
-}
