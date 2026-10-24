@@ -171,7 +171,21 @@ fn metadata_from_body(
         manifest_inconsistency,
         removed_previous_version,
         npm_tarball,
+        pypi_release: None,
+        release_cadence: npm_cadence(time, &selected_ver),
     })
+}
+
+/// Release cadence around `selected` from the packument's `time` map
+/// (`created` and `modified` are not versions).
+fn npm_cadence(time: &serde_json::Value, selected: &str) -> Option<super::cadence::ReleaseCadence> {
+    let times = time.as_object()?;
+    let published = crate::cache::iso_to_epoch(times.get(selected)?.as_str()?)?;
+    let others = times
+        .iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "created" | "modified") && *key != selected)
+        .filter_map(|(_, value)| crate::cache::iso_to_epoch(value.as_str()?));
+    Some(super::cadence::cadence_from_epochs(published, others))
 }
 
 /// Runtime dependency count: names in `dependencies` and

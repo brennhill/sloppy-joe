@@ -135,6 +135,12 @@ impl Check for MetadataCheck {
                     ctx.non_internal_deps,
                     ctx.resolution,
                 ));
+            acc.issues
+                .extend(super::python_lockfile_hashes::check_python_lockfile_hashes(
+                    &lookups,
+                    ctx.non_internal_deps,
+                    ctx.resolution,
+                ));
             acc.issues.extend(super::metadata::issues_from_lookups(
                 &lookups,
                 ctx.config,

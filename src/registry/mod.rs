@@ -1,3 +1,4 @@
+pub mod cadence;
 pub mod crates_io;
 pub mod go;
 pub mod google_maven;
@@ -8,6 +9,7 @@ pub mod npm_tarball;
 pub mod nuget;
 pub mod packagist;
 pub mod pypi;
+pub mod pypi_release;
 pub mod rubygems;
 
 use crate::Ecosystem;
@@ -67,6 +69,11 @@ pub struct PackageMetadata {
     /// hash, and the install/dependency facts the packument declares for it.
     /// Used to verify the packument against the tarball (manifest confusion).
     pub npm_tarball: Option<npm_tarball::NpmTarballRef>,
+    /// PyPI only: the files PyPI lists for the selected version, with the
+    /// sha256 digests it publishes for them.
+    pub pypi_release: Option<pypi_release::PypiRelease>,
+    /// Release timing around the selected version (PyPI).
+    pub release_cadence: Option<cadence::ReleaseCadence>,
 }
 
 #[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.

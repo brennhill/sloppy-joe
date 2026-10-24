@@ -5,6 +5,8 @@ pub mod malicious;
 pub mod metadata;
 pub use crate::names;
 pub mod pipeline;
+pub(crate) mod python_lockfile_hashes;
+pub(crate) mod release_cadence;
 pub(crate) mod signals;
 pub mod similarity;
 pub(crate) mod tarball_verification;

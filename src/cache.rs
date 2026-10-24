@@ -222,6 +222,15 @@ fn split_utc_offset(date_str: &str) -> Option<(&str, i64)> {
 
 /// Parse an ISO 8601 date string and return the age in hours.
 pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
+    let diff_seconds = now_epoch() as i64 - iso_to_epoch(date_str)?;
+    if diff_seconds < 0 {
+        return None;
+    }
+    Some((diff_seconds / 3600) as u64)
+}
+
+/// Parse an ISO 8601 date string into Unix epoch seconds.
+pub(crate) fn iso_to_epoch(date_str: &str) -> Option<i64> {
     // Parse common ISO 8601 formats: "2026-03-21T10:30:00.000Z"
     let (cleaned, offset_seconds) = split_utc_offset(date_str.trim())?;
     // Try parsing with chrono-like manual parsing (avoid adding chrono dep)
@@ -254,15 +263,7 @@ pub(crate) fn age_in_hours(date_str: &str) -> Option<u64> {
     };
     let sec: i64 = seconds.parse().ok()?;
 
-    let pkg_epoch =
-        crate::cache::checked_date_to_epoch(year, month, day, hour, min, sec)? - offset_seconds;
-    let now = crate::cache::now_epoch() as i64;
-
-    let diff_seconds = now - pkg_epoch;
-    if diff_seconds < 0 {
-        return None;
-    }
-    Some((diff_seconds / 3600) as u64)
+    Some(crate::cache::checked_date_to_epoch(year, month, day, hour, min, sec)? - offset_seconds)
 }
 
 /// Walk up from `dir` looking for a `.git` directory or file (worktrees/submodules

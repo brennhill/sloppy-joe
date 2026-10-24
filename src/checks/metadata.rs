@@ -169,6 +169,7 @@ pub(crate) fn issues_from_lookups(
         issues.extend(signals::check_downloads_unavailable(lookup, meta));
         issues.extend(signals::check_manifest_inconsistency(lookup, meta));
         issues.extend(signals::check_removed_previous_version(lookup, meta));
+        issues.extend(super::release_cadence::check_release_cadence(lookup, meta));
     }
 
     issues

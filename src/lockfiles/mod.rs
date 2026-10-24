@@ -29,6 +29,7 @@ pub(crate) mod npm;
 pub(crate) mod pipfile_lock;
 pub(crate) mod pnpm;
 pub(crate) mod python;
+pub(crate) mod python_hashes;
 mod ruby;
 pub(crate) mod uv;
 pub(crate) mod yarn;
@@ -111,6 +112,8 @@ pub struct ResolutionResult {
     issue_keys: HashSet<(String, ResolutionKey)>,
     /// Integrity recorded by an npm-family lockfile, per package version.
     pub(crate) npm_integrity: Option<std::sync::Arc<integrity::NpmLockfileIntegrity>>,
+    /// Artifact hashes recorded by a Python lockfile, per package version.
+    pub(crate) python_hashes: Option<std::sync::Arc<python_hashes::PythonLockfileHashes>>,
 }
 
 impl ResolutionResult {
@@ -187,6 +190,7 @@ pub struct LockfileData {
     /// Retained parsed lockfile for re-resolution of transitive deps without re-reading disk.
     parsed: ParsedLockfile,
     npm_integrity: Option<std::sync::Arc<integrity::NpmLockfileIntegrity>>,
+    python_hashes: Option<std::sync::Arc<python_hashes::PythonLockfileHashes>>,
 }
 
 impl LockfileData {
@@ -205,6 +209,8 @@ impl LockfileData {
             resolve_from_parsed(&parsed, direct_deps, ResolutionMode::Direct, python_profile)?;
         let npm_integrity = integrity::collect(&parsed).map(std::sync::Arc::new);
         resolution.npm_integrity = npm_integrity.clone();
+        let python_hashes = python_hashes::collect(&parsed).map(std::sync::Arc::new);
+        resolution.python_hashes = python_hashes.clone();
 
         let (all_deps, lockfile_issues) =
             parse_all_from_parsed_for_project(&parsed, direct_deps, project_dir, python_profile)?;
@@ -236,6 +242,7 @@ impl LockfileData {
             transitive_deps: transitive,
             parsed,
             npm_integrity,
+            python_hashes,
         })
     }
 
@@ -245,6 +252,7 @@ impl LockfileData {
         let mut resolution =
             resolve_from_parsed(&self.parsed, deps, ResolutionMode::Transitive, None)?;
         resolution.npm_integrity = self.npm_integrity.clone();
+        resolution.python_hashes = self.python_hashes.clone();
         Ok(resolution)
     }
 
@@ -268,6 +276,7 @@ impl LockfileData {
             transitive_deps: Vec::new(),
             parsed: ParsedLockfile::None,
             npm_integrity: None,
+            python_hashes: None,
         }
     }
 }
