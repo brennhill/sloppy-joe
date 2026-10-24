@@ -20,10 +20,9 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
     }
     let path = project_dir.join("Gemfile");
-    let content = super::read_line_oriented_limited(&path, super::MAX_MANIFEST_BYTES)
-        .context("Failed to read Gemfile")?;
+    let content = crate::untrusted::read_line_file(&path).context("Failed to read Gemfile")?;
 
-    for line in content.lines() {
+    for line in crate::untrusted::rows(&content) {
         let line = strip_ruby_comments(line);
         let line = line.trim();
         let method = line
@@ -56,7 +55,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 
     let mut deps = Vec::new();
     let mut gemspecs = Vec::new();
-    for line in content.lines() {
+    for line in crate::untrusted::rows(&content) {
         let line = strip_ruby_comments(line);
         if let Some(statement) = gemspec_statement(line.trim()) {
             gemspecs.push(statement?);
@@ -242,10 +241,9 @@ fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependenc
             path.display()
         );
     }
-    let content = super::read_line_oriented_limited(&path, super::MAX_MANIFEST_BYTES)
+    let content = crate::untrusted::read_line_file(&path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    let text: String = content
-        .lines()
+    let text: String = crate::untrusted::rows(&content)
         .map(strip_ruby_comments)
         .collect::<Vec<_>>()
         .join("\n");
@@ -422,7 +420,7 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
     let mut in_entry = false;
     let mut state = RubyExpressionState::default();
 
-    for raw_line in content.lines() {
+    for raw_line in crate::untrusted::rows(content) {
         let uncommented = strip_ruby_comments(raw_line);
         let trimmed = uncommented.trim();
         if !in_entry {

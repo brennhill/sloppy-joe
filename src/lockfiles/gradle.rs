@@ -102,7 +102,7 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<String>> {
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    crate::parsers::read_line_oriented_limited(&path, crate::parsers::MAX_MANIFEST_BYTES).map(Some)
+    crate::untrusted::read_line_file(&path).map(Some)
 }
 
 #[cfg(test)]
@@ -135,7 +135,7 @@ fn parse_versions(content: &str) -> HashMap<String, Vec<String>> {
 fn parse_entries(content: &str) -> Vec<(String, String)> {
     let mut entries = Vec::new();
 
-    for line in content.lines() {
+    for line in crate::untrusted::rows(content) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;

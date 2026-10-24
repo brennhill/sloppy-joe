@@ -100,7 +100,7 @@ fn reject_hatch_toml(project_dir: &Path) -> Result<()> {
 
 /// Whether an INI-style tox configuration has a `deps` or `requires` key.
 fn ini_declares_packages(content: &str) -> bool {
-    content.lines().any(|line| {
+    crate::untrusted::rows(content).any(|line| {
         let line = line.trim_start();
         ["deps", "requires"].iter().any(|key| {
             line.strip_prefix(key)
@@ -124,8 +124,7 @@ fn toml_declares_packages(value: &toml::Value) -> bool {
 /// Whether a tox configuration declares environment `deps` or `requires`. In `setup.cfg` and
 /// `pyproject.toml` only a tox section counts; `tox.ini` and `tox.toml` are tox's own files.
 fn tox_installs_packages(path: &Path, shared_file_section: Option<&str>) -> Result<bool> {
-    let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
-    crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
+    let content = crate::untrusted::read_line_file(path)?;
     if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
         let parsed: toml::Value = toml::from_str(&content)
             .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;

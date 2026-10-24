@@ -17,8 +17,7 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
         }
     }
     let path = project_dir.join("go.mod");
-    let content = super::read_line_oriented_limited(&path, super::MAX_MANIFEST_BYTES)
-        .context("Failed to read go.mod")?;
+    let content = crate::untrusted::read_line_file(&path).context("Failed to read go.mod")?;
     validate_replace_targets(&content, &path)?;
 
     let requirements = parse_requirements(&content);
@@ -45,8 +44,7 @@ fn validate_replace_targets(content: &str, path: &Path) -> Result<()> {
             path.display()
         );
     }
-    if content
-        .lines()
+    if crate::untrusted::rows(content)
         .any(|line| line.trim().split([' ', '\t', '(']).next() == Some("replace"))
     {
         anyhow::bail!(
@@ -79,7 +77,7 @@ fn parse_directive(content: &str, keyword: &str) -> Vec<Vec<String>> {
     let mut entries = Vec::new();
     let mut in_block = false;
 
-    for line in content.lines() {
+    for line in crate::untrusted::rows(content) {
         let line = line.split_once("//").map_or(line, |(code, _)| code).trim();
         let directive = line
             .strip_prefix(keyword)
@@ -164,7 +162,7 @@ fn validate_tool_directives(
 pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
     let mut hashes: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
-    for line in go_sum.lines().filter(|line| !line.trim().is_empty()) {
+    for line in crate::untrusted::rows(go_sum).filter(|line| !line.trim().is_empty()) {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let [module, version, hash] = fields[..] else {
             anyhow::bail!("Malformed go.sum line {line:?}: expected '<module> <version> <hash>'");
@@ -222,7 +220,7 @@ pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
 /// Requirements go.mod marks `// indirect`.
 fn indirect_requirements(go_mod: &str) -> HashSet<(String, String)> {
     let mut indirect = HashSet::new();
-    for line in go_mod.lines() {
+    for line in crate::untrusted::rows(go_mod) {
         let Some((code, comment)) = line.split_once("//") else {
             continue;
         };
@@ -265,7 +263,7 @@ pub(crate) fn vendoring_applies(go_mod: &str) -> bool {
 /// a substitute for go.sum.
 pub(crate) fn check_vendor_modules(go_mod: &str, modules_txt: &str) -> Result<()> {
     let mut vendored: HashSet<(String, String)> = HashSet::new();
-    for line in modules_txt.lines() {
+    for line in crate::untrusted::rows(modules_txt) {
         let Some(rest) = line.strip_prefix("# ") else {
             continue;
         };
@@ -333,7 +331,7 @@ fn parse_local_replace_entries(content: &str) -> impl Iterator<Item = (String, S
     let mut replacements = HashSet::new();
     let mut in_replace = false;
 
-    for line in content.lines() {
+    for line in crate::untrusted::rows(content) {
         let line = line.trim();
         if line == "replace (" {
             in_replace = true;

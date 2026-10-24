@@ -88,7 +88,7 @@ pub(super) fn read_lockfile(project_dir: &Path) -> Result<Option<String>> {
     if !crate::parsers::path_detected(&path)? {
         return Ok(None);
     }
-    crate::parsers::read_line_oriented_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)
+    crate::untrusted::read_line_file(&path)
         .map(Some)
         .map_err(|err| {
             anyhow::anyhow!(
@@ -163,7 +163,7 @@ fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String,
     let mut in_specs = false;
     let mut section = "";
 
-    for line in content.lines() {
+    for line in crate::untrusted::rows(content) {
         if !line.is_empty() && !line.starts_with(char::is_whitespace) {
             section = line.trim();
             if matches!(section, "GIT" | "PATH" | "PLUGIN SOURCE") {

@@ -116,14 +116,13 @@ pub(crate) fn read_validated_yarn_lockfile(
 ) -> Result<crate::lockfiles::yarn::ParsedYarnLock> {
     let path =
         selected_lockfile_path(spec).expect("Yarn preflight should guarantee a lockfile exists");
-    let content =
-        parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is unreadable: {}",
-                path.display(),
-                err
-            )
-        })?;
+    let content = crate::untrusted::read_line_file(&path).map_err(|err| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' is unreadable: {}",
+            path.display(),
+            err
+        )
+    })?;
     let project_name = manifest
         .get("name")
         .and_then(|value| value.as_str())

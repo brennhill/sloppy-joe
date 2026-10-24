@@ -7,6 +7,8 @@ pub(super) struct Baseline {
     pub(super) layer: Vec<String>,
     pub(super) file_lines: BTreeMap<String, usize>,
     pub(super) complexity: BTreeMap<String, usize>,
+    pub(super) raw_reads: BTreeMap<String, usize>,
+    pub(super) line_splits: BTreeMap<String, usize>,
     pub(super) exists: bool,
 }
 
@@ -30,11 +32,13 @@ pub(super) fn load_baseline() -> Baseline {
         let (kind, rest) = line.split_once(' ').expect("baseline line needs a kind");
         match kind {
             "layer" => baseline.layer.push(rest.to_string()),
-            "file-lines" | "fn-complexity" => {
+            "file-lines" | "fn-complexity" | "raw-read" | "line-split" => {
                 let (key, value) = rest.rsplit_once(' ').expect("baseline line needs a value");
                 let value: usize = value.parse().expect("baseline value must be a number");
                 let map = match kind {
                     "file-lines" => &mut baseline.file_lines,
+                    "raw-read" => &mut baseline.raw_reads,
+                    "line-split" => &mut baseline.line_splits,
                     _ => &mut baseline.complexity,
                 };
                 map.insert(key.to_string(), value);
@@ -59,6 +63,12 @@ pub(super) fn write_baseline(measures: &Measures) {
     }
     for (function, value) in &measures.complexity {
         out.push_str(&format!("fn-complexity {function} {value}\n"));
+    }
+    for (file, count) in &measures.raw_reads {
+        out.push_str(&format!("raw-read {file} {count}\n"));
+    }
+    for (file, count) in &measures.line_splits {
+        out.push_str(&format!("line-split {file} {count}\n"));
     }
     std::fs::write(baseline_path(), out).unwrap();
 }
@@ -137,6 +147,13 @@ pub(super) fn all_comparisons(
             &measures.complexity,
             &baseline.complexity,
             Some(MAX_COMPLEXITY),
+        ),
+        compare_numbers("raw reads:", &measures.raw_reads, &baseline.raw_reads, None),
+        compare_numbers(
+            "line splits:",
+            &measures.line_splits,
+            &baseline.line_splits,
+            None,
         ),
     ];
     for (w, s) in sets {

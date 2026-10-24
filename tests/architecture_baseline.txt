@@ -1,3 +1,44 @@
 # Architecture baseline (docs/specs/architecture-guardrails.md).
 # Existing violations only. Values may shrink, never grow.
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
+raw-read src/ecosystems/cargo/config_file.rs 1
+raw-read src/ecosystems/cargo/program_settings.rs 1
+raw-read src/ecosystems/cargo/scope.rs 1
+raw-read src/ecosystems/cargo/validate.rs 1
+raw-read src/ecosystems/common.rs 3
+raw-read src/ecosystems/js/binding.rs 1
+raw-read src/ecosystems/js/lockfile_read.rs 4
+raw-read src/ecosystems/js/mod.rs 1
+raw-read src/ecosystems/js/workspace.rs 1
+raw-read src/ecosystems/php/provenance.rs 1
+raw-read src/ecosystems/python/interpreter_config.rs 2
+raw-read src/ecosystems/python/lockfile_read.rs 3
+raw-read src/ecosystems/python/tool_config.rs 1
+raw-read src/lockfiles/composer.rs 1
+raw-read src/lockfiles/dotnet.rs 1
+raw-read src/lockfiles/pipfile_lock.rs 1
+raw-read src/lockfiles/python.rs 1
+raw-read src/lockfiles/read.rs 5
+raw-read src/lockfiles/uv.rs 1
+raw-read src/lockfiles/yarn.rs 1
+raw-read src/parsers/cargo_toml.rs 2
+raw-read src/parsers/composer_json.rs 1
+raw-read src/parsers/csproj.rs 3
+raw-read src/parsers/csproj_hooks.rs 1
+raw-read src/parsers/jvm.rs 6
+raw-read src/parsers/jvm/gradle_plugins.rs 2
+raw-read src/parsers/jvm/maven_model.rs 1
+raw-read src/parsers/jvm/pom.rs 4
+raw-read src/parsers/nuget_config.rs 1
+raw-read src/parsers/package_json.rs 1
+raw-read src/parsers/pipfile.rs 1
+raw-read src/parsers/pyproject_toml.rs 1
+raw-read src/parsers/requirements.rs 3
+raw-read src/parsers/requirements/directives.rs 1
+raw-read src/parsers/setup_cfg.rs 1
+line-split src/lockfiles/python/poetry_hash.rs 1
+line-split src/parsers/gemfile.rs 1
+line-split src/parsers/go_mod/graph.rs 1
+line-split src/parsers/python_scope/host.rs 1
+line-split src/parsers/requirements.rs 2
+line-split src/parsers/setup_cfg.rs 1

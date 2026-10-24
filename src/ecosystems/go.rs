@@ -127,9 +127,8 @@ fn vendored_source_warning(spec: &ProjectInputSpec) -> Issue {
 }
 
 fn check_go_sum(spec: &ProjectInputSpec) -> Result<Option<Issue>> {
-    let manifest_content =
-        parsers::read_line_oriented_limited(&spec.manifest_path, parsers::MAX_MANIFEST_BYTES)
-            .map_err(|err| common::broken_manifest(spec, err))?;
+    let manifest_content = crate::untrusted::read_line_file(&spec.manifest_path)
+        .map_err(|err| common::broken_manifest(spec, err))?;
     if !parsers::go_mod::requires_go_sum(&manifest_content) {
         return Ok(None);
     }
@@ -139,8 +138,7 @@ fn check_go_sum(spec: &ProjectInputSpec) -> Result<Option<Issue>> {
     // must cover go.mod instead. Its mere existence is not a substitute for either check.
     let modules_txt = spec.project_dir().join("vendor/modules.txt");
     if modules_txt.is_file() && parsers::go_mod::vendoring_applies(&manifest_content) {
-        let listing =
-            parsers::read_line_oriented_limited(&modules_txt, parsers::MAX_MANIFEST_BYTES)?;
+        let listing = crate::untrusted::read_line_file(&modules_txt)?;
         parsers::go_mod::check_vendor_modules(&manifest_content, &listing).map_err(|err| {
             anyhow::anyhow!(
                 "Broken vendor directory '{}': {}",
@@ -150,7 +148,7 @@ fn check_go_sum(spec: &ProjectInputSpec) -> Result<Option<Issue>> {
         })?;
         return Ok(Some(vendored_source_warning(spec)));
     }
-    let go_sum = parsers::read_line_oriented_limited(&go_sum_path, parsers::MAX_MANIFEST_BYTES)?;
+    let go_sum = crate::untrusted::read_line_file(&go_sum_path)?;
     parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err))?;
     Ok(None)

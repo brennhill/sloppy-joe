@@ -7,9 +7,9 @@ pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
 }
 
 pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
-    let content = super::read_file_limited(path, super::MAX_MANIFEST_BYTES)?;
-    // Python's tokenizer ends a line (and a comment) at a lone `\r`; the scanner below does not.
-    crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
+    // Python's tokenizer ends a line (and a comment) at a lone `\r`; the scanner below does not,
+    // so the gateway refuses it.
+    let content = crate::untrusted::read_script_file(path)?;
     // shortcut: the literal scanner cannot model triple-quoted strings; reject until tokenized properly.
     if content.contains("\"\"\"") || content.contains("'''") {
         bail!(
@@ -17,8 +17,7 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
             path.display()
         );
     }
-    for line in content
-        .lines()
+    for line in crate::untrusted::rows(&content)
         .take(2)
         .filter(|line| line.trim_start().starts_with('#'))
     {
@@ -305,7 +304,7 @@ fn extract_setup_call(content: &str) -> Result<Option<String>> {
             bail!("Scan not supported: multiple setup.py setup() calls");
         }
         validate_setup_preamble(&content[..index])?;
-        if content[end + 1..].lines().any(|line| {
+        if crate::untrusted::rows(&content[end + 1..]).any(|line| {
             let line = line.trim();
             !line.is_empty() && !line.starts_with('#')
         }) {
@@ -338,7 +337,7 @@ fn validate_setup_preamble(before_setup: &str) -> Result<()> {
     let prefix = before_setup
         .strip_suffix("setuptools.")
         .unwrap_or(before_setup);
-    for line in prefix.lines() {
+    for line in crate::untrusted::rows(prefix) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || is_setup_import(line) {
             continue;

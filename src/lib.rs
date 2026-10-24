@@ -23,6 +23,7 @@ mod project;
 pub(crate) use project::*;
 pub mod registry;
 pub mod report;
+mod untrusted;
 mod version;
 
 use anyhow::Result;

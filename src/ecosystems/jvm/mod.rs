@@ -201,8 +201,8 @@ fn ensure_gradle_lockfile_pins_dependencies(
         return Ok(());
     }
     let path = common::named_lockfile(spec).expect("Gradle names gradle.lockfile");
-    let content = parsers::read_line_oriented_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-    let pins = content.lines().any(|line| {
+    let content = crate::untrusted::read_line_file(&path)?;
+    let pins = crate::untrusted::rows(&content).any(|line| {
         line.split_once('=')
             .is_some_and(|(coordinates, _)| coordinates.matches(':').count() == 2)
     });

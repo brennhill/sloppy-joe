@@ -21,9 +21,7 @@ use std::path::Path;
 
 #[cfg(test)]
 pub(crate) use crate::fsutil::extract_xml_value;
-pub(crate) use crate::fsutil::{
-    MAX_MANIFEST_BYTES, read_bytes_limited, read_file_limited, read_line_oriented_limited,
-};
+pub(crate) use crate::fsutil::{MAX_MANIFEST_BYTES, read_bytes_limited, read_file_limited};
 
 pub(crate) fn path_detected(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {

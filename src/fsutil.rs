@@ -9,14 +9,6 @@ pub(crate) fn read_file_limited(path: &std::path::Path, max_bytes: u64) -> Resul
         .map_err(|e| anyhow::anyhow!("Failed to decode {} as UTF-8: {}", path.display(), e))
 }
 
-/// Read a line-oriented file (lockfile, go.mod, Gemfile) and refuse line terminators that the
-/// tool reading it honors but `str::lines()` does not; see `reject_unmodeled_line_breaks`.
-pub(crate) fn read_line_oriented_limited(path: &std::path::Path, max_bytes: u64) -> Result<String> {
-    let content = read_file_limited(path, max_bytes)?;
-    reject_unmodeled_line_breaks(&content, path)?;
-    Ok(content)
-}
-
 /// Read raw bytes from a regular file with a hard size limit.
 #[cfg(unix)]
 pub(crate) fn read_bytes_limited(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>> {
@@ -235,17 +227,5 @@ mod line_tests {
         assert_eq!(get("c"), Some("3"));
         assert_eq!(get("d"), Some("ab"));
         assert_eq!(get("e"), Some("x"));
-    }
-
-    #[test]
-    fn line_oriented_files_with_a_lone_cr_are_refused() {
-        let dir = std::env::temp_dir().join(format!("sj-lineor-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("f.lock");
-        std::fs::write(&file, "a\r\nb\n").unwrap();
-        assert!(read_line_oriented_limited(&file, 1024).is_ok());
-        std::fs::write(&file, "a\rb\n").unwrap();
-        assert!(read_line_oriented_limited(&file, 1024).is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

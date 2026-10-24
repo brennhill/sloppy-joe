@@ -10,6 +10,7 @@ mod bypass_rules;
 mod gap_tests;
 mod isolation;
 mod items;
+mod raw_reads;
 mod roots;
 mod scanner_tests;
 mod test_files;
@@ -32,6 +33,7 @@ const FOUNDATION: &[&str] = &[
     "names",
     "http",
     "fsutil",
+    "untrusted",
 ];
 const CONFIG: &[&str] = &["config", "npm_config"];
 const ORCHESTRATION: &[&str] = &["bootstrap", "engine", "lib", "main"];
@@ -272,7 +274,12 @@ fn strip(src: &str) -> String {
                     j += 1;
                 }
                 if b.get(j) == Some(&'\'') {
-                    out.push_str("' '");
+                    // `'\n'` is kept: splitting on it is what raw_reads looks for.
+                    if b[i + 1..j] == ['\\', 'n'] {
+                        out.push_str("'\\n'");
+                    } else {
+                        out.push_str("' '");
+                    }
                     i = j + 1;
                     continue;
                 }
@@ -353,6 +360,10 @@ struct Measures {
     complexity: BTreeMap<String, usize>,
     /// placement counters
     placement: BTreeMap<String, usize>,
+    /// file -> raw file reads outside the untrusted-read gateway
+    raw_reads: BTreeMap<String, usize>,
+    /// file -> line splits outside the untrusted-read gateway
+    line_splits: BTreeMap<String, usize>,
     /// Modules under src/ that the layer table does not know.
     unclassified: Vec<String>,
 }
@@ -408,6 +419,7 @@ fn measure() -> Measures {
         }
     }
     measures.layer_edges.sort();
+    (measures.raw_reads, measures.line_splits) = raw_reads::measure_raw_reads(&files);
     measures
 }
 
@@ -677,6 +689,26 @@ fn functions_stay_within_the_complexity_cap() {
         &load_baseline().complexity,
         Some(MAX_COMPLEXITY),
     );
+    fail_if_any(worse, stale);
+}
+
+#[test]
+fn security_files_are_read_through_the_untrusted_gateway() {
+    if update_mode() {
+        return;
+    }
+    let measures = measure();
+    let baseline = load_baseline();
+    let (mut worse, mut stale) =
+        compare_numbers("raw reads:", &measures.raw_reads, &baseline.raw_reads, None);
+    let (w, s) = compare_numbers(
+        "line splits:",
+        &measures.line_splits,
+        &baseline.line_splits,
+        None,
+    );
+    worse.extend(w);
+    stale.extend(s);
     fail_if_any(worse, stale);
 }
 

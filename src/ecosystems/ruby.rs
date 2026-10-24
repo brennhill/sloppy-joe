@@ -116,8 +116,8 @@ impl EcosystemSupport for Ruby {
         )?;
         if !parsed.deps.is_empty() {
             let path = common::named_lockfile(spec).expect("Ruby names Gemfile.lock");
-            let content = parsers::read_line_oriented_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-            if !content.lines().any(|line| line.trim_end() == "GEM") {
+            let content = crate::untrusted::read_line_file(&path)?;
+            if !crate::untrusted::rows(&content).any(|line| line.trim_end() == "GEM") {
                 anyhow::bail!(
                     "Required lockfile '{}' has no GEM section although the Gemfile declares {} gems: the lockfile is malformed or stale. Fix: regenerate it with 'bundle lock'.",
                     path.display(),

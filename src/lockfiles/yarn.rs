@@ -43,7 +43,7 @@ pub(crate) fn parse_lockfile(
     crate::fsutil::reject_unmodeled_line_breaks(content, &path)?;
     let mut entries = Vec::new();
     let mut by_selector = HashMap::new();
-    let lines = content.lines().collect::<Vec<_>>();
+    let lines = crate::untrusted::rows(content).collect::<Vec<_>>();
     let mut index = 0usize;
 
     while index < lines.len() {

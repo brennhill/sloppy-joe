@@ -49,7 +49,11 @@ fn reject_python_version_path(path: &Path) -> Result<()> {
     if !exists(path) {
         return Ok(());
     }
-    let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
+    let content = crate::untrusted::read_text(
+        path,
+        crate::untrusted::Format::Text,
+        crate::fsutil::MAX_MANIFEST_BYTES,
+    )?;
     for line in content.split(['\n', '\r']) {
         let line = line.trim();
         if !line.starts_with('#') && line.contains(['/', '\\']) {
@@ -109,8 +113,7 @@ fn reject_poetry_toml(path: &Path) -> Result<()> {
     if !exists(path) {
         return Ok(());
     }
-    let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
-    crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
+    let content = crate::untrusted::read_line_file(path)?;
     let parsed: toml::Value = toml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", path.display(), err))?;
     let mut keys = Vec::new();
@@ -145,9 +148,8 @@ fn reject_pipenv_dotenv(path: &Path) -> Result<()> {
     if !exists(path) {
         return Ok(());
     }
-    let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
-    crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
-    for line in content.lines() {
+    let content = crate::untrusted::read_line_file(path)?;
+    for line in crate::untrusted::rows(&content) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
