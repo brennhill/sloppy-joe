@@ -1,9 +1,11 @@
 use super::*;
 
 mod config_file;
+mod program_settings;
 mod rewrite;
 mod scope;
 mod validate;
+mod workspace;
 
 pub(crate) use config_file::*;
 pub(crate) use rewrite::*;
@@ -164,6 +166,20 @@ fn expand_cargo_project_inputs(
         let rewrites =
             collect_effective_cargo_rewrites(scan_root, &manifest, config, &cargo_config_rewrites)?;
         let effective = resolve_cargo_effective_dependencies(scan_root, &manifest, config)?;
+
+        for member in workspace::workspace_member_manifests(scan_root, &manifest)? {
+            let known = specs.iter().any(|spec| {
+                std::fs::canonicalize(&spec.manifest_path).ok().as_ref() == Some(&member)
+            });
+            if !known && seen.insert(member.clone()) {
+                specs.push(ProjectInputSpec {
+                    kind: ProjectInputKind::Cargo,
+                    manifest_path: member,
+                    lockfile_path_override: None,
+                    js_binding: None,
+                });
+            }
+        }
 
         for dep in effective {
             if let parsers::cargo_toml::CargoSourceSpec::Path(path) = dep.spec.source

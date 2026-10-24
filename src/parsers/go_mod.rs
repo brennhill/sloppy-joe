@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
 
+mod graph;
+
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let project_dir = std::fs::canonicalize(project_dir)?;
     for ancestor in project_dir.ancestors() {
@@ -214,7 +216,7 @@ pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
             unhashed.join(", ")
         );
     }
-    Ok(())
+    graph::check_unlisted_modules(go_mod, go_sum)
 }
 
 /// Requirements go.mod marks `// indirect`.
@@ -291,7 +293,7 @@ pub(crate) fn check_vendor_modules(go_mod: &str, modules_txt: &str) -> Result<()
             missing.join(", ")
         );
     }
-    Ok(())
+    graph::check_unlisted_vendored(go_mod, &vendored)
 }
 
 /// `h1:` followed by a 44-character standard base64 SHA-256 digest.
