@@ -1,7 +1,7 @@
 # Untrusted Input Hardening Specification
 
 **Created**: 2026-10-24
-**Status**: Draft (questions at the end need answers before implementation)
+**Status**: Accepted (decisions recorded at the end)
 **Input**: "any feedback on architectural improvements to prevent these issues?" — items 1–3 of the
 answer: allowlist config tables, a declared table of the files each package manager reads, and one
 function through which every security-relevant file is read.
@@ -168,6 +168,7 @@ pub(crate) struct AmbientInput { pattern: &'static str, scope: Scope,
                                  disposition: Disposition }
 pub(crate) enum Scope { ProjectDir, AncestorsToRepoRoot }
 pub(crate) enum Disposition { Modeled(fn(&Path) -> Result<()>), Blocked(&'static str),
+                              BlockedIfTracked(&'static str),
                               Irrelevant(&'static str) }
 fn ambient_inputs(&self) -> &'static [AmbientInput];   // no default implementation
 ```
@@ -222,18 +223,20 @@ that every plugin returns a non-empty `ambient_inputs`.
 3. `ambient_inputs` per plugin, populated from the Context Anchors list; conformance suite.
 4. Remove the old helpers and denylist constants; tighten baselines; CHANGELOG.
 
-## Open Questions
+## Decisions (2026-10-24)
 
-1. **YAML.** `.yarnrc.yml`, `pnpm-lock.yaml` and `pnpm-workspace.yaml` need duplicate-key, anchor
-   and alias detection. Does the current YAML crate expose that, or do we accept a small
-   dependency / a pre-scan? (I will check the crate before implementing.)
-2. **Strictness on unknown keys in widely used files** (`.npmrc`, `gradle.properties`,
-   `pyproject.toml [tool.*]`): a closed allowlist will block repos that use harmless keys we have
-   not listed. Do you accept that, with each report becoming a table row, or do you want an
-   explicit per-key allow in the scanner's config for users?
-3. **`.venv` tracked-ness** currently reads `.git/index` inside the Python plugin. Should
-   `Scope`/`Disposition` get a "blocked only if git-tracked" variant backed by a foundation helper
-   (which would also let Composer's committed `vendor/` be handled)?
-4. **Scope of the first pass.** Rollout steps 1–2 remove the most bug classes; step 3 is the
-   largest data-entry job. Do you want all four steps before merging, or each step as its own
-   commit/PR?
+1. **YAML**: a small YAML dependency is acceptable where the existing crate cannot report duplicate
+   keys, anchors, aliases and merge keys.
+2. **Unknown keys must be flexible**: an unlisted key blocks by default, and users can allow it
+   explicitly through the scanner config (a per-file, per-key allow entry). Constraints: the allow
+   list is read only from the trusted config source defined in `docs/specs/config-injection.md`
+   (never from a file inside the scanned repo that the repo's author controls unless that spec
+   already trusts it); an allow entry names the file pattern and the exact key path, never a
+   wildcard over a whole file; every applied allow is reported as a warning so it stays visible in
+   output and `--json`; an allow cannot override a `Blocked` ambient input or a gateway rejection
+   (BOM, NUL, line terminators, duplicate keys), only a missing-from-table key.
+3. **Git-tracked helper**: add a foundation helper (`is_git_tracked(path)` reading `.git/index`,
+   returning tracked / untracked / undecidable) and a `BlockedIfTracked` disposition for
+   `ambient_inputs`; the Python `.venv` check and a committed Composer `vendor/` use it.
+4. **Rollout**: each rollout step is its own commit (tests green, changelog entry, no push).
+
