@@ -18,6 +18,7 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
 
     reject_ancestor_overrides(csproj)?;
     reject_user_file(csproj)?;
+    super::csproj_hooks::reject_obj_extension_imports(csproj)?;
     for tag in content.split('<').skip(1) {
         check_tag(tag, csproj)?;
     }
@@ -70,6 +71,7 @@ fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
             }
         }
         reject_global_json_msbuild_sdks(ancestor, csproj)?;
+        super::csproj_hooks::reject_local_tools(ancestor, csproj)?;
         super::nuget_config::reject_untrusted_nuget_config(ancestor, csproj)?;
     }
     Ok(())
@@ -86,6 +88,7 @@ fn check_tag(tag: &str, csproj: &Path) -> Result<()> {
     // MSBuild item and property names are case-insensitive.
     let folded = local_name.to_ascii_lowercase();
     reject_lockfile_overrides(&folded, tag, csproj)?;
+    super::csproj_hooks::reject_install_hooks(&folded, tag, csproj)?;
     if matches!(
         folded.as_str(),
         "restoresources"
