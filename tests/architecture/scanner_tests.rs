@@ -34,13 +34,27 @@ fn scanner_finds_crate_targets_in_paths_and_groups() {
 }
 
 #[test]
-fn inline_test_modules_are_cut() {
+fn cfg_test_items_are_cut_and_production_code_around_them_is_kept() {
     let code = cut_inline_tests("fn a() {}\n#[cfg(test)]\nmod tests { fn b() {} }");
     assert!(code.contains("fn a") && !code.contains("fn b"));
     let kept = cut_inline_tests("#[cfg(test)]\n#[path = \"x\"]\nmod x;\nfn c() {}");
-    assert!(kept.contains("fn c"));
+    assert!(kept.contains("fn c") && !kept.contains("mod x"));
     let after = cut_inline_tests(
         "fn a() {}\n#[cfg(test)]\npub(crate) mod t { fn b() { if x { } } }\nfn c() {}",
     );
     assert!(after.contains("fn a") && after.contains("fn c") && !after.contains("fn b"));
+    // Functions, `use`, and constants with `;` inside brackets end where the item ends.
+    let items = cut_inline_tests(
+        "#[cfg(test)]\nuse a::{b, c};\nfn keep1() {}\n#[cfg(test)]\npub(crate) fn t(x: [u8; 4]) -> u8 { 1 }\nfn keep2() {}\n#[cfg(test)]\nconst N: [u8; 2] = [0; 2];\nfn keep3() {}",
+    );
+    assert!(
+        ["keep1", "keep2", "keep3"]
+            .iter()
+            .all(|f| items.contains(f))
+            && !items.contains("fn t")
+            && !items.contains("const N"),
+        "{items}"
+    );
+    // `cfg(not(test))` is production code.
+    assert!(cut_inline_tests("#[cfg(not(test))]\nfn p() {}").contains("fn p"));
 }

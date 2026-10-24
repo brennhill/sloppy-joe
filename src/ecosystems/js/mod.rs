@@ -45,6 +45,10 @@ impl EcosystemSupport for Js {
         Ok(Vec::new())
     }
 
+    fn similarity_on_transitives(&self) -> bool {
+        true
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Npm]
     }

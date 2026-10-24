@@ -84,6 +84,9 @@ pub(crate) trait EcosystemSupport: Sync {
     /// the kind has no lockfile of its own.
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf>;
 
+    /// Whether transitive dependencies get the similarity (typosquat) check without `--deep`.
+    fn similarity_on_transitives(&self) -> bool;
+
     /// Dependencies declared by the manifest, without scan-specific resolution.
     fn parse_manifest(&self, scan_root: &Path, spec: &ProjectInputSpec) -> Result<Vec<Dependency>>;
 
@@ -206,6 +209,25 @@ pub(crate) fn for_kind(kind: ProjectInputKind) -> &'static dyn EcosystemSupport 
         .copied()
         .find(|plugin| plugin.kinds().contains(&kind))
         .unwrap_or_else(|| panic!("no ecosystem plugin registered for {kind:?}"))
+}
+
+/// The plugin that owns `ecosystem`. A missing plugin is an error, never a default.
+pub(crate) fn for_ecosystem(ecosystem: Ecosystem) -> Result<&'static dyn EcosystemSupport> {
+    all()
+        .iter()
+        .copied()
+        .find(|plugin| {
+            plugin
+                .kinds()
+                .first()
+                .is_some_and(|kind| kind.ecosystem() == ecosystem)
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No ecosystem plugin is registered for {}: refusing to scan without one",
+                ecosystem.as_str()
+            )
+        })
 }
 
 /// Lockfile data for scanning `deps` of `project`. Tooling that no lockfile records is

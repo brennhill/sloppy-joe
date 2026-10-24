@@ -90,3 +90,30 @@ fn npm_manifest_with_utf8_bom_is_read() {
     assert_eq!(deps[0].name, "left-pad");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_discovery_parser_mismatch_blocks_instead_of_reporting_a_clean_scan() {
+    let dir = std::path::Path::new("/proj");
+    let found = vec![Dependency {
+        name: "left-pad".to_string(),
+        version: Some("1.3.0".to_string()),
+        ecosystem: Ecosystem::Npm,
+        actual_name: None,
+    }];
+    let error = no_inputs_error(dir, Ok(found));
+    assert!(
+        error
+            .to_string()
+            .contains("refusing to report a clean scan"),
+        "{error}"
+    );
+    // Even an empty read means the parser saw a manifest discovery did not.
+    assert!(
+        no_inputs_error(dir, Ok(Vec::new()))
+            .to_string()
+            .contains("0 dependencies")
+    );
+    // The parser's own error (no manifest) passes through unchanged.
+    let missing = no_inputs_error(dir, Err(anyhow::anyhow!("no manifest found")));
+    assert_eq!(missing.to_string(), "no manifest found");
+}

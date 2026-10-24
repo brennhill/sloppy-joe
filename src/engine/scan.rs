@@ -216,8 +216,10 @@ pub(crate) async fn scan_with_config(
         }
     }
     if projects.is_empty() && acc.runs.is_empty() {
-        parsers::parse_dependencies(project_dir, project_type)?;
-        return Ok(ScanReport::from_issues(0, acc.issues));
+        return Err(no_inputs_error(
+            project_dir,
+            parsers::parse_dependencies(project_dir, project_type),
+        ));
     }
     let full_scan_reasons = fast_mode_full_scan_reasons(&projects, &cache_base, &config, opts);
 
@@ -252,6 +254,23 @@ pub(crate) async fn scan_with_config(
 
     persist_scan_state(&projects, &report, &cache_base, &config, opts);
     Ok(report)
+}
+
+/// The error for a scan whose project discovery found nothing. The legacy parser's own error says
+/// why there is no manifest. If it instead reads dependencies, discovery and the parser disagree
+/// about what a project is, and a clean zero-package report would hide that: block.
+pub(crate) fn no_inputs_error(
+    project_dir: &std::path::Path,
+    parsed: Result<Vec<Dependency>>,
+) -> anyhow::Error {
+    match parsed {
+        Err(error) => error,
+        Ok(found) => anyhow::anyhow!(
+            "Project discovery found no scannable inputs in {}, but the manifest parser read {} dependencies: refusing to report a clean scan. Run with --type to name the ecosystem, or report this mismatch.",
+            project_dir.display(),
+            found.len()
+        ),
+    }
 }
 
 pub(crate) fn project_scan_summary(

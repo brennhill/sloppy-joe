@@ -8,6 +8,10 @@ pub(super) struct Jvm;
 
 #[async_trait::async_trait]
 impl EcosystemSupport for Jvm {
+    fn similarity_on_transitives(&self) -> bool {
+        false
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Gradle, ProjectInputKind::Maven]
     }

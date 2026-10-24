@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Scan: when project discovery finds nothing to scan but the legacy manifest parser reads a manifest, the scan now blocks with a discovery/parser mismatch error instead of reporting a clean zero-package scan.
 - Build: update `tokio` to 1.53.3 (RUSTSEC-2026-0386, `AsyncFd` I/O-safety, affected 1.49.0), and allowlist the `sha1`, `flate2`, `tar` and `semver` crates in the repository's own self-check config so the CI self-check does not flag them as typosquats.
 - Cargo: trust `Cargo.lock` for a ranged crates.io requirement (`serde = "1.0"`) when exactly one locked version satisfies it, using the `semver` crate (pinned `=1.0.28`) for Cargo's requirement rules. A lock that contradicts the requirement is `resolution/lockfile-out-of-sync`, several satisfying versions stay `resolution/ambiguous`, and an invalid requirement keeps `resolution/no-trusted-lockfile-sync`. This amends `docs/specs/cargo-provenance-hardening.md`; real projects such as `bat` and `fd` now scan cleanly. Other ecosystems keep the strict rule.
 - Maven: derive versions the way Maven's effective model does. `${property}` references, `<dependencyManagement>` and `<pluginManagement>` entries, imported BOMs, and the `<parent>` chain (local reactor parents, otherwise POMs fetched from Maven Central) now supply versions, so Apache-style projects that manage plugin versions in a parent no longer block with `resolution/no-exact-version`. A parent or BOM that cannot be fetched fails the scan; a version that cannot be derived stays unresolved.

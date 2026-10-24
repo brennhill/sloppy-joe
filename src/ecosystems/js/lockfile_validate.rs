@@ -37,6 +37,25 @@ pub(crate) fn validate_npm_lockfile_version(
     Ok(())
 }
 
+fn js_lockfile_help(spec: &ProjectInputSpec) -> String {
+    match spec.js_binding.as_ref().map(|binding| binding.manager) {
+        Some(JsPackageManager::Pnpm) => {
+            "Run `pnpm install --lockfile-only` and commit pnpm-lock.yaml.".to_string()
+        }
+        Some(JsPackageManager::Yarn) => {
+            "Commit the authoritative yarn.lock for this project.".to_string()
+        }
+        Some(JsPackageManager::Bun) => {
+            "Commit the authoritative bun.lock or bun.lockb for this project.".to_string()
+        }
+        _ => spec
+            .kind
+            .missing_lockfile_help()
+            .unwrap_or("Commit the authoritative lockfile for this project.")
+            .to_string(),
+    }
+}
+
 pub(crate) fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec) -> Result<()> {
     let help = js_lockfile_help(spec);
     let Some(binding) = &spec.js_binding else {

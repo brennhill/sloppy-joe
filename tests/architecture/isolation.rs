@@ -145,6 +145,41 @@ fn module_redirect_violations(files: &[(String, String)]) -> Vec<String> {
     violations
 }
 
+/// Orchestration code (engine, lib, main, bootstrap) must not name an ecosystem: it asks the
+/// plugin registry. `Ecosystem::<Variant>` and `JsPackageManager` are how a per-ecosystem branch
+/// would creep back in.
+fn engine_ecosystem_violations(files: &[(String, String)]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (rel, code) in files {
+        let inside = rel.trim_start_matches("src/");
+        let module = match inside.split_once('/') {
+            Some((dir, _)) => dir,
+            None => inside.trim_end_matches(".rs"),
+        };
+        if !ORCHESTRATION.contains(&module) {
+            continue;
+        }
+        for pattern in ["Ecosystem::", "JsPackageManager"] {
+            let named = code.match_indices(pattern).any(|(at, _)| {
+                !code[..at].chars().next_back().is_some_and(is_ident)
+                    && (pattern.ends_with("::")
+                        || !code[at + pattern.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(is_ident))
+            });
+            if named {
+                violations.push(format!(
+                    "{rel} names `{pattern}`; ask the ecosystem plugin (ecosystems::for_ecosystem or the EcosystemSupport trait) instead"
+                ));
+            }
+        }
+    }
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
 fn scanned_sources() -> Vec<(String, String)> {
     load_sources()
         .into_iter()
@@ -161,6 +196,7 @@ fn ecosystem_plugins_are_isolated() {
     let mut violations = isolation_violations(&files, &plugins);
     violations.extend(kind_alias_violations(&files));
     violations.extend(module_redirect_violations(&files));
+    violations.extend(engine_ecosystem_violations(&files));
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
 
@@ -369,4 +405,51 @@ fn red_team_bypasses_are_caught_in_the_real_tree() {
         "\ninclude!(\"../ecosystems/go.rs\");\n",
     );
     assert_eq!(module_redirect_violations(&files).len(), 1);
+}
+
+#[test]
+fn engine_rule_flags_ecosystem_names_in_orchestration_only() {
+    let file = |rel: &str, code: &str| vec![(rel.to_string(), code.to_string())];
+    for code in [
+        "fn f(e: Ecosystem) -> bool { e == Ecosystem::Npm }",
+        "match m { JsPackageManager::Pnpm => 1, _ => 0 }",
+    ] {
+        assert_eq!(
+            engine_ecosystem_violations(&file("src/engine/x.rs", code)).len(),
+            1,
+            "{code}"
+        );
+    }
+    // The type itself, similarly named identifiers, and lower layers are fine.
+    assert!(
+        engine_ecosystem_violations(&file(
+            "src/engine/x.rs",
+            "fn f(e: Ecosystem) { MyEcosystem::Npm; }"
+        ))
+        .is_empty()
+    );
+    assert!(engine_ecosystem_violations(&file("src/registry/x.rs", "Ecosystem::Npm")).is_empty());
+    assert!(
+        engine_ecosystem_violations(&file("src/ecosystems/js/mod.rs", "JsPackageManager::Pnpm"))
+            .is_empty()
+    );
+    assert_eq!(
+        engine_ecosystem_violations(&file("src/lib.rs", "Ecosystem::Cargo")).len(),
+        1
+    );
+}
+
+#[test]
+fn engine_ecosystem_names_are_caught_in_the_real_tree() {
+    let clean = scanned_sources();
+    assert!(engine_ecosystem_violations(&clean).is_empty());
+    let mut files = clean;
+    let entry = files
+        .iter_mut()
+        .find(|(rel, _)| rel == "src/engine/scan.rs")
+        .unwrap();
+    entry
+        .1
+        .push_str("\nfn leak(e: Ecosystem) -> bool { e == Ecosystem::Npm }\n");
+    assert_eq!(engine_ecosystem_violations(&files).len(), 1);
 }

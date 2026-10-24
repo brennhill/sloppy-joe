@@ -330,8 +330,10 @@ pub(crate) async fn scan_transitive_dependencies(
             resolution: &resolution,
             ..*ctx
         };
+        let similarity_on_transitives =
+            ecosystems::for_ecosystem(ctx.ecosystem)?.similarity_on_transitives();
         for check in checks::pipeline::default_pipeline() {
-            if check.name() != "similarity" || ctx.opts.deep || ctx.ecosystem == Ecosystem::Npm {
+            if check.name() != "similarity" || ctx.opts.deep || similarity_on_transitives {
                 check.run(&trans_ctx, &mut trans_acc).await?;
             }
         }

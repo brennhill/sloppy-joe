@@ -30,6 +30,10 @@ impl EcosystemSupport for Php {
         Ok(Vec::new())
     }
 
+    fn similarity_on_transitives(&self) -> bool {
+        false
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Php]
     }

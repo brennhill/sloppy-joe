@@ -77,25 +77,6 @@ pub(crate) fn parse_project_input(
     ecosystems::for_kind(spec.kind).parse_manifest(scan_root, spec)
 }
 
-pub(crate) fn js_lockfile_help(spec: &ProjectInputSpec) -> String {
-    match spec.js_binding.as_ref().map(|binding| binding.manager) {
-        Some(JsPackageManager::Pnpm) => {
-            "Run `pnpm install --lockfile-only` and commit pnpm-lock.yaml.".to_string()
-        }
-        Some(JsPackageManager::Yarn) => {
-            "Commit the authoritative yarn.lock for this project.".to_string()
-        }
-        Some(JsPackageManager::Bun) => {
-            "Commit the authoritative bun.lock or bun.lockb for this project.".to_string()
-        }
-        _ => spec
-            .kind
-            .missing_lockfile_help()
-            .unwrap_or("Commit the authoritative lockfile for this project.")
-            .to_string(),
-    }
-}
-
 pub(crate) fn lockfile_paths_for_project(spec: &ProjectInputSpec) -> Vec<std::path::PathBuf> {
     selected_lockfile_path(spec).into_iter().collect()
 }

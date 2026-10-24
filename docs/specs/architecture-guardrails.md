@@ -67,6 +67,9 @@ nearest place. Without a guardrail that keeps happening.
 - **Given** a file outside `src/project.rs` and `src/ecosystems/`, **then** it does not rename
   `ProjectInputKind` (`use ... as K`, `type K = ...`), so variant names cannot evade the placement
   count.
+- **Given** orchestration code (`src/engine/`, `src/lib.rs`, `src/main.rs`, `src/bootstrap`), **then** it
+  names no `Ecosystem::<Variant>` and no `JsPackageManager`; it asks `ecosystems::for_ecosystem` or
+  the `EcosystemSupport` trait. Never baselined.
 - **Given** any non-test source file, **then** it has no `#[path]` redirect (other than on a
   `#[cfg(test)]` module) and no `include!`, so every module path is the one the scan sees.
 - **Given** a file outside `src/ecosystems/`, **then** it does not name a concrete plugin module

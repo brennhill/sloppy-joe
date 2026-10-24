@@ -655,3 +655,25 @@ fn every_kind_has_an_unsupported_construct_fixture() {
         assert!(covered, "add an unsupported-construct fixture for {kind:?}");
     }
 }
+
+#[test]
+fn every_ecosystem_with_a_kind_resolves_to_its_plugin() {
+    for kind in ProjectInputKind::ALL {
+        let plugin =
+            for_ecosystem(kind.ecosystem()).unwrap_or_else(|err| panic!("{kind:?}: {err}"));
+        assert!(plugin.kinds().contains(&kind), "{kind:?}");
+    }
+}
+
+#[test]
+fn only_npm_checks_transitive_similarity_without_deep() {
+    for plugin in all() {
+        let ecosystem = plugin.kinds()[0].ecosystem();
+        assert_eq!(
+            plugin.similarity_on_transitives(),
+            ecosystem == Ecosystem::Npm,
+            "{}",
+            ecosystem.as_str()
+        );
+    }
+}
