@@ -513,3 +513,6 @@ mod part17_npm_default_registry;
 
 #[path = "lib_tests/part18_npm_workspace_members.rs"]
 mod part18_npm_workspace_members;
+
+#[path = "lib_tests/part19_python_ci_strictness.rs"]
+mod part19_python_ci_strictness;

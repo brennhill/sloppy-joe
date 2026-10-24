@@ -167,7 +167,7 @@ fn reject_uv_redirects(table: &toml::map::Map<String, toml::Value>, source: &Pat
 
 /// `uv.toml` in the project directory or any parent configures uv for the project (and, when
 /// present, replaces `[tool.uv]`), so its index settings count the same as pyproject's.
-fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
+pub(crate) fn reject_uv_toml_redirects(pyproject: &Path) -> Result<()> {
     let dir = std::fs::canonicalize(pyproject.parent().unwrap_or(Path::new(".")))?;
     let boundary = crate::cache::find_git_root(&dir).map_err(anyhow::Error::msg)?;
     for ancestor in dir.ancestors() {

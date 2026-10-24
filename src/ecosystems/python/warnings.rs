@@ -55,7 +55,12 @@ pub(crate) fn validate_hash_locked_requirements_provenance(
     Ok(provenance.primary_index.is_some())
 }
 
-pub(crate) fn trusted_python_preference_warnings(spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+/// Legacy manifests beside a Poetry or uv project are not scanned. That is a warning, and an
+/// error when `strict` (the `--ci` scan), because their dependencies would be installed unseen.
+pub(crate) fn trusted_python_preference_warnings(
+    spec: &ProjectInputSpec,
+    strict: bool,
+) -> Result<Vec<Issue>> {
     let mut warnings = Vec::new();
     let (tool_name, fix) = match spec.kind {
         ProjectInputKind::PyProjectPoetry => (
@@ -73,7 +78,11 @@ pub(crate) fn trusted_python_preference_warnings(spec: &ProjectInputSpec) -> Res
             Issue::new(
                 candidate.display().to_string(),
                 checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST,
-                Severity::Warning,
+                if strict {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
             )
             .message(format!(
                 "Ignoring legacy Python manifest '{}' because '{}' is a {} project. sloppy-joe prefers the trusted {} workflow as the source of truth for this directory.",

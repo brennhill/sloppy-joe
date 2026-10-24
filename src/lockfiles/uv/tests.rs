@@ -458,3 +458,52 @@ sdist = { url = "https://download.pytorch.org/packages/torch-2.6.0.tar.gz", hash
     .expect_err("undeclared non-PyPI lock source must fail closed");
     assert!(err.to_string().contains("not declared"));
 }
+
+#[test]
+fn artifact_urls_must_come_from_where_the_registry_serves_files() {
+    let path = Path::new("uv.lock");
+    let parsed: toml::Value = toml::from_str(UV_LOCK).unwrap();
+    validate_provenance(&parsed, path).unwrap();
+
+    // Registry says PyPI but the sdist and wheel point at an attacker's host.
+    let evil = UV_LOCK.replace("files.pythonhosted.org", "evil.example");
+    let parsed: toml::Value = toml::from_str(&evil).unwrap();
+    let err = validate_provenance(&parsed, path).unwrap_err().to_string();
+    assert!(err.contains("evil.example"), "{err}");
+
+    // Only the wheel is redirected.
+    let wheel_only = UV_LOCK.replace(
+        "{ url = \"https://files.pythonhosted.org/packages/example/requests-2.32.3-py3-none-any.whl\"",
+        "{ url = \"https://evil.example/requests-2.32.3-py3-none-any.whl\"",
+    );
+    let parsed: toml::Value = toml::from_str(&wheel_only).unwrap();
+    assert!(validate_provenance(&parsed, path).is_err());
+
+    // PyPI files over plain http are not accepted either.
+    let http = UV_LOCK.replace(
+        "https://files.pythonhosted.org",
+        "http://files.pythonhosted.org",
+    );
+    let parsed: toml::Value = toml::from_str(&http).unwrap();
+    assert!(validate_provenance(&parsed, path).is_err());
+}
+
+#[test]
+fn a_private_registry_may_serve_its_own_artifacts() {
+    let path = Path::new("uv.lock");
+    let private = UV_LOCK
+        .replace("https://pypi.org/simple", "https://pkgs.example.com/simple")
+        .replace(
+            "https://files.pythonhosted.org/packages",
+            "https://pkgs.example.com/files",
+        );
+    let parsed: toml::Value = toml::from_str(&private).unwrap();
+    validate_provenance(&parsed, path).unwrap();
+
+    let elsewhere = private.replace(
+        "https://pkgs.example.com/files",
+        "https://cdn.example.net/files",
+    );
+    let parsed: toml::Value = toml::from_str(&elsewhere).unwrap();
+    assert!(validate_provenance(&parsed, path).is_err());
+}
