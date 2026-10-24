@@ -294,6 +294,9 @@ pub(crate) fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<PathBuf>
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(test)]
+mod lockfile_data_tests;
+
 pub(crate) fn scan_registry(
     project: &ParsedProject,
     client: reqwest::Client,
