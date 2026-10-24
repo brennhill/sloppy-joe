@@ -72,7 +72,7 @@ async fn a_lock_pointing_at_a_foreign_repository_blocks() {
     TEST_PACKAGIST_URL.with(|url| *url.borrow_mut() = Some(origin));
     let dir = std::env::temp_dir().join(format!("sj-packagist-lock-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let client = crate::registry::http_client();
+    let client = crate::http::http_client();
     for (source, dist, blocks) in [
         (
             "https://github.com/php-fig/log.git",

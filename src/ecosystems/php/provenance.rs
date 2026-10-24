@@ -4,8 +4,7 @@
 //! can name Packagist's `psr/log` and still download an attacker's repository on a trusted host.
 //! The p2 metadata lists where Packagist says each version lives; the lock must agree.
 
-use crate::{Issue, Result, Severity};
-use std::path::Path;
+use super::*;
 
 const PACKAGIST_URL: &str = "https://repo.packagist.org";
 
@@ -102,7 +101,7 @@ pub(crate) async fn verify_lock_locations(
     client: &reqwest::Client,
     lockfile: &Path,
 ) -> Result<Vec<Issue>> {
-    let content = crate::parsers::read_file_limited(lockfile, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let content = parsers::read_file_limited(lockfile, parsers::MAX_MANIFEST_BYTES)?;
     let lock: serde_json::Value = serde_json::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", lockfile.display(), err))?;
     let base = packagist_url();
@@ -116,11 +115,11 @@ pub(crate) async fn verify_lock_locations(
                     lockfile.display()
                 );
             };
-            if !super::validate_package_name(name) {
+            if !registry::validate_package_name(name) {
                 anyhow::bail!("Invalid package name in '{}'", lockfile.display());
             }
             let url = format!("{base}/p2/{}.json", name.to_ascii_lowercase());
-            let response = super::retry_get(client, &url).await?;
+            let response = crate::http::retry_get(client, &url).await?;
             let status = response.status();
             let published = if status.is_success() {
                 let body: serde_json::Value = response.json().await?;
@@ -140,7 +139,7 @@ pub(crate) async fn verify_lock_locations(
                 issues.push(
                     Issue::new(
                         name,
-                        crate::checks::names::RESOLUTION_SOURCE_MISMATCH,
+                        checks::names::RESOLUTION_SOURCE_MISMATCH,
                         Severity::Error,
                     )
                     .message(format!(
@@ -155,5 +154,5 @@ pub(crate) async fn verify_lock_locations(
 }
 
 #[cfg(test)]
-#[path = "packagist_lock_tests.rs"]
+#[path = "provenance_tests.rs"]
 mod tests;

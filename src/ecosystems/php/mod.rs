@@ -1,5 +1,7 @@
 use super::*;
 
+mod provenance;
+
 pub(super) struct Php;
 
 #[async_trait::async_trait]
@@ -35,7 +37,7 @@ impl EcosystemSupport for Php {
         else {
             return Ok(Vec::new());
         };
-        registry::packagist_lock::verify_lock_locations(&client, &lockfile).await
+        provenance::verify_lock_locations(&client, &lockfile).await
     }
 
     fn similarity_on_transitives(&self) -> bool {
