@@ -70,7 +70,7 @@ nearest place. Without a guardrail that keeps happening.
 ## Constraints
 
 - Pure file scanning: no new dependencies, no network, deterministic, runs in well under a second.
-- Test files (`*_tests.rs`, inline `#[cfg(test)]` modules) are exempt from layer and complexity rules;
+- Test files (`*_tests.rs`, `tests.rs`, anything under a `tests/` or `*_tests/` directory, inline `#[cfg(test)]` modules) are exempt from layer and complexity rules;
   the 800-line cap applies to every file.
 - Complexity is approximate by design (text scan, not a compiler pass) and defined below. It must be
   stable: the same source gives the same number.

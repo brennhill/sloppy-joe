@@ -99,8 +99,10 @@ struct SourceFile {
 }
 
 fn is_test_file(rel: &str) -> bool {
-    let name = rel.rsplit('/').next().unwrap_or(rel);
-    name.ends_with("_tests.rs") || name == "tests.rs" || name.contains("test_utils")
+    let mut parts = rel.rsplit('/');
+    let name = parts.next().unwrap_or(rel);
+    let in_test_dir = parts.any(|dir| dir == "tests" || dir.ends_with("_tests"));
+    in_test_dir || name.ends_with("_tests.rs") || name == "tests.rs" || name.contains("test_utils")
 }
 
 fn load_sources() -> Vec<SourceFile> {
