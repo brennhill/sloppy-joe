@@ -6,8 +6,8 @@ use std::path::Path;
 use super::add_manifest_exact_fallbacks;
 use super::{
     ResolutionKey, ResolutionMode, ResolutionResult, ResolutionSource, ResolvedVersion,
-    add_manifest_exact_fallback, missing_entry_issue, no_trusted_lockfile_sync_issue,
-    out_of_sync_issue,
+    add_manifest_exact_fallback, ambiguous_issue, missing_entry_issue,
+    no_trusted_lockfile_sync_issue, out_of_sync_issue,
 };
 
 /// Resolve versions from a pre-read Gemfile.lock content string.
@@ -25,8 +25,14 @@ pub(super) fn resolve_from_content_with_mode(
     let mut result = ResolutionResult::default();
 
     for dep in deps {
-        match versions.get(&dep.name) {
-            Some(version) => {
+        match versions.get(&dep.name).map(Vec::as_slice) {
+            // Several different versions of one gem (platform variants resolving apart) cannot
+            // be attributed to the direct dependency; every one is still scanned as a package.
+            Some([_, _, ..]) => {
+                result.push_issue_for(dep, ambiguous_issue(dep));
+                add_manifest_exact_fallback(&mut result, dep);
+            }
+            Some([version]) => {
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != *version
                 {
@@ -49,7 +55,7 @@ pub(super) fn resolve_from_content_with_mode(
                     },
                 );
             }
-            None => {
+            None | Some([]) => {
                 result.push_issue_for(dep, missing_entry_issue(dep, "Gemfile.lock"));
                 add_manifest_exact_fallback(&mut result, dep);
             }
@@ -64,11 +70,13 @@ pub(super) fn parse_all_from_content(content: &str) -> Result<Vec<Dependency>> {
     let versions = parse_gem_versions(content)?;
     Ok(versions
         .into_iter()
-        .map(|(name, version)| Dependency {
-            name,
-            version: Some(version),
-            ecosystem: crate::Ecosystem::Ruby,
-            actual_name: None,
+        .flat_map(|(name, versions)| {
+            versions.into_iter().map(move |version| Dependency {
+                name: name.clone(),
+                version: Some(version),
+                ecosystem: crate::Ecosystem::Ruby,
+                actual_name: None,
+            })
         })
         .collect())
 }
@@ -132,8 +140,26 @@ fn check_gem_remote(section: &str, line: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String, String>> {
-    let mut versions = std::collections::HashMap::new();
+/// Record one `name (version)` spec line. `1.13.0-x86_64-linux`: the registry knows the version,
+/// not the platform build, so the platform suffix is dropped but every distinct version is kept.
+fn record_spec(versions: &mut std::collections::HashMap<String, Vec<String>>, trimmed: &str) {
+    let Some((name, rest)) = trimmed.split_once(' ') else {
+        return;
+    };
+    let version = rest.trim_start_matches('(').trim_end_matches(')');
+    let version = version.split('-').next().unwrap_or(version);
+    if name.is_empty() || version.is_empty() {
+        return;
+    }
+    let known = versions.entry(name.to_string()).or_default();
+    if !known.iter().any(|seen| seen == version) {
+        known.push(version.to_string());
+    }
+}
+
+fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String, Vec<String>>> {
+    let mut versions: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let mut in_specs = false;
     let mut section = "";
 
@@ -175,13 +201,7 @@ fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String,
             continue;
         }
 
-        let trimmed = line.trim();
-        if let Some((name, rest)) = trimmed.split_once(' ') {
-            let version = rest.trim_start_matches('(').trim_end_matches(')');
-            if !name.is_empty() && !version.is_empty() {
-                versions.insert(name.to_string(), version.to_string());
-            }
-        }
+        record_spec(&mut versions, line.trim());
     }
 
     Ok(versions)
@@ -219,10 +239,13 @@ DEPENDENCIES
     #[test]
     fn parse_gem_versions_extracts_all() {
         let versions = parse_gem_versions(GEMFILE_LOCK).unwrap();
-        assert_eq!(versions.get("rails"), Some(&"7.0.4".to_string()));
-        assert_eq!(versions.get("actioncable"), Some(&"7.0.4".to_string()));
-        assert_eq!(versions.get("pg"), Some(&"1.4.5".to_string()));
-        assert_eq!(versions.get("puma"), Some(&"6.0.2".to_string()));
+        assert_eq!(versions.get("rails"), Some(&vec!["7.0.4".to_string()]));
+        assert_eq!(
+            versions.get("actioncable"),
+            Some(&vec!["7.0.4".to_string()])
+        );
+        assert_eq!(versions.get("pg"), Some(&vec!["1.4.5".to_string()]));
+        assert_eq!(versions.get("puma"), Some(&vec!["6.0.2".to_string()]));
     }
 
     #[test]
@@ -268,5 +291,46 @@ mod remote_tests {
         };
         assert!(parse_gem_versions(&lock("https://rubygems.org/")).is_ok());
         assert!(parse_gem_versions(&lock("https://evil.example.com/")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    const LOCK: &str = "GEM\n  remote: https://rubygems.org/\n  specs:\n    nokogiri (1.13.0-x86_64-linux)\n    nokogiri (1.19.4)\n    rake (13.0.6)\n    ffi (1.16.3-arm64-darwin)\n    ffi (1.16.3)\n\nPLATFORMS\n  ruby\n  x86_64-linux\n";
+
+    #[test]
+    fn every_platform_variant_is_kept_and_scanned_without_its_suffix() {
+        let all = parse_all_from_content(LOCK).unwrap();
+        let has = |name: &str, version: &str| {
+            all.iter()
+                .any(|d| d.name == name && d.version.as_deref() == Some(version))
+        };
+        assert!(
+            has("nokogiri", "1.13.0"),
+            "the vulnerable platform build is scanned"
+        );
+        assert!(has("nokogiri", "1.19.4"));
+        assert_eq!(
+            all.iter().filter(|d| d.name == "ffi").count(),
+            1,
+            "same version dedupes"
+        );
+    }
+
+    #[test]
+    fn a_direct_gem_with_diverging_platform_versions_is_ambiguous() {
+        let dep = |name: &str| crate::test_helpers::dep_with(name, None, crate::Ecosystem::Ruby);
+        let deps = [dep("nokogiri"), dep("ffi"), dep("rake")];
+        let result = resolve_from_content(LOCK, &deps).unwrap();
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.check == crate::names::RESOLUTION_AMBIGUOUS && i.package == "nokogiri")
+        );
+        assert_eq!(result.exact_version(&deps[1]), Some("1.16.3"));
+        assert_eq!(result.exact_version(&deps[2]), Some("13.0.6"));
     }
 }
