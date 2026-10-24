@@ -3,6 +3,8 @@ pub mod bootstrap;
 mod ecosystems;
 mod engine;
 pub(crate) use ecosystems::selected_lockfile_path;
+#[cfg(test)]
+pub(crate) use ecosystems::test_access::*;
 pub(crate) use engine::*;
 pub mod cache;
 pub mod checks;

@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) fn cargo_patch_scope_matches(
     scope: &parsers::cargo_toml::CargoPatchScope,

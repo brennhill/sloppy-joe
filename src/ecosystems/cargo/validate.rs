@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) fn cargo_allowlisted_local_target(
     scan_root: &std::path::Path,

@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) fn cargo_trusted_scope_root(
     scan_root: &std::path::Path,

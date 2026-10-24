@@ -1,5 +1,15 @@
 use super::*;
 
+mod config_file;
+mod rewrite;
+mod scope;
+mod validate;
+
+pub(crate) use config_file::*;
+pub(crate) use rewrite::*;
+pub(crate) use scope::*;
+pub(crate) use validate::*;
+
 pub(super) struct Cargo;
 
 impl EcosystemSupport for Cargo {
@@ -132,4 +142,33 @@ fn expand_cargo_project_inputs(
 
     specs.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
     Ok(())
+}
+
+pub(crate) fn parse_cargo_project_dependencies(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+    config: &config::SloppyJoeConfig,
+) -> Result<Vec<Dependency>> {
+    let manifest = parsers::cargo_toml::parse_manifest_file(&spec.manifest_path)?;
+    let mut deps = Vec::new();
+    for dep in resolve_cargo_effective_dependencies(scan_root, &manifest, config)? {
+        match dep.spec.source {
+            parsers::cargo_toml::CargoSourceSpec::CratesIo
+            | parsers::cargo_toml::CargoSourceSpec::RegistryAlias(_)
+            | parsers::cargo_toml::CargoSourceSpec::RegistryIndex(_) => {
+                let dependency = Dependency {
+                    name: dep.spec.package_name,
+                    version: dep.spec.version,
+                    ecosystem: Ecosystem::Cargo,
+                    actual_name: None,
+                };
+                parsers::validate_dependency(&dependency, &spec.manifest_path)?;
+                deps.push(dependency);
+            }
+            parsers::cargo_toml::CargoSourceSpec::Path(_)
+            | parsers::cargo_toml::CargoSourceSpec::Git { .. }
+            | parsers::cargo_toml::CargoSourceSpec::Workspace => {}
+        }
+    }
+    Ok(deps)
 }

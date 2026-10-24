@@ -19,6 +19,12 @@ mod php;
 mod python;
 mod ruby;
 
+/// Plugin internals that unit tests exercise directly. Production code goes through the trait.
+#[cfg(test)]
+pub(crate) mod test_access {
+    pub(crate) use super::cargo::*;
+}
+
 /// What a plugin needs to know about the scan it is part of.
 pub(crate) struct ScanCtx<'a> {
     pub(crate) scan_root: &'a Path,

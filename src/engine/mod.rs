@@ -1,9 +1,5 @@
 //! Scan orchestration, split by concern. Everything here is re-exported to the crate root
 //! so existing paths keep working.
-mod cargo_config;
-mod cargo_rewrite;
-mod cargo_scope;
-mod cargo_validate;
 mod discovery;
 mod fingerprint;
 mod js_binding;
@@ -18,10 +14,6 @@ mod private_npm;
 mod python_warnings;
 mod scan;
 
-pub(crate) use cargo_config::*;
-pub(crate) use cargo_rewrite::*;
-pub(crate) use cargo_scope::*;
-pub(crate) use cargo_validate::*;
 pub(crate) use discovery::*;
 pub(crate) use fingerprint::*;
 pub(crate) use js_binding::*;
