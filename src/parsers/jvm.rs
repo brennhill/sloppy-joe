@@ -103,6 +103,25 @@ fn gradle_boundary(project_dir: &Path) -> Result<std::path::PathBuf> {
     }))
 }
 
+/// Gradle compiles and runs `buildSrc` while configuring every build. Its dependencies are only
+/// scanned through its own build script, so a `buildSrc` without one is code nothing reads.
+fn reject_buildsrc_without_script(dir: &Path) -> Result<()> {
+    let build_src = dir.join("buildSrc");
+    if std::fs::symlink_metadata(&build_src).is_err() {
+        return Ok(());
+    }
+    let has_script = ["build.gradle", "build.gradle.kts"]
+        .iter()
+        .any(|name| std::fs::symlink_metadata(build_src.join(name)).is_ok());
+    if !has_script {
+        bail!(
+            "Unsupported Gradle buildSrc in {}: it has no build script, but its sources are compiled and run while Gradle configures the build, so they cannot be scanned",
+            build_src.display()
+        );
+    }
+    Ok(())
+}
+
 /// `gradle.properties` JVM arguments that load agents or replace the class path run inside Gradle
 /// itself, before any build script the scan reads.
 fn reject_gradle_jvm_overrides(dir: &Path) -> Result<()> {
@@ -178,12 +197,20 @@ pub(crate) fn gradle_locking(path: &Path) -> Result<GradleLocking> {
             }
             let content = super::read_file_limited(&script, super::MAX_MANIFEST_BYTES)?;
             for token in tokenize_gradle(&content) {
-                let GradleToken::Ident(ident) = token else {
-                    continue;
-                };
-                let last = ident.rsplit('.').next().unwrap_or_default();
-                locks |= last == "lockAllConfigurations";
-                lenient |= matches!(last, "LENIENT" | "lockMode");
+                match token {
+                    GradleToken::Ident(ident) => {
+                        let last = ident.rsplit('.').next().unwrap_or_default();
+                        locks |= last == "lockAllConfigurations";
+                        lenient |= last == "LENIENT";
+                    }
+                    // `LockMode.valueOf("LENIENT")`.
+                    GradleToken::Literal(text) => {
+                        lenient |= text
+                            .trim_matches(['"', '\''])
+                            .eq_ignore_ascii_case("LENIENT");
+                    }
+                    GradleToken::Symbol(_) => {}
+                }
             }
         }
     }
@@ -216,6 +243,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
     {
         reject_untrusted_gradle_wrapper(ancestor)?;
         reject_gradle_jvm_overrides(ancestor)?;
+        reject_buildsrc_without_script(ancestor)?;
         for filename in ["settings.gradle", "settings.gradle.kts"] {
             let settings_path = ancestor.join(filename);
             if super::path_detected(&settings_path)? {

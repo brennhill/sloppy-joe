@@ -280,6 +280,7 @@ fn reject_unverifiable_cargo_settings(
     if value.get("credential-alias").is_some() {
         found.push("credential-alias".to_string());
     }
+    found.extend(super::program_settings::program_running_settings(value));
     if found.is_empty() {
         return Ok(());
     }

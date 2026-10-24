@@ -42,6 +42,14 @@ fn gradle_locking_is_only_strict_when_the_build_turns_it_on() {
             "dependencyLocking { lockAllConfigurations()\n lockMode = LockMode.LENIENT }",
             GradleLocking::Lenient,
         ),
+        (
+            "dependencyLocking { lockAllConfigurations()\n lockMode = LockMode.STRICT }",
+            GradleLocking::Strict,
+        ),
+        (
+            "dependencyLocking { lockAllConfigurations()\n lockMode.set(LockMode.valueOf(\"LENIENT\")) }",
+            GradleLocking::Lenient,
+        ),
     ] {
         let dir = setup_gradle(script);
         assert_eq!(gradle_locking(&dir.join("build.gradle")).unwrap(), expected);
@@ -173,6 +181,25 @@ fn gradle_properties_that_load_agents_block() {
         &dir,
         "gradle.properties",
         "org.gradle.jvmargs=-Xmx2g\norg.gradle.parallel=true\n",
+    );
+    assert!(parse(&dir).is_ok());
+    cleanup(&dir);
+}
+
+#[test]
+fn a_buildsrc_without_a_build_script_blocks() {
+    let dir = setup_gradle("dependencies { implementation 'a:b:1' }");
+    write_in(
+        &dir,
+        "buildSrc/src/main/java/Evil.java",
+        "public class Evil {}",
+    );
+    let err = parse(&dir).unwrap_err().to_string();
+    assert!(err.contains("buildSrc"), "{err}");
+    write_in(
+        &dir,
+        "buildSrc/build.gradle",
+        "repositories { mavenCentral() }",
     );
     assert!(parse(&dir).is_ok());
     cleanup(&dir);

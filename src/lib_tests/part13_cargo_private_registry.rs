@@ -712,6 +712,16 @@ fn cargo_config_network_and_build_settings_block() {
         "[net]\ngit-fetch-with-cli = true\n",
         "[build]\nrustc-wrapper = \"./wrap.sh\"\n",
         "[registry]\ncredential-provider = \"cargo:token\"\n",
+        "include = \"extra.toml\"\n",
+        "include = [{ path = \"extra.toml\", optional = true }]\n",
+        "[build]\nrustc = \"./fake-rustc\"\n",
+        "[build]\nrustflags = [\"-C\", \"linker=./evil.sh\"]\n",
+        "[build]\nrustflags = [\"-Clink-arg=-fuse-ld=evil\"]\n",
+        "[target.x86_64-unknown-linux-gnu]\nlinker = \"./evil.sh\"\n",
+        "[target.'cfg(unix)']\nrunner = \"./evil.sh\"\n",
+        "[target.'cfg(unix)']\nrustflags = \"-C linker=./evil.sh\"\n",
+        "[env]\nRUSTC_WRAPPER = \"./wrap.sh\"\n",
+        "[env]\nCARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = \"./evil.sh\"\n",
     ] {
         let dir = cargo_project_with_lock(&checksum, Some(setting));
         let err = preflight_scan_inputs(&dir, Some("cargo"))
@@ -722,7 +732,12 @@ fn cargo_config_network_and_build_settings_block() {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
-    let benign = cargo_project_with_lock(&checksum, Some("[term]\ncolor = \"never\"\n"));
+    let benign = cargo_project_with_lock(
+        &checksum,
+        Some(
+            "[term]\ncolor = \"never\"\n[env]\nRUST_BACKTRACE = \"1\"\n[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n",
+        ),
+    );
     preflight_scan_inputs(&benign, Some("cargo")).unwrap();
     let _ = std::fs::remove_dir_all(benign);
 }

@@ -57,6 +57,9 @@ fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
             "Directory.Build.props",
             "Directory.Build.targets",
             "Directory.Packages.props",
+            "Directory.Build.rsp",
+            "Directory.Solution.props",
+            "Directory.Solution.targets",
         ] {
             if super::path_detected(&ancestor.join(name))? {
                 bail!(

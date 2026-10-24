@@ -101,8 +101,7 @@ impl EcosystemSupport for Go {
         spec: &ProjectInputSpec,
         _parsed: &ParsedInput,
     ) -> Result<Vec<Issue>> {
-        check_go_sum(spec)?;
-        Ok(Vec::new())
+        Ok(check_go_sum(spec)?.into_iter().collect())
     }
 
     fn source_policy(
@@ -114,12 +113,25 @@ impl EcosystemSupport for Go {
     }
 }
 
-fn check_go_sum(spec: &ProjectInputSpec) -> Result<()> {
+/// Go never checks vendored files against go.sum, so edited vendored code cannot be detected.
+fn vendored_source_warning(spec: &ProjectInputSpec) -> Issue {
+    Issue::new(
+        spec.manifest_path.display().to_string(),
+        checks::names::RESOLUTION_VENDORED_SOURCE_UNVERIFIED,
+        Severity::Warning,
+    )
+    .message(
+        "vendor/ is used for the build; Go does not verify vendored files against go.sum, so the vendored source may differ from the module versions that were scanned.",
+    )
+    .fix("Compare the vendor directory with `go mod vendor` output in CI (for example `go mod vendor && git diff --exit-code vendor`).")
+}
+
+fn check_go_sum(spec: &ProjectInputSpec) -> Result<Option<Issue>> {
     let manifest_content =
         parsers::read_file_limited(&spec.manifest_path, parsers::MAX_MANIFEST_BYTES)
             .map_err(|err| common::broken_manifest(spec, err))?;
     if !parsers::go_mod::requires_go_sum(&manifest_content) {
-        return Ok(());
+        return Ok(None);
     }
     let go_sum_path = common::named_lockfile(spec).expect("Go names go.sum");
     common::ensure_kind_lockfile(spec, &go_sum_path)?;
@@ -135,13 +147,12 @@ fn check_go_sum(spec: &ProjectInputSpec) -> Result<()> {
                 err
             )
         })?;
-    } else {
-        let go_sum = parsers::read_file_limited(&go_sum_path, parsers::MAX_MANIFEST_BYTES)?;
-        parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum).map_err(|err| {
-            anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err)
-        })?;
+        return Ok(Some(vendored_source_warning(spec)));
     }
-    Ok(())
+    let go_sum = parsers::read_file_limited(&go_sum_path, parsers::MAX_MANIFEST_BYTES)?;
+    parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err))?;
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -202,7 +213,11 @@ mod vendor_tests {
             &format!("example.com/other v1.0.0/go.mod {HASH}\n"),
             Some(listing),
         );
-        check_go_sum(&spec).unwrap();
+        let warning = check_go_sum(&spec).unwrap().expect("vendored builds warn");
+        assert_eq!(
+            warning.check,
+            checks::names::RESOLUTION_VENDORED_SOURCE_UNVERIFIED
+        );
     }
 
     #[test]

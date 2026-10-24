@@ -96,6 +96,7 @@ pub const RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS: &str =
 pub const RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE: &str =
     "resolution/python-implicit-runtime-profile";
 pub const RESOLUTION_PYTHON_GROUPS_NOT_SCANNED: &str = "resolution/python-groups-not-scanned";
+pub const RESOLUTION_VENDORED_SOURCE_UNVERIFIED: &str = "resolution/vendored-source-unverified";
 pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
 
 #[cfg(test)]
@@ -165,6 +166,7 @@ mod tests {
             RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS,
             RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE,
             RESOLUTION_PYTHON_GROUPS_NOT_SCANNED,
+            RESOLUTION_VENDORED_SOURCE_UNVERIFIED,
             CONFIG_LOCAL_OVERLAY_RELAXATION,
         ]
     }
