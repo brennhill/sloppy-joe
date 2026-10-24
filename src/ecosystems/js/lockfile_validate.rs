@@ -88,12 +88,12 @@ pub(crate) fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec)
         );
     }
     let Some(path) = &binding.lockfile_path else {
-        let expected = match binding.manager {
-            JsPackageManager::Npm => "'npm-shrinkwrap.json' or 'package-lock.json'",
-            JsPackageManager::Pnpm => "'pnpm-lock.yaml'",
-            JsPackageManager::Yarn => "'yarn.lock'",
-            JsPackageManager::Bun => "'bun.lock' or 'bun.lockb'",
-        };
+        let expected = super::managers::manager(binding.manager)
+            .lockfile_candidates()
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(" or ");
         anyhow::bail!(
             "Required lockfile {} is missing for {} project '{}'. Fix: {}",
             expected,

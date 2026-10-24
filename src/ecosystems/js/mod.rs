@@ -4,6 +4,7 @@ mod binding;
 mod local_deps;
 mod lockfile_read;
 mod lockfile_validate;
+mod managers;
 mod npm_lockfile_checks;
 mod workspace;
 
@@ -196,55 +197,18 @@ fn preflight_js_project(
     validate_supported_js_manager(spec)?;
     validate_js_manifest_security_policy(spec, manifest)?;
     let scope_root = npm_trusted_scope_root(&ctx.canonical_root, spec)?;
-    let ignore_dirs = &ctx.scan.config.ignore_dirs;
-    let index = &ctx.js.index;
-    match spec
+    let manager = spec
         .js_binding
         .as_ref()
         .map(|binding| binding.manager)
-        .unwrap_or(JsPackageManager::Npm)
-    {
-        JsPackageManager::Npm => {
-            let allowed_alias_targets = selected_lockfile_path(spec)
-                .and_then(|path| ctx.js.alias_targets.get(&path))
-                .cloned()
-                .unwrap_or_default();
-            let (lockfile, npm_warnings) = read_validated_npm_lockfile(
-                spec,
-                manifest,
-                ctx.scan.config,
-                &allowed_alias_targets,
-            )?;
-            warnings.extend(npm_warnings);
-            validate_local_npm_dependencies(&scope_root, spec, manifest, &lockfile, index)
-        }
-        JsPackageManager::Pnpm => {
-            let lockfile = read_validated_pnpm_lockfile(spec, manifest)?;
-            validate_local_pnpm_dependencies(
-                &scope_root,
-                spec,
-                manifest,
-                &lockfile,
-                index,
-                ignore_dirs,
-            )
-        }
-        JsPackageManager::Bun => {
-            let lockfile = read_validated_bun_lockfile(spec, manifest)?;
-            validate_local_bun_dependencies(
-                &scope_root,
-                spec,
-                manifest,
-                &lockfile,
-                index,
-                ignore_dirs,
-            )
-        }
-        JsPackageManager::Yarn => {
-            let lockfile = read_validated_yarn_lockfile(spec, manifest)?;
-            validate_local_yarn_dependencies(&scope_root, spec, manifest, &lockfile, ignore_dirs)
-        }
-    }
+        .unwrap_or(JsPackageManager::Npm);
+    warnings.extend(managers::manager(manager).validate_lockfile(
+        ctx,
+        spec,
+        manifest,
+        &scope_root,
+    )?);
+    Ok(())
 }
 
 #[cfg(test)]

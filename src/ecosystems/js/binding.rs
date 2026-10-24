@@ -200,10 +200,9 @@ pub(crate) fn resolve_js_project_binding(
     )?;
     let lockfile_path = js_lockfile_path(&root_dir, manager)?;
     let package_entry_key = if canonical_project_dir == canonical_root_dir {
-        match manager {
-            JsPackageManager::Pnpm => ".".to_string(),
-            _ => String::new(),
-        }
+        managers::manager(manager)
+            .root_package_entry_key()
+            .to_string()
     } else {
         relative_package_entry_key(&canonical_root_dir, &canonical_project_dir)?
     };
@@ -298,41 +297,14 @@ pub(crate) fn js_workspace_records_project(
     };
     let key = relative_package_entry_key(&root.project_dir, project_dir)?;
     let content = parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES)?;
-    match root.manager {
-        JsPackageManager::Pnpm => {
-            let value: serde_yaml::Value = crate::lockfiles::parse_pnpm_lock_guarded(&content)
-                .map_err(|error| {
-                    anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
-                })?;
-            Ok(value
-                .get("importers")
-                .and_then(|entries| entries.get(&key))
-                .is_some())
-        }
-        JsPackageManager::Npm => {
-            let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
-                anyhow::anyhow!("Broken lockfile '{}': {error}", path.display())
-            })?;
-            Ok(value
-                .get("packages")
-                .and_then(|entries| entries.get(&key))
-                .is_some())
-        }
-        // Other workspace formats retain their existing ownership checks.
-        JsPackageManager::Yarn | JsPackageManager::Bun => Ok(true),
-    }
+    managers::manager(root.manager).lockfile_records_member(&path, &content, &key)
 }
 
 pub(crate) fn js_lockfile_path(
     root: &std::path::Path,
     manager: JsPackageManager,
 ) -> Result<Option<std::path::PathBuf>> {
-    let candidates: &[&str] = match manager {
-        JsPackageManager::Npm => &["npm-shrinkwrap.json", "package-lock.json"],
-        JsPackageManager::Pnpm => &["pnpm-lock.yaml"],
-        JsPackageManager::Yarn => &["yarn.lock"],
-        JsPackageManager::Bun => &["bun.lock", "bun.lockb"],
-    };
+    let candidates = managers::manager(manager).lockfile_candidates();
     for name in candidates {
         let path = root.join(name);
         if parsers::path_detected(&path)? {
