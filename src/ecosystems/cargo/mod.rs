@@ -119,6 +119,7 @@ impl EcosystemSupport for Cargo {
         let lockfile = authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
         common::ensure_kind_lockfile(spec, &lockfile)?;
         cargo_lockfile_value(&lockfile)?;
+        program_settings::reject_toolchain_path(spec.project_dir())?;
         Ok(Vec::new())
     }
 

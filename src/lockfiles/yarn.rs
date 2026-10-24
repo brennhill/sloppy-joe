@@ -298,10 +298,10 @@ impl ParsedYarnLock {
     /// Registry entries of a Yarn classic lockfile. `None` for Yarn Berry,
     /// whose `checksum` hashes Yarn's own zip archive, not the tarball.
     pub(crate) fn classic_registry_entries(&self) -> Option<Vec<YarnClassicRegistryEntry>> {
-        let berry = self.entries.iter().any(|entry| {
-            entry.resolution.is_some()
-                || (entry.selectors.len() == 1 && entry.selectors[0] == "__metadata")
-        });
+        let berry = self
+            .entries
+            .iter()
+            .any(|entry| entry.selectors.len() == 1 && entry.selectors[0] == "__metadata");
         if berry {
             return None;
         }

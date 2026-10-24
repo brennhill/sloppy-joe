@@ -82,7 +82,37 @@ pub(crate) fn validate_manifest_consistency(
     Ok(())
 }
 
+/// Classic vs Berry is decided by the `__metadata` header alone: yarn 1 ignores a `resolution`
+/// field and fetches `resolved`, so fields of the other format never stand in for the real ones.
+fn reject_mixed_formats(parsed: &ParsedYarnLock, entry: &YarnLockEntry, berry: bool) -> Result<()> {
+    let (format, fields, mixed) = if berry {
+        (
+            "Yarn classic fields (resolved/integrity) into a Berry",
+            "classic",
+            entry.resolved.is_some() || entry.integrity.is_some(),
+        )
+    } else {
+        (
+            "Yarn Berry fields (resolution/checksum) into a classic",
+            "berry",
+            entry.resolution.is_some() || entry.checksum.is_some(),
+        )
+    };
+    if mixed {
+        anyhow::bail!(
+            "Required lockfile '{}' entry '{}' mixes {format} lockfile ({fields} ignores the other's fields).",
+            parsed.path.display(),
+            entry.selectors.join(", ")
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_provenance(parsed: &ParsedYarnLock) -> Result<()> {
+    let berry = parsed
+        .entries
+        .iter()
+        .any(|entry| entry.selectors.len() == 1 && entry.selectors[0] == "__metadata");
     for entry in &parsed.entries {
         // Yarn Berry's lockfile header block, not a package.
         if entry.selectors.len() == 1 && entry.selectors[0] == "__metadata" {
@@ -117,6 +147,7 @@ pub(crate) fn validate_provenance(parsed: &ParsedYarnLock) -> Result<()> {
                         entry.selectors.join(", ")
                     );
                 };
+                reject_mixed_formats(parsed, entry, berry)?;
                 if let Some(resolution) = &entry.resolution {
                     let checksum = entry
                         .checksum
@@ -299,4 +330,24 @@ pub(crate) fn expected_yarn_registry_tarball_paths(
     }
 
     vec![format!("{package_name}/-/{}-{version}.tgz", package_name)]
+}
+
+#[cfg(test)]
+mod format_mixing_tests {
+    use super::*;
+
+    fn parse(text: &str) -> ParsedYarnLock {
+        super::super::parse_lockfile(
+            text,
+            std::path::PathBuf::from("yarn.lock"),
+            std::path::Path::new("."),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn berry_fields_in_a_classic_lock_cannot_hide_the_resolved_url() {
+        let lock = "# yarn lockfile v1\n\nleft-pad@^1.3.0:\n  version \"1.3.0\"\n  resolved \"https://evil.example/left-pad/-/left-pad-1.3.0.tgz#abc\"\n  integrity sha512-AAAA\n  resolution \"left-pad@npm:1.3.0\"\n  checksum 0000/aaaa\n";
+        assert!(validate_provenance(&parse(lock)).is_err());
+    }
 }

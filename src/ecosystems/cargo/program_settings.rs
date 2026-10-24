@@ -47,6 +47,33 @@ fn flags_run_programs(value: &toml::Value) -> bool {
 }
 
 /// Names of the settings in `value` that run a program or include another config file.
+/// A `rust-toolchain(.toml)` with `path = ...` makes rustup run a cargo and rustc from a directory
+/// in the repository (rustup searches the project directory and its parents).
+pub(super) fn reject_toolchain_path(project_dir: &std::path::Path) -> anyhow::Result<()> {
+    let start = std::fs::canonicalize(project_dir)?;
+    for dir in start.ancestors() {
+        for name in ["rust-toolchain.toml", "rust-toolchain"] {
+            let file = dir.join(name);
+            if std::fs::symlink_metadata(&file).is_err() {
+                continue;
+            }
+            let content =
+                crate::parsers::read_file_limited(&file, crate::parsers::MAX_MANIFEST_BYTES)?;
+            let has_path = toml::from_str::<toml::Value>(&content)
+                .ok()
+                .and_then(|value| value.get("toolchain")?.get("path").cloned())
+                .is_some();
+            if has_path {
+                anyhow::bail!(
+                    "Unsupported rustup toolchain path in {}: rustup would run a cargo and rustc from a directory the scan has not seen",
+                    file.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn program_running_settings(value: &toml::Value) -> Vec<String> {
     let mut found = Vec::new();
     if value.get("include").is_some() {
@@ -130,5 +157,29 @@ mod tests {
             ));
             assert_eq!(found, vec![format!("env.{name}")], "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod toolchain_tests {
+    use super::*;
+
+    #[test]
+    fn a_toolchain_path_blocks() {
+        let dir = std::env::temp_dir().join(format!("sj-toolchain-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("rust-toolchain.toml"),
+            "[toolchain]\npath = \"tools/rust\"\n",
+        )
+        .unwrap();
+        assert!(reject_toolchain_path(&dir).is_err());
+        std::fs::write(
+            dir.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.80.0\"\n",
+        )
+        .unwrap();
+        assert!(reject_toolchain_path(&dir).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

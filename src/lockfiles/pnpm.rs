@@ -526,6 +526,22 @@ pub(crate) fn validate_provenance(
             continue;
         }
 
+        // pnpm fetches a `type: git`, `binary`, `variations` or escaping `directory` resolution
+        // from wherever it points, whatever integrity string rides along; only a plain
+        // registry tarball (integrity, optional tarball) is modeled.
+        if let Some(extra) = resolution
+            .keys()
+            .filter_map(|key| key.as_str())
+            .find(|key| !matches!(*key, "integrity" | "tarball"))
+        {
+            anyhow::bail!(
+                "Required lockfile '{}' package '{}' has an unsupported resolution field '{}' (a git, binary, variations or out-of-repo directory source); sloppy-joe only trusts registry tarball resolutions.",
+                lockfile_path.display(),
+                key,
+                crate::report::sanitize_for_terminal(extra)
+            );
+        }
+
         let integrity = resolution
             .get("integrity")
             .and_then(|value| value.as_str())
@@ -719,5 +735,35 @@ mod alias_tests {
             normalized_pnpm_reference("@scope/x@1.0.0", "@scope/y"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod resolution_kind_tests {
+    use super::*;
+
+    fn check(resolution: &str) -> Result<()> {
+        let lock = format!(
+            "lockfileVersion: '9.0'\npackages:\n  left-pad@1.3.0:\n    resolution: {resolution}\n"
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&lock).unwrap();
+        validate_provenance(
+            &parsed,
+            Path::new("pnpm-lock.yaml"),
+            &crate::npm_config::NpmRegistries::default(),
+        )
+    }
+
+    #[test]
+    fn git_binary_and_escaping_directory_resolutions_block_even_with_integrity() {
+        for resolution in [
+            "{integrity: sha512-AAAA, type: git, repo: 'https://evil.example/x.git', commit: abc}",
+            "{integrity: sha512-AAAA, type: binary, url: 'https://evil.example/x.tgz'}",
+            "{integrity: sha512-AAAA, type: variations, variants: []}",
+            "{integrity: sha512-AAAA, type: directory, directory: ../../outside}",
+        ] {
+            assert!(check(resolution).is_err(), "{resolution}");
+        }
+        assert!(check("{integrity: sha512-AAAA}").is_ok());
     }
 }
