@@ -3,15 +3,8 @@
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
 fn-complexity src/checks/similarity/mod.rs::check_similarity_with_options 61
 fn-complexity src/checks/tarball_verification.rs::verify_npm_tarballs 22
-fn-complexity src/engine/js_binding.rs::resolve_js_project_binding 16
 fn-complexity src/engine/preflight.rs::preflight_selected_project_inputs 32
 fn-complexity src/engine/scan.rs::scan_with_config 34
-fn-complexity src/lockfiles/cargo.rs::resolve_from_value_with_mode 23
-fn-complexity src/lockfiles/python/source_policy.rs::validate_source_policy 16
-fn-complexity src/lockfiles/read.rs::read_lockfile 20
-fn-complexity src/lockfiles/uv.rs::resolve_from_value_with_mode_and_profile 16
-fn-complexity src/lockfiles/yarn.rs::parse_all_from_parsed_for_project 16
-fn-complexity src/lockfiles/yarn.rs::parse_lockfile 23
 fn-complexity src/main.rs::main 46
 fn-complexity src/parsers/gemfile.rs::collect_gem_entries 26
 fn-complexity src/parsers/gemfile.rs::ingest 19

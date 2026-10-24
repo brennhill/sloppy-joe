@@ -61,6 +61,27 @@ pub(super) fn resolve_from_value_with_mode(
         return Ok(result);
     };
 
+    let versions_by_name = registry_versions_by_name(packages);
+
+    let mut result = ResolutionResult::default();
+    for dep in deps {
+        let Some(versions) = versions_by_name.get(&dep.name) else {
+            result.push_issue_for(dep, missing_entry_issue(dep, "Cargo.lock"));
+            add_manifest_exact_fallback(&mut result, dep);
+            continue;
+        };
+        if let [version] = versions.as_slice() {
+            resolve_single_version(&mut result, dep, version, mode);
+        } else {
+            resolve_multiple_versions(&mut result, dep, versions, mode);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Locked versions per crate name, from crates.io-style registry sources only.
+fn registry_versions_by_name(packages: &[toml::Value]) -> HashMap<String, Vec<String>> {
     let mut versions_by_name: HashMap<String, Vec<String>> = HashMap::new();
     for package in packages {
         let Some(table) = package.as_table() else {
@@ -85,100 +106,82 @@ pub(super) fn resolve_from_value_with_mode(
             .or_default()
             .push(version.to_string());
     }
+    versions_by_name
+}
 
-    let mut result = ResolutionResult::default();
-    for dep in deps {
-        let Some(versions) = versions_by_name.get(&dep.name) else {
-            result.push_issue_for(dep, missing_entry_issue(dep, "Cargo.lock"));
-            add_manifest_exact_fallback(&mut result, dep);
-            continue;
-        };
+fn record_locked_version(result: &mut ResolutionResult, dep: &Dependency, version: &str) {
+    result.exact_versions.insert(
+        ResolutionKey::from(dep),
+        ResolvedVersion {
+            version: version.to_string(),
+            source: ResolutionSource::Lockfile,
+        },
+    );
+}
 
-        if versions.len() == 1 {
-            let version = &versions[0];
-            if let Some(exact_manifest) = dep.exact_version()
-                && !cargo_lock_versions_match(&exact_manifest, version)
-            {
+fn resolve_single_version(
+    result: &mut ResolutionResult,
+    dep: &Dependency,
+    version: &str,
+    mode: ResolutionMode,
+) {
+    if let Some(exact_manifest) = dep.exact_version()
+        && !cargo_lock_versions_match(&exact_manifest, version)
+    {
+        result.push_issue_for(dep, out_of_sync_issue(dep, version));
+        add_manifest_exact_fallback(result, dep);
+        return;
+    }
+    if mode == ResolutionMode::Direct && dep.version.is_some() && dep.exact_version().is_none() {
+        // A requirement the lock's only version satisfies is the version
+        // Cargo installs. One it contradicts means the lock is stale.
+        match requirement_matches(dep, version) {
+            Some(true) => {}
+            Some(false) => {
                 result.push_issue_for(dep, out_of_sync_issue(dep, version));
-                add_manifest_exact_fallback(&mut result, dep);
-                continue;
+                return;
             }
-            if mode == ResolutionMode::Direct
-                && dep.version.is_some()
-                && dep.exact_version().is_none()
-            {
-                // A requirement the lock's only version satisfies is the version
-                // Cargo installs. One it contradicts means the lock is stale.
-                match requirement_matches(dep, version) {
-                    Some(true) => {}
-                    Some(false) => {
-                        result.push_issue_for(dep, out_of_sync_issue(dep, version));
-                        continue;
-                    }
-                    None => {
-                        result
-                            .push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "Cargo.lock"));
-                        continue;
-                    }
-                }
+            None => {
+                result.push_issue_for(dep, no_trusted_lockfile_sync_issue(dep, "Cargo.lock"));
+                return;
             }
-            result.exact_versions.insert(
-                ResolutionKey::from(dep),
-                ResolvedVersion {
-                    version: version.clone(),
-                    source: ResolutionSource::Lockfile,
-                },
-            );
-            continue;
-        }
-
-        let exact = dep
-            .exact_version()
-            .or_else(|| {
-                (mode == ResolutionMode::Transitive)
-                    .then(|| dep.version.clone())
-                    .flatten()
-            })
-            .filter(|v| versions.iter().any(|lv| cargo_lock_versions_match(v, lv)));
-
-        if let Some(matched) = exact {
-            result.exact_versions.insert(
-                ResolutionKey::from(dep),
-                ResolvedVersion {
-                    version: matched,
-                    source: ResolutionSource::Lockfile,
-                },
-            );
-        } else if let Some(exact_manifest) = dep.exact_version() {
-            result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
-            add_manifest_exact_fallback(&mut result, dep);
-            let _ = exact_manifest; // used for the branch condition
-        } else if mode == ResolutionMode::Direct
-            && dep.version.is_some()
-            && dep.exact_version().is_none()
-            && let Some(satisfying) = satisfying_versions(dep, versions)
-        {
-            match satisfying.as_slice() {
-                [only] => {
-                    result.exact_versions.insert(
-                        ResolutionKey::from(dep),
-                        ResolvedVersion {
-                            version: (*only).clone(),
-                            source: ResolutionSource::Lockfile,
-                        },
-                    );
-                }
-                [] => {
-                    result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
-                }
-                _ => result.push_issue_for(dep, ambiguous_issue(dep)),
-            }
-        } else {
-            result.push_issue_for(dep, ambiguous_issue(dep));
         }
     }
+    record_locked_version(result, dep, version);
+}
 
-    Ok(result)
+fn resolve_multiple_versions(
+    result: &mut ResolutionResult,
+    dep: &Dependency,
+    versions: &[String],
+    mode: ResolutionMode,
+) {
+    let exact = dep
+        .exact_version()
+        .or_else(|| {
+            (mode == ResolutionMode::Transitive)
+                .then(|| dep.version.clone())
+                .flatten()
+        })
+        .filter(|v| versions.iter().any(|lv| cargo_lock_versions_match(v, lv)));
+
+    if let Some(matched) = exact {
+        record_locked_version(result, dep, &matched);
+    } else if dep.exact_version().is_some() {
+        result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", ")));
+        add_manifest_exact_fallback(result, dep);
+    } else if mode == ResolutionMode::Direct
+        && dep.version.is_some()
+        && let Some(satisfying) = satisfying_versions(dep, versions)
+    {
+        match satisfying.as_slice() {
+            [only] => record_locked_version(result, dep, only),
+            [] => result.push_issue_for(dep, out_of_sync_issue(dep, &versions.join(", "))),
+            _ => result.push_issue_for(dep, ambiguous_issue(dep)),
+        }
+    } else {
+        result.push_issue_for(dep, ambiguous_issue(dep));
+    }
 }
 
 /// Whether `locked` satisfies the dependency's Cargo requirement. `None` when

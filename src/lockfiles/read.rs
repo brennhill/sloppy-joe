@@ -12,91 +12,8 @@ pub(crate) fn read_lockfile(
     }
 
     match ecosystem {
-        Some(Ecosystem::Npm) => {
-            if lockfile_override.is_some_and(is_pnpm_lockfile_path) {
-                let path = lockfile_override.expect("checked above");
-                let content =
-                    crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                let value: serde_yaml::Value = parse_pnpm_lock_guarded(&content)
-                    .map_err(|err| anyhow::anyhow!("Failed to parse pnpm-lock.yaml: {}", err))?;
-                let importer_key = pnpm_importer_key(project_dir, path)?;
-                return Ok(ParsedLockfile::Pnpm {
-                    value,
-                    importer_key,
-                    path: path.to_path_buf(),
-                });
-            }
-            if lockfile_override.is_some_and(is_bun_lockfile_path) {
-                let path = lockfile_override.expect("checked above");
-                let file_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("bun.lock");
-                if file_name == "bun.lockb" {
-                    anyhow::bail!(
-                        "Legacy Bun binary lockfile '{}' is not supported yet. Regenerate and commit the text bun.lock.",
-                        path.display()
-                    );
-                }
-                let content =
-                    crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                let value: serde_json::Value = parse_json5_guarded(&content)
-                    .map_err(|err| anyhow::anyhow!("Failed to parse bun.lock: {}", err))?;
-                let importer_key = js_importer_key(project_dir, path)?;
-                return Ok(ParsedLockfile::Bun {
-                    value,
-                    importer_key,
-                });
-            }
-            if lockfile_override.is_some_and(is_yarn_lockfile_path) {
-                let path = lockfile_override.expect("checked above");
-                let content =
-                    crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-                return Ok(ParsedLockfile::Yarn(yarn::parse_lockfile(
-                    &content,
-                    path.to_path_buf(),
-                    project_dir,
-                )?));
-            }
-            let Some(path) = lockfile_override.map(PathBuf::from).or_else(|| {
-                first_existing(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
-            }) else {
-                return Ok(ParsedLockfile::None);
-            };
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("npm-shrinkwrap.json")
-                .to_string();
-            let content =
-                crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-            let value: serde_json::Value = serde_json::from_str(&content)
-                .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
-            let version = npm::lockfile_version(&value)
-                .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
-            if version == 1 {
-                Ok(ParsedLockfile::NpmLegacy { value, file_name })
-            } else {
-                Ok(ParsedLockfile::Npm {
-                    value,
-                    file_name,
-                    project_key: js_importer_key(project_dir, &path)?,
-                })
-            }
-        }
-        Some(Ecosystem::Cargo) => {
-            let path = lockfile_override
-                .map(PathBuf::from)
-                .unwrap_or_else(|| project_dir.join("Cargo.lock"));
-            if !crate::parsers::path_detected(&path)? {
-                return Ok(ParsedLockfile::None);
-            }
-            let content =
-                crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
-            let value = toml::from_str(&content)
-                .map_err(|err| anyhow::anyhow!("Failed to parse Cargo.lock: {}", err))?;
-            Ok(ParsedLockfile::Cargo(value))
-        }
+        Some(Ecosystem::Npm) => read_npm_lockfile(project_dir, lockfile_override),
+        Some(Ecosystem::Cargo) => read_cargo_lockfile(project_dir, lockfile_override),
         Some(Ecosystem::Php) => match composer::read_lockfile(project_dir)? {
             Some(value) => Ok(ParsedLockfile::Composer(value)),
             None => Ok(ParsedLockfile::None),
@@ -119,6 +36,113 @@ pub(crate) fn read_lockfile(
         },
         _ => Ok(ParsedLockfile::None),
     }
+}
+
+fn read_npm_lockfile(
+    project_dir: &Path,
+    lockfile_override: Option<&Path>,
+) -> Result<ParsedLockfile> {
+    if let Some(path) = lockfile_override {
+        if is_pnpm_lockfile_path(path) {
+            return read_pnpm_override(project_dir, path);
+        }
+        if is_bun_lockfile_path(path) {
+            return read_bun_override(project_dir, path);
+        }
+        if is_yarn_lockfile_path(path) {
+            return read_yarn_override(project_dir, path);
+        }
+    }
+    read_npm_package_lock(project_dir, lockfile_override)
+}
+
+fn read_pnpm_override(project_dir: &Path, path: &Path) -> Result<ParsedLockfile> {
+    let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let value: serde_yaml::Value = parse_pnpm_lock_guarded(&content)
+        .map_err(|err| anyhow::anyhow!("Failed to parse pnpm-lock.yaml: {}", err))?;
+    let importer_key = pnpm_importer_key(project_dir, path)?;
+    Ok(ParsedLockfile::Pnpm {
+        value,
+        importer_key,
+        path: path.to_path_buf(),
+    })
+}
+
+fn read_bun_override(project_dir: &Path, path: &Path) -> Result<ParsedLockfile> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("bun.lock");
+    if file_name == "bun.lockb" {
+        anyhow::bail!(
+            "Legacy Bun binary lockfile '{}' is not supported yet. Regenerate and commit the text bun.lock.",
+            path.display()
+        );
+    }
+    let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let value: serde_json::Value = parse_json5_guarded(&content)
+        .map_err(|err| anyhow::anyhow!("Failed to parse bun.lock: {}", err))?;
+    let importer_key = js_importer_key(project_dir, path)?;
+    Ok(ParsedLockfile::Bun {
+        value,
+        importer_key,
+    })
+}
+
+fn read_yarn_override(project_dir: &Path, path: &Path) -> Result<ParsedLockfile> {
+    let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    Ok(ParsedLockfile::Yarn(yarn::parse_lockfile(
+        &content,
+        path.to_path_buf(),
+        project_dir,
+    )?))
+}
+
+fn read_npm_package_lock(
+    project_dir: &Path,
+    lockfile_override: Option<&Path>,
+) -> Result<ParsedLockfile> {
+    let Some(path) = lockfile_override
+        .map(PathBuf::from)
+        .or_else(|| first_existing(project_dir, &["npm-shrinkwrap.json", "package-lock.json"]))
+    else {
+        return Ok(ParsedLockfile::None);
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("npm-shrinkwrap.json")
+        .to_string();
+    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
+    let version = npm::lockfile_version(&value)
+        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    if version == 1 {
+        Ok(ParsedLockfile::NpmLegacy { value, file_name })
+    } else {
+        Ok(ParsedLockfile::Npm {
+            value,
+            file_name,
+            project_key: js_importer_key(project_dir, &path)?,
+        })
+    }
+}
+
+fn read_cargo_lockfile(
+    project_dir: &Path,
+    lockfile_override: Option<&Path>,
+) -> Result<ParsedLockfile> {
+    let path = lockfile_override
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_dir.join("Cargo.lock"));
+    if !crate::parsers::path_detected(&path)? {
+        return Ok(ParsedLockfile::None);
+    }
+    let content = crate::parsers::read_file_limited(&path, crate::parsers::MAX_MANIFEST_BYTES)?;
+    let value = toml::from_str(&content)
+        .map_err(|err| anyhow::anyhow!("Failed to parse Cargo.lock: {}", err))?;
+    Ok(ParsedLockfile::Cargo(value))
 }
 
 pub(crate) fn read_lockfile_for_project_kind(

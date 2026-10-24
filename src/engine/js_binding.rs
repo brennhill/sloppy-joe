@@ -107,63 +107,44 @@ pub(crate) fn bind_js_project_inputs(
     Ok(())
 }
 
-pub(crate) fn resolve_js_project_binding(
-    scan_root: &std::path::Path,
+/// A project with its own lockfile that its enclosing workspace does not record is installed
+/// on its own, unless the workspace root explicitly selects a package manager.
+fn project_is_independent_of_workspace(
+    root: &WorkspaceRoot,
+    canonical_project_dir: &std::path::Path,
     spec: &ProjectInputSpec,
-) -> Result<JsProjectBinding> {
-    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
-        anyhow::anyhow!(
-            "Failed to inspect {}: {}",
-            spec.project_dir().display(),
-            err
-        )
-    })?;
-    let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
-    let mut workspace_root = find_js_workspace_root(&ancestry_root, &canonical_project_dir)?;
-    let mut independent_from_workspace = None;
-    if let Some(root) = &workspace_root
-        && root.project_dir != canonical_project_dir
-        && js_lockfile_path(
-            &canonical_project_dir,
-            detect_js_manager(
-                &canonical_project_dir,
-                &spec.manifest_path,
-                &read_npm_manifest_value(&spec.manifest_path)?,
-            )?,
-        )?
-        .is_some()
-        && !js_workspace_records_project(root, &canonical_project_dir)?
-    {
-        let root_manifest = root.project_dir.join("package.json");
-        let explicitly_selected = parsers::path_detected(&root_manifest)?
-            && read_npm_manifest_value(&root_manifest)?
-                .get("packageManager")
-                .is_some();
-        if !explicitly_selected {
-            independent_from_workspace = Some(root.manifest_path.clone());
-            workspace_root = None;
-        }
+) -> Result<bool> {
+    if root.project_dir == canonical_project_dir {
+        return Ok(false);
     }
-    let (root_manifest_path, root_dir, manager) = if let Some(root) = workspace_root.as_ref() {
-        (
-            root.manifest_path.clone(),
-            root.project_dir.clone(),
-            root.manager,
-        )
-    } else {
-        let root_manifest_path = spec.manifest_path.clone();
-        let root_manifest = read_npm_manifest_value(&root_manifest_path)?;
-        let root_dir = root_manifest_path
-            .parent()
-            .expect("package.json should always have a parent directory")
-            .to_path_buf();
-        let manager = detect_js_manager(&root_dir, &root_manifest_path, &root_manifest)?;
-        (root_manifest_path, root_dir, manager)
-    };
-    let canonical_root_dir = std::fs::canonicalize(&root_dir)
-        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
+    let manager = detect_js_manager(
+        canonical_project_dir,
+        &spec.manifest_path,
+        &read_npm_manifest_value(&spec.manifest_path)?,
+    )?;
+    if js_lockfile_path(canonical_project_dir, manager)?.is_none()
+        || js_workspace_records_project(root, canonical_project_dir)?
+    {
+        return Ok(false);
+    }
+    let root_manifest = root.project_dir.join("package.json");
+    let explicitly_selected = parsers::path_detected(&root_manifest)?
+        && read_npm_manifest_value(&root_manifest)?
+            .get("packageManager")
+            .is_some();
+    Ok(!explicitly_selected)
+}
+
+/// Read the root `.npmrc` and reject package-manager configuration files that redirect
+/// registries or rewrite dependencies.
+fn read_package_manager_config(
+    canonical_project_dir: &std::path::Path,
+    ancestry_root: &std::path::Path,
+    canonical_root_dir: &std::path::Path,
+    manager: JsPackageManager,
+) -> Result<npm_config::NpmRegistries> {
     let mut npm_registries = npm_config::NpmRegistries::default();
-    for dir in ancestor_dirs_inclusive(&canonical_project_dir, &ancestry_root)?
+    for dir in ancestor_dirs_inclusive(canonical_project_dir, ancestry_root)?
         .into_iter()
         .rev()
     {
@@ -187,6 +168,53 @@ pub(crate) fn resolve_js_project_binding(
             }
         }
     }
+    Ok(npm_registries)
+}
+
+pub(crate) fn resolve_js_project_binding(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+) -> Result<JsProjectBinding> {
+    let canonical_project_dir = std::fs::canonicalize(spec.project_dir()).map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to inspect {}: {}",
+            spec.project_dir().display(),
+            err
+        )
+    })?;
+    let ancestry_root = js_ancestry_root(scan_root, spec.project_dir())?;
+    let mut workspace_root = find_js_workspace_root(&ancestry_root, &canonical_project_dir)?;
+    let mut independent_from_workspace = None;
+    if let Some(root) = &workspace_root
+        && project_is_independent_of_workspace(root, &canonical_project_dir, spec)?
+    {
+        independent_from_workspace = Some(root.manifest_path.clone());
+        workspace_root = None;
+    }
+    let (root_manifest_path, root_dir, manager) = if let Some(root) = workspace_root.as_ref() {
+        (
+            root.manifest_path.clone(),
+            root.project_dir.clone(),
+            root.manager,
+        )
+    } else {
+        let root_manifest_path = spec.manifest_path.clone();
+        let root_manifest = read_npm_manifest_value(&root_manifest_path)?;
+        let root_dir = root_manifest_path
+            .parent()
+            .expect("package.json should always have a parent directory")
+            .to_path_buf();
+        let manager = detect_js_manager(&root_dir, &root_manifest_path, &root_manifest)?;
+        (root_manifest_path, root_dir, manager)
+    };
+    let canonical_root_dir = std::fs::canonicalize(&root_dir)
+        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", root_dir.display(), err))?;
+    let npm_registries = read_package_manager_config(
+        &canonical_project_dir,
+        &ancestry_root,
+        &canonical_root_dir,
+        manager,
+    )?;
     let lockfile_path = js_lockfile_path(&root_dir, manager)?;
     let package_entry_key = if canonical_project_dir == canonical_root_dir {
         match manager {

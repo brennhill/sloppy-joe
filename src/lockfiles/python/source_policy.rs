@@ -225,48 +225,14 @@ pub(crate) fn validate_source_policy(
             );
         }
         if source_url != crate::config::normalized_default_pypi_index() {
-            match source_name.as_deref() {
-                Some(source_name) => {
-                    let Some(declared_url) = declared_source_names.get(&source_name.to_lowercase())
-                    else {
-                        anyhow::bail!(
-                            "Broken lockfile '{}': package '{}' resolves from source '{}' that is not declared in '{}'",
-                            source_path.display(),
-                            crate::report::sanitize_for_terminal(name),
-                            crate::report::sanitize_for_terminal(source_name),
-                            source_path
-                                .parent()
-                                .unwrap_or_else(|| Path::new("."))
-                                .join("pyproject.toml")
-                                .display()
-                        );
-                    };
-                    if declared_url != &source_url {
-                        anyhow::bail!(
-                            "Broken lockfile '{}': package '{}' resolves from source '{}' ({}) but pyproject.toml declares that source as {}",
-                            source_path.display(),
-                            crate::report::sanitize_for_terminal(name),
-                            crate::report::sanitize_for_terminal(source_name),
-                            source_url,
-                            declared_url
-                        );
-                    }
-                }
-                None if !declared_source_urls.contains(&source_url) => {
-                    anyhow::bail!(
-                        "Broken lockfile '{}': package '{}' resolves from non-PyPI source '{}' that is not declared in '{}'",
-                        source_path.display(),
-                        crate::report::sanitize_for_terminal(name),
-                        source_url,
-                        source_path
-                            .parent()
-                            .unwrap_or_else(|| Path::new("."))
-                            .join("pyproject.toml")
-                            .display()
-                    );
-                }
-                None => {}
-            }
+            ensure_source_declared(
+                name,
+                &source_url,
+                source_name.as_deref(),
+                &declared_source_names,
+                &declared_source_urls,
+                source_path,
+            )?;
         }
         if let Some(authorized_sources) = authorized_sources {
             let authorized = authorized_sources.get(&identity);
@@ -289,6 +255,74 @@ pub(crate) fn validate_source_policy(
             .insert(source_url);
     }
 
+    check_source_intents(
+        source_intents,
+        &package_sources,
+        &mut used_source_names,
+        source_path,
+    )?;
+
+    Ok((used_source_urls, used_source_names))
+}
+
+/// A lockfile package from a non-PyPI index must come from a source the manifest declares.
+fn ensure_source_declared(
+    name: &str,
+    source_url: &str,
+    source_name: Option<&str>,
+    declared_source_names: &HashMap<String, String>,
+    declared_source_urls: &HashSet<String>,
+    source_path: &Path,
+) -> Result<()> {
+    let manifest = || {
+        source_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("pyproject.toml")
+    };
+    match source_name {
+        Some(source_name) => {
+            let Some(declared_url) = declared_source_names.get(&source_name.to_lowercase()) else {
+                anyhow::bail!(
+                    "Broken lockfile '{}': package '{}' resolves from source '{}' that is not declared in '{}'",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(name),
+                    crate::report::sanitize_for_terminal(source_name),
+                    manifest().display()
+                );
+            };
+            if declared_url != source_url {
+                anyhow::bail!(
+                    "Broken lockfile '{}': package '{}' resolves from source '{}' ({}) but pyproject.toml declares that source as {}",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(name),
+                    crate::report::sanitize_for_terminal(source_name),
+                    source_url,
+                    declared_url
+                );
+            }
+        }
+        None if !declared_source_urls.contains(source_url) => {
+            anyhow::bail!(
+                "Broken lockfile '{}': package '{}' resolves from non-PyPI source '{}' that is not declared in '{}'",
+                source_path.display(),
+                crate::report::sanitize_for_terminal(name),
+                source_url,
+                manifest().display()
+            );
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Every dependency that names a source must resolve from exactly that source.
+fn check_source_intents(
+    source_intents: &[PythonDependencySourceIntent],
+    package_sources: &HashMap<String, HashSet<String>>,
+    used_source_names: &mut HashSet<String>,
+    source_path: &Path,
+) -> Result<()> {
     for intent in source_intents {
         let Some(resolved_sources) = package_sources.get(&intent.package) else {
             anyhow::bail!(
@@ -321,8 +355,7 @@ pub(crate) fn validate_source_policy(
         }
         used_source_names.insert(intent.source_name.to_lowercase());
     }
-
-    Ok((used_source_urls, used_source_names))
+    Ok(())
 }
 
 pub(crate) fn poetry_package_source(

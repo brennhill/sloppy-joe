@@ -29,6 +29,11 @@ pub(crate) struct YarnLockEntry {
     pub(crate) sections: HashMap<String, BTreeMap<String, String>>,
 }
 
+fn is_blank_or_comment(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
 pub(crate) fn parse_lockfile(
     content: &str,
     path: PathBuf,
@@ -40,121 +45,22 @@ pub(crate) fn parse_lockfile(
     let mut index = 0usize;
 
     while index < lines.len() {
-        let line = lines[index];
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if is_blank_or_comment(lines[index]) {
             index += 1;
             continue;
         }
-        if line.starts_with(' ') {
-            anyhow::bail!(
-                "Broken lockfile '{}': unexpected indentation before entry header on line {}.",
-                path.display(),
-                index + 1
-            );
-        }
-        let Some(header) = trimmed.strip_suffix(':') else {
-            anyhow::bail!(
-                "Broken lockfile '{}': expected an entry header ending with ':' on line {}.",
-                path.display(),
-                index + 1
-            );
-        };
-        let selectors = split_selectors(header);
-        if selectors.is_empty() {
-            anyhow::bail!(
-                "Broken lockfile '{}': entry on line {} did not contain any selectors.",
-                path.display(),
-                index + 1
-            );
-        }
-
+        let selectors = parse_entry_header(lines[index], index, &path)?;
         index += 1;
-        let mut version = None;
-        let mut resolved = None;
-        let mut resolution = None;
-        let mut checksum = None;
-        let mut integrity = None;
-        let mut link_type = None;
-        let mut sections = HashMap::new();
-
-        while index < lines.len() {
-            let line = lines[index];
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                index += 1;
-                continue;
-            }
-            if !line.starts_with("  ") {
-                break;
-            }
-            let body = &line[2..];
-            if let Some(section_name) = body.trim_end().strip_suffix(':') {
-                index += 1;
-                let mut section = BTreeMap::new();
-                while index < lines.len() {
-                    let line = lines[index];
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        index += 1;
-                        continue;
-                    }
-                    if !line.starts_with("    ") {
-                        break;
-                    }
-                    let (name, value) = parse_property_line(&line[4..]).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Broken lockfile '{}': invalid nested property on line {}.",
-                            path.display(),
-                            index + 1
-                        )
-                    })?;
-                    section.insert(name, normalize_yarn_value(&value));
-                    index += 1;
-                }
-                sections.insert(section_name.trim().to_string(), section);
-                continue;
-            }
-
-            let (key, value) = parse_property_line(body).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Broken lockfile '{}': invalid property on line {}.",
-                    path.display(),
-                    index + 1
-                )
-            })?;
-            let value = normalize_yarn_value(&value);
-            match key.as_str() {
-                "version" => version = Some(value),
-                "resolved" => resolved = Some(value),
-                "resolution" => resolution = Some(value),
-                "checksum" => checksum = Some(value),
-                "integrity" => integrity = Some(value),
-                "linkType" => link_type = Some(value),
-                _ => {}
-            }
-            index += 1;
-        }
-
-        let entry = YarnLockEntry {
-            selectors: selectors.clone(),
-            version,
-            resolved,
-            resolution,
-            checksum,
-            integrity,
-            link_type,
-            sections,
-        };
+        let entry = parse_entry_body(&lines, &mut index, selectors, &path)?;
         let entry_index = entries.len();
-        for selector in selectors {
+        for selector in &entry.selectors {
             // A repeated selector makes both the locked version and the
             // dependency graph ambiguous, and would hide the shadowed entry.
             if by_selector.insert(selector.clone(), entry_index).is_some() {
                 anyhow::bail!(
                     "Broken lockfile '{}': selector '{}' appears in more than one entry.",
                     path.display(),
-                    crate::report::sanitize_for_terminal(&selector)
+                    crate::report::sanitize_for_terminal(selector)
                 );
             }
         }
@@ -166,6 +72,122 @@ pub(crate) fn parse_lockfile(
         entries,
         by_selector,
     })
+}
+
+fn parse_entry_header(line: &str, index: usize, path: &Path) -> Result<Vec<String>> {
+    if line.starts_with(' ') {
+        anyhow::bail!(
+            "Broken lockfile '{}': unexpected indentation before entry header on line {}.",
+            path.display(),
+            index + 1
+        );
+    }
+    let Some(header) = line.trim().strip_suffix(':') else {
+        anyhow::bail!(
+            "Broken lockfile '{}': expected an entry header ending with ':' on line {}.",
+            path.display(),
+            index + 1
+        );
+    };
+    let selectors = split_selectors(header);
+    if selectors.is_empty() {
+        anyhow::bail!(
+            "Broken lockfile '{}': entry on line {} did not contain any selectors.",
+            path.display(),
+            index + 1
+        );
+    }
+    Ok(selectors)
+}
+
+fn parse_entry_body(
+    lines: &[&str],
+    index: &mut usize,
+    selectors: Vec<String>,
+    path: &Path,
+) -> Result<YarnLockEntry> {
+    let mut entry = YarnLockEntry {
+        selectors,
+        version: None,
+        resolved: None,
+        resolution: None,
+        checksum: None,
+        integrity: None,
+        link_type: None,
+        sections: HashMap::new(),
+    };
+    while *index < lines.len() {
+        let line = lines[*index];
+        if is_blank_or_comment(line) {
+            *index += 1;
+            continue;
+        }
+        if !line.starts_with("  ") {
+            break;
+        }
+        let body = &line[2..];
+        if let Some(section_name) = body.trim_end().strip_suffix(':') {
+            *index += 1;
+            let section = parse_nested_section(lines, index, path)?;
+            entry
+                .sections
+                .insert(section_name.trim().to_string(), section);
+            continue;
+        }
+
+        let (key, value) = parse_property_line(body).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Broken lockfile '{}': invalid property on line {}.",
+                path.display(),
+                *index + 1
+            )
+        })?;
+        entry.set_property(&key, normalize_yarn_value(&value));
+        *index += 1;
+    }
+    Ok(entry)
+}
+
+fn parse_nested_section(
+    lines: &[&str],
+    index: &mut usize,
+    path: &Path,
+) -> Result<BTreeMap<String, String>> {
+    let mut section = BTreeMap::new();
+    while *index < lines.len() {
+        let line = lines[*index];
+        if is_blank_or_comment(line) {
+            *index += 1;
+            continue;
+        }
+        if !line.starts_with("    ") {
+            break;
+        }
+        let (name, value) = parse_property_line(&line[4..]).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Broken lockfile '{}': invalid nested property on line {}.",
+                path.display(),
+                *index + 1
+            )
+        })?;
+        section.insert(name, normalize_yarn_value(&value));
+        *index += 1;
+    }
+    Ok(section)
+}
+
+impl YarnLockEntry {
+    fn set_property(&mut self, key: &str, value: String) {
+        match key {
+            "version" => self.version = Some(value),
+            "resolved" => self.resolved = Some(value),
+            "resolution" => self.resolution = Some(value),
+            "checksum" => self.checksum = Some(value),
+            "integrity" => self.integrity = Some(value),
+            "linkType" => self.link_type = Some(value),
+            _ => {}
+        }
+    }
 }
 
 pub(super) fn resolve_from_parsed(
@@ -454,18 +476,9 @@ pub(super) fn parse_all_from_parsed_for_project(
         && !declares_workspaces(project_dir);
     let workspaces = workspaces.into_iter().collect::<HashSet<_>>();
 
-    let mut orphans = Vec::new();
-    for (index, entry) in parsed.entries.iter().enumerate() {
-        if global.reachable.contains(&index) || workspaces.contains(&index) {
-            continue;
-        }
-        if packages[index].is_some() {
-            orphans.push(index);
-        } else if !(entry.selectors.len() == 1 && entry.selectors[0] == "__metadata") {
-            // Not a package sloppy-joe can attribute: reachability unknown.
-            certain = false;
-        }
-    }
+    let (orphans, unattributable) =
+        unreferenced_entries(parsed, &packages, &global.reachable, &workspaces);
+    certain &= !unattributable;
 
     if certain {
         if !orphans.is_empty() {
@@ -478,6 +491,29 @@ pub(super) fn parse_all_from_parsed_for_project(
     }
 
     Ok((dependencies_for(&packages, scan), issues))
+}
+
+/// Entries nothing reaches. The flag is set when one of them is not a package sloppy-joe can
+/// attribute, so reachability is unknown.
+fn unreferenced_entries(
+    parsed: &ParsedYarnLock,
+    packages: &[Option<(String, String)>],
+    reachable: &HashSet<usize>,
+    workspaces: &HashSet<usize>,
+) -> (Vec<usize>, bool) {
+    let mut orphans = Vec::new();
+    let mut unattributable = false;
+    for (index, entry) in parsed.entries.iter().enumerate() {
+        if reachable.contains(&index) || workspaces.contains(&index) {
+            continue;
+        }
+        if packages[index].is_some() {
+            orphans.push(index);
+        } else if !(entry.selectors.len() == 1 && entry.selectors[0] == "__metadata") {
+            unattributable = true;
+        }
+    }
+    (orphans, unattributable)
 }
 
 fn dependencies_for(

@@ -113,73 +113,82 @@ pub(super) fn resolve_from_value_with_mode_and_profile(
         };
 
         if let Some(exact_manifest) = dep.exact_version() {
-            let expected_version = selected_root_version
-                .as_deref()
-                .unwrap_or(exact_manifest.as_str());
-            match candidates
-                .iter()
-                .find(|version| version.as_str() == expected_version)
-            {
-                Some(version) => {
-                    result.exact_versions.insert(
-                        ResolutionKey::from(dep),
-                        ResolvedVersion {
-                            version: (*version).clone(),
-                            source: ResolutionSource::Lockfile,
-                        },
-                    );
-                }
-                None => {
-                    if let Some(version) = candidates.first() {
-                        result.push_issue_for(dep, out_of_sync_issue(dep, version));
-                    } else {
-                        result.push_issue_for(dep, missing_entry_issue(dep, "uv.lock"));
-                    }
-                    add_manifest_exact_fallback(&mut result, dep);
-                }
-            }
-            continue;
-        }
-
-        if mode == ResolutionMode::Direct && dep.version.is_some() {
-            let selected = selected_root_version
-                .as_ref()
-                .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
-            match selected {
-                Some(version) if version_matches_uv_specifier(version, dep.version.as_deref())? => {
-                    result.exact_versions.insert(
-                        ResolutionKey::from(dep),
-                        ResolvedVersion {
-                            version: version.clone(),
-                            source: ResolutionSource::Lockfile,
-                        },
-                    );
-                }
-                Some(version) => result.push_issue_for(dep, out_of_sync_issue(dep, version)),
-                None => result.push_issue_for(dep, ambiguous_issue(dep)),
-            }
-            continue;
-        }
-
-        match candidates.as_slice() {
-            [version] => {
-                result.exact_versions.insert(
-                    ResolutionKey::from(dep),
-                    ResolvedVersion {
-                        version: (*version).clone(),
-                        source: ResolutionSource::Lockfile,
-                    },
-                );
-            }
-            [] => {
-                result.push_issue_for(dep, missing_entry_issue(dep, "uv.lock"));
-                add_manifest_exact_fallback(&mut result, dep);
-            }
-            _ => result.push_issue_for(dep, ambiguous_issue(dep)),
+            let expected = selected_root_version.as_deref().unwrap_or(&exact_manifest);
+            resolve_exact_manifest(&mut result, dep, &candidates, expected);
+        } else if mode == ResolutionMode::Direct && dep.version.is_some() {
+            resolve_ranged_direct(
+                &mut result,
+                dep,
+                &candidates,
+                selected_root_version.as_ref(),
+            )?;
+        } else {
+            resolve_unconstrained(&mut result, dep, &candidates);
         }
     }
 
     Ok(result)
+}
+
+fn record_locked_version(result: &mut ResolutionResult, dep: &Dependency, version: &str) {
+    result.exact_versions.insert(
+        ResolutionKey::from(dep),
+        ResolvedVersion {
+            version: version.to_string(),
+            source: ResolutionSource::Lockfile,
+        },
+    );
+}
+
+/// The manifest pins an exact version: the lock must carry it.
+fn resolve_exact_manifest(
+    result: &mut ResolutionResult,
+    dep: &Dependency,
+    candidates: &[&String],
+    expected: &str,
+) {
+    if let Some(version) = candidates
+        .iter()
+        .find(|version| version.as_str() == expected)
+    {
+        record_locked_version(result, dep, version);
+        return;
+    }
+    match candidates.first() {
+        Some(version) => result.push_issue_for(dep, out_of_sync_issue(dep, version)),
+        None => result.push_issue_for(dep, missing_entry_issue(dep, "uv.lock")),
+    }
+    add_manifest_exact_fallback(result, dep);
+}
+
+/// A direct dependency with a range: the single locked version must satisfy it.
+fn resolve_ranged_direct(
+    result: &mut ResolutionResult,
+    dep: &Dependency,
+    candidates: &[&String],
+    selected_root_version: Option<&String>,
+) -> Result<()> {
+    let selected = selected_root_version.or_else(|| (candidates.len() == 1).then(|| candidates[0]));
+    match selected {
+        Some(version) if version_matches_uv_specifier(version, dep.version.as_deref())? => {
+            record_locked_version(result, dep, version);
+        }
+        Some(version) => result.push_issue_for(dep, out_of_sync_issue(dep, version)),
+        None => result.push_issue_for(dep, ambiguous_issue(dep)),
+    }
+    Ok(())
+}
+
+/// No manifest constraint: exactly one locked version is required.
+fn resolve_unconstrained(result: &mut ResolutionResult, dep: &Dependency, candidates: &[&String]) {
+    match candidates {
+        [version] => record_locked_version(result, dep, version),
+        [] => {
+            result.push_issue_for(dep, missing_entry_issue(dep, "uv.lock"));
+            add_manifest_exact_fallback(result, dep);
+        }
+        _ => result.push_issue_for(dep, ambiguous_issue(dep)),
+    }
 }
 
 pub(super) fn parse_all_from_value(parsed: &toml::Value) -> Result<Vec<Dependency>> {
