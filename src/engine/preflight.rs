@@ -95,10 +95,10 @@ fn preflight_input(
     check_kind_lockfile(ctx, spec, &parsed_input, warnings)?;
 
     if parsed_input.deps.is_empty()
-        && matches!(
-            spec.kind,
-            ProjectInputKind::Gradle | ProjectInputKind::Dotnet
-        )
+        && spec
+            .kind
+            .descriptor()
+            .rejects_locked_packages_without_declarations
     {
         ensure_no_locked_packages_without_declarations(spec, &parsed_input.deps)?;
     }
@@ -144,6 +144,12 @@ fn parse_preflight_input(
 }
 
 fn ensure_kind_lockfile(spec: &ProjectInputSpec, lockfile: &std::path::Path) -> Result<()> {
+    if spec.kind.descriptor().lockfile != LockfilePolicy::Required {
+        anyhow::bail!(
+            "Internal error: {} projects have no required lockfile to check",
+            spec.kind.manifest_label()
+        );
+    }
     ensure_lockfile_readable(lockfile, spec.kind.missing_lockfile_help().unwrap())
 }
 
@@ -261,6 +267,12 @@ fn check_python_lockfile(
             if !validate_hash_locked_requirements_provenance(ctx.scan_root, spec, config)? {
                 warnings.push(hash_locked_requirements_reduced_confidence_warning(spec));
             }
+        }
+        kind if !kind.is_python() => {
+            anyhow::bail!(
+                "Internal error: {} is not a Python project",
+                kind.manifest_label()
+            );
         }
         _ => {
             if spec.kind == ProjectInputKind::PyRequirements {

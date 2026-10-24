@@ -34,7 +34,8 @@ pub(crate) fn read_lockfile(
             Some(value) => Ok(ParsedLockfile::Python(value)),
             None => Ok(ParsedLockfile::None),
         },
-        _ => Ok(ParsedLockfile::None),
+        // Go records checksums in go.sum, which preflight checks separately.
+        Some(Ecosystem::Go) | None => Ok(ParsedLockfile::None),
     }
 }
 

@@ -90,89 +90,170 @@ impl ProjectInputSpec {
     }
 }
 
-impl ProjectInputKind {
-    pub(crate) fn is_python(self) -> bool {
-        matches!(
-            self,
-            Self::PyProjectPoetry
-                | Self::PyProjectUv
-                | Self::PyRequirements
-                | Self::PyRequirementsTrusted
-                | Self::PyProjectLegacy
-                | Self::PyPipfile
-                | Self::PySetupPy
-                | Self::PySetupCfg
-        )
-    }
+/// How a project kind relates to a lockfile. Every kind states one: there is no default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LockfilePolicy {
+    /// A lockfile must exist and be readable; scans block without it.
+    Required,
+    /// No trusted lockfile format exists; the scan continues with reduced confidence.
+    Unsupported,
+}
 
+/// Static facts about a project kind. The one place a new kind must answer each question.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KindDescriptor {
     /// The ecosystem this project installs from, known even when the manifest
     /// declares no dependencies (its lockfile may still list packages).
-    pub(crate) fn ecosystem(self) -> Ecosystem {
+    pub(crate) ecosystem: Ecosystem,
+    pub(crate) manifest_label: &'static str,
+    /// Package manager name; `None` for JS, where it is bound per project.
+    pub(crate) manager: Option<&'static str>,
+    pub(crate) lockfile: LockfilePolicy,
+    /// Remedy shown when the required lockfile is missing; `Some` exactly when `lockfile` is `Required`.
+    pub(crate) missing_lockfile_help: Option<&'static str>,
+    /// Locked packages with no declared dependencies means declarations were missed: block.
+    pub(crate) rejects_locked_packages_without_declarations: bool,
+}
+
+impl ProjectInputKind {
+    #[cfg(test)]
+    pub(crate) const ALL: [ProjectInputKind; 16] = [
+        Self::Npm,
+        Self::PyProjectPoetry,
+        Self::PyProjectUv,
+        Self::PyRequirements,
+        Self::PyRequirementsTrusted,
+        Self::PyProjectLegacy,
+        Self::PyPipfile,
+        Self::PySetupPy,
+        Self::PySetupCfg,
+        Self::Cargo,
+        Self::Go,
+        Self::Ruby,
+        Self::Php,
+        Self::Gradle,
+        Self::Maven,
+        Self::Dotnet,
+    ];
+
+    pub(crate) fn descriptor(self) -> KindDescriptor {
+        use LockfilePolicy::{Required, Unsupported};
+        let python = |manifest_label, manager, lockfile, help| KindDescriptor {
+            ecosystem: Ecosystem::PyPI,
+            manifest_label,
+            manager: Some(manager),
+            lockfile,
+            missing_lockfile_help: help,
+            rejects_locked_packages_without_declarations: false,
+        };
+        let simple = |ecosystem, manifest_label, manager, help| KindDescriptor {
+            ecosystem,
+            manifest_label,
+            manager: Some(manager),
+            lockfile: Required,
+            missing_lockfile_help: Some(help),
+            rejects_locked_packages_without_declarations: false,
+        };
         match self {
-            Self::Npm => Ecosystem::Npm,
-            Self::Cargo => Ecosystem::Cargo,
-            Self::Go => Ecosystem::Go,
-            Self::Ruby => Ecosystem::Ruby,
-            Self::Php => Ecosystem::Php,
-            Self::Gradle | Self::Maven => Ecosystem::Jvm,
-            Self::Dotnet => Ecosystem::Dotnet,
-            Self::PyProjectPoetry
-            | Self::PyProjectUv
-            | Self::PyRequirements
-            | Self::PyRequirementsTrusted
-            | Self::PyProjectLegacy
-            | Self::PyPipfile
-            | Self::PySetupPy
-            | Self::PySetupCfg => Ecosystem::PyPI,
+            Self::Npm => KindDescriptor {
+                ecosystem: Ecosystem::Npm,
+                manifest_label: "package.json",
+                manager: None,
+                lockfile: Required,
+                missing_lockfile_help: Some(
+                    "Run `npm install --package-lock-only` or `npm shrinkwrap`, then commit the lockfile.",
+                ),
+                rejects_locked_packages_without_declarations: false,
+            },
+            Self::Cargo => simple(
+                Ecosystem::Cargo,
+                "Cargo.toml",
+                "cargo",
+                "Run `cargo generate-lockfile` and commit Cargo.lock.",
+            ),
+            Self::Go => simple(
+                Ecosystem::Go,
+                "go.mod",
+                "go",
+                "Run `go mod tidy` so Go records dependency checksums in go.sum.",
+            ),
+            Self::Ruby => simple(
+                Ecosystem::Ruby,
+                "Gemfile",
+                "bundler",
+                "Run `bundle lock` or `bundle install`, then commit Gemfile.lock.",
+            ),
+            Self::Php => simple(
+                Ecosystem::Php,
+                "composer.json",
+                "composer",
+                "Run `composer update` or `composer install`, then commit composer.lock.",
+            ),
+            Self::Gradle => KindDescriptor {
+                rejects_locked_packages_without_declarations: true,
+                ..simple(
+                    Ecosystem::Jvm,
+                    "build.gradle or build.gradle.kts",
+                    "gradle",
+                    "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
+                )
+            },
+            Self::Dotnet => KindDescriptor {
+                rejects_locked_packages_without_declarations: true,
+                ..simple(
+                    Ecosystem::Dotnet,
+                    "*.csproj",
+                    "nuget",
+                    "Run `dotnet restore --use-lock-file` and commit packages.lock.json.",
+                )
+            },
+            Self::Maven => KindDescriptor {
+                ecosystem: Ecosystem::Jvm,
+                manifest_label: "pom.xml",
+                manager: Some("maven"),
+                lockfile: Unsupported,
+                missing_lockfile_help: None,
+                rejects_locked_packages_without_declarations: false,
+            },
+            Self::PyProjectPoetry => python(
+                "pyproject.toml",
+                "poetry",
+                Required,
+                Some("Run `poetry lock` and commit poetry.lock alongside pyproject.toml."),
+            ),
+            Self::PyProjectUv => python(
+                "pyproject.toml",
+                "uv",
+                Required,
+                Some("Run `uv lock` and commit uv.lock alongside pyproject.toml."),
+            ),
+            Self::PyProjectLegacy => python("pyproject.toml", "pip", Unsupported, None),
+            Self::PyRequirements | Self::PyRequirementsTrusted => {
+                python("requirements*.txt", "pip", Unsupported, None)
+            }
+            Self::PyPipfile => python("Pipfile", "pipenv", Unsupported, None),
+            Self::PySetupPy => python("setup.py", "pip", Unsupported, None),
+            Self::PySetupCfg => python("setup.cfg", "pip", Unsupported, None),
         }
+    }
+
+    pub(crate) fn is_python(self) -> bool {
+        self.descriptor().ecosystem == Ecosystem::PyPI
+    }
+
+    pub(crate) fn ecosystem(self) -> Ecosystem {
+        self.descriptor().ecosystem
     }
 
     pub(crate) fn manifest_label(self) -> &'static str {
-        match self {
-            Self::Npm => "package.json",
-            Self::PyProjectPoetry | Self::PyProjectUv | Self::PyProjectLegacy => "pyproject.toml",
-            Self::PyRequirements | Self::PyRequirementsTrusted => "requirements*.txt",
-            Self::PyPipfile => "Pipfile",
-            Self::PySetupPy => "setup.py",
-            Self::PySetupCfg => "setup.cfg",
-            Self::Cargo => "Cargo.toml",
-            Self::Go => "go.mod",
-            Self::Ruby => "Gemfile",
-            Self::Php => "composer.json",
-            Self::Gradle => "build.gradle or build.gradle.kts",
-            Self::Maven => "pom.xml",
-            Self::Dotnet => "*.csproj",
-        }
+        self.descriptor().manifest_label
     }
 
     pub(crate) fn missing_lockfile_help(&self) -> Option<&'static str> {
-        match self {
-            Self::Npm => Some(
-                "Run `npm install --package-lock-only` or `npm shrinkwrap`, then commit the lockfile.",
-            ),
-            Self::Cargo => Some("Run `cargo generate-lockfile` and commit Cargo.lock."),
-            Self::Go => Some("Run `go mod tidy` so Go records dependency checksums in go.sum."),
-            Self::Ruby => Some("Run `bundle lock` or `bundle install`, then commit Gemfile.lock."),
-            Self::Php => {
-                Some("Run `composer update` or `composer install`, then commit composer.lock.")
-            }
-            Self::Gradle => Some(
-                "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
-            ),
-            Self::Dotnet => {
-                Some("Run `dotnet restore --use-lock-file` and commit packages.lock.json.")
-            }
-            Self::PyProjectPoetry => {
-                Some("Run `poetry lock` and commit poetry.lock alongside pyproject.toml.")
-            }
-            Self::PyProjectUv => Some("Run `uv lock` and commit uv.lock alongside pyproject.toml."),
-            Self::PyRequirements
-            | Self::PyRequirementsTrusted
-            | Self::PyProjectLegacy
-            | Self::PyPipfile
-            | Self::PySetupPy
-            | Self::PySetupCfg
-            | Self::Maven => None,
-        }
+        self.descriptor().missing_lockfile_help
     }
 }
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;
