@@ -16,8 +16,7 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     let mut index = 0usize;
 
     while index < lines.len() {
-        let raw = lines[index];
-        let trimmed = raw.trim();
+        let trimmed = lines[index].trim();
 
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
             index += 1;
@@ -40,50 +39,60 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
             continue;
         }
 
-        match section.as_str() {
-            "options"
-                if key_name(trimmed).is_some_and(|key| {
-                    let key = normalize_cfg_name(key);
-                    ["install_requires", "setup_requires", "tests_require"]
-                        .iter()
-                        .any(|supported| key == *supported)
-                }) =>
-            {
-                let (entries, next_index) = read_cfg_value_block(&lines, index);
-                collect_dependency_lines(&entries, path, &mut deps)?;
-                index = next_index;
-            }
-            "options.extras_require" => {
-                let (entries, next_index) = read_cfg_value_block(&lines, index);
-                collect_dependency_lines(&entries, path, &mut deps)?;
-                index = next_index;
-            }
-            "options" | "easy_install" => {
-                let key = key_name(trimmed).map(normalize_cfg_name);
-                let Some(key) = key else {
-                    index += 1;
-                    continue;
-                };
-                let carries_dependencies = section == "easy_install"
-                    || key == "dependency_links"
-                    || (key != "python_requires"
-                        && (key.contains("require") || key.contains("depend")));
-                let (entries, next_index) = read_cfg_value_block(&lines, index);
-                if carries_dependencies && entries.iter().any(|entry| !entry.is_empty()) {
-                    anyhow::bail!(
-                        "Scan not supported: setup.cfg [{section}] {key} can add or redirect dependencies in {}",
-                        path.display()
-                    );
-                }
-                index = next_index;
-            }
-            _ => {
-                index += 1;
-            }
-        }
+        index = read_option(&section, &lines, index, path, &mut deps)?;
     }
 
     Ok(deps)
+}
+
+fn is_dependency_list_key(key: &str) -> bool {
+    ["install_requires", "setup_requires", "tests_require"]
+        .contains(&normalize_cfg_name(key).as_str())
+}
+
+/// Options that can add or redirect dependencies without being a plain requirement list.
+fn carries_dependencies(section: &str, key: &str) -> bool {
+    section == "easy_install"
+        || key == "dependency_links"
+        || (key != "python_requires" && (key.contains("require") || key.contains("depend")))
+}
+
+/// Read the option starting at `index` and return the index of the next unread line.
+fn read_option(
+    section: &str,
+    lines: &[&str],
+    index: usize,
+    path: &Path,
+    deps: &mut Vec<Dependency>,
+) -> Result<usize> {
+    let trimmed = lines[index].trim();
+    match section {
+        "options" if key_name(trimmed).is_some_and(is_dependency_list_key) => {
+            let (entries, next_index) = read_cfg_value_block(lines, index);
+            collect_dependency_lines(&entries, path, deps)?;
+            Ok(next_index)
+        }
+        "options.extras_require" => {
+            let (entries, next_index) = read_cfg_value_block(lines, index);
+            collect_dependency_lines(&entries, path, deps)?;
+            Ok(next_index)
+        }
+        "options" | "easy_install" => {
+            let Some(key) = key_name(trimmed).map(normalize_cfg_name) else {
+                return Ok(index + 1);
+            };
+            let (entries, next_index) = read_cfg_value_block(lines, index);
+            if carries_dependencies(section, &key) && entries.iter().any(|entry| !entry.is_empty())
+            {
+                anyhow::bail!(
+                    "Scan not supported: setup.cfg [{section}] {key} can add or redirect dependencies in {}",
+                    path.display()
+                );
+            }
+            Ok(next_index)
+        }
+        _ => Ok(index + 1),
+    }
 }
 
 fn normalize_cfg_name(name: &str) -> String {

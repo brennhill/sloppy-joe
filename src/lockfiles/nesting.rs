@@ -143,36 +143,16 @@ pub(crate) fn ensure_nesting_depth(content: &str, syntax: NestingSyntax) -> Resu
     let mut previous: Option<u8> = None;
     while index < bytes.len() {
         let byte = bytes[index];
-        let opens_string = match byte {
-            b'"' | b'\'' => {
-                syntax == NestingSyntax::Json5
-                    || matches!(
-                        previous,
-                        None | Some(b':' | b',' | b'[' | b'{' | b'-' | b'?')
-                    )
-            }
-            _ => false,
-        };
-        if opens_string {
+        if opens_string(byte, previous, syntax) {
             index = skip_string(bytes, index, syntax);
             previous = Some(b'"');
             continue;
         }
+        if let Some(after_comment) = skip_comment(bytes, index, syntax) {
+            index = after_comment;
+            continue;
+        }
         match byte {
-            b'/' if syntax == NestingSyntax::Json5 && bytes.get(index + 1) == Some(&b'/') => {
-                index = skip_until(bytes, index + 2, b"\n");
-                continue;
-            }
-            b'/' if syntax == NestingSyntax::Json5 && bytes.get(index + 1) == Some(&b'*') => {
-                index = skip_until(bytes, index + 2, b"*/") + 2;
-                continue;
-            }
-            b'#' if syntax == NestingSyntax::Yaml
-                && (index == 0 || bytes[index - 1].is_ascii_whitespace()) =>
-            {
-                index = skip_until(bytes, index + 1, b"\n");
-                continue;
-            }
             b'[' | b'{' => {
                 depth += 1;
                 if depth > MAX_LOCKFILE_NESTING_DEPTH {
@@ -198,6 +178,34 @@ pub(crate) fn ensure_nesting_depth(content: &str, syntax: NestingSyntax) -> Resu
         index += 1;
     }
     Ok(())
+}
+
+fn opens_string(byte: u8, previous: Option<u8>, syntax: NestingSyntax) -> bool {
+    matches!(byte, b'"' | b'\'')
+        && (syntax == NestingSyntax::Json5
+            || matches!(
+                previous,
+                None | Some(b':' | b',' | b'[' | b'{' | b'-' | b'?')
+            ))
+}
+
+/// Index just past a comment starting at `index`, or `None` when no comment starts there.
+fn skip_comment(bytes: &[u8], index: usize, syntax: NestingSyntax) -> Option<usize> {
+    let next = bytes.get(index + 1);
+    match bytes[index] {
+        b'/' if syntax == NestingSyntax::Json5 && next == Some(&b'/') => {
+            Some(skip_until(bytes, index + 2, b"\n"))
+        }
+        b'/' if syntax == NestingSyntax::Json5 && next == Some(&b'*') => {
+            Some(skip_until(bytes, index + 2, b"*/") + 2)
+        }
+        b'#' if syntax == NestingSyntax::Yaml
+            && (index == 0 || bytes[index - 1].is_ascii_whitespace()) =>
+        {
+            Some(skip_until(bytes, index + 1, b"\n"))
+        }
+        _ => None,
+    }
 }
 
 /// Index just past the string literal opening at `start`.

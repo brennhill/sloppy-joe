@@ -3,22 +3,16 @@
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
 fn-complexity src/checks/similarity/mod.rs::check_similarity_with_options 61
 fn-complexity src/checks/tarball_verification.rs::verify_npm_tarballs 22
-fn-complexity src/engine/discovery.rs::project_input_kind_from_path 20
-fn-complexity src/engine/discovery.rs::unbound_project_inputs_with_config 19
-fn-complexity src/engine/discovery.rs::walk_project_tree 17
 fn-complexity src/engine/js_binding.rs::resolve_js_project_binding 16
 fn-complexity src/engine/preflight.rs::preflight_selected_project_inputs 32
 fn-complexity src/engine/scan.rs::scan_with_config 34
 fn-complexity src/lockfiles/cargo.rs::resolve_from_value_with_mode 23
-fn-complexity src/lockfiles/nesting.rs::ensure_nesting_depth 20
 fn-complexity src/lockfiles/python/source_policy.rs::validate_source_policy 16
 fn-complexity src/lockfiles/read.rs::read_lockfile 20
 fn-complexity src/lockfiles/uv.rs::resolve_from_value_with_mode_and_profile 16
 fn-complexity src/lockfiles/yarn.rs::parse_all_from_parsed_for_project 16
 fn-complexity src/lockfiles/yarn.rs::parse_lockfile 23
 fn-complexity src/main.rs::main 46
-fn-complexity src/parsers/csproj.rs::extract_attr 17
-fn-complexity src/parsers/csproj.rs::parse_file 18
 fn-complexity src/parsers/gemfile.rs::collect_gem_entries 26
 fn-complexity src/parsers/gemfile.rs::ingest 19
 fn-complexity src/parsers/gemfile.rs::parse_gemspec 21
@@ -30,12 +24,10 @@ fn-complexity src/parsers/jvm/maven_model.rs::resolve_pom_versions 30
 fn-complexity src/parsers/mod.rs::parse_all_ecosystems_inner 32
 fn-complexity src/parsers/python_scope/marker.rs::resolve_marker_variable 18
 fn-complexity src/parsers/python_scope/marker.rs::tokenize_marker 29
-fn-complexity src/parsers/setup_cfg.rs::parse_file 17
 fn-complexity src/parsers/setup_py.rs::extract_setup_call 36
 fn-complexity src/parsers/setup_py.rs::find_keyword_assignment 30
 fn-complexity src/parsers/setup_py.rs::matching_delimiter 22
 fn-complexity src/parsers/setup_py.rs::validate_literal_setup_arguments 17
-fn-complexity src/version.rs::exact_version 17
 placement project-input-kind src/engine/discovery.rs 28
 placement project-input-kind src/engine/js_binding.rs 3
 placement project-input-kind src/engine/js_workspace.rs 1

@@ -16,6 +16,15 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", csproj.display(), e))?;
     let content = strip_xml_comments(&content);
 
+    reject_ancestor_overrides(csproj)?;
+    for tag in content.split('<').skip(1) {
+        check_tag(tag, csproj)?;
+    }
+    collect_package_references(&content, csproj)
+}
+
+/// Implicit imports, `global.json` SDK pins and `nuget.config` feeds in any ancestor directory.
+fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
     for ancestor in csproj.parent().into_iter().flat_map(Path::ancestors) {
         for name in [
             "Directory.Build.props",
@@ -33,103 +42,115 @@ pub(crate) fn parse_file(csproj: &Path) -> Result<Vec<Dependency>> {
         reject_global_json_msbuild_sdks(ancestor, csproj)?;
         reject_untrusted_nuget_config(ancestor, csproj)?;
     }
+    Ok(())
+}
 
-    for tag in content.split('<').skip(1) {
-        let name = tag
-            .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
-            .next()
-            .unwrap_or_default();
-        let local_name = name.rsplit(':').next().unwrap_or_default();
-        if matches!(
-            local_name,
-            "RestoreSources"
-                | "RestoreAdditionalProjectSources"
-                | "RestoreFallbackFolders"
-                | "RestoreAdditionalProjectFallbackFolders"
-        ) {
-            bail!(
-                "Unsupported MSBuild {} in {}: restore would fetch packages from sources sloppy-joe cannot verify",
-                name,
-                csproj.display()
-            );
-        }
-        if matches!(
-            local_name,
-            "Import" | "PackageDownload" | "DotNetCliToolReference"
-        ) || (local_name == "PackageReference" && name != "PackageReference")
-        {
-            bail!(
-                "Unsupported MSBuild {} in {}: dependency declarations cannot be verified",
-                name,
-                csproj.display()
-            );
-        }
-        let attrs = tag.split('>').next().unwrap_or_default();
-        let attrs = &attrs[name.len().min(attrs.len())..];
-        if local_name == "Project"
-            && let Some(sdks) = extract_attr(attrs, "Sdk")
-        {
-            for sdk in sdks.split(';').map(str::trim).filter(|sdk| !sdk.is_empty()) {
-                let (sdk_name, version) = match sdk.split_once('/') {
-                    Some((sdk_name, version)) => (sdk_name.trim(), Some(version)),
-                    None => (sdk, None),
-                };
-                reject_unbundled_msbuild_sdk(sdk_name, version, csproj)?;
-            }
-        }
-        if local_name == "Sdk" {
-            if name != "Sdk" {
-                bail!(
-                    "Unsupported MSBuild {} in {}: SDK declarations cannot be verified",
-                    name,
-                    csproj.display()
-                );
-            }
-            let sdk_name = extract_attr(attrs, "Name").unwrap_or_default();
-            let version = extract_attr(attrs, "Version");
-            reject_unbundled_msbuild_sdk(sdk_name.trim(), version.as_deref(), csproj)?;
-        }
+/// Reject one `<...` fragment of the project file that declares sources or dependencies
+/// sloppy-joe cannot verify.
+fn check_tag(tag: &str, csproj: &Path) -> Result<()> {
+    let name = tag
+        .split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
+        .next()
+        .unwrap_or_default();
+    let local_name = name.rsplit(':').next().unwrap_or_default();
+    if matches!(
+        local_name,
+        "RestoreSources"
+            | "RestoreAdditionalProjectSources"
+            | "RestoreFallbackFolders"
+            | "RestoreAdditionalProjectFallbackFolders"
+    ) {
+        bail!(
+            "Unsupported MSBuild {} in {}: restore would fetch packages from sources sloppy-joe cannot verify",
+            name,
+            csproj.display()
+        );
     }
+    let unmodeled_reference = local_name == "PackageReference" && name != "PackageReference";
+    if matches!(
+        local_name,
+        "Import" | "PackageDownload" | "DotNetCliToolReference"
+    ) || unmodeled_reference
+    {
+        bail!(
+            "Unsupported MSBuild {} in {}: dependency declarations cannot be verified",
+            name,
+            csproj.display()
+        );
+    }
+    let attrs = tag.split('>').next().unwrap_or_default();
+    let attrs = &attrs[name.len().min(attrs.len())..];
+    match local_name {
+        "Project" => check_project_sdk_attribute(attrs, csproj),
+        "Sdk" => check_sdk_element(name, attrs, csproj),
+        _ => Ok(()),
+    }
+}
 
+fn check_project_sdk_attribute(attrs: &str, csproj: &Path) -> Result<()> {
+    let Some(sdks) = extract_attr(attrs, "Sdk") else {
+        return Ok(());
+    };
+    for sdk in sdks.split(';').map(str::trim).filter(|sdk| !sdk.is_empty()) {
+        let (sdk_name, version) = match sdk.split_once('/') {
+            Some((sdk_name, version)) => (sdk_name.trim(), Some(version)),
+            None => (sdk, None),
+        };
+        reject_unbundled_msbuild_sdk(sdk_name, version, csproj)?;
+    }
+    Ok(())
+}
+
+fn check_sdk_element(name: &str, attrs: &str, csproj: &Path) -> Result<()> {
+    if name != "Sdk" {
+        bail!(
+            "Unsupported MSBuild {} in {}: SDK declarations cannot be verified",
+            name,
+            csproj.display()
+        );
+    }
+    let sdk_name = extract_attr(attrs, "Name").unwrap_or_default();
+    let version = extract_attr(attrs, "Version");
+    reject_unbundled_msbuild_sdk(sdk_name.trim(), version.as_deref(), csproj)
+}
+
+fn collect_package_references(content: &str, csproj: &Path) -> Result<Vec<Dependency>> {
     let mut deps = Vec::new();
     let mut search_start = 0usize;
-    while let Some(open_idx) = find_package_reference_start(&content, search_start) {
-        let (tag_end, self_closing) = find_tag_end(&content, open_idx)?;
+    while let Some(open_idx) = find_package_reference_start(content, search_start) {
+        let (tag_end, self_closing) = find_tag_end(content, open_idx)?;
         let tag_content = &content[open_idx + "<PackageReference".len()..tag_end];
-        {
-            let name = extract_attr(tag_content, "Include").ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Unsupported PackageReference in {}: expected an Include attribute",
-                    csproj.display()
-                )
-            })?;
-            let version = if self_closing {
-                extract_attr(tag_content, "Version")
-            } else {
-                let close_idx = content[tag_end + 1..]
-                    .find("</PackageReference>")
-                    .map(|idx| tag_end + 1 + idx)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Unterminated <PackageReference> element in {}",
-                            csproj.display()
-                        )
-                    })?;
-                let body = &content[tag_end + 1..close_idx];
-                extract_attr(tag_content, "Version").or_else(|| extract_xml_value(body, "Version"))
-            };
-            let dep = Dependency {
-                name,
-                version,
-                ecosystem: crate::Ecosystem::Dotnet,
-                actual_name: None,
-            };
-            super::validate_dependency(&dep, csproj)?;
-            deps.push(dep);
-        }
+        let name = extract_attr(tag_content, "Include").ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported PackageReference in {}: expected an Include attribute",
+                csproj.display()
+            )
+        })?;
+        let version = if self_closing {
+            extract_attr(tag_content, "Version")
+        } else {
+            let close_idx = content[tag_end + 1..]
+                .find("</PackageReference>")
+                .map(|idx| tag_end + 1 + idx)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Unterminated <PackageReference> element in {}",
+                        csproj.display()
+                    )
+                })?;
+            let body = &content[tag_end + 1..close_idx];
+            extract_attr(tag_content, "Version").or_else(|| extract_xml_value(body, "Version"))
+        };
+        let dep = Dependency {
+            name,
+            version,
+            ecosystem: crate::Ecosystem::Dotnet,
+            actual_name: None,
+        };
+        super::validate_dependency(&dep, csproj)?;
+        deps.push(dep);
         search_start = tag_end + 1;
     }
-
     Ok(deps)
 }
 
@@ -319,6 +340,23 @@ fn find_tag_end(content: &str, start: usize) -> Result<(usize, bool)> {
     bail!("Unterminated XML tag")
 }
 
+type Chars<'a> = std::iter::Peekable<std::str::CharIndices<'a>>;
+
+fn skip_whitespace(chars: &mut Chars) {
+    while chars.next_if(|(_, ch)| ch.is_whitespace()).is_some() {}
+}
+
+/// Consume through the closing `quote` and return the text between, or `None` when unterminated.
+fn read_quoted<'a>(chars: &mut Chars, text: &'a str, quote: char) -> Option<&'a str> {
+    let start = chars.peek().map_or(text.len(), |(idx, _)| *idx);
+    for (idx, ch) in chars.by_ref() {
+        if ch == quote {
+            return Some(&text[start..idx]);
+        }
+    }
+    None
+}
+
 fn extract_attr(tag_content: &str, attr: &str) -> Option<String> {
     let mut chars = tag_content.char_indices().peekable();
 
@@ -326,50 +364,27 @@ fn extract_attr(tag_content: &str, attr: &str) -> Option<String> {
         if ch.is_whitespace() || ch == '/' {
             continue;
         }
-        let name_start = start;
         let mut name_end = start + ch.len_utf8();
-        while let Some(&(idx, next)) = chars.peek() {
-            if next.is_whitespace() || matches!(next, '=' | '/' | '>') {
-                break;
-            }
+        while let Some((idx, next)) =
+            chars.next_if(|(_, next)| !next.is_whitespace() && !matches!(next, '=' | '/' | '>'))
+        {
             name_end = idx + next.len_utf8();
-            chars.next();
         }
-        let name = &tag_content[name_start..name_end];
-        while let Some(&(_, next)) = chars.peek() {
-            if !next.is_whitespace() {
-                break;
-            }
-            chars.next();
-        }
-        if !matches!(chars.peek(), Some((_, '='))) {
+        let name = &tag_content[start..name_end];
+        skip_whitespace(&mut chars);
+        if chars.next_if(|(_, next)| *next == '=').is_none() {
             continue;
         }
-        chars.next();
-        while let Some(&(_, next)) = chars.peek() {
-            if !next.is_whitespace() {
-                break;
-            }
-            chars.next();
-        }
+        skip_whitespace(&mut chars);
         let (_, quote) = chars.next()?;
         if quote != '"' && quote != '\'' {
             return None;
         }
-        let value_start = chars
-            .peek()
-            .map(|(idx, _)| *idx)
-            .unwrap_or(tag_content.len());
-        while let Some(&(idx, next)) = chars.peek() {
-            if next == quote {
-                let value = &tag_content[value_start..idx];
-                if name == attr {
-                    return Some(value.to_string());
-                }
-                chars.next();
-                break;
-            }
-            chars.next();
+        let value = read_quoted(&mut chars, tag_content, quote);
+        if let Some(value) = value
+            && name == attr
+        {
+            return Some(value.to_string());
         }
     }
 

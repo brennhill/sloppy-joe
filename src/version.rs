@@ -7,41 +7,38 @@ pub fn exact_version(raw: &str, ecosystem: Ecosystem) -> Option<String> {
     }
 
     match ecosystem {
-        Ecosystem::PyPI => {
-            if raw.starts_with("===") {
-                return None;
-            }
-            let exact = raw.strip_prefix("==")?.trim();
-            if exact.is_empty()
-                || exact.contains(',')
-                || exact.contains(';')
-                || exact.contains(' ')
-                || has_wildcard_syntax(exact)
-            {
-                return None;
-            }
-            Some(exact.to_string())
-        }
-        Ecosystem::Cargo => {
-            let exact = raw.strip_prefix('=')?.trim();
-            if exact.is_empty() || has_range_syntax(exact) {
-                return None;
-            }
-            Some(exact.to_string())
-        }
-        Ecosystem::Npm => {
-            if has_range_syntax(raw) || has_wildcard_syntax(raw) || raw.matches('.').count() < 2 {
-                return None;
-            }
-            Some(raw.to_string())
-        }
-        _ => {
-            if has_range_syntax(raw) {
-                return None;
-            }
-            Some(raw.to_string())
-        }
+        Ecosystem::PyPI => exact_pypi_version(raw),
+        Ecosystem::Cargo => exact_cargo_version(raw),
+        Ecosystem::Npm => exact_npm_version(raw),
+        _ => (!has_range_syntax(raw)).then(|| raw.to_string()),
     }
+}
+
+fn exact_pypi_version(raw: &str) -> Option<String> {
+    if raw.starts_with("===") {
+        return None;
+    }
+    let exact = raw.strip_prefix("==")?.trim();
+    let composite = exact.contains([',', ';', ' ']);
+    if exact.is_empty() || composite || has_wildcard_syntax(exact) {
+        return None;
+    }
+    Some(exact.to_string())
+}
+
+fn exact_cargo_version(raw: &str) -> Option<String> {
+    let exact = raw.strip_prefix('=')?.trim();
+    if exact.is_empty() || has_range_syntax(exact) {
+        return None;
+    }
+    Some(exact.to_string())
+}
+
+fn exact_npm_version(raw: &str) -> Option<String> {
+    if has_range_syntax(raw) || has_wildcard_syntax(raw) || raw.matches('.').count() < 2 {
+        return None;
+    }
+    Some(raw.to_string())
 }
 
 fn has_range_syntax(raw: &str) -> bool {
