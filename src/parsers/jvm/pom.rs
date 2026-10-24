@@ -402,52 +402,87 @@ fn check_mvn_dir(mvn: &Path) -> Result<()> {
             bail!("Unsupported Maven {name} in {}: {why}", file.display());
         }
     }
-    let read = |name: &str| std::fs::read_to_string(mvn.join(name)).unwrap_or_default();
-    let config = read("maven.config");
-    for token in config.split_whitespace() {
-        let name = token.split('=').next().unwrap_or(token);
-        if matches!(
-            name,
-            "-s" | "--settings"
-                | "-gs"
-                | "--global-settings"
-                | "-t"
-                | "--toolchains"
-                | "-gt"
-                | "--global-toolchains"
-        ) {
-            bail!(
-                "Unsupported Maven option '{name}' in {}: settings and toolchains files are not scanned",
-                mvn.join("maven.config").display()
-            );
+    let read = |name: &str| -> Result<String> {
+        let file = mvn.join(name);
+        if std::fs::symlink_metadata(&file).is_err() {
+            return Ok(String::new());
         }
+        let bytes = crate::fsutil::read_bytes_limited(&file, crate::fsutil::MAX_MANIFEST_BYTES)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    };
+    for token in read("maven.config")?.split(|c: char| c.is_whitespace() || c == '\u{0c}') {
+        reject_maven_option(token, &mvn.join("maven.config"))?;
     }
-    if read("jvm.config").contains("-javaagent") || read("jvm.config").contains("-agentpath") {
+    let jvm = read("jvm.config")?;
+    if [
+        "-javaagent",
+        "-agentpath",
+        "-agentlib",
+        "-Xbootclasspath",
+        "-Djava.system.class.loader",
+        "-Dmaven.ext.class.path",
+    ]
+    .iter()
+    .any(|flag| jvm.contains(flag))
+    {
         bail!(
-            "Unsupported Maven JVM agent in {}: agents run inside Maven unscanned",
+            "Unsupported Maven JVM option in {}: agents and class path overrides run inside Maven unscanned",
             mvn.join("jvm.config").display()
         );
     }
     let wrapper = mvn.join("wrapper").join("maven-wrapper.properties");
-    if let Ok(properties) = std::fs::read_to_string(&wrapper) {
-        for line in properties.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let value = value.trim().replace('\\', "");
-            if matches!(key.trim(), "distributionUrl" | "wrapperUrl")
+    if std::fs::symlink_metadata(&wrapper).is_ok() {
+        let bytes = crate::fsutil::read_bytes_limited(&wrapper, crate::fsutil::MAX_MANIFEST_BYTES)?;
+        for (key, value) in crate::fsutil::parse_java_properties(&bytes) {
+            if matches!(key.as_str(), "distributionUrl" | "wrapperUrl")
                 && !TRUSTED_MAVEN_WRAPPER_URLS
                     .iter()
-                    .any(|trusted| value.starts_with(trusted))
+                    .any(|trusted| value.trim().starts_with(trusted))
             {
                 bail!(
                     "Untrusted Maven wrapper {} in {}: '{}' is not on Maven Central",
-                    key.trim(),
+                    key,
                     wrapper.display(),
                     crate::report::sanitize_for_terminal(&value)
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// Options in `.mvn/maven.config` that change which settings, toolchains, project file,
+/// repository or extensions Maven uses. commons-cli accepts attached short values (`-sfile`) and
+/// abbreviated long options, so match by prefix.
+fn reject_maven_option(token: &str, config: &Path) -> Result<()> {
+    let name = token.split('=').next().unwrap_or(token);
+    let long_overrides = [
+        "--settings",
+        "--global-settings",
+        "--toolchains",
+        "--global-toolchains",
+        "--file",
+    ];
+    let short = !name.starts_with("--")
+        && ["-s", "-gs", "-t", "-gt", "-f"]
+            .iter()
+            .any(|flag| name.starts_with(flag));
+    let long = name.len() >= 3
+        && name.starts_with("--")
+        && long_overrides.iter().any(|option| option.starts_with(name));
+    let property = [
+        "-Dmaven.repo.local",
+        "-Dmaven.ext.class.path",
+        "-Dmaven.home",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix));
+    if short || long || property {
+        bail!(
+            "Unsupported Maven option '{}' in {}: it changes the settings, project file, repository or extensions Maven uses",
+            crate::report::sanitize_for_terminal(token),
+            config.display()
+        );
     }
     Ok(())
 }

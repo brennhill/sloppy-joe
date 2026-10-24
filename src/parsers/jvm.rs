@@ -103,24 +103,43 @@ fn gradle_boundary(project_dir: &Path) -> Result<std::path::PathBuf> {
     }))
 }
 
+/// `gradle.properties` JVM arguments that load agents or replace the class path run inside Gradle
+/// itself, before any build script the scan reads.
+fn reject_gradle_jvm_overrides(dir: &Path) -> Result<()> {
+    let properties = dir.join("gradle.properties");
+    if std::fs::symlink_metadata(&properties).is_err() {
+        return Ok(());
+    }
+    let bytes = crate::fsutil::read_bytes_limited(&properties, super::MAX_MANIFEST_BYTES)?;
+    for (key, value) in crate::fsutil::parse_java_properties(&bytes) {
+        let agent = ["-javaagent", "-agentpath", "-agentlib", "-Xbootclasspath"]
+            .iter()
+            .any(|flag| value.contains(flag));
+        if (key == "org.gradle.jvmargs" && agent) || key == "org.gradle.java.home" {
+            bail!(
+                "Unsupported Gradle property '{key}' in {}: it changes the JVM that runs Gradle in ways the scan cannot verify",
+                properties.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The Gradle wrapper downloads and runs a Gradle distribution; only Gradle's own hosts count.
 fn reject_untrusted_gradle_wrapper(dir: &Path) -> Result<()> {
     let properties = dir.join("gradle/wrapper/gradle-wrapper.properties");
-    let Ok(content) = std::fs::read_to_string(&properties) else {
+    if std::fs::symlink_metadata(&properties).is_err() {
         return Ok(());
-    };
-    for line in content.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim().replace('\\', "");
-        if key.trim() == "distributionUrl"
+    }
+    let bytes = crate::fsutil::read_bytes_limited(&properties, super::MAX_MANIFEST_BYTES)?;
+    for (key, value) in crate::fsutil::parse_java_properties(&bytes) {
+        if key == "distributionUrl"
             && ![
                 "https://services.gradle.org/",
                 "https://downloads.gradle.org/",
             ]
             .iter()
-            .any(|trusted| value.starts_with(trusted))
+            .any(|trusted| value.trim().starts_with(trusted))
         {
             bail!(
                 "Untrusted Gradle wrapper distributionUrl in {}: '{}' is not a Gradle-hosted distribution",
@@ -196,6 +215,7 @@ pub(crate) fn parse_gradle_build(path: &Path) -> Result<GradleBuild> {
         .take_while(|dir| dir.starts_with(&boundary))
     {
         reject_untrusted_gradle_wrapper(ancestor)?;
+        reject_gradle_jvm_overrides(ancestor)?;
         for filename in ["settings.gradle", "settings.gradle.kts"] {
             let settings_path = ancestor.join(filename);
             if super::path_detected(&settings_path)? {
@@ -299,5 +319,7 @@ fn extract_gradle_dep(line: &str, source_path: &Path) -> Result<Option<Dependenc
     Ok(None)
 }
 
+#[cfg(test)]
+mod build_override_tests;
 #[cfg(test)]
 mod tests;

@@ -57,6 +57,7 @@ pub(crate) struct NpmRegistries(pub(crate) BTreeMap<String, String>);
 impl NpmRegistries {
     pub(crate) fn read(&mut self, path: &Path) -> Result<()> {
         let content = crate::fsutil::read_file_limited(path, crate::fsutil::MAX_MANIFEST_BYTES)?;
+        crate::fsutil::reject_unmodeled_line_breaks(&content, path)?;
         for (line_number, line) in content.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with(['#', ';']) {
@@ -174,5 +175,25 @@ impl NpmRegistries {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod line_break_tests {
+    use super::*;
+
+    #[test]
+    fn a_registry_hidden_behind_a_carriage_return_is_not_skipped() {
+        let dir = std::env::temp_dir().join(format!("sj-npmrc-cr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".npmrc");
+        std::fs::write(&path, "# team config\rregistry=https://evil.example.com/\n").unwrap();
+        assert!(NpmRegistries::default().read(&path).is_err());
+        std::fs::write(
+            &path,
+            "# team config\r\nregistry=https://registry.npmjs.org/\n",
+        )
+        .unwrap();
+        assert!(NpmRegistries::default().read(&path).is_ok());
     }
 }

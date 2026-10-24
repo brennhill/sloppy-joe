@@ -118,6 +118,20 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
 /// `PLUGIN SOURCE` sections install code that never came from a registry, and
 /// `specs:` under any other section cannot be attributed to one, so both are
 /// blocking errors rather than being mistaken for registry gems.
+/// A `remote:` line of the GEM section must be RubyGems itself.
+fn check_gem_remote(section: &str, line: &str) -> Result<()> {
+    if section == "GEM"
+        && let Some(remote) = line.trim().strip_prefix("remote:")
+        && remote.trim().trim_end_matches('/') != "https://rubygems.org"
+    {
+        anyhow::bail!(
+            "Gemfile.lock GEM remote '{}' is not https://rubygems.org/; sloppy-joe only trusts gems resolved from RubyGems",
+            crate::report::sanitize_for_terminal(remote.trim())
+        );
+    }
+    Ok(())
+}
+
 fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut versions = std::collections::HashMap::new();
     let mut in_specs = false;
@@ -133,6 +147,7 @@ fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String,
                 );
             }
         }
+        check_gem_remote(section, line)?;
         if line.trim() == "specs:" {
             if section != "GEM" {
                 anyhow::bail!(
@@ -239,5 +254,19 @@ DEPENDENCIES
         assert!(names.contains(&"puma"));
         // All should have versions
         assert!(all.iter().all(|d| d.version.is_some()));
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+
+    #[test]
+    fn only_rubygems_org_is_a_trusted_gem_remote() {
+        let lock = |remote: &str| {
+            format!("GEM\n  remote: {remote}\n  specs:\n    rake (13.0.6)\n\nPLATFORMS\n  ruby\n")
+        };
+        assert!(parse_gem_versions(&lock("https://rubygems.org/")).is_ok());
+        assert!(parse_gem_versions(&lock("https://evil.example.com/")).is_err());
     }
 }

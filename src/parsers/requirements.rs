@@ -293,6 +293,7 @@ fn ensure_modeled_encoding(content: &str) -> Result<()> {
 }
 
 fn logical_requirement_lines(content: &str) -> Result<Vec<String>> {
+    crate::fsutil::reject_unmodeled_line_breaks(content, Path::new("requirements file"))?;
     ensure_modeled_encoding(content)?;
     let mut entries = Vec::new();
     let mut current = String::new();

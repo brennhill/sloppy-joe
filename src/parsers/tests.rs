@@ -502,3 +502,25 @@ fn a_csproj_user_file_blocks() {
     assert!(crate::parsers::csproj::parse(&dir).is_err());
     cleanup(&dir);
 }
+
+#[test]
+fn hidden_line_breaks_in_python_config_block() {
+    let dir = empty_test_dir("linebreaks");
+    for (name, content) in [
+        (
+            "requirements.txt",
+            "six==1.16.0\n# pinned\revil @ https://e.example/e.tgz\n",
+        ),
+        ("requirements.txt", "six==1.16.0\n# pinned\x0cevil==1\n"),
+    ] {
+        std::fs::write(dir.join(name), content).unwrap();
+        assert!(requirements::parse(&dir).is_err(), "{content:?}");
+    }
+    std::fs::write(
+        dir.join("setup.cfg"),
+        "[options]\n# c\rinstall_requires = evil\n",
+    )
+    .unwrap();
+    assert!(setup_cfg::parse(&dir).is_err());
+    cleanup(&dir);
+}
