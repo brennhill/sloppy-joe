@@ -124,6 +124,30 @@ fn selection_priority(
     verify_all.then_some(2)
 }
 
+/// Outcomes already known without a download (no integrity data, or a fresh cache hit), plus the
+/// units that still need fetching.
+fn cached_outcomes(
+    units: &[Unit],
+    disk_cache: &TarballCache,
+) -> (Vec<Option<Outcome>>, Vec<usize>) {
+    let mut outcomes: Vec<Option<Outcome>> = (0..units.len()).map(|_| None).collect();
+    let mut to_fetch = Vec::new();
+    for (index, unit) in units.iter().enumerate() {
+        let Some(key) = &unit.key else {
+            outcomes[index] = Some(Outcome::Failed(unverified_issue(
+                unit,
+                "the registry metadata provides no dist.integrity or dist.shasum to verify the tarball against",
+            )));
+            continue;
+        };
+        match disk_cache.entries.get(key) {
+            Some(entry) => outcomes[index] = Some(Outcome::Verified(entry.facts.clone())),
+            None => to_fetch.push(index),
+        }
+    }
+    (outcomes, to_fetch)
+}
+
 fn collect_units(
     lookups: &[MetadataLookup],
     flagged: &HashSet<String>,
@@ -230,22 +254,7 @@ pub(crate) async fn verify_npm_tarballs(
     let cache_path = tarball_cache_path(options.cache_dir);
     let mut disk_cache = load_disk_cache(&cache_path, options.no_cache, now);
 
-    let mut outcomes: Vec<Option<Outcome>> = (0..units.len()).map(|_| None).collect();
-    let mut to_fetch = Vec::new();
-    for (index, unit) in units.iter().enumerate() {
-        match &unit.key {
-            None => {
-                outcomes[index] = Some(Outcome::Failed(unverified_issue(
-                    unit,
-                    "the registry metadata provides no dist.integrity or dist.shasum to verify the tarball against",
-                )))
-            }
-            Some(key) => match disk_cache.entries.get(key) {
-                Some(entry) => outcomes[index] = Some(Outcome::Verified(entry.facts.clone())),
-                None => to_fetch.push(index),
-            },
-        }
-    }
+    let (mut outcomes, mut to_fetch) = cached_outcomes(&units, &disk_cache);
 
     to_fetch.sort_by(|a, b| {
         (units[*a].priority, &units[*a].package).cmp(&(units[*b].priority, &units[*b].package))
@@ -298,6 +307,15 @@ pub(crate) async fn verify_npm_tarballs(
         cache::atomic_write_json(&cache_path, &disk_cache);
     }
 
+    apply_outcomes(&units, outcomes, lookups)
+}
+
+/// Turn per-unit outcomes into issues, applying verified tarball facts to the lookups.
+fn apply_outcomes(
+    units: &[Unit],
+    outcomes: Vec<Option<Outcome>>,
+    lookups: &mut [MetadataLookup],
+) -> Vec<Issue> {
     let mut issues = Vec::new();
     for (unit, outcome) in units.iter().zip(outcomes) {
         match outcome {
