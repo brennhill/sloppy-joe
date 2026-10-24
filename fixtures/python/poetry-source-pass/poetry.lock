@@ -16,4 +16,4 @@ reference = "pytorch"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "4a0effb5d4ed36d4ef4fa7aaa6f42111929beec8c839ceb6cd8b701bb36ff1ca"
+content-hash = "93e852f277f70c7d3f60ba9cf185433351ee96aace51b33cafdbd7d18c56cfdd"
