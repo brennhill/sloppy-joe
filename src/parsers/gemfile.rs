@@ -1,6 +1,6 @@
 use crate::Dependency;
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn parse(project_dir: &Path) -> Result<Vec<Dependency>> {
     let project_dir = std::fs::canonicalize(project_dir)?;
@@ -142,27 +142,84 @@ fn gemspec_statement(trimmed: &str) -> Option<Result<Option<String>>> {
 
 /// Dependencies a project's own `.gemspec` adds to the bundle. Only literal
 /// `add_dependency "name", "requirement"...` calls are understood.
-fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependency>> {
-    let path = match name {
-        Some(name) => project_dir.join(format!("{name}.gemspec")),
-        None => {
-            let mut found = Vec::new();
-            for entry in std::fs::read_dir(project_dir)? {
-                let entry = entry?;
-                if entry.file_name().to_string_lossy().ends_with(".gemspec") {
-                    found.push(entry.path());
-                }
-            }
-            match found.as_slice() {
-                [only] => only.clone(),
-                _ => anyhow::bail!(
-                    "Unsupported `gemspec` in {}: expected exactly one .gemspec file, found {}",
-                    project_dir.display(),
-                    found.len()
-                ),
-            }
+fn gemspec_path(project_dir: &Path, name: Option<&str>) -> Result<PathBuf> {
+    if let Some(name) = name {
+        return Ok(project_dir.join(format!("{name}.gemspec")));
+    }
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(project_dir)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().ends_with(".gemspec") {
+            found.push(entry.path());
         }
-    };
+    }
+    match found.as_slice() {
+        [only] => Ok(only.clone()),
+        _ => anyhow::bail!(
+            "Unsupported `gemspec` in {}: expected exactly one .gemspec file, found {}",
+            project_dir.display(),
+            found.len()
+        ),
+    }
+}
+
+/// The text after `add_` when it starts `runtime_dependency`, `development_dependency` or
+/// `dependency` as a whole word.
+fn dependency_call_tail(after_add: &str) -> Option<&str> {
+    let rest = ["runtime_dependency", "development_dependency", "dependency"]
+        .iter()
+        .find_map(|m| after_add.strip_prefix(m))?;
+    if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(rest)
+}
+
+/// Read the plain string arguments of one `add_*dependency` call.
+fn read_dependency_call_literals(
+    rest: &str,
+    unsupported: &dyn Fn(&str) -> anyhow::Error,
+) -> Result<Vec<String>> {
+    let mut rest = rest.trim_start_matches([' ', '\t']);
+    let parenthesized = rest.starts_with('(');
+    if parenthesized {
+        rest = &rest[1..];
+    }
+    let mut literals = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        let Some((literal, tail)) = take_string_literal(rest) else {
+            return Err(unsupported("a dependency argument is not a plain string"));
+        };
+        if literal.contains('"') {
+            return Err(unsupported("a dependency argument contains a quote"));
+        }
+        literals.push(literal);
+        rest = tail;
+        match tail.trim_start().strip_prefix(',') {
+            Some(next) => rest = next,
+            None => break,
+        }
+    }
+    if parenthesized {
+        let Some(next) = rest.trim_start().strip_prefix(')') else {
+            return Err(unsupported("a dependency call is not closed"));
+        };
+        rest = next;
+    }
+    let line_tail = rest.split('\n').next().unwrap_or_default().trim();
+    let ends_statement = line_tail.is_empty()
+        || line_tail.starts_with('}')
+        || line_tail.starts_with(';')
+        || line_tail == "end";
+    if !ends_statement {
+        return Err(unsupported("a dependency call has trailing expressions"));
+    }
+    Ok(literals)
+}
+
+fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependency>> {
+    let path = gemspec_path(project_dir, name)?;
     if !super::path_detected(&path)? {
         anyhow::bail!(
             "`gemspec` in the Gemfile names missing file {}",
@@ -194,54 +251,10 @@ fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependenc
     while let Some(found) = text[offset..].find("add_") {
         let start = offset + found;
         offset = start + 4;
-        let after_add = &text[start + 4..];
-        let method_tail = ["runtime_dependency", "development_dependency", "dependency"]
-            .iter()
-            .find_map(|m| after_add.strip_prefix(m));
-        let Some(mut rest) = method_tail else {
+        let Some(rest) = dependency_call_tail(&text[start + 4..]) else {
             continue;
         };
-        if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-            continue;
-        }
-        rest = rest.trim_start_matches([' ', '\t']);
-        let parenthesized = rest.starts_with('(');
-        if parenthesized {
-            rest = &rest[1..];
-        }
-        let mut literals = Vec::new();
-        let mut after_last;
-        loop {
-            rest = rest.trim_start();
-            let Some((literal, tail)) = take_string_literal(rest) else {
-                return Err(unsupported("a dependency argument is not a plain string"));
-            };
-            if literal.contains('"') {
-                return Err(unsupported("a dependency argument contains a quote"));
-            }
-            literals.push(literal);
-            after_last = tail;
-            rest = tail.trim_start();
-            match rest.strip_prefix(',') {
-                Some(next) => rest = next,
-                None => break,
-            }
-        }
-        rest = after_last;
-        if parenthesized {
-            let Some(next) = rest.trim_start().strip_prefix(')') else {
-                return Err(unsupported("a dependency call is not closed"));
-            };
-            rest = next;
-        }
-        let line_tail = rest.split('\n').next().unwrap_or_default().trim();
-        if !(line_tail.is_empty()
-            || line_tail.starts_with('}')
-            || line_tail.starts_with(';')
-            || line_tail == "end")
-        {
-            return Err(unsupported("a dependency call has trailing expressions"));
-        }
+        let literals = read_dependency_call_literals(rest, &unsupported)?;
         let quoted: Vec<String> = literals.iter().map(|l| format!("\"{l}\"")).collect();
         let Some((name, version)) = extract_gem_spec(&format!("gem {}", quoted.join(", "))) else {
             return Err(unsupported("a dependency has an unrecognized requirement"));
@@ -347,6 +360,46 @@ fn strip_condition_modifier(entry: &str) -> String {
     entry.to_string()
 }
 
+fn starts_gem_entry(trimmed: &str) -> bool {
+    trimmed.starts_with("gem ") || trimmed.starts_with("gem\t") || trimmed.starts_with("gem(")
+}
+
+/// `group :a, :b do` / `platforms :x do` with literal symbols only.
+fn is_literal_group(method: &str, trimmed: &str) -> bool {
+    matches!(method, "group" | "platform" | "platforms")
+        && trimmed.strip_suffix("do").is_some_and(|prefix| {
+            prefix[method.len()..].split(',').all(|symbol| {
+                symbol.trim().strip_prefix(':').is_some_and(|name| {
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+        })
+}
+
+/// A Gemfile line outside a `gem` entry is allowed only if it cannot add dependencies.
+fn ensure_supported_statement(trimmed: &str) -> Result<()> {
+    let method = trimmed
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or_default();
+    let literal_runtime = method == "ruby"
+        && literal_arguments(trimmed[4..].trim()).is_some_and(|arguments| arguments.len() == 1);
+    let literal_conditional = match method {
+        "else" => trimmed == "else",
+        "if" | "unless" | "elsif" => simple_condition(&trimmed[method.len()..]),
+        _ => false,
+    };
+    let allowed = method == "source"
+        || trimmed == "end"
+        || literal_runtime
+        || is_literal_group(method, trimmed)
+        || literal_conditional;
+    if allowed && !trimmed.contains(';') {
+        return Ok(());
+    }
+    anyhow::bail!("Unsupported Gemfile statement: dependency declarations cannot be verified")
+}
+
 fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
     let mut entries = Vec::new();
     let mut current = String::new();
@@ -364,46 +417,12 @@ fn collect_gem_entries(content: &str) -> Result<Vec<String>> {
                 statement?;
                 continue;
             }
-            if trimmed.starts_with("gem ")
-                || trimmed.starts_with("gem\t")
-                || trimmed.starts_with("gem(")
-            {
+            if starts_gem_entry(trimmed) {
                 in_entry = true;
                 current.clear();
             } else {
-                let method = trimmed
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .next()
-                    .unwrap_or_default();
-                let literal_runtime = method == "ruby"
-                    && literal_arguments(trimmed[4..].trim())
-                        .is_some_and(|arguments| arguments.len() == 1);
-                let literal_group = matches!(method, "group" | "platform" | "platforms")
-                    && trimmed.strip_suffix("do").is_some_and(|prefix| {
-                        prefix[method.len()..].split(',').all(|symbol| {
-                            symbol.trim().strip_prefix(':').is_some_and(|name| {
-                                !name.is_empty()
-                                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                            })
-                        })
-                    });
-                let literal_conditional = match method {
-                    "else" => trimmed == "else",
-                    "if" | "unless" | "elsif" => simple_condition(&trimmed[method.len()..]),
-                    _ => false,
-                };
-                if (method == "source"
-                    || trimmed == "end"
-                    || literal_runtime
-                    || literal_group
-                    || literal_conditional)
-                    && !trimmed.contains(';')
-                {
-                    continue;
-                }
-                anyhow::bail!(
-                    "Unsupported Gemfile statement: dependency declarations cannot be verified"
-                );
+                ensure_supported_statement(trimmed)?;
+                continue;
             }
         }
 
@@ -684,19 +703,26 @@ impl RubyExpressionState {
                 self.escape = false;
                 continue;
             }
+            let in_string = self.in_single || self.in_double;
             match ch {
-                '\\' if self.in_single || self.in_double => self.escape = true,
+                '\\' if in_string => self.escape = true,
                 '\'' if !self.in_double => self.in_single = !self.in_single,
                 '"' if !self.in_single => self.in_double = !self.in_double,
-                _ if self.in_single || self.in_double => {}
-                '(' => self.parens += 1,
-                ')' => self.parens = self.parens.saturating_sub(1),
-                '[' => self.brackets += 1,
-                ']' => self.brackets = self.brackets.saturating_sub(1),
-                '{' => self.braces += 1,
-                '}' => self.braces = self.braces.saturating_sub(1),
-                _ => {}
+                _ if in_string => {}
+                _ => self.track_bracket(ch),
             }
+        }
+    }
+
+    fn track_bracket(&mut self, ch: char) {
+        match ch {
+            '(' => self.parens += 1,
+            ')' => self.parens = self.parens.saturating_sub(1),
+            '[' => self.brackets += 1,
+            ']' => self.brackets = self.brackets.saturating_sub(1),
+            '{' => self.braces += 1,
+            '}' => self.braces = self.braces.saturating_sub(1),
+            _ => {}
         }
     }
 

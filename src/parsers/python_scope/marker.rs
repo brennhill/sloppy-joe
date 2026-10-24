@@ -165,6 +165,25 @@ pub(crate) fn resolve_marker_value(
     }
 }
 
+fn os_name_for(platform: &str) -> String {
+    match platform {
+        "win32" => "nt",
+        "darwin" | "linux" => "posix",
+        other => other,
+    }
+    .to_string()
+}
+
+fn platform_system_for(platform: &str) -> String {
+    match platform {
+        "win32" => "Windows",
+        "darwin" => "Darwin",
+        "linux" => "Linux",
+        other => other,
+    }
+    .to_string()
+}
+
 pub(crate) fn resolve_marker_variable(
     name: &str,
     profile: &PythonProfile,
@@ -172,17 +191,8 @@ pub(crate) fn resolve_marker_variable(
 ) -> Result<String> {
     match name {
         "sys_platform" => Ok(profile.target_platform.clone()),
-        "os_name" => Ok(match profile.target_platform.as_str() {
-            "win32" => "nt".to_string(),
-            "darwin" | "linux" => "posix".to_string(),
-            other => other.to_string(),
-        }),
-        "platform_system" => Ok(match profile.target_platform.as_str() {
-            "win32" => "Windows".to_string(),
-            "darwin" => "Darwin".to_string(),
-            "linux" => "Linux".to_string(),
-            other => other.to_string(),
-        }),
+        "os_name" => Ok(os_name_for(&profile.target_platform)),
+        "platform_system" => Ok(platform_system_for(&profile.target_platform)),
         "platform_machine" => Ok(profile.target_arch.clone()),
         "platform_python_implementation" => Ok("CPython".to_string()),
         "implementation_name" => Ok("cpython".to_string()),
