@@ -184,18 +184,22 @@ fn check_kind_lockfile(
             )?);
         }
         ProjectInputKind::Go => check_go_sum(spec)?,
-        ProjectInputKind::Ruby => {
-            ensure_kind_lockfile(spec, &spec.project_dir().join("Gemfile.lock"))?
-        }
-        ProjectInputKind::Php => {
-            ensure_kind_lockfile(spec, &spec.project_dir().join("composer.lock"))?
-        }
-        ProjectInputKind::Gradle => {
-            ensure_kind_lockfile(spec, &spec.project_dir().join("gradle.lockfile"))?
-        }
-        ProjectInputKind::Dotnet => ensure_kind_lockfile(
+        ProjectInputKind::Ruby
+        | ProjectInputKind::Php
+        | ProjectInputKind::Gradle
+        | ProjectInputKind::Dotnet => ensure_kind_lockfile(
             spec,
-            &spec.manifest_path.with_file_name("packages.lock.json"),
+            &spec
+                .kind
+                .descriptor()
+                .lockfile_name
+                .map(|name| spec.project_dir().join(name))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Internal error: {} projects name no lockfile",
+                        spec.kind.manifest_label()
+                    )
+                })?,
         )?,
         ProjectInputKind::Maven => warnings.push(maven_no_lockfile_warning(spec)),
     }

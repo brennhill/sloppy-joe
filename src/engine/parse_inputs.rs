@@ -392,14 +392,19 @@ pub(crate) fn selected_lockfile_path(spec: &ProjectInputSpec) -> Option<std::pat
             .or_else(|| {
                 first_existing_lockfile(project_dir, &["npm-shrinkwrap.json", "package-lock.json"])
             }),
-        ProjectInputKind::Cargo => Some(project_dir.join("Cargo.lock")),
-        ProjectInputKind::Go => Some(project_dir.join("go.sum")),
-        ProjectInputKind::Ruby => Some(project_dir.join("Gemfile.lock")),
-        ProjectInputKind::Php => Some(project_dir.join("composer.lock")),
-        ProjectInputKind::Gradle => Some(project_dir.join("gradle.lockfile")),
-        ProjectInputKind::Dotnet => Some(spec.manifest_path.with_file_name("packages.lock.json")),
-        ProjectInputKind::PyProjectPoetry => Some(project_dir.join("poetry.lock")),
-        ProjectInputKind::PyProjectUv => Some(project_dir.join("uv.lock")),
+        // Lockfile named by the descriptor, next to the manifest.
+        ProjectInputKind::Cargo
+        | ProjectInputKind::Go
+        | ProjectInputKind::Ruby
+        | ProjectInputKind::Php
+        | ProjectInputKind::Gradle
+        | ProjectInputKind::Dotnet
+        | ProjectInputKind::PyProjectPoetry
+        | ProjectInputKind::PyProjectUv => spec
+            .kind
+            .descriptor()
+            .lockfile_name
+            .map(|name| project_dir.join(name)),
         ProjectInputKind::PyRequirementsTrusted => Some(spec.manifest_path.clone()),
         ProjectInputKind::PyPipfile => {
             first_existing_lockfile(project_dir, &[lockfiles::pipfile_lock::LOCKFILE_NAME])

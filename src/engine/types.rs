@@ -106,6 +106,14 @@ pub(crate) struct KindDescriptor {
     /// declares no dependencies (its lockfile may still list packages).
     pub(crate) ecosystem: Ecosystem,
     pub(crate) manifest_label: &'static str,
+    /// The `--type` value that selects this kind.
+    pub(crate) project_type: &'static str,
+    /// Manifest file names that identify this kind on their own; empty when detection is by
+    /// pattern (`pyproject.toml` content, `requirements*.txt`, `*.csproj`).
+    pub(crate) manifest_file_names: &'static [&'static str],
+    /// Lockfile sitting next to the manifest; `None` when the lockfile is bound per project (JS),
+    /// is the manifest itself, or does not exist for the kind.
+    pub(crate) lockfile_name: Option<&'static str>,
     /// Package manager name; `None` for JS, where it is bound per project.
     pub(crate) manager: Option<&'static str>,
     pub(crate) lockfile: LockfilePolicy,
@@ -116,7 +124,6 @@ pub(crate) struct KindDescriptor {
 }
 
 impl ProjectInputKind {
-    #[cfg(test)]
     pub(crate) const ALL: [ProjectInputKind; 16] = [
         Self::Npm,
         Self::PyProjectPoetry,
@@ -138,26 +145,47 @@ impl ProjectInputKind {
 
     pub(crate) fn descriptor(self) -> KindDescriptor {
         use LockfilePolicy::{Required, Unsupported};
-        let python = |manifest_label, manager, lockfile, help| KindDescriptor {
-            ecosystem: Ecosystem::PyPI,
-            manifest_label,
-            manager: Some(manager),
-            lockfile,
-            missing_lockfile_help: help,
-            rejects_locked_packages_without_declarations: false,
-        };
-        let simple = |ecosystem, manifest_label, manager, help| KindDescriptor {
-            ecosystem,
-            manifest_label,
-            manager: Some(manager),
-            lockfile: Required,
-            missing_lockfile_help: Some(help),
-            rejects_locked_packages_without_declarations: false,
+        // Python kinds that have no lockfile of their own.
+        let python =
+            |manifest_label, manifest_file_names, manager, lockfile_name, lockfile, help| {
+                KindDescriptor {
+                    ecosystem: Ecosystem::PyPI,
+                    manifest_label,
+                    project_type: "pypi",
+                    manifest_file_names,
+                    lockfile_name,
+                    manager: Some(manager),
+                    lockfile,
+                    missing_lockfile_help: help,
+                    rejects_locked_packages_without_declarations: false,
+                }
+            };
+        let simple = |ecosystem,
+                      project_type,
+                      manifest_label,
+                      manifest_file_names,
+                      manager,
+                      lockfile_name,
+                      help| {
+            KindDescriptor {
+                ecosystem,
+                manifest_label,
+                project_type,
+                manifest_file_names,
+                lockfile_name: Some(lockfile_name),
+                manager: Some(manager),
+                lockfile: Required,
+                missing_lockfile_help: Some(help),
+                rejects_locked_packages_without_declarations: false,
+            }
         };
         match self {
             Self::Npm => KindDescriptor {
                 ecosystem: Ecosystem::Npm,
                 manifest_label: "package.json",
+                project_type: "npm",
+                manifest_file_names: &["package.json"],
+                lockfile_name: None,
                 manager: None,
                 lockfile: Required,
                 missing_lockfile_help: Some(
@@ -167,34 +195,49 @@ impl ProjectInputKind {
             },
             Self::Cargo => simple(
                 Ecosystem::Cargo,
-                "Cargo.toml",
                 "cargo",
+                "Cargo.toml",
+                &["Cargo.toml"],
+                "cargo",
+                "Cargo.lock",
                 "Run `cargo generate-lockfile` and commit Cargo.lock.",
             ),
             Self::Go => simple(
                 Ecosystem::Go,
-                "go.mod",
                 "go",
+                "go.mod",
+                &["go.mod"],
+                "go",
+                "go.sum",
                 "Run `go mod tidy` so Go records dependency checksums in go.sum.",
             ),
             Self::Ruby => simple(
                 Ecosystem::Ruby,
+                "ruby",
                 "Gemfile",
+                &["Gemfile"],
                 "bundler",
+                "Gemfile.lock",
                 "Run `bundle lock` or `bundle install`, then commit Gemfile.lock.",
             ),
             Self::Php => simple(
                 Ecosystem::Php,
+                "php",
                 "composer.json",
+                &["composer.json"],
                 "composer",
+                "composer.lock",
                 "Run `composer update` or `composer install`, then commit composer.lock.",
             ),
             Self::Gradle => KindDescriptor {
                 rejects_locked_packages_without_declarations: true,
                 ..simple(
                     Ecosystem::Jvm,
+                    "jvm",
                     "build.gradle or build.gradle.kts",
+                    &["build.gradle", "build.gradle.kts"],
                     "gradle",
+                    "gradle.lockfile",
                     "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
                 )
             },
@@ -202,14 +245,20 @@ impl ProjectInputKind {
                 rejects_locked_packages_without_declarations: true,
                 ..simple(
                     Ecosystem::Dotnet,
+                    "dotnet",
                     "*.csproj",
+                    &[],
                     "nuget",
+                    "packages.lock.json",
                     "Run `dotnet restore --use-lock-file` and commit packages.lock.json.",
                 )
             },
             Self::Maven => KindDescriptor {
                 ecosystem: Ecosystem::Jvm,
                 manifest_label: "pom.xml",
+                project_type: "jvm",
+                manifest_file_names: &["pom.xml"],
+                lockfile_name: None,
                 manager: Some("maven"),
                 lockfile: Unsupported,
                 missing_lockfile_help: None,
@@ -217,23 +266,27 @@ impl ProjectInputKind {
             },
             Self::PyProjectPoetry => python(
                 "pyproject.toml",
+                &[],
                 "poetry",
+                Some("poetry.lock"),
                 Required,
                 Some("Run `poetry lock` and commit poetry.lock alongside pyproject.toml."),
             ),
             Self::PyProjectUv => python(
                 "pyproject.toml",
+                &[],
                 "uv",
+                Some("uv.lock"),
                 Required,
                 Some("Run `uv lock` and commit uv.lock alongside pyproject.toml."),
             ),
-            Self::PyProjectLegacy => python("pyproject.toml", "pip", Unsupported, None),
+            Self::PyProjectLegacy => python("pyproject.toml", &[], "pip", None, Unsupported, None),
             Self::PyRequirements | Self::PyRequirementsTrusted => {
-                python("requirements*.txt", "pip", Unsupported, None)
+                python("requirements*.txt", &[], "pip", None, Unsupported, None)
             }
-            Self::PyPipfile => python("Pipfile", "pipenv", Unsupported, None),
-            Self::PySetupPy => python("setup.py", "pip", Unsupported, None),
-            Self::PySetupCfg => python("setup.cfg", "pip", Unsupported, None),
+            Self::PyPipfile => python("Pipfile", &["Pipfile"], "pipenv", None, Unsupported, None),
+            Self::PySetupPy => python("setup.py", &["setup.py"], "pip", None, Unsupported, None),
+            Self::PySetupCfg => python("setup.cfg", &["setup.cfg"], "pip", None, Unsupported, None),
         }
     }
 

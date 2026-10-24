@@ -47,18 +47,7 @@ pub(crate) fn unbound_project_inputs_with_config(
 
 /// Whether an explicit `--type` selects manifests of `kind` (no type selects everything).
 fn project_type_includes(project_type: Option<&str>, kind: ProjectInputKind) -> bool {
-    match project_type {
-        Some("npm") => kind == ProjectInputKind::Npm,
-        Some("pypi") => kind.is_python(),
-        Some("cargo") => kind == ProjectInputKind::Cargo,
-        Some("go") => kind == ProjectInputKind::Go,
-        Some("ruby") => kind == ProjectInputKind::Ruby,
-        Some("php") => kind == ProjectInputKind::Php,
-        Some("jvm") => matches!(kind, ProjectInputKind::Gradle | ProjectInputKind::Maven),
-        Some("dotnet") => kind == ProjectInputKind::Dotnet,
-        Some(_) => false,
-        None => true,
-    }
+    project_type.is_none_or(|selected| kind.descriptor().project_type == selected)
 }
 
 /// The blocking message when an explicit `--type` finds no manifest.
@@ -420,17 +409,7 @@ pub(crate) fn project_input_kind_from_path(
 
 /// Manifests that are identified by their exact file name.
 fn project_input_kind_for_file_name(name: &str) -> Option<ProjectInputKind> {
-    Some(match name {
-        "package.json" => ProjectInputKind::Npm,
-        "Pipfile" => ProjectInputKind::PyPipfile,
-        "setup.py" => ProjectInputKind::PySetupPy,
-        "setup.cfg" => ProjectInputKind::PySetupCfg,
-        "Cargo.toml" => ProjectInputKind::Cargo,
-        "go.mod" => ProjectInputKind::Go,
-        "Gemfile" => ProjectInputKind::Ruby,
-        "composer.json" => ProjectInputKind::Php,
-        "build.gradle" | "build.gradle.kts" => ProjectInputKind::Gradle,
-        "pom.xml" => ProjectInputKind::Maven,
-        _ => return None,
-    })
+    ProjectInputKind::ALL
+        .into_iter()
+        .find(|kind| kind.descriptor().manifest_file_names.contains(&name))
 }

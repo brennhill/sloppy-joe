@@ -61,3 +61,28 @@ fn python_kinds_are_exactly_the_pypi_ones() {
         assert_eq!(kind.is_python(), kind.ecosystem() == Ecosystem::PyPI);
     }
 }
+
+#[test]
+fn manifest_file_names_identify_one_kind() {
+    for kind in ProjectInputKind::ALL {
+        for name in kind.descriptor().manifest_file_names {
+            let owners: Vec<_> = ProjectInputKind::ALL
+                .iter()
+                .filter(|other| other.descriptor().manifest_file_names.contains(name))
+                .collect();
+            assert_eq!(owners, vec![&kind], "{name} must identify exactly one kind");
+        }
+    }
+}
+
+#[test]
+fn named_lockfiles_belong_to_required_lockfile_kinds() {
+    for kind in ProjectInputKind::ALL {
+        let d = kind.descriptor();
+        if d.lockfile_name.is_some() {
+            assert_eq!(d.lockfile, LockfilePolicy::Required, "{kind:?}");
+        }
+        let explicit_type = ["npm", "pypi", "cargo", "go", "ruby", "php", "jvm", "dotnet"];
+        assert!(explicit_type.contains(&d.project_type), "{kind:?}");
+    }
+}
