@@ -86,7 +86,8 @@ pub(crate) fn read_validated_pnpm_lockfile(
 pub(crate) fn read_validated_bun_lockfile(
     spec: &ProjectInputSpec,
     manifest: &serde_json::Value,
-) -> Result<serde_json::Value> {
+    config: &config::SloppyJoeConfig,
+) -> Result<(serde_json::Value, Vec<Issue>)> {
     let path =
         selected_lockfile_path(spec).expect("bun preflight should guarantee a lockfile exists");
     let file_name = path
@@ -111,7 +112,8 @@ pub(crate) fn read_validated_bun_lockfile(
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     validate_bun_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::bun::validate_provenance(&lockfile, &path)?;
-    Ok(lockfile)
+    let applied = bun_lock_schema::check_entry_keys(&lockfile, &path, &config.config_key_allow)?;
+    Ok((lockfile, crate::config_surface::issues(&applied)))
 }
 
 pub(crate) fn read_validated_yarn_lockfile(

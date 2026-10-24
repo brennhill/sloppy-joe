@@ -2,6 +2,7 @@ use super::*;
 
 mod ambient_inputs;
 mod binding;
+mod bun_lock_schema;
 mod config_surfaces;
 mod local_deps;
 mod lockfile_read;
