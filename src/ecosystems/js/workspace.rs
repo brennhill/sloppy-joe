@@ -313,13 +313,7 @@ pub(crate) fn parse_js_workspace_patterns(
     manifest: &serde_json::Value,
     manager: JsPackageManager,
 ) -> Result<Option<Vec<String>>> {
-    match manager {
-        JsPackageManager::Npm => parse_npm_workspaces(manifest_path, manifest),
-        JsPackageManager::Pnpm => parse_pnpm_workspaces(workspace_dir),
-        JsPackageManager::Yarn | JsPackageManager::Bun => {
-            parse_npm_workspaces(manifest_path, manifest)
-        }
-    }
+    managers::manager(manager).declared_workspaces(workspace_dir, manifest_path, manifest)
 }
 
 pub(crate) fn parse_pnpm_workspaces(

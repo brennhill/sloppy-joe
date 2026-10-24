@@ -15,6 +15,15 @@ pub(super) trait JsManager: Sync {
     /// whose format has no such check keep their existing ownership checks and answer `true`.
     fn lockfile_records_member(&self, path: &Path, content: &str, key: &str) -> Result<bool>;
 
+    /// Workspace member patterns declared for this manager: in `package.json` for npm, yarn and
+    /// bun, in `pnpm-workspace.yaml` for pnpm.
+    fn declared_workspaces(
+        &self,
+        workspace_dir: &Path,
+        manifest_path: &Path,
+        manifest: &serde_json::Value,
+    ) -> Result<Option<Vec<String>>>;
+
     /// Read the lockfile against the manifest and verify local (workspace, path) dependencies.
     /// Errors block; the returned issues are warnings.
     fn validate_lockfile(
@@ -41,6 +50,15 @@ struct Yarn;
 struct Bun;
 
 impl JsManager for Npm {
+    fn declared_workspaces(
+        &self,
+        _workspace_dir: &Path,
+        manifest_path: &Path,
+        manifest: &serde_json::Value,
+    ) -> Result<Option<Vec<String>>> {
+        parse_npm_workspaces(manifest_path, manifest)
+    }
+
     fn lockfile_candidates(&self) -> &'static [&'static str] {
         &["npm-shrinkwrap.json", "package-lock.json"]
     }
@@ -77,6 +95,15 @@ impl JsManager for Npm {
 }
 
 impl JsManager for Pnpm {
+    fn declared_workspaces(
+        &self,
+        workspace_dir: &Path,
+        _manifest_path: &Path,
+        _manifest: &serde_json::Value,
+    ) -> Result<Option<Vec<String>>> {
+        parse_pnpm_workspaces(workspace_dir)
+    }
+
     fn lockfile_candidates(&self) -> &'static [&'static str] {
         &["pnpm-lock.yaml"]
     }
@@ -115,6 +142,15 @@ impl JsManager for Pnpm {
 }
 
 impl JsManager for Yarn {
+    fn declared_workspaces(
+        &self,
+        _workspace_dir: &Path,
+        manifest_path: &Path,
+        manifest: &serde_json::Value,
+    ) -> Result<Option<Vec<String>>> {
+        parse_npm_workspaces(manifest_path, manifest)
+    }
+
     fn lockfile_candidates(&self) -> &'static [&'static str] {
         &["yarn.lock"]
     }
@@ -147,6 +183,15 @@ impl JsManager for Yarn {
 }
 
 impl JsManager for Bun {
+    fn declared_workspaces(
+        &self,
+        _workspace_dir: &Path,
+        manifest_path: &Path,
+        manifest: &serde_json::Value,
+    ) -> Result<Option<Vec<String>>> {
+        parse_npm_workspaces(manifest_path, manifest)
+    }
+
     fn lockfile_candidates(&self) -> &'static [&'static str] {
         &["bun.lock", "bun.lockb"]
     }

@@ -70,3 +70,23 @@ fn descriptor_rows_cover_every_kind_in_order() {
     let rows: Vec<_> = DESCRIPTORS.iter().map(|(kind, _)| *kind).collect();
     assert_eq!(rows, ProjectInputKind::ALL.to_vec());
 }
+
+#[test]
+fn each_project_type_has_exactly_one_missing_manifest_message() {
+    let mut types: Vec<&str> = ProjectInputKind::ALL
+        .iter()
+        .map(|kind| kind.descriptor().project_type)
+        .collect();
+    types.sort();
+    types.dedup();
+    for project_type in types {
+        let rows = ProjectInputKind::ALL
+            .iter()
+            .filter(|kind| {
+                let d = kind.descriptor();
+                d.project_type == project_type && d.missing_manifest_message.is_some()
+            })
+            .count();
+        assert_eq!(rows, 1, "project type {project_type}");
+    }
+}

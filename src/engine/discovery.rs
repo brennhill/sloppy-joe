@@ -33,7 +33,7 @@ pub(crate) fn unbound_project_inputs_with_config(
     ecosystems::refine_specs(project_dir, config, &mut specs)?;
 
     if specs.is_empty()
-        && let Some(message) = project_type.and_then(missing_manifest_message)
+        && let Some(message) = project_type.and_then(missing_manifest_message_for_type)
     {
         anyhow::bail!("{message}");
     }
@@ -44,25 +44,6 @@ pub(crate) fn unbound_project_inputs_with_config(
 /// Whether an explicit `--type` selects manifests of `kind` (no type selects everything).
 fn project_type_includes(project_type: Option<&str>, kind: ProjectInputKind) -> bool {
     project_type.is_none_or(|selected| kind.descriptor().project_type == selected)
-}
-
-/// The blocking message when an explicit `--type` finds no manifest.
-fn missing_manifest_message(project_type: &str) -> Option<&'static str> {
-    Some(match project_type {
-        "npm" => "Required manifest 'package.json' is missing for this project type.",
-        "pypi" => {
-            "Required Python manifest is missing for this project type. Expected one of: pyproject.toml, requirements*.txt, Pipfile, setup.cfg, or setup.py."
-        }
-        "cargo" => "Required manifest 'Cargo.toml' is missing for this project type.",
-        "go" => "Required manifest 'go.mod' is missing for this project type.",
-        "ruby" => "Required manifest 'Gemfile' is missing for this project type.",
-        "php" => "Required manifest 'composer.json' is missing for this project type.",
-        "jvm" => {
-            "Required manifest 'build.gradle, build.gradle.kts, or pom.xml' is missing for this project type."
-        }
-        "dotnet" => "Required manifest '.csproj' is missing for this project type.",
-        _ => return None,
-    })
 }
 
 pub(crate) fn discover_project_inputs(

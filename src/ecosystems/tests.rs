@@ -356,3 +356,102 @@ fn poetry_only_refusals_are_descriptor_facts_that_source_policy_enforces() {
         assert_eq!(outcome.is_err(), refusal.is_some(), "{kind:?}");
     }
 }
+
+// Kinds with no lockfile of their own must say so: preflight passes with a stated warning
+// (legacy format or reduced confidence), never silently clean and never as a lockfile-backed
+// scan.
+const LOCKFILE_LESS: &[(ProjectInputKind, &str, &str)] = &[
+    (
+        ProjectInputKind::PyRequirements,
+        "requirements.txt",
+        "requests==2.31.0\n",
+    ),
+    (
+        ProjectInputKind::PyRequirementsTrusted,
+        "requirements.txt",
+        "requests==2.31.0 \\\n    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000\n",
+    ),
+    (
+        ProjectInputKind::PyProjectLegacy,
+        "pyproject.toml",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"requests==2.31.0\"]\n",
+    ),
+    (
+        ProjectInputKind::PyPipfile,
+        "Pipfile",
+        "[packages]\nrequests = \"==2.31.0\"\n",
+    ),
+    (
+        ProjectInputKind::PySetupPy,
+        "setup.py",
+        "from setuptools import setup\nsetup(name='app', install_requires=['requests==2.31.0'])\n",
+    ),
+    (
+        ProjectInputKind::PySetupCfg,
+        "setup.cfg",
+        "[options]\ninstall_requires =\n    requests==2.31.0\n",
+    ),
+    (
+        ProjectInputKind::Maven,
+        "pom.xml",
+        "<project><dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId><version>4.13.2</version></dependency></dependencies></project>",
+    ),
+];
+
+#[test]
+fn every_kind_has_a_conformance_fixture() {
+    for kind in ProjectInputKind::ALL {
+        let covered = FIXTURES.iter().any(|fixture| fixture.kind == kind)
+            || LOCKFILE_LESS.iter().any(|(k, ..)| *k == kind);
+        assert!(covered, "add a conformance fixture for {kind:?}");
+    }
+}
+
+#[test]
+fn lockfile_less_kinds_state_their_policy() {
+    let config = config::SloppyJoeConfig::default();
+    let opts = ScanOptions::default();
+    for (kind, manifest, content) in LOCKFILE_LESS {
+        assert_eq!(
+            kind.descriptor().lockfile,
+            LockfilePolicy::Unsupported,
+            "{kind:?}"
+        );
+        let fixture = Fixture {
+            kind: *kind,
+            manifest,
+            content,
+        };
+        let dir = fixture_dir(&fixture, None);
+        let scan = ScanCtx {
+            scan_root: &dir,
+            config: &config,
+            opts: &opts,
+        };
+        let spec = ProjectInputSpec {
+            kind: *kind,
+            manifest_path: dir.join(manifest),
+            lockfile_path_override: None,
+            js_binding: None,
+        };
+        let ctx = PreflightCtx::new(
+            scan,
+            std::slice::from_ref(&spec),
+            std::slice::from_ref(&spec),
+        )
+        .unwrap();
+        let issues = preflight(&ctx, &spec)
+            .unwrap_or_else(|err| panic!("{kind:?} should preflight with a warning: {err}"));
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.severity == Severity::Warning),
+            "{kind:?} must state its reduced-confidence policy, got {issues:?}"
+        );
+        assert!(
+            issues.iter().all(|issue| issue.severity != Severity::Error),
+            "{kind:?}: {issues:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

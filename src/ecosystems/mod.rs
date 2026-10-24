@@ -141,6 +141,22 @@ pub(crate) trait EcosystemSupport: Sync {
         spec: &ProjectInputSpec,
     ) -> Result<SourcePolicy>;
 
+    /// The preflight stage: parse the manifest, verify its lockfile, apply the source policy. An
+    /// error blocks the project; the returned issues are warnings. The stages it runs are all
+    /// required, so this composition has nothing of its own to get wrong.
+    fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
+        let parsed = self
+            .parse(&ctx.scan, spec)
+            .map_err(|err| common::broken_manifest(spec, err))?;
+        let mut warnings = parsed.warnings.clone();
+        warnings.extend(self.validate_lockfile(ctx, spec, &parsed)?);
+        match self.source_policy(ctx, spec)? {
+            SourcePolicy::LockfileBacked(issues) => warnings.extend(issues),
+            SourcePolicy::ReducedConfidence(issue) => warnings.push(issue),
+        }
+        Ok(warnings)
+    }
+
     /// A registry client that replaces the ecosystem default for this project, when the project
     /// resolves from somewhere else (Gradle plugin repositories).
     fn scan_registry(
@@ -265,17 +281,7 @@ pub(crate) fn tooling_groups(
 
 /// Verify one project's lockfile and policy; see [`EcosystemSupport::validate_lockfile`] and [`EcosystemSupport::source_policy`].
 pub(crate) fn preflight(ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
-    let plugin = for_kind(spec.kind);
-    let parsed = plugin
-        .parse(&ctx.scan, spec)
-        .map_err(|err| common::broken_manifest(spec, err))?;
-    let mut warnings = parsed.warnings.clone();
-    warnings.extend(plugin.validate_lockfile(ctx, spec, &parsed)?);
-    match plugin.source_policy(ctx, spec)? {
-        SourcePolicy::LockfileBacked(issues) => warnings.extend(issues),
-        SourcePolicy::ReducedConfidence(issue) => warnings.push(issue),
-    }
-    Ok(warnings)
+    for_kind(spec.kind).preflight(ctx, spec)
 }
 
 /// A plugin was handed a project it does not own: an engine bug, never user input.
