@@ -56,15 +56,17 @@ Sources below are mostly vendor write-ups and secondary reports; counts differ b
 | Malicious release with valid provenance | AsyncAPI releases carried valid Sigstore/SLSA provenance because CI was hijacked ([TuxCare](https://tuxcare.com/blog/supply-chain-broke-in-2026/)). | sloppy-joe does not read attestations, so it neither trusts nor reports them. Provenance would not have been a safe pass signal. |
 | Typosquatted MCP server packages | Described as plausible by [Nesbitt](https://nesbitt.io/2026/04/08/package-security-problems-for-ai-agents); no in-the-wild case found. | Ordinary similarity applies only if the real MCP package is in the popular-package set. Not specifically modeled. |
 
-## Gap review of proposed checks (2026-10-24)
+## Gap review of proposed checks (updated 2026-10-25)
+
+Spec: `docs/specs/python-supply-chain-signals.md`. Attestation/provenance reporting and MCP-name similarity are out of scope.
 
 | Proposed check | Status | Evidence |
 | --- | --- | --- |
-| New or low-history package with a plausible hallucinated name | Done | `metadata/new-package` (under 30 days) and `metadata/low-downloads` in `src/checks/signals.rs`. No check combines "name looks like a CLI/tool name" with recency. |
-| Execution on install beyond scripts (`binding.gyp`, `.pth`) | Partly done | npm gyp covered; PyPI `.pth` and other wheel startup hooks are not. |
-| Maintainer change, version burst, dormancy-then-release | Partly done | Publisher change and publisher/script history exist (`check_maintainer_change`, `check_publisher_script_combo`). No dormancy or release-burst signal. |
-| Cooldown window for new versions | Done | `min_version_age_hours`, default 72 (`src/config/mod.rs`, `check_version_age`). |
-| Dependency steering (agent-introduced deps, CLI-name-as-package) | Not done | No code path; `canonical` rules only help where an org configures them. |
-| Lockfile integrity and non-registry sources | Done for npm-family | `metadata/lockfile-integrity-mismatch`/`-unverified`; source provenance checks for Cargo, Python, Composer, pnpm, Yarn. Yarn Berry checksums cannot be compared with registry data. |
-| MCP server package name similarity | Not done | No MCP-specific names in the popular-package data. |
-| Report attestation/provenance status | Not done | No attestation or Sigstore handling in `src/`. Treat as an informational signal only. |
+| New or low-history package with a plausible hallucinated name | Done | `metadata/new-package`, `metadata/low-downloads`; `steering/distribution-name` adds the guessed import/command-name case for PyPI. |
+| Execution on install beyond scripts (`binding.gyp`, `.pth`) | Done | npm gyp counts as an install script; PyPI wheels are read for `*.pth` import lines and `sitecustomize`/`usercustomize` (`metadata/python-startup-hook`). sdist `setup.py` and hook code beyond a token list are not analyzed. |
+| Maintainer change, version burst, dormancy-then-release | Done | Publisher change and publisher/script history; `metadata/dormant-release` and `metadata/release-burst` for PyPI and npm. Other registries carry no cadence data yet. |
+| Cooldown window for new versions | Done | `min_version_age_hours`, default 72. The PyPI version date is the newest file upload. |
+| Dependency steering | Partly done | Guessed import/command names for PyPI. "Dependency newly added since the git base" is not built (needs a VCS baseline). |
+| Lockfile integrity and non-registry sources | Done for npm-family and Python | `metadata/lockfile-integrity-*` for npm lockfiles, `poetry.lock`, `uv.lock`, `Pipfile.lock`. `requirements.txt --hash` and Yarn Berry are not compared. |
+| MCP server package name similarity | Out of scope | |
+| Report attestation/provenance status | Out of scope | |

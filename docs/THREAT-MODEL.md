@@ -61,6 +61,10 @@ fails when a path named here no longer exists, so this page cannot drift silentl
 | Attack | Control | Where |
 | --- | --- | --- |
 | Typosquat or hallucinated package name | Existence, similarity and metadata checks | `docs/specs/registry-similarity.md` |
+| Startup hook in a PyPI wheel (`*.pth`, `sitecustomize`) | Recent or flagged versions' wheels are read in memory and hash-checked | `src/checks/wheel_verification.rs`, `docs/specs/python-supply-chain-signals.md` |
+| A Python lockfile hash PyPI never served | Recorded sha256 must be published by PyPI | `src/checks/python_lockfile_hashes.rs`, `src/lockfiles/python_hashes.rs` |
+| Release after long silence or in a burst | Cadence signals on recent versions | `src/checks/release_cadence.rs` |
+| A guessed import or command name used as a package | Known-mismatch table, stricter when young | `src/checks/steering.rs` |
 | A known-malicious package | OSV check | `docs/specs/vulnerability-coverage.md` |
 | A registry or cache fails and the scan passes | Errors block; caches go through one module | `src/cache.rs`, `docs/specs/lockfile-handling.md` |
 
