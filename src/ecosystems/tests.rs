@@ -49,3 +49,33 @@ fn default_lockfile_paths_agree_with_the_descriptor() {
         }
     }
 }
+
+#[test]
+fn plugins_detect_exactly_the_manifest_names_their_descriptors_list() {
+    for kind in ProjectInputKind::ALL {
+        for name in kind.descriptor().manifest_file_names {
+            // pyproject.toml is classified by content, so it is not in the name table.
+            let detected = detect(Path::new("/proj").join(name).as_path())
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(detected, Some(kind), "{name}");
+        }
+    }
+}
+
+#[test]
+fn unrelated_files_are_not_projects() {
+    for name in ["README.md", "main.rs", "Makefile", "lock.json"] {
+        assert_eq!(
+            detect(&Path::new("/proj").join(name)).unwrap(),
+            None,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn unsupported_bundler_files_block_instead_of_being_skipped() {
+    for name in ["gems.rb", "gems.locked"] {
+        assert!(detect(&Path::new("/proj").join(name)).is_err(), "{name}");
+    }
+}

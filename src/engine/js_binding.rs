@@ -90,23 +90,6 @@ pub(crate) struct NpmProjectIndex {
         std::collections::HashMap<String, std::collections::HashSet<std::path::PathBuf>>,
 }
 
-#[cfg(test)]
-pub(crate) fn bind_js_project_inputs(
-    scan_root: &std::path::Path,
-    specs: &mut [ProjectInputSpec],
-) -> Result<()> {
-    for spec in specs.iter_mut() {
-        if spec.kind != ProjectInputKind::Npm {
-            continue;
-        }
-        spec.js_binding = Some(resolve_js_project_binding(scan_root, spec)?);
-        if let Some(binding) = &spec.js_binding {
-            spec.lockfile_path_override = binding.lockfile_path.clone();
-        }
-    }
-    Ok(())
-}
-
 /// A project with its own lockfile that its enclosing workspace does not record is installed
 /// on its own, unless the workspace root explicitly selects a package manager.
 fn project_is_independent_of_workspace(

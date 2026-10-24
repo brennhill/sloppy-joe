@@ -76,3 +76,15 @@ pub(super) fn named_lockfile(spec: &ProjectInputSpec) -> Option<PathBuf> {
         .lockfile_name
         .map(|name| spec.manifest_path.with_file_name(name))
 }
+
+/// The kind among `kinds` whose descriptor lists the manifest's exact file name.
+pub(super) fn kind_for_file_name(
+    kinds: &[ProjectInputKind],
+    path: &Path,
+) -> Option<ProjectInputKind> {
+    let name = path.file_name()?.to_str()?;
+    kinds
+        .iter()
+        .copied()
+        .find(|kind| kind.descriptor().manifest_file_names.contains(&name))
+}

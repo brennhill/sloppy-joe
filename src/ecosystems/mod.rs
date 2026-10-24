@@ -69,6 +69,37 @@ pub(crate) trait EcosystemSupport: Sync {
     /// Dependencies (and warnings/tooling) the scan checks for this project.
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput>;
 
+    /// Classify a manifest path as one of this plugin's kinds. Unsupported lookalikes the scan
+    /// would otherwise skip silently (e.g. `gems.rb`) are errors, never `None`.
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>>;
+
+    /// Adjust the discovered projects after `--type` filtering: add local path dependencies,
+    /// drop manifests another one owns, refuse ambiguity. No-op for most ecosystems.
+    fn refine_specs(
+        &self,
+        _scan_root: &Path,
+        _config: &config::SloppyJoeConfig,
+        _specs: &mut Vec<ProjectInputSpec>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Bind projects to their package manager and lockfile. Projects that cannot be bound are
+    /// returned with the reason; the scan reports them as incomplete. No-op for most ecosystems.
+    fn bind(
+        &self,
+        _scan_root: &Path,
+        _specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+        std::collections::HashMap::new()
+    }
+
+    /// Split build/tooling dependencies that no lockfile records into the groups that resolve
+    /// from separate repositories. One group by default.
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
+        vec![unlocked]
+    }
+
     /// Verify the project's lockfile and policy before anything is scanned. An error blocks the
     /// project; the returned issues are warnings about reduced confidence.
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>>;
@@ -96,6 +127,55 @@ pub(crate) fn for_kind(kind: ProjectInputKind) -> &'static dyn EcosystemSupport 
         .copied()
         .find(|plugin| plugin.kinds().contains(&kind))
         .unwrap_or_else(|| panic!("no ecosystem plugin registered for {kind:?}"))
+}
+
+/// The kind of project the manifest at `path` is, if it is one.
+pub(crate) fn detect(path: &Path) -> Result<Option<ProjectInputKind>> {
+    for plugin in all() {
+        if let Some(kind) = plugin.detect(path)? {
+            return Ok(Some(kind));
+        }
+    }
+    Ok(None)
+}
+
+/// Let every plugin adjust the discovered projects, then order them by manifest path.
+pub(crate) fn refine_specs(
+    scan_root: &Path,
+    config: &config::SloppyJoeConfig,
+    specs: &mut Vec<ProjectInputSpec>,
+) -> Result<()> {
+    for plugin in all() {
+        plugin.refine_specs(scan_root, config, specs)?;
+    }
+    specs.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
+    Ok(())
+}
+
+/// Bind every project; returns the projects that could not be bound, with the reason.
+pub(crate) fn bind(
+    scan_root: &Path,
+    specs: &mut [ProjectInputSpec],
+) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+    let mut errors = std::collections::HashMap::new();
+    for plugin in all() {
+        errors.extend(plugin.bind(scan_root, specs));
+    }
+    errors
+}
+
+/// Bind JS projects, failing on the first one that cannot be bound (no workspace-member check).
+#[cfg(test)]
+pub(crate) fn bind_strict(scan_root: &Path, specs: &mut [ProjectInputSpec]) -> Result<()> {
+    js::bind_strict(scan_root, specs)
+}
+
+/// Groups of unlocked tooling dependencies for a project.
+pub(crate) fn tooling_groups(
+    kind: ProjectInputKind,
+    unlocked: Vec<Dependency>,
+) -> Vec<Vec<Dependency>> {
+    for_kind(kind).tooling_groups(unlocked)
 }
 
 /// Verify one project's lockfile and policy; see [`EcosystemSupport::preflight`].

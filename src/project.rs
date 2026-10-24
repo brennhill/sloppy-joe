@@ -99,6 +99,17 @@ pub(crate) enum LockfilePolicy {
     Unsupported,
 }
 
+/// What discovery does with a manifest found inside an installed dependency tree (`node_modules`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstalledTreePolicy {
+    /// The manifest is a project like any other.
+    Scan,
+    /// Installed packages are not projects, unless they carry a lockfile of their own.
+    ScanWhenLocked,
+    /// Never a project: it belongs to an installed dependency.
+    Skip,
+}
+
 /// Static facts about a project kind. The one place a new kind must answer each question.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct KindDescriptor {
@@ -114,6 +125,7 @@ pub(crate) struct KindDescriptor {
     /// Lockfile sitting next to the manifest; `None` when the lockfile is bound per project (JS),
     /// is the manifest itself, or does not exist for the kind.
     pub(crate) lockfile_name: Option<&'static str>,
+    pub(crate) in_installed_tree: InstalledTreePolicy,
     /// Package manager name; `None` for JS, where it is bound per project.
     pub(crate) manager: Option<&'static str>,
     pub(crate) lockfile: LockfilePolicy,
@@ -122,6 +134,7 @@ pub(crate) struct KindDescriptor {
 }
 
 impl ProjectInputKind {
+    #[cfg(test)]
     pub(crate) const ALL: [ProjectInputKind; 16] = [
         Self::Npm,
         Self::PyProjectPoetry,
@@ -152,6 +165,7 @@ impl ProjectInputKind {
                     project_type: "pypi",
                     manifest_file_names,
                     lockfile_name,
+                    in_installed_tree: InstalledTreePolicy::Skip,
                     manager: Some(manager),
                     lockfile,
                     missing_lockfile_help: help,
@@ -170,6 +184,7 @@ impl ProjectInputKind {
                 project_type,
                 manifest_file_names,
                 lockfile_name: Some(lockfile_name),
+                in_installed_tree: InstalledTreePolicy::Scan,
                 manager: Some(manager),
                 lockfile: Required,
                 missing_lockfile_help: Some(help),
@@ -182,6 +197,7 @@ impl ProjectInputKind {
                 project_type: "npm",
                 manifest_file_names: &["package.json"],
                 lockfile_name: None,
+                in_installed_tree: InstalledTreePolicy::ScanWhenLocked,
                 manager: None,
                 lockfile: Required,
                 missing_lockfile_help: Some(
@@ -248,6 +264,7 @@ impl ProjectInputKind {
                 project_type: "jvm",
                 manifest_file_names: &["pom.xml"],
                 lockfile_name: None,
+                in_installed_tree: InstalledTreePolicy::Scan,
                 manager: Some("maven"),
                 lockfile: Unsupported,
                 missing_lockfile_help: None,

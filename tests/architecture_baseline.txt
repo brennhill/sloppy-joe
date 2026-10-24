@@ -1,12 +1,11 @@
 # Architecture baseline (docs/specs/architecture-guardrails.md).
 # Existing violations only. Values may shrink, never grow.
 # Tighten with: UPDATE_ARCH_BASELINE=1 cargo test --test architecture
-placement project-input-kind src/engine/discovery.rs 11
-placement project-input-kind src/engine/js_binding.rs 3
+placement project-input-kind src/engine/js_binding.rs 2
 placement project-input-kind src/engine/js_workspace.rs 1
 placement project-input-kind src/engine/lockfile_read.rs 1
-placement project-input-kind src/engine/parse_inputs.rs 24
+placement project-input-kind src/engine/parse_inputs.rs 8
 placement project-input-kind src/engine/python_warnings.rs 4
-placement project-input-kind src/engine/scan.rs 4
+placement project-input-kind src/engine/scan.rs 1
 placement project-input-kind src/gradle_plugin_scan.rs 2
 placement project-input-kind src/lockfiles/read.rs 16

@@ -1,108 +1,5 @@
 use crate::*;
 
-pub(crate) fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
-    let trusted_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| {
-            matches!(
-                spec.kind,
-                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-            )
-        })
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-    let legacy_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyProjectLegacy)
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-    let trusted_requirements_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted)
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-
-    specs.retain(|spec| {
-        if !spec.kind.is_python() {
-            return true;
-        }
-        // `requirements/*.txt` belongs to the project in the parent directory.
-        let owner_dir = if parsers::requirements::is_in_requirements_directory(&spec.manifest_path)
-        {
-            spec.project_dir().parent().unwrap_or(spec.project_dir())
-        } else {
-            spec.project_dir()
-        };
-        if trusted_pyproject_dirs.contains(spec.project_dir())
-            || trusted_pyproject_dirs.contains(owner_dir)
-        {
-            return matches!(
-                spec.kind,
-                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-            );
-        }
-        if trusted_requirements_dirs.contains(spec.project_dir()) {
-            if legacy_pyproject_dirs.contains(spec.project_dir()) {
-                return true;
-            }
-            return spec.kind == ProjectInputKind::PyRequirementsTrusted;
-        }
-        true
-    });
-}
-
-pub(crate) fn reject_ambiguous_python_project_inputs(specs: &[ProjectInputSpec]) -> Result<()> {
-    let mut trusted_requirements_dirs = std::collections::HashSet::new();
-    let mut legacy_pyproject_dirs = std::collections::HashSet::new();
-
-    for spec in specs {
-        match spec.kind {
-            ProjectInputKind::PyRequirementsTrusted => {
-                trusted_requirements_dirs.insert(spec.project_dir().to_path_buf());
-            }
-            ProjectInputKind::PyProjectLegacy => {
-                legacy_pyproject_dirs.insert(spec.project_dir().to_path_buf());
-            }
-            _ => {}
-        }
-    }
-
-    let ambiguous_dirs: Vec<_> = trusted_requirements_dirs
-        .intersection(&legacy_pyproject_dirs)
-        .cloned()
-        .collect();
-    if let Some(dir) = ambiguous_dirs.into_iter().min() {
-        anyhow::bail!(
-            "Ambiguous trusted Python roots in '{}': found both a legacy pyproject.toml and a fully hash-locked requirements file. sloppy-joe refuses to guess which manifest is authoritative. Fix: remove the weaker manifest from this directory, or split the trusted requirements into a separate standalone root.",
-            dir.display()
-        );
-    }
-
-    Ok(())
-}
-
-pub(crate) fn has_npm_lockfile(project_dir: &std::path::Path) -> bool {
-    ["npm-shrinkwrap.json", "package-lock.json"]
-        .iter()
-        .any(|name| parsers::path_detected(&project_dir.join(name)).unwrap_or(false))
-}
-
-pub(crate) fn promote_trusted_pip_tools_specs(
-    scan_root: &std::path::Path,
-    specs: &mut [ProjectInputSpec],
-) -> Result<()> {
-    for spec in specs.iter_mut() {
-        if spec.kind != ProjectInputKind::PyRequirements {
-            continue;
-        }
-        if parsers::requirements::is_hash_locked_requirements_file(&spec.manifest_path, scan_root)?
-        {
-            spec.kind = ProjectInputKind::PyRequirementsTrusted;
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn npm_dependency_entries(manifest: &serde_json::Value) -> Vec<(String, String)> {
     [
         "dependencies",
@@ -120,39 +17,6 @@ pub(crate) fn npm_dependency_entries(manifest: &serde_json::Value) -> Vec<(Strin
             .filter_map(|(name, value)| value.as_str().map(|spec| (name.clone(), spec.to_string())))
     })
     .collect()
-}
-
-pub(crate) fn prune_included_requirement_specs(
-    scan_root: &std::path::Path,
-    specs: &mut Vec<ProjectInputSpec>,
-) -> Result<()> {
-    let mut included = std::collections::HashSet::new();
-
-    for spec in specs.iter().filter(|spec| {
-        matches!(
-            spec.kind,
-            ProjectInputKind::PyRequirements | ProjectInputKind::PyRequirementsTrusted
-        )
-    }) {
-        for include in parsers::requirements::included_paths(&spec.manifest_path, scan_root)? {
-            included.insert(include);
-        }
-    }
-
-    specs.retain(|spec| {
-        if !matches!(
-            spec.kind,
-            ProjectInputKind::PyRequirements | ProjectInputKind::PyRequirementsTrusted
-        ) {
-            return true;
-        }
-        match std::fs::canonicalize(&spec.manifest_path) {
-            Ok(canonical) => !included.contains(&canonical),
-            Err(_) => true,
-        }
-    });
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -179,15 +43,7 @@ pub(crate) fn parse_project_inputs_with_options(
             python_root_extras: parsed.python_root_extras,
             unlocked_tooling: false,
         });
-        // Gradle plugin markers and buildscript classpath artifacts resolve from
-        // different repositories, so each group gets its own project.
-        let tooling_groups = if spec.kind == ProjectInputKind::Gradle {
-            let (markers, classpath) =
-                gradle_plugin_scan::split_tooling_deps(parsed.unlocked_tooling_deps);
-            vec![markers, classpath]
-        } else {
-            vec![parsed.unlocked_tooling_deps]
-        };
+        let tooling_groups = ecosystems::tooling_groups(spec.kind, parsed.unlocked_tooling_deps);
         for tooling_deps in tooling_groups.into_iter().filter(|deps| !deps.is_empty()) {
             projects.push(ParsedProject {
                 spec: spec.clone(),

@@ -29,6 +29,10 @@ impl EcosystemSupport for Go {
         })
     }
 
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        Ok(common::kind_for_file_name(self.kinds(), path))
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let parsed = common::parse_for_preflight(self, ctx, spec)?;
         check_go_sum(spec)?;

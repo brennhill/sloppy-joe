@@ -37,6 +37,17 @@ impl EcosystemSupport for Jvm {
         }
     }
 
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        Ok(common::kind_for_file_name(self.kinds(), path))
+    }
+
+    fn tooling_groups(&self, unlocked: Vec<Dependency>) -> Vec<Vec<Dependency>> {
+        // Gradle plugin markers and buildscript classpath artifacts resolve from
+        // different repositories, so each group gets its own project.
+        let (markers, classpath) = gradle_plugin_scan::split_tooling_deps(unlocked);
+        vec![markers, classpath]
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let parsed = common::parse_for_preflight(self, ctx, spec)?;
         let mut warnings = parsed.warnings.clone();

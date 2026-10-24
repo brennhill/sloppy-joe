@@ -29,6 +29,14 @@ impl EcosystemSupport for Dotnet {
         })
     }
 
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        if path.file_name().and_then(|name| name.to_str()) == Some("packages.config") {
+            parsers::csproj::reject_packages_config(path)?;
+            return Ok(None);
+        }
+        Ok(parsers::csproj::is_project_file(path).then_some(ProjectInputKind::Dotnet))
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let parsed = common::parse_for_preflight(self, ctx, spec)?;
         let lockfile = common::named_lockfile(spec).expect("Dotnet names packages.lock.json");

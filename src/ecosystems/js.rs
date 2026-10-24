@@ -38,6 +38,50 @@ impl EcosystemSupport for Js {
         })
     }
 
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        Ok(common::kind_for_file_name(self.kinds(), path))
+    }
+
+    fn bind(
+        &self,
+        scan_root: &Path,
+        specs: &mut [ProjectInputSpec],
+    ) -> std::collections::HashMap<PathBuf, anyhow::Error> {
+        let mut binding_errors = std::collections::HashMap::new();
+        for spec in specs.iter_mut() {
+            if spec.kind != ProjectInputKind::Npm {
+                continue;
+            }
+            match resolve_js_project_binding(scan_root, spec) {
+                Ok(binding) => {
+                    spec.lockfile_path_override = binding.lockfile_path.clone();
+                    spec.js_binding = Some(binding);
+                }
+                Err(error) => {
+                    binding_errors.insert(spec.manifest_path.clone(), error);
+                }
+            }
+        }
+        let scanned_js_dirs: std::collections::HashSet<PathBuf> = specs
+            .iter()
+            .filter(|spec| spec.kind == ProjectInputKind::Npm)
+            .filter_map(|spec| std::fs::canonicalize(spec.project_dir()).ok())
+            .collect();
+        for spec in specs.iter() {
+            if spec.kind != ProjectInputKind::Npm
+                || binding_errors.contains_key(&spec.manifest_path)
+            {
+                continue;
+            }
+            if let Err(error) =
+                ensure_js_workspace_members_scanned(scan_root, spec, &scanned_js_dirs)
+            {
+                binding_errors.insert(spec.manifest_path.clone(), error);
+            }
+        }
+        binding_errors
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let manifest = ctx
             .js
@@ -153,4 +197,17 @@ fn preflight_js_project(
             validate_local_yarn_dependencies(&scope_root, spec, manifest, &lockfile, ignore_dirs)
         }
     }
+}
+
+#[cfg(test)]
+pub(super) fn bind_strict(scan_root: &Path, specs: &mut [ProjectInputSpec]) -> Result<()> {
+    for spec in specs.iter_mut() {
+        if spec.kind != ProjectInputKind::Npm {
+            continue;
+        }
+        let binding = resolve_js_project_binding(scan_root, spec)?;
+        spec.lockfile_path_override = binding.lockfile_path.clone();
+        spec.js_binding = Some(binding);
+    }
+    Ok(())
 }

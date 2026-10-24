@@ -29,6 +29,19 @@ impl EcosystemSupport for Cargo {
         })
     }
 
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        Ok(common::kind_for_file_name(self.kinds(), path))
+    }
+
+    fn refine_specs(
+        &self,
+        scan_root: &Path,
+        config: &config::SloppyJoeConfig,
+        specs: &mut Vec<ProjectInputSpec>,
+    ) -> Result<()> {
+        expand_cargo_project_inputs(scan_root, specs, config)
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let ScanCtx {
             scan_root, config, ..
@@ -41,4 +54,82 @@ impl EcosystemSupport for Cargo {
         cargo_lockfile_value(&lockfile)?;
         Ok(warnings)
     }
+}
+
+fn expand_cargo_project_inputs(
+    scan_root: &std::path::Path,
+    specs: &mut Vec<ProjectInputSpec>,
+    config: &config::SloppyJoeConfig,
+) -> Result<()> {
+    let mut seen = specs
+        .iter()
+        .map(|spec| spec.manifest_path.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut index = 0usize;
+    while index < specs.len() {
+        if specs[index].kind != ProjectInputKind::Cargo {
+            index += 1;
+            continue;
+        }
+
+        let manifest_path = specs[index].manifest_path.clone();
+        specs[index].lockfile_path_override = Some(authoritative_cargo_lockfile_path(
+            scan_root,
+            &manifest_path,
+            config,
+        )?);
+
+        let manifest = parsers::cargo_toml::parse_manifest_file(&manifest_path)?;
+        let (cargo_config_rewrites, _) =
+            load_effective_cargo_config_rewrites(scan_root, &manifest_path, config)?;
+        let rewrites =
+            collect_effective_cargo_rewrites(scan_root, &manifest, config, &cargo_config_rewrites)?;
+        let effective = resolve_cargo_effective_dependencies(scan_root, &manifest, config)?;
+
+        for dep in effective {
+            if let parsers::cargo_toml::CargoSourceSpec::Path(path) = dep.spec.source
+                && let Some(target_manifest) = cargo_local_target_manifest(
+                    scan_root,
+                    &dep.base_dir,
+                    &path,
+                    &dep.spec.package_name,
+                    config,
+                )?
+                && seen.insert(target_manifest.clone())
+            {
+                specs.push(ProjectInputSpec {
+                    kind: ProjectInputKind::Cargo,
+                    manifest_path: target_manifest,
+                    lockfile_path_override: None,
+                    js_binding: None,
+                });
+            }
+        }
+
+        for rewrite in rewrites {
+            if let parsers::cargo_toml::CargoSourceSpec::Path(path) = &rewrite.spec.source
+                && let Some(target_manifest) = cargo_local_target_manifest(
+                    scan_root,
+                    &rewrite.base_dir,
+                    path,
+                    &rewrite.spec.package_name,
+                    config,
+                )?
+                && seen.insert(target_manifest.clone())
+            {
+                specs.push(ProjectInputSpec {
+                    kind: ProjectInputKind::Cargo,
+                    manifest_path: target_manifest,
+                    lockfile_path_override: None,
+                    js_binding: None,
+                });
+            }
+        }
+
+        index += 1;
+    }
+
+    specs.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
+    Ok(())
 }

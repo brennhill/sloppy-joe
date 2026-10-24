@@ -69,44 +69,6 @@ impl ScanAccumulator {
     }
 }
 
-/// Bind every JS project to its package manager and lockfile; projects that cannot be bound,
-/// or whose workspace members are not all scanned, are returned with their error.
-fn bind_js_projects(
-    project_dir: &std::path::Path,
-    specs: &mut [ProjectInputSpec],
-) -> std::collections::HashMap<std::path::PathBuf, anyhow::Error> {
-    let mut binding_errors = std::collections::HashMap::new();
-    for spec in specs.iter_mut() {
-        if spec.kind != ProjectInputKind::Npm {
-            continue;
-        }
-        match resolve_js_project_binding(project_dir, spec) {
-            Ok(binding) => {
-                spec.lockfile_path_override = binding.lockfile_path.clone();
-                spec.js_binding = Some(binding);
-            }
-            Err(error) => {
-                binding_errors.insert(spec.manifest_path.clone(), error);
-            }
-        }
-    }
-    let scanned_js_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::Npm)
-        .filter_map(|spec| std::fs::canonicalize(spec.project_dir()).ok())
-        .collect();
-    for spec in specs.iter() {
-        if spec.kind != ProjectInputKind::Npm || binding_errors.contains_key(&spec.manifest_path) {
-            continue;
-        }
-        if let Err(error) = ensure_js_workspace_members_scanned(project_dir, spec, &scanned_js_dirs)
-        {
-            binding_errors.insert(spec.manifest_path.clone(), error);
-        }
-    }
-    binding_errors
-}
-
 /// Reasons a fast scan recommends a full scan; empty outside fast mode.
 fn fast_mode_full_scan_reasons(
     projects: &[ParsedProject],
@@ -236,7 +198,7 @@ pub(crate) async fn scan_with_config(
         .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
     cache::ensure_cache_dir_outside_project(&cache_base, project_dir)?;
     let mut specs = unbound_project_inputs_with_config(project_dir, project_type, &config)?;
-    let mut binding_errors = bind_js_projects(project_dir, &mut specs);
+    let mut binding_errors = ecosystems::bind(project_dir, &mut specs);
     let usable_specs: Vec<_> = specs
         .iter()
         .filter(|spec| !binding_errors.contains_key(&spec.manifest_path))

@@ -29,6 +29,19 @@ impl EcosystemSupport for Ruby {
         })
     }
 
+    fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        // Bundler 2 prefers these over Gemfile / Gemfile.lock, so a scan that only reads
+        // the old names would miss the dependencies Bundler actually installs.
+        if let Some(name @ ("gems.rb" | "gems.locked")) = path.file_name().and_then(|n| n.to_str())
+        {
+            anyhow::bail!(
+                "Unsupported Bundler file '{name}' at '{}': sloppy-joe reads Gemfile and Gemfile.lock only, so these dependencies would go unchecked. Fix: rename to Gemfile / Gemfile.lock.",
+                path.display()
+            );
+        }
+        Ok(common::kind_for_file_name(self.kinds(), path))
+    }
+
     fn preflight(&self, ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<Vec<Issue>> {
         let parsed = common::parse_for_preflight(self, ctx, spec)?;
         common::ensure_kind_lockfile(

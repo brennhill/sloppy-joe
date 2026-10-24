@@ -19,7 +19,7 @@ pub(crate) fn detected_project_inputs_with_config(
     config: &config::SloppyJoeConfig,
 ) -> Result<Vec<ProjectInputSpec>> {
     let mut specs = unbound_project_inputs_with_config(project_dir, project_type, config)?;
-    bind_js_project_inputs(project_dir, &mut specs)?;
+    ecosystems::bind_strict(project_dir, &mut specs)?;
     Ok(specs)
 }
 
@@ -30,11 +30,7 @@ pub(crate) fn unbound_project_inputs_with_config(
 ) -> Result<Vec<ProjectInputSpec>> {
     let mut specs = discover_project_inputs(project_dir, &config.ignore_dirs)?;
     specs.retain(|spec| project_type_includes(project_type, spec.kind));
-    expand_cargo_project_inputs(project_dir, &mut specs, config)?;
-    promote_trusted_pip_tools_specs(project_dir, &mut specs)?;
-    prune_included_requirement_specs(project_dir, &mut specs)?;
-    reject_ambiguous_python_project_inputs(&specs)?;
-    prefer_trusted_python_project_inputs(&mut specs);
+    ecosystems::refine_specs(project_dir, config, &mut specs)?;
 
     if specs.is_empty()
         && let Some(message) = project_type.and_then(missing_manifest_message)
@@ -67,84 +63,6 @@ fn missing_manifest_message(project_type: &str) -> Option<&'static str> {
         "dotnet" => "Required manifest '.csproj' is missing for this project type.",
         _ => return None,
     })
-}
-
-pub(crate) fn expand_cargo_project_inputs(
-    scan_root: &std::path::Path,
-    specs: &mut Vec<ProjectInputSpec>,
-    config: &config::SloppyJoeConfig,
-) -> Result<()> {
-    let mut seen = specs
-        .iter()
-        .map(|spec| spec.manifest_path.clone())
-        .collect::<std::collections::HashSet<_>>();
-
-    let mut index = 0usize;
-    while index < specs.len() {
-        if specs[index].kind != ProjectInputKind::Cargo {
-            index += 1;
-            continue;
-        }
-
-        let manifest_path = specs[index].manifest_path.clone();
-        specs[index].lockfile_path_override = Some(authoritative_cargo_lockfile_path(
-            scan_root,
-            &manifest_path,
-            config,
-        )?);
-
-        let manifest = parsers::cargo_toml::parse_manifest_file(&manifest_path)?;
-        let (cargo_config_rewrites, _) =
-            load_effective_cargo_config_rewrites(scan_root, &manifest_path, config)?;
-        let rewrites =
-            collect_effective_cargo_rewrites(scan_root, &manifest, config, &cargo_config_rewrites)?;
-        let effective = resolve_cargo_effective_dependencies(scan_root, &manifest, config)?;
-
-        for dep in effective {
-            if let parsers::cargo_toml::CargoSourceSpec::Path(path) = dep.spec.source
-                && let Some(target_manifest) = cargo_local_target_manifest(
-                    scan_root,
-                    &dep.base_dir,
-                    &path,
-                    &dep.spec.package_name,
-                    config,
-                )?
-                && seen.insert(target_manifest.clone())
-            {
-                specs.push(ProjectInputSpec {
-                    kind: ProjectInputKind::Cargo,
-                    manifest_path: target_manifest,
-                    lockfile_path_override: None,
-                    js_binding: None,
-                });
-            }
-        }
-
-        for rewrite in rewrites {
-            if let parsers::cargo_toml::CargoSourceSpec::Path(path) = &rewrite.spec.source
-                && let Some(target_manifest) = cargo_local_target_manifest(
-                    scan_root,
-                    &rewrite.base_dir,
-                    path,
-                    &rewrite.spec.package_name,
-                    config,
-                )?
-                && seen.insert(target_manifest.clone())
-            {
-                specs.push(ProjectInputSpec {
-                    kind: ProjectInputKind::Cargo,
-                    manifest_path: target_manifest,
-                    lockfile_path_override: None,
-                    js_binding: None,
-                });
-            }
-        }
-
-        index += 1;
-    }
-
-    specs.sort_by(|left, right| left.manifest_path.cmp(&right.manifest_path));
-    Ok(())
 }
 
 pub(crate) fn discover_project_inputs(
@@ -347,69 +265,26 @@ pub(crate) fn project_input_from_path(
     path: &std::path::Path,
     inside_installed_node_modules: bool,
 ) -> Result<Option<ProjectInputSpec>> {
-    let Some(kind) = project_input_kind_from_path(path)? else {
+    let Some(kind) = ecosystems::detect(path)? else {
         return Ok(None);
     };
-
-    if inside_installed_node_modules {
-        match kind {
-            ProjectInputKind::Npm
-                if has_npm_lockfile(path.parent().expect("manifest paths have parent")) => {}
-            kind if kind == ProjectInputKind::Npm || kind.is_python() => return Ok(None),
-            _ => {}
-        }
-    }
-
-    Ok(Some(ProjectInputSpec {
+    let spec = ProjectInputSpec {
         kind,
         manifest_path: path.to_path_buf(),
         lockfile_path_override: None,
         js_binding: None,
-    }))
-}
+    };
 
-pub(crate) fn project_input_kind_from_path(
-    path: &std::path::Path,
-) -> Result<Option<ProjectInputKind>> {
-    let name = path.file_name().and_then(|name| name.to_str());
-    match name {
-        Some("pyproject.toml") => {
-            return Ok(Some(
-                match parsers::pyproject_toml::classify_manifest(path)? {
-                    parsers::pyproject_toml::PyprojectKind::Poetry => {
-                        ProjectInputKind::PyProjectPoetry
-                    }
-                    parsers::pyproject_toml::PyprojectKind::Uv => ProjectInputKind::PyProjectUv,
-                    parsers::pyproject_toml::PyprojectKind::Legacy => {
-                        ProjectInputKind::PyProjectLegacy
-                    }
-                },
-            ));
-        }
-        // Bundler 2 prefers these over Gemfile / Gemfile.lock, so a scan that only reads
-        // the old names would miss the dependencies Bundler actually installs.
-        Some(name @ ("gems.rb" | "gems.locked")) => anyhow::bail!(
-            "Unsupported Bundler file '{name}' at '{}': sloppy-joe reads Gemfile and Gemfile.lock only, so these dependencies would go unchecked. Fix: rename to Gemfile / Gemfile.lock.",
-            path.display()
-        ),
-        Some("packages.config") => {
-            parsers::csproj::reject_packages_config(path)?;
+    if inside_installed_node_modules {
+        let keep = match kind.descriptor().in_installed_tree {
+            InstalledTreePolicy::Scan => true,
+            InstalledTreePolicy::ScanWhenLocked => selected_lockfile_path(&spec).is_some(),
+            InstalledTreePolicy::Skip => false,
+        };
+        if !keep {
             return Ok(None);
         }
-        _ => {}
     }
-    if let Some(kind) = name.and_then(project_input_kind_for_file_name) {
-        return Ok(Some(kind));
-    }
-    if parsers::requirements::is_requirements_manifest_path(path) {
-        return Ok(Some(ProjectInputKind::PyRequirements));
-    }
-    Ok(parsers::csproj::is_project_file(path).then_some(ProjectInputKind::Dotnet))
-}
 
-/// Manifests that are identified by their exact file name.
-fn project_input_kind_for_file_name(name: &str) -> Option<ProjectInputKind> {
-    ProjectInputKind::ALL
-        .into_iter()
-        .find(|kind| kind.descriptor().manifest_file_names.contains(&name))
+    Ok(Some(spec))
 }
