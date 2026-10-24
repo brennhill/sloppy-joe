@@ -10,6 +10,8 @@ impl std::fmt::Debug for LockfileKind {
 }
 
 mod nesting;
+#[cfg(test)]
+mod parse_helpers_tests;
 pub(crate) use nesting::*;
 mod issues;
 pub(crate) use issues::*;
@@ -188,39 +190,6 @@ pub struct LockfileData {
 }
 
 impl LockfileData {
-    #[cfg(test)]
-    pub fn parse(project_dir: &Path, direct_deps: &[Dependency]) -> Result<Self> {
-        Self::parse_for_kind(project_dir, None, direct_deps)
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn parse_for_kind(
-        project_dir: &Path,
-        project_kind: Option<LockfileKind>,
-        direct_deps: &[Dependency],
-    ) -> Result<Self> {
-        Self::parse_for_kind_with_lockfile(project_dir, project_kind, direct_deps, None)
-    }
-
-    #[cfg(test)]
-    pub fn parse_for_kind_with_lockfile(
-        project_dir: &Path,
-        project_kind: Option<LockfileKind>,
-        direct_deps: &[Dependency],
-        lockfile_override: Option<&Path>,
-    ) -> Result<Self> {
-        Self::parse_for_kind_with_lockfile_and_profile(
-            project_dir,
-            project_kind.unwrap_or_else(|| {
-                LockfileKind::for_ecosystem(direct_deps.first().map(|d| d.ecosystem))
-            }),
-            direct_deps,
-            lockfile_override,
-            None,
-        )
-    }
-
     pub fn parse_for_kind_with_lockfile_and_profile(
         project_dir: &Path,
         project_kind: LockfileKind,

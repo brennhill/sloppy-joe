@@ -317,21 +317,3 @@ pub(crate) fn resolve_versions(
         }
     }
 }
-
-#[cfg(test)]
-impl LockfileKind {
-    /// The reader for an ecosystem's usual lockfile; tests that name no project kind use it.
-    pub(crate) fn for_ecosystem(ecosystem: Option<Ecosystem>) -> LockfileKind {
-        match ecosystem {
-            Some(Ecosystem::Npm) => LockfileKind::NPM,
-            Some(Ecosystem::Cargo) => LockfileKind::CARGO,
-            Some(Ecosystem::Php) => LockfileKind::PHP,
-            Some(Ecosystem::Jvm) => LockfileKind::JVM,
-            Some(Ecosystem::Dotnet) => LockfileKind::DOTNET,
-            Some(Ecosystem::Ruby) => LockfileKind::RUBY,
-            Some(Ecosystem::PyPI) => LockfileKind::PYPI,
-            Some(Ecosystem::Go) => LockfileKind::GO,
-            None => LockfileKind::ABSENT,
-        }
-    }
-}
