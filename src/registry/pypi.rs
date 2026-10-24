@@ -2,7 +2,49 @@ use super::RegistryExistence;
 use anyhow::Result;
 use async_trait::async_trait;
 
-super::registry_struct!(PypiRegistry);
+const PYPI_FILES_ORIGIN: &str = "https://files.pythonhosted.org";
+
+pub struct PypiRegistry {
+    client: reqwest::Client,
+    /// Separate client for wheels: never follows redirects, HTTPS only.
+    wheel_client: reqwest::Client,
+    files_origin: reqwest::Url,
+}
+
+impl PypiRegistry {
+    pub fn new() -> Self {
+        Self::with_client(super::http_client())
+    }
+
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self {
+            client,
+            wheel_client: super::wheel::wheel_http_client(),
+            files_origin: reqwest::Url::parse(PYPI_FILES_ORIGIN).expect("valid file host"),
+        }
+    }
+
+    /// Registry whose wheel host is a local test server (plain HTTP, no proxy).
+    #[cfg(test)]
+    pub(crate) fn for_test(files_origin: &str) -> Self {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        Self {
+            client: client.clone(),
+            wheel_client: client,
+            files_origin: reqwest::Url::parse(files_origin).unwrap(),
+        }
+    }
+}
+
+impl Default for PypiRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl super::RegistryExistence for PypiRegistry {
@@ -33,6 +75,17 @@ impl super::RegistryMetadata for PypiRegistry {
         }
         let body: serde_json::Value = resp.json().await?;
         Ok(Some(metadata_from_body(&body, version)))
+    }
+
+    async fn inspect_pypi_wheel(
+        &self,
+        package_name: &str,
+        file: &super::pypi_release::PypiFile,
+    ) -> Result<Option<super::wheel::WheelFacts>> {
+        self.validate_name(package_name)?;
+        super::wheel::fetch_and_inspect(&self.wheel_client, &self.files_origin, file)
+            .await
+            .map(Some)
     }
 }
 
@@ -85,15 +138,23 @@ pub(crate) fn metadata_from_body(
         };
     }
 
-    let latest_version_date = if version.is_some() {
-        body["releases"][selected.as_str()]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v["upload_time"].as_str())
-            .map(|s| s.to_string())
-    } else {
-        body["info"]["upload_time"].as_str().map(|s| s.to_string())
-    };
+    // Files can be added to a release long after it was first published, so
+    // the version is as new as its newest file.
+    let latest_version_date = body["releases"][selected.as_str()]
+        .as_array()
+        .and_then(|files| {
+            files
+                .iter()
+                .filter_map(|file| file["upload_time"].as_str())
+                .max()
+        })
+        .map(|s| s.to_string())
+        .or_else(|| {
+            version
+                .is_none()
+                .then(|| body["info"]["upload_time"].as_str().map(|s| s.to_string()))
+                .flatten()
+        });
 
     // PyPI main API doesn't expose download counts
     super::PackageMetadata {
@@ -135,6 +196,27 @@ mod tests {
         assert_eq!(release.files[0].sha256.as_deref(), Some("aa"));
         assert_eq!(meta.latest_version_date.as_deref(), Some("2023-01-01T00:00:00"));
         assert!(meta.release_cadence.unwrap().previous_release_epoch.is_none());
+    }
+
+    #[test]
+    fn version_date_is_the_latest_file_upload_so_a_late_added_file_cannot_hide() {
+        let body = json!({
+            "info": {"version": "1.0", "upload_time": "2023-01-01T00:00:00"},
+            "releases": {"1.0": [
+                {"filename": "p-1.0.tar.gz", "url": "https://x/a", "packagetype": "sdist",
+                 "upload_time": "2023-01-01T00:00:00"},
+                {"filename": "p-1.0-py3-none-any.whl", "url": "https://x/b",
+                 "packagetype": "bdist_wheel", "upload_time": "2024-06-01T00:00:00"},
+            ]}
+        });
+        for requested in [Some("1.0"), None] {
+            let meta = metadata_from_body(&body, requested);
+            assert_eq!(
+                meta.latest_version_date.as_deref(),
+                Some("2024-06-01T00:00:00"),
+                "requested={requested:?}"
+            );
+        }
     }
 
     #[test]

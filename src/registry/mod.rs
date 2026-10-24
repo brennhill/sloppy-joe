@@ -11,6 +11,7 @@ pub mod packagist;
 pub mod pypi;
 pub mod pypi_release;
 pub mod rubygems;
+pub mod wheel;
 
 use crate::Ecosystem;
 use anyhow::Result;
@@ -136,6 +137,19 @@ pub trait RegistryMetadata: Send + Sync {
     ) -> Result<Option<npm_tarball::NpmManifestFacts>> {
         let _ = package_name;
         let _ = tarball;
+        Ok(None)
+    }
+
+    /// Download one PyPI wheel, verify it against the sha256 PyPI published
+    /// and report the startup hooks it installs. `Ok(None)` means this
+    /// registry cannot inspect wheels; callers that need inspection fail closed.
+    async fn inspect_pypi_wheel(
+        &self,
+        package_name: &str,
+        file: &pypi_release::PypiFile,
+    ) -> Result<Option<wheel::WheelFacts>> {
+        let _ = package_name;
+        let _ = file;
         Ok(None)
     }
 

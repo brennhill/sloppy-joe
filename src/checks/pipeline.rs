@@ -129,6 +129,17 @@ impl Check for MetadataCheck {
                 )
                 .await,
             );
+            // Wheel startup hooks mark the version as running install-time
+            // code before any signal reads that flag.
+            acc.issues.extend(
+                super::wheel_verification::inspect_python_wheels(
+                    ctx.registry,
+                    &mut lookups,
+                    &acc.similarity_flagged,
+                    &super::wheel_verification::WheelVerificationOptions::from_scan(ctx.opts),
+                )
+                .await,
+            );
             acc.issues
                 .extend(super::lockfile_integrity::check_lockfile_integrity(
                     &lookups,
