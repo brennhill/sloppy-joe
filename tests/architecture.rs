@@ -843,37 +843,32 @@ fn mentions_path(code: &str, path: &str) -> bool {
     })
 }
 
-#[test]
-fn ecosystem_plugins_are_isolated() {
-    let plugins = plugin_names();
-    assert!(plugins.len() >= 8, "found plugins {plugins:?}");
+/// Isolation violations among `(relative path, code)` pairs: code outside `src/ecosystems/`
+/// naming a concrete plugin, and a plugin importing a sibling plugin.
+fn isolation_violations(files: &[(String, String)], plugins: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
-    for file in load_sources().iter().filter(|f| !f.is_test) {
-        let owner = file
-            .rel
-            .strip_prefix("src/ecosystems/")
-            .map(|rest| rest.split(['/', '.']).next().unwrap().to_string())
-            // `ecosystems/mod.rs` is the registry: it names every plugin by design.
-            .filter(|own| own != "mod");
-        if file.rel == "src/ecosystems/mod.rs" {
+    for (rel, code) in files {
+        // `ecosystems/mod.rs` is the registry: it names every plugin by design.
+        if rel == "src/ecosystems/mod.rs" {
             continue;
         }
-        for plugin in &plugins {
-            let reaches_in = mentions_path(&file.code, &format!("ecosystems::{plugin}"));
+        let owner = rel
+            .strip_prefix("src/ecosystems/")
+            .map(|rest| rest.split(['/', '.']).next().unwrap().to_string());
+        for plugin in plugins {
+            let reaches_in = mentions_path(code, &format!("ecosystems::{plugin}"));
             match owner.as_deref() {
                 None if reaches_in => violations.push(format!(
-                    "{} reaches into ecosystems::{plugin}; go through the EcosystemSupport trait",
-                    file.rel
+                    "{rel} reaches into ecosystems::{plugin}; go through the EcosystemSupport trait"
                 )),
                 Some(own) if own != plugin => {
                     let sibling = reaches_in
-                        || mentions_path(&file.code, &format!("super::super::{plugin}"))
-                        || (file.rel.matches('/').count() == 2
-                            && mentions_path(&file.code, &format!("super::{plugin}")));
+                        || mentions_path(code, &format!("super::super::{plugin}"))
+                        || (rel.matches('/').count() == 2
+                            && mentions_path(code, &format!("super::{plugin}")));
                     if sibling {
                         violations.push(format!(
-                            "{} (ecosystem {own}) imports ecosystem {plugin}; share code through ecosystems::common",
-                            file.rel
+                            "{rel} (ecosystem {own}) imports ecosystem {plugin}; share code through ecosystems::common"
                         ));
                     }
                 }
@@ -881,7 +876,50 @@ fn ecosystem_plugins_are_isolated() {
             }
         }
     }
+    violations
+}
+
+#[test]
+fn ecosystem_plugins_are_isolated() {
+    let plugins = plugin_names();
+    assert!(plugins.len() >= 8, "found plugins {plugins:?}");
+    let files: Vec<(String, String)> = load_sources()
+        .into_iter()
+        .filter(|f| !f.is_test)
+        .map(|f| (f.rel, f.code))
+        .collect();
+    let violations = isolation_violations(&files, &plugins);
     assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn isolation_rule_flags_engine_and_sibling_imports() {
+    let plugins = vec!["cargo".to_string(), "go".to_string()];
+    let files = vec![
+        (
+            "src/engine/scan.rs".to_string(),
+            "use crate::ecosystems::cargo::Cargo;".to_string(),
+        ),
+        (
+            "src/ecosystems/go.rs".to_string(),
+            "use super::cargo::helper;".to_string(),
+        ),
+        (
+            "src/ecosystems/go/inner.rs".to_string(),
+            "use super::super::cargo::helper;".to_string(),
+        ),
+        (
+            "src/ecosystems/cargo/mod.rs".to_string(),
+            "use super::common::x; use crate::ecosystems::first_existing_lockfile;".to_string(),
+        ),
+        (
+            "src/engine/ok.rs".to_string(),
+            "use crate::ecosystems::bind;".to_string(),
+        ),
+    ];
+    let violations = isolation_violations(&files, &plugins);
+    assert_eq!(violations.len(), 3, "{violations:?}");
+    assert!(violations[0].contains("src/engine/scan.rs"));
 }
 
 #[test]

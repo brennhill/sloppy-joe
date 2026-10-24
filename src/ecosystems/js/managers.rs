@@ -8,6 +8,14 @@ pub(super) trait JsManager: Sync {
     /// Lockfile file names, in preference order.
     fn lockfile_candidates(&self) -> &'static [&'static str];
 
+    /// Files whose presence at an install root signals this manager (lockfiles and workspace or
+    /// plug'n'play markers).
+    fn root_markers(&self) -> &'static [&'static str];
+
+    /// Config files that only this manager reads; their registry redirects and dependency
+    /// rewrites cannot be verified, so their presence blocks.
+    fn unverifiable_config_files(&self) -> &'static [&'static str];
+
     /// The lockfile key of a project that is its own install root.
     fn root_package_entry_key(&self) -> &'static str;
 
@@ -35,6 +43,14 @@ pub(super) trait JsManager: Sync {
     ) -> Result<Vec<Issue>>;
 }
 
+/// Every manager, in the order their signals are reported.
+pub(super) const ALL: [JsPackageManager; 4] = [
+    JsPackageManager::Npm,
+    JsPackageManager::Pnpm,
+    JsPackageManager::Yarn,
+    JsPackageManager::Bun,
+];
+
 pub(super) fn manager(manager: JsPackageManager) -> &'static dyn JsManager {
     match manager {
         JsPackageManager::Npm => &Npm,
@@ -50,6 +66,14 @@ struct Yarn;
 struct Bun;
 
 impl JsManager for Npm {
+    fn root_markers(&self) -> &'static [&'static str] {
+        &["npm-shrinkwrap.json", "package-lock.json"]
+    }
+
+    fn unverifiable_config_files(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     fn declared_workspaces(
         &self,
         _workspace_dir: &Path,
@@ -95,6 +119,14 @@ impl JsManager for Npm {
 }
 
 impl JsManager for Pnpm {
+    fn root_markers(&self) -> &'static [&'static str] {
+        &["pnpm-lock.yaml", "pnpm-workspace.yaml"]
+    }
+
+    fn unverifiable_config_files(&self) -> &'static [&'static str] {
+        &[".pnpmfile.cjs"]
+    }
+
     fn declared_workspaces(
         &self,
         workspace_dir: &Path,
@@ -142,6 +174,14 @@ impl JsManager for Pnpm {
 }
 
 impl JsManager for Yarn {
+    fn root_markers(&self) -> &'static [&'static str] {
+        &["yarn.lock", ".pnp.cjs"]
+    }
+
+    fn unverifiable_config_files(&self) -> &'static [&'static str] {
+        &[".yarnrc", ".yarnrc.yml"]
+    }
+
     fn declared_workspaces(
         &self,
         _workspace_dir: &Path,
@@ -183,6 +223,14 @@ impl JsManager for Yarn {
 }
 
 impl JsManager for Bun {
+    fn root_markers(&self) -> &'static [&'static str] {
+        &["bun.lock", "bun.lockb"]
+    }
+
+    fn unverifiable_config_files(&self) -> &'static [&'static str] {
+        &["bunfig.toml"]
+    }
+
     fn declared_workspaces(
         &self,
         _workspace_dir: &Path,

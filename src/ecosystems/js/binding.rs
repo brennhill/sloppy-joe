@@ -136,14 +136,14 @@ fn read_package_manager_config(
             npm_registries.read(&npmrc)?;
             npm_registries.validate_manager(manager.as_str(), &npmrc)?;
         }
-        for (filename, owner) in [
-            (".yarnrc", Some(JsPackageManager::Yarn)),
-            (".yarnrc.yml", Some(JsPackageManager::Yarn)),
-            (".pnpmfile.cjs", Some(JsPackageManager::Pnpm)),
-            ("bunfig.toml", Some(JsPackageManager::Bun)),
-        ] {
+        for (filename, owner) in managers::ALL.into_iter().flat_map(|owner| {
+            managers::manager(owner)
+                .unverifiable_config_files()
+                .iter()
+                .map(move |name| (*name, owner))
+        }) {
             let path = dir.join(filename);
-            if owner.is_none_or(|owner| owner == manager) && parsers::path_detected(&path)? {
+            if owner == manager && parsers::path_detected(&path)? {
                 anyhow::bail!(
                     "Unsupported JS package-manager configuration '{}': registry redirects and dependency rewrites cannot be verified",
                     path.display()
@@ -386,16 +386,12 @@ pub(crate) fn detect_js_manager(
             format!("packageManager in '{}'", manifest_path.display()),
         ));
     }
-    for (marker, manager) in [
-        ("pnpm-lock.yaml", JsPackageManager::Pnpm),
-        ("pnpm-workspace.yaml", JsPackageManager::Pnpm),
-        ("yarn.lock", JsPackageManager::Yarn),
-        (".pnp.cjs", JsPackageManager::Yarn),
-        ("bun.lock", JsPackageManager::Bun),
-        ("bun.lockb", JsPackageManager::Bun),
-        ("npm-shrinkwrap.json", JsPackageManager::Npm),
-        ("package-lock.json", JsPackageManager::Npm),
-    ] {
+    for (marker, manager) in managers::ALL.into_iter().flat_map(|manager| {
+        managers::manager(manager)
+            .root_markers()
+            .iter()
+            .map(move |marker| (*marker, manager))
+    }) {
         let path = root_dir.join(marker);
         if parsers::path_detected(&path)? {
             signals.push((manager, path.display().to_string()));

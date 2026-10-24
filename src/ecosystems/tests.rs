@@ -455,3 +455,89 @@ fn lockfile_less_kinds_state_their_policy() {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+// Unsupported constructs for the kinds with no lockfile: with nothing else to fail on, the whole
+// preflight must block.
+const UNSUPPORTED_LOCKFILE_LESS: &[(ProjectInputKind, &str, &str)] = &[
+    (
+        ProjectInputKind::PyRequirements,
+        "requirements.txt",
+        "x @ git+https://example.com/x.git\n",
+    ),
+    (
+        ProjectInputKind::PyRequirementsTrusted,
+        "requirements.txt",
+        "x @ git+https://example.com/x.git \\\n    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000\n",
+    ),
+    (
+        ProjectInputKind::PyProjectLegacy,
+        "pyproject.toml",
+        "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"x @ git+https://example.com/x.git\"]\n",
+    ),
+    (
+        ProjectInputKind::PyPipfile,
+        "Pipfile",
+        "[packages]\nx = {git = \"https://example.com/x.git\"}\n",
+    ),
+    (
+        ProjectInputKind::PySetupPy,
+        "setup.py",
+        "from setuptools import setup\nsetup(name='app', install_requires=['x @ git+https://example.com/x.git'])\n",
+    ),
+    (
+        ProjectInputKind::PySetupCfg,
+        "setup.cfg",
+        "[options]\ninstall_requires =\n    x @ git+https://example.com/x.git\n",
+    ),
+    (
+        ProjectInputKind::Maven,
+        "pom.xml",
+        "<project><dependencies><dependency><groupId>a</groupId><artifactId>b</artifactId><version>1.0</version><scope>system</scope><systemPath>/opt/b.jar</systemPath></dependency></dependencies></project>",
+    ),
+];
+
+#[test]
+fn lockfile_less_kinds_block_unsupported_constructs() {
+    let config = config::SloppyJoeConfig::default();
+    let opts = ScanOptions::default();
+    for (kind, manifest, content) in UNSUPPORTED_LOCKFILE_LESS {
+        let fixture = Fixture {
+            kind: *kind,
+            manifest,
+            content,
+        };
+        let dir = fixture_dir(&fixture, None);
+        let scan = ScanCtx {
+            scan_root: &dir,
+            config: &config,
+            opts: &opts,
+        };
+        let spec = ProjectInputSpec {
+            kind: *kind,
+            manifest_path: dir.join(manifest),
+            lockfile_path_override: None,
+            js_binding: None,
+        };
+        let ctx = PreflightCtx::new(
+            scan,
+            std::slice::from_ref(&spec),
+            std::slice::from_ref(&spec),
+        )
+        .unwrap();
+        let blocked = match preflight(&ctx, &spec) {
+            Err(err) => err.to_string().contains("nsupported"),
+            Ok(issues) => issues.iter().any(|i| i.severity == Severity::Error),
+        };
+        assert!(blocked, "{kind:?}: unsupported construct passed preflight");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn every_kind_has_an_unsupported_construct_fixture() {
+    for kind in ProjectInputKind::ALL {
+        let covered = UNSUPPORTED.iter().any(|(k, ..)| *k == kind)
+            || UNSUPPORTED_LOCKFILE_LESS.iter().any(|(k, ..)| *k == kind);
+        assert!(covered, "add an unsupported-construct fixture for {kind:?}");
+    }
+}
