@@ -200,12 +200,13 @@ fn plugin_markers_are_scanned_as_a_separate_unlocked_tooling_project() {
     );
 
     let client = registry::http_client();
+    // Through the trait: the engine only ever reaches the plugin repository client this way.
     assert!(
-        gradle_plugin_scan::plugin_registry_for(main, client.clone())
+        crate::ecosystems::scan_registry(main, client.clone())
             .unwrap()
             .is_none()
     );
-    let registry = gradle_plugin_scan::plugin_registry_for(tooling, client)
+    let registry = crate::ecosystems::scan_registry(tooling, client)
         .unwrap()
         .expect("plugin projects use the plugin repository client");
     assert_eq!(registry.ecosystem(), "jvm");
@@ -414,5 +415,50 @@ fn lookalikes_of_well_known_plugin_ids_are_flagged() {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[tokio::test]
+async fn implementation_checks_run_through_the_trait_for_plugin_projects_only() {
+    let dir = gradle_project(
+        &build_with_plugins("id 'com.diffplug.spotless' version '6.25.0'"),
+        &[],
+    );
+    let config = config::SloppyJoeConfig::default();
+    let cache = unique_dir();
+    let specs = specs(&dir, &config);
+    let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts(&cache)).unwrap();
+    let main = projects.iter().find(|p| !p.unlocked_tooling).unwrap();
+    let tooling = projects.iter().find(|p| p.unlocked_tooling).unwrap();
+    let client = registry::http_client();
+
+    // A project without plugin markers has nothing to check.
+    let none = crate::ecosystems::implementation_issues(
+        main,
+        client.clone(),
+        &NoAdvisories,
+        &opts(&cache),
+    )
+    .await
+    .unwrap();
+    assert!(none.is_empty(), "{none:?}");
+
+    // A plugin project is checked: a plugin repository added after parsing is rejected when the
+    // check builds its repository client, so the block proves the check ran.
+    std::fs::write(
+        dir.join("settings.gradle"),
+        "pluginManagement { repositories { maven { url 'https://plugins.corp.example/m2' } } }",
+    )
+    .unwrap();
+    let err =
+        crate::ecosystems::implementation_issues(tooling, client, &NoAdvisories, &opts(&cache))
+            .await
+            .expect_err("plugin implementation checks must run for plugin projects");
+    assert!(
+        err.to_string()
+            .contains("cannot be checked as a public registry"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&cache);
 }
