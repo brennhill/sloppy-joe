@@ -7,8 +7,6 @@ fn-complexity src/engine/preflight.rs::preflight_selected_project_inputs 32
 fn-complexity src/engine/scan.rs::scan_with_config 34
 fn-complexity src/main.rs::main 46
 fn-complexity src/parsers/jvm/gradle_plugins.rs::resolve_plugins 23
-fn-complexity src/parsers/jvm/gradle_scan.rs::tokenize_gradle 26
-fn-complexity src/parsers/jvm/gradle_scan.rs::walk_gradle_script 36
 fn-complexity src/parsers/mod.rs::parse_all_ecosystems_inner 32
 placement project-input-kind src/engine/discovery.rs 28
 placement project-input-kind src/engine/js_binding.rs 3

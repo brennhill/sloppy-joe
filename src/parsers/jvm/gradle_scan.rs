@@ -7,59 +7,73 @@ pub(crate) enum GradleToken {
     Symbol(char),
 }
 
+/// Index just past the line comment starting at `i`.
+fn skip_line_comment(chars: &[char], mut i: usize) -> usize {
+    i += 2;
+    while i < chars.len() && chars[i] != '\n' {
+        i += 1;
+    }
+    i
+}
+
+/// Index just past the block comment starting at `i`; unterminated comments run to the end.
+fn skip_block_comment(chars: &[char], mut i: usize) -> usize {
+    i += 2;
+    while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+        i += 1;
+    }
+    (i + 2).min(chars.len())
+}
+
+/// Index just past the quoted literal starting at `i`; unterminated literals run to the end.
+fn skip_quoted_literal(chars: &[char], mut i: usize) -> usize {
+    let quote = chars[i];
+    i += 1;
+    while i < chars.len() {
+        if chars[i] == '\\' {
+            i += 2;
+            continue;
+        }
+        i += 1;
+        if chars[i - 1] == quote {
+            break;
+        }
+    }
+    i.min(chars.len())
+}
+
+fn skip_identifier(chars: &[char], mut i: usize) -> usize {
+    i += 1;
+    while i < chars.len()
+        && (chars[i].is_ascii_alphanumeric() || matches!(chars[i], '_' | '.' | '-' | ':'))
+    {
+        i += 1;
+    }
+    i
+}
+
 pub(crate) fn tokenize_gradle(content: &str) -> Vec<GradleToken> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = content.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
+        let next = chars.get(i + 1).copied();
         match chars[i] {
-            c if c.is_whitespace() => i += 1,
-            '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
-                i += 2;
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
-                i += 2;
-                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    i += 1;
-                }
-                i = (i + 2).min(chars.len());
-            }
+            '/' if next == Some('/') => i = skip_line_comment(&chars, i),
+            '/' if next == Some('*') => i = skip_block_comment(&chars, i),
             '"' | '\'' => {
-                let start = i;
-                let quote = chars[i];
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if chars[i] == quote {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-                tokens.push(GradleToken::Literal(
-                    chars[start..i.min(chars.len())].iter().collect(),
-                ));
+                let end = skip_quoted_literal(&chars, i);
+                tokens.push(GradleToken::Literal(chars[i..end].iter().collect()));
+                i = end;
             }
-            '{' | '}' | '(' | ')' => {
-                tokens.push(GradleToken::Symbol(chars[i]));
+            c @ ('{' | '}' | '(' | ')') => {
+                tokens.push(GradleToken::Symbol(c));
                 i += 1;
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
-                let start = i;
-                i += 1;
-                while i < chars.len()
-                    && (chars[i].is_ascii_alphanumeric()
-                        || matches!(chars[i], '_' | '.' | '-' | ':'))
-                {
-                    i += 1;
-                }
-                tokens.push(GradleToken::Ident(chars[start..i].iter().collect()));
+                let end = skip_identifier(&chars, i);
+                tokens.push(GradleToken::Ident(chars[i..end].iter().collect()));
+                i = end;
             }
             _ => i += 1,
         }
@@ -288,6 +302,119 @@ pub(crate) fn scan_gradle_script(
     Ok(script)
 }
 
+/// Which enclosing block a Gradle script walk is inside.
+#[derive(Clone, Copy)]
+struct GradleScope {
+    plugin_management: bool,
+    buildscript: bool,
+}
+
+/// Fail closed on constructs that can change dependencies or repositories outside literal blocks.
+fn reject_unverifiable_ident(name: &str, opens_block: bool, path: &Path) -> Result<()> {
+    let mut parts = name.split('.');
+    if parts.clone().any(|part| part == "dependencies") && (name != "dependencies" || !opens_block)
+    {
+        bail!(
+            "Unsupported Gradle dependency expression in {}: dependency mutations outside literal blocks cannot be verified",
+            path.display()
+        );
+    }
+    if parts.any(|part| matches!(part, "repositories" | "pluginManagement"))
+        && (!matches!(name, "repositories" | "pluginManagement") || !opens_block)
+    {
+        bail!(
+            "Unsupported Gradle repository expression '{}' in {}: repositories can only be verified when declared in literal blocks",
+            crate::report::sanitize_for_terminal(name),
+            path.display()
+        );
+    }
+    if name == "resolutionStrategy" || name.starts_with("resolutionStrategy.") {
+        bail!(
+            "Unsupported Gradle resolution rule in {}: resolutionStrategy can substitute or force dependency versions that cannot be verified",
+            path.display()
+        );
+    }
+    if matches!(name, "apply" | "includeBuild") {
+        bail!(
+            "Unsupported Gradle script source '{}' in {}: applied scripts and composite builds cannot be verified",
+            name,
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Handle the block opened by `tokens[idx]`; returns the index of its closing brace when consumed.
+fn walk_gradle_block(
+    tokens: &[GradleToken],
+    idx: usize,
+    name: &str,
+    path: &Path,
+    script: &mut gradle_plugins::GradleScript,
+    scope: GradleScope,
+) -> Result<Option<usize>> {
+    let handled = match name {
+        "pluginManagement" => true,
+        "buildscript" => !scope.buildscript,
+        "plugins" | "repositories" | "dependencies" => true,
+        _ => false,
+    };
+    if !handled {
+        return Ok(None);
+    }
+    let end = find_gradle_block_end(tokens, idx + 1).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Broken Gradle manifest '{}': unclosed '{}' block.",
+            path.display(),
+            name
+        )
+    })?;
+    let block = &tokens[idx + 2..end];
+    match name {
+        "pluginManagement" => {
+            script.has_plugin_management = true;
+            walk_gradle_script(block, path, script, true, false)?;
+        }
+        "buildscript" => walk_gradle_script(block, path, script, false, true)?,
+        "plugins" => {
+            let plugins = gradle_plugins::parse_plugins_block(block, path)?;
+            if scope.plugin_management {
+                script.managed_plugins.extend(plugins);
+            } else {
+                script.plugins.extend(plugins);
+            }
+        }
+        "dependencies" if scope.buildscript => {
+            script.classpath.extend(parse_classpath_block(block, path)?);
+        }
+        "dependencies" => validate_gradle_dependencies_block(block, path)?,
+        _ => walk_repositories_block(block, path, script, scope)?,
+    }
+    Ok(Some(end))
+}
+
+fn walk_repositories_block(
+    block: &[GradleToken],
+    path: &Path,
+    script: &mut gradle_plugins::GradleScript,
+    scope: GradleScope,
+) -> Result<()> {
+    if scope.plugin_management {
+        script
+            .plugin_repositories
+            .get_or_insert_with(Vec::new)
+            .extend(gradle_plugins::parse_plugin_repositories(block, path)?);
+        return Ok(());
+    }
+    let google = validate_gradle_repositories_block(block, path)?;
+    if scope.buildscript {
+        script.buildscript_uses_google |= google;
+    } else {
+        script.uses_google_maven |= google;
+    }
+    Ok(())
+}
+
 /// Enforce the Gradle source policy over `tokens` and collect plugin requests.
 /// `plugin_management` is set inside a `pluginManagement { }` block, where
 /// `repositories` and `plugins` configure plugin resolution.
@@ -298,109 +425,28 @@ pub(crate) fn walk_gradle_script(
     plugin_management: bool,
     buildscript: bool,
 ) -> Result<()> {
-    let block_end = |idx: usize, name: &str| {
-        find_gradle_block_end(tokens, idx + 1).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Broken Gradle manifest '{}': unclosed '{}' block.",
-                path.display(),
-                name
-            )
-        })
-    };
     let mut idx = 0usize;
     while idx < tokens.len() {
         let opens_block = matches!(tokens.get(idx + 1), Some(GradleToken::Symbol('{')));
-        match &tokens[idx] {
-            GradleToken::Ident(name)
-                if name.split('.').any(|part| part == "dependencies")
-                    && (name != "dependencies" || !opens_block) =>
-            {
-                bail!(
-                    "Unsupported Gradle dependency expression in {}: dependency mutations outside literal blocks cannot be verified",
-                    path.display()
-                );
-            }
-            GradleToken::Ident(name)
-                if name
-                    .split('.')
-                    .any(|part| matches!(part, "repositories" | "pluginManagement"))
-                    && (!matches!(name.as_str(), "repositories" | "pluginManagement")
-                        || !opens_block) =>
-            {
-                bail!(
-                    "Unsupported Gradle repository expression '{}' in {}: repositories can only be verified when declared in literal blocks",
-                    crate::report::sanitize_for_terminal(name),
-                    path.display()
-                );
-            }
-            GradleToken::Ident(name)
-                if name == "resolutionStrategy" || name.starts_with("resolutionStrategy.") =>
-            {
-                bail!(
-                    "Unsupported Gradle resolution rule in {}: resolutionStrategy can substitute or force dependency versions that cannot be verified",
-                    path.display()
-                );
-            }
-            GradleToken::Ident(name)
-                if name.split('.').any(|part| {
-                    matches!(part, "versionCatalogs" | "defaultLibrariesExtensionName")
-                }) =>
-            {
-                script.custom_catalogs = true;
-            }
-            GradleToken::Ident(name) if name == "pluginManagement" && opens_block => {
-                let end = block_end(idx, name)?;
-                script.has_plugin_management = true;
-                walk_gradle_script(&tokens[idx + 2..end], path, script, true, false)?;
+        let GradleToken::Ident(name) = &tokens[idx] else {
+            idx += 1;
+            continue;
+        };
+        reject_unverifiable_ident(name, opens_block, path)?;
+        if name
+            .split('.')
+            .any(|part| matches!(part, "versionCatalogs" | "defaultLibrariesExtensionName"))
+        {
+            script.custom_catalogs = true;
+        }
+        if opens_block {
+            let scope = GradleScope {
+                plugin_management,
+                buildscript,
+            };
+            if let Some(end) = walk_gradle_block(tokens, idx, name, path, script, scope)? {
                 idx = end;
             }
-            GradleToken::Ident(name) if name == "buildscript" && opens_block && !buildscript => {
-                let end = block_end(idx, name)?;
-                walk_gradle_script(&tokens[idx + 2..end], path, script, false, true)?;
-                idx = end;
-            }
-            GradleToken::Ident(name) if name == "plugins" && opens_block => {
-                let end = block_end(idx, name)?;
-                let plugins = gradle_plugins::parse_plugins_block(&tokens[idx + 2..end], path)?;
-                if plugin_management {
-                    script.managed_plugins.extend(plugins);
-                } else {
-                    script.plugins.extend(plugins);
-                }
-                idx = end;
-            }
-            GradleToken::Ident(name) if matches!(name.as_str(), "apply" | "includeBuild") => {
-                bail!(
-                    "Unsupported Gradle script source '{}' in {}: applied scripts and composite builds cannot be verified",
-                    name,
-                    path.display()
-                );
-            }
-            GradleToken::Ident(name)
-                if matches!(name.as_str(), "repositories" | "dependencies") && opens_block =>
-            {
-                let end = block_end(idx, name)?;
-                let block = &tokens[idx + 2..end];
-                if name == "dependencies" && buildscript {
-                    script.classpath.extend(parse_classpath_block(block, path)?);
-                } else if name == "dependencies" {
-                    validate_gradle_dependencies_block(block, path)?;
-                } else if plugin_management {
-                    script
-                        .plugin_repositories
-                        .get_or_insert_with(Vec::new)
-                        .extend(gradle_plugins::parse_plugin_repositories(block, path)?);
-                } else {
-                    let google = validate_gradle_repositories_block(block, path)?;
-                    if buildscript {
-                        script.buildscript_uses_google |= google;
-                    } else {
-                        script.uses_google_maven |= google;
-                    }
-                }
-                idx = end;
-            }
-            _ => {}
         }
         idx += 1;
     }
