@@ -124,7 +124,15 @@ impl JsManager for Pnpm {
     }
 
     fn unverifiable_config_files(&self) -> &'static [&'static str] {
-        &[".pnpmfile.cjs"]
+        // pnpm loads whichever of these exists (`.mjs` since pnpm 10); each runs code at install.
+        &[
+            ".pnpmfile.cjs",
+            ".pnpmfile.mjs",
+            ".pnpmfile.js",
+            ".pnpmfile.mts",
+            ".pnpmfile.cts",
+            ".pnpmfile.ts",
+        ]
     }
 
     fn declared_workspaces(

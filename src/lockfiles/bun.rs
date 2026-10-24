@@ -503,6 +503,26 @@ pub(crate) fn validate_provenance(parsed: &serde_json::Value, lockfile_path: &Pa
             );
         }
 
+        // Slot 1 is the registry tarball location; empty means the default registry.
+        let location = parts
+            .get(1)
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Broken lockfile '{}': Bun package '{}' has no registry location.",
+                    lockfile_path.display(),
+                    key
+                )
+            })?;
+        if !location.is_empty() && !location.starts_with("https://registry.npmjs.org/") {
+            anyhow::bail!(
+                "Required lockfile '{}' package '{}' resolves from '{}', which is not the public npm registry. sloppy-joe only trusts Bun entries resolved from registry.npmjs.org.",
+                lockfile_path.display(),
+                key,
+                crate::report::sanitize_for_terminal(location)
+            );
+        }
+
         let integrity = parts
             .get(3)
             .and_then(|value| value.as_str())

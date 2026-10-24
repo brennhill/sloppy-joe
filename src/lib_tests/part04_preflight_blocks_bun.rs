@@ -685,3 +685,114 @@ __metadata:
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn preflight_blocks_bun_lock_entries_resolved_from_a_foreign_location() {
+    for (location, blocks) in [
+        ("https://evil.example/react-18.3.1.tgz", true),
+        ("https://registry.npmjs.org/react/-/react-18.3.1.tgz", false),
+        ("", false),
+    ] {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"demo","packageManager":"bun@1.3.9","dependencies":{"react":"18.3.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bun.lock"),
+            format!(
+                r#"{{"lockfileVersion": 1, "configVersion": 1,
+  "workspaces": {{"": {{"name": "demo", "dependencies": {{"react": "18.3.1"}}}}}},
+  "packages": {{"react": ["react@18.3.1", "{location}", {{}}, "sha512-react"]}}
+}}"#
+            ),
+        )
+        .unwrap();
+        let result = preflight_scan_inputs(&dir, Some("npm"));
+        assert_eq!(result.is_err(), blocks, "{location}: {result:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn preflight_blocks_corepack_urls_in_package_manager() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","packageManager":"npm@https://evil.example/npm.tgz","dependencies":{"react":"18.3.1"}}"#,
+    )
+    .unwrap();
+    let err = preflight_scan_inputs(&dir, Some("npm")).expect_err("corepack URL must block");
+    assert!(err.to_string().contains("packageManager"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn preflight_blocks_array_dependencies_and_pnpmfile_variants() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"demo","dependencies":["left-pad"]}"#,
+    )
+    .unwrap();
+    assert!(preflight_scan_inputs(&dir, Some("npm")).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    for name in [".pnpmfile.cjs", ".pnpmfile.mjs"] {
+        let dir = unique_dir();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"name":"demo","packageManager":"pnpm@9.15.0","dependencies":{"react":"18.3.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        std::fs::write(dir.join(name), "module.exports = {}\n").unwrap();
+        let err = preflight_scan_inputs(&dir, Some("npm")).expect_err(name);
+        assert!(err.to_string().contains(name), "{name}: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[tokio::test]
+async fn deeply_nested_pnpm_workspace_members_fail_closed() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    let mut deep = std::path::PathBuf::from(".planning");
+    for level in 0..20 {
+        deep = deep.join(format!("d{level}"));
+    }
+    std::fs::create_dir_all(dir.join(&deep)).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","packageManager":"pnpm@9.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.planning/**'\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .: {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(&deep).join("package.json"),
+        r#"{"name":"deep","dependencies":{"evil-pkg":"6.6.6"}}"#,
+    )
+    .unwrap();
+    let blocked = match scan_with_source(&dir, Some("npm"), None, false).await {
+        Err(error) => error.to_string().contains("nesting"),
+        Ok(report) => report
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("nesting")),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        blocked,
+        "members beyond the search depth must not go unscanned"
+    );
+}

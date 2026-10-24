@@ -29,6 +29,16 @@ pub(crate) fn parse_manifest_value(
         "optionalDependencies",
         "peerDependencies",
     ] {
+        if let Some(value) = parsed.get(section)
+            && !value.is_object()
+        {
+            // npm installs an array or string here as packages named `0`, `1`, ...
+            anyhow::bail!(
+                "Unsupported npm dependency section '{}' in {}: expected an object of name to version",
+                section,
+                path.display()
+            );
+        }
         if let Some(obj) = parsed.get(section).and_then(|v| v.as_object()) {
             for (name, version) in obj {
                 if let Some(dep) = parse_dependency(name, version, path)? {

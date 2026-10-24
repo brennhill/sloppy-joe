@@ -255,8 +255,15 @@ pub(crate) fn collect_unscanned_workspace_members(
     hidden: &mut Vec<std::path::PathBuf>,
     depth: usize,
 ) -> Result<()> {
-    if depth > 16 || !hidden.is_empty() {
+    if !hidden.is_empty() {
         return Ok(());
+    }
+    if depth > 16 {
+        anyhow::bail!(
+            "Workspace member search under '{}' stopped at {} levels of nesting: members below that depth cannot be checked, and the package manager would still install them. Fix: flatten the directory tree or list members explicitly at a shallower depth.",
+            dir.display(),
+            depth
+        );
     }
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.collect::<std::result::Result<_, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
@@ -366,7 +373,22 @@ pub(crate) fn detect_js_manager(
     {
         let manager = package_manager
             .split_once('@')
-            .map(|(name, _)| name)
+            .map(|(name, version)| {
+                // Corepack also accepts a URL after `@`, which downloads and runs that archive.
+                if version.is_empty()
+                    || !version
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'))
+                {
+                    anyhow::bail!(
+                        "package.json '{}' declares packageManager '{}' with a version that is not a plain version string; corepack would fetch it from a location sloppy-joe cannot verify.",
+                        manifest_path.display(),
+                        crate::report::sanitize_for_terminal(package_manager)
+                    );
+                }
+                Ok(name)
+            })
+            .transpose()?
             .unwrap_or(package_manager);
         let manager = match manager {
             "npm" => JsPackageManager::Npm,
