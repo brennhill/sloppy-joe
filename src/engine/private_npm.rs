@@ -135,9 +135,10 @@ pub(crate) async fn scan_parsed_project(
     mark_source(&mut acc.issues, "direct");
 
     if !internal.is_empty() {
-        let internal_resolution = ecosystems::lockfile_data(&config, opts, project, &internal)
-            .map(|ld| ld.resolution)
-            .unwrap_or_default();
+        // A lockfile that cannot be read for internal packages blocks: scanning them with no
+        // resolved versions would skip their advisory checks silently.
+        let internal_resolution =
+            ecosystems::lockfile_data(&config, opts, project, &internal)?.resolution;
         let internal_ctx = checks::CheckContext {
             checkable_deps: &[],
             non_internal_deps: &internal,

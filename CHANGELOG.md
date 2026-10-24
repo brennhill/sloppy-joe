@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- JavaScript: a `package.json5`, or a `package.yaml` that declares npm-style `dependencies`/`devDependencies` as a mapping, now blocks discovery instead of being skipped, so a repo no longer reports "0 packages, no issues" while a project's dependencies go unread. Haskell hpack `package.yaml` files (a list of dependencies) are still ignored; `ignore_dirs` excludes a directory outright.
+- Scan: a lockfile that cannot be read for internal packages now blocks instead of scanning them with no resolved versions (which skipped their advisory checks).
 - Scan: when project discovery finds nothing to scan but the legacy manifest parser reads a manifest, the scan now blocks with a discovery/parser mismatch error instead of reporting a clean zero-package scan.
 - Build: update `tokio` to 1.53.3 (RUSTSEC-2026-0386, `AsyncFd` I/O-safety, affected 1.49.0), and allowlist the `sha1`, `flate2`, `tar` and `semver` crates in the repository's own self-check config so the CI self-check does not flag them as typosquats.
 - Cargo: trust `Cargo.lock` for a ranged crates.io requirement (`serde = "1.0"`) when exactly one locked version satisfies it, using the `semver` crate (pinned `=1.0.28`) for Cargo's requirement rules. A lock that contradicts the requirement is `resolution/lockfile-out-of-sync`, several satisfying versions stay `resolution/ambiguous`, and an invalid requirement keeps `resolution/no-trusted-lockfile-sync`. This amends `docs/specs/cargo-provenance-hardening.md`; real projects such as `bat` and `fd` now scan cleanly. Other ecosystems keep the strict rule.

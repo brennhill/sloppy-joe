@@ -152,9 +152,11 @@ async fn unrelated_parent_manager_conflicts_do_not_suppress_independent_children
 
 #[tokio::test]
 async fn pnpm_workspace_members_that_discovery_cannot_bind_block_the_scan() {
-    for (member_dir, manifest) in [
-        ("packages/tools", "package.yaml"),
-        (".planning/tools", "package.json"),
+    // A package.yaml member is rejected when discovery detects it; an ignored directory's member
+    // is caught afterwards by the workspace check.
+    for (member_dir, manifest, message) in [
+        ("packages/tools", "package.yaml", "Unsupported manifest"),
+        (".planning/tools", "package.json", "not a scanned project"),
     ] {
         let dir = unique_dir();
         std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -180,11 +182,11 @@ async fn pnpm_workspace_members_that_discovery_cannot_bind_block_the_scan() {
         )
         .unwrap();
         let blocked = match scan_with_source(&dir, Some("npm"), None, false).await {
-            Err(error) => error.to_string().contains("not a scanned project"),
+            Err(error) => error.to_string().contains(message),
             Ok(report) => report
                 .issues
                 .iter()
-                .any(|issue| issue.message.contains("not a scanned project")),
+                .any(|issue| issue.message.contains(message)),
         };
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
@@ -245,4 +247,63 @@ fn cargo_member_scans_refuse_a_workspace_root_above_the_scan_root() {
     let _ = std::fs::remove_dir_all(&dir);
     let error = result.expect_err("a member below a workspace root must not be scanned alone");
     assert!(error.to_string().contains("above the scan root"), "{error}");
+}
+
+#[tokio::test]
+async fn npm_workspace_member_missing_from_the_root_lockfile_is_an_independent_install() {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join("packages/b")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+    )
+    .unwrap();
+    // The root lockfile records no `packages/b` entry, so npm never installs b from it.
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"name":"root","lockfileVersion":3,"packages":{"":{"name":"root","workspaces":["packages/*"]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/b/package.json"),
+        r#"{"name":"b","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/b/package-lock.json"),
+        r#"{"name":"b","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"b","version":"1.0.0"}}}"#,
+    )
+    .unwrap();
+    let report = scan_with_source_full_options(
+        &dir,
+        Some("npm"),
+        None,
+        &ScanOptions {
+            scan_mode: ScanMode::Fast,
+            no_cache: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let member = report
+        .projects
+        .iter()
+        .find(|p| p.manifest_path.ends_with("packages/b/package.json"))
+        .unwrap_or_else(|| panic!("member not scanned: {:?}", report.projects));
+    assert_eq!(
+        member.status,
+        report::ProjectScanStatus::Passed,
+        "{:?}",
+        report.issues
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("independent")),
+        "an install outside the root lockfile must be stated: {:?}",
+        report.issues
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

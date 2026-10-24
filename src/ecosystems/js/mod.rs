@@ -95,6 +95,7 @@ impl EcosystemSupport for Js {
     }
 
     fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
+        reject_unscanned_manifest(path)?;
         Ok(common::kind_for_file_name(self.kinds(), path))
     }
 
@@ -255,4 +256,43 @@ pub(super) fn bind_strict(scan_root: &Path, specs: &mut [ProjectInputSpec]) -> R
         spec.js_binding = Some(binding);
     }
     Ok(())
+}
+
+/// Manifests pnpm and others accept in place of `package.json`. The scan reads only
+/// `package.json`, so one of these declaring dependencies would be skipped silently: block.
+/// `package.yaml` is also Haskell's hpack manifest, whose `dependencies` is a list; only the
+/// npm-style mapping of names to versions counts as a JavaScript manifest.
+fn reject_unscanned_manifest(path: &Path) -> Result<()> {
+    let unsupported = |what: &str| {
+        anyhow::anyhow!(
+            "Unsupported manifest '{}': {what} is not scanned, so its dependencies would be skipped silently. Fix: declare them in package.json, or list the directory in ignore_dirs if it is not a JavaScript project.",
+            path.display()
+        )
+    };
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("package.json5") => Err(unsupported("package.json5")),
+        Some("package.yaml") => {
+            let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)?;
+            let manifest: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|error| {
+                anyhow::anyhow!("Broken manifest '{}': {error}", path.display())
+            })?;
+            let declares_npm_dependencies = [
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            ]
+            .iter()
+            .any(|section| {
+                manifest
+                    .get(section)
+                    .is_some_and(serde_yaml::Value::is_mapping)
+            });
+            if declares_npm_dependencies {
+                return Err(unsupported("package.yaml"));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
