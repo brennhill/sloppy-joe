@@ -7,7 +7,9 @@
 
 mod baseline;
 mod bypass_rules;
+mod gap_tests;
 mod isolation;
+mod items;
 mod roots;
 mod scanner_tests;
 mod test_files;
@@ -119,6 +121,29 @@ struct SourceFile {
     code: String,
 }
 
+/// Physical lines as rustc sees them: `\n`, `\r\n`, a lone `\r` and the Unicode line separators
+/// are all whitespace to the compiler, so none may hide lines from the size cap.
+fn count_lines(content: &str) -> usize {
+    let mut lines = 0;
+    let mut pending = false;
+    let mut chars = content.chars().peekable();
+    while let Some(c) = chars.next() {
+        if matches!(
+            c,
+            '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+        ) {
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            lines += 1;
+            pending = false;
+        } else {
+            pending = true;
+        }
+    }
+    lines + usize::from(pending)
+}
+
 fn load_sources() -> Vec<SourceFile> {
     let root = repo_root();
     let mut paths = Vec::new();
@@ -143,7 +168,7 @@ fn load_sources() -> Vec<SourceFile> {
                 None => inside.trim_end_matches(".rs").to_string(),
             };
             SourceFile {
-                raw_lines: content.lines().count(),
+                raw_lines: count_lines(&content),
                 is_test: test_files.contains(&rel),
                 code: cut_inline_tests(&strip(&content)),
                 rel,
@@ -509,6 +534,7 @@ fn function_complexities(code: &str) -> Vec<(String, usize)> {
         // Keep scanning inside the body so nested functions are found too.
         i = j;
     }
+    found.extend(items::initializer_complexities(&b));
     found
 }
 
