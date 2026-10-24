@@ -138,3 +138,33 @@ fn legacy_manifests_beside_a_trusted_project_block_in_ci() {
     let ci = trusted_python_preference_warnings(&spec, true).unwrap();
     assert!(ci.iter().all(|issue| issue.severity == Severity::Error));
 }
+
+#[test]
+fn other_tox_configuration_files_are_flagged_like_tox_ini() {
+    for (file, content) in [
+        ("tox.toml", "[env.py]\ndeps = [\"evil\"]\n"),
+        (
+            "setup.cfg",
+            "[tox:tox]\nenvlist = py\n[testenv]\ndeps =\n    evil\n",
+        ),
+        (
+            "pyproject.toml",
+            "[project]\nname = \"d\"\nversion = \"1\"\n[tool.tox]\nrequires = [\"tox-evil\"]\n",
+        ),
+    ] {
+        let spec = project(
+            &[(file, content)],
+            "pyproject.toml",
+            ProjectInputKind::PyProjectLegacy,
+        );
+        let issues = unscanned_tool_files(&spec, true).unwrap();
+        assert_eq!(issues.len(), 1, "{file}");
+    }
+    // A setup.cfg without tox sections is not a tox file.
+    let spec = project(
+        &[("setup.cfg", "[metadata]\nname = demo\n")],
+        "pyproject.toml",
+        ProjectInputKind::PyProjectLegacy,
+    );
+    assert!(unscanned_tool_files(&spec, true).unwrap().is_empty());
+}

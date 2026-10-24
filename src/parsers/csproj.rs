@@ -70,7 +70,7 @@ fn reject_ancestor_overrides(csproj: &Path) -> Result<()> {
             }
         }
         reject_global_json_msbuild_sdks(ancestor, csproj)?;
-        reject_untrusted_nuget_config(ancestor, csproj)?;
+        super::nuget_config::reject_untrusted_nuget_config(ancestor, csproj)?;
     }
     Ok(())
 }
@@ -89,6 +89,9 @@ fn check_tag(tag: &str, csproj: &Path) -> Result<()> {
     if matches!(
         folded.as_str(),
         "restoresources"
+            | "restoreconfigfile"
+            | "restorepackagespath"
+            | "restorerootconfigdirectory"
             | "restoreadditionalprojectsources"
             | "restorefallbackfolders"
             | "restoreadditionalprojectfallbackfolders"
@@ -235,64 +238,6 @@ fn reject_unbundled_msbuild_sdk(name: &str, version: Option<&str>, csproj: &Path
 
 /// `global.json` `msbuild-sdks` pins NuGet-resolved MSBuild SDKs for every
 /// project below it.
-const NUGET_ORG_FEED: &str = "https://api.nuget.org/v3/index.json";
-
-/// `dotnet restore` honors a `nuget.config` in the project directory or any parent, so a
-/// feed other than nuget.org there redirects every package to an unverified source.
-fn reject_untrusted_nuget_config(dir: &Path, csproj: &Path) -> Result<()> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .eq_ignore_ascii_case("nuget.config")
-        {
-            continue;
-        }
-        let path = entry.path();
-        let content = super::read_file_limited(&path, super::MAX_MANIFEST_BYTES)?;
-        let content = strip_xml_comments(&content);
-        let lowered = content.to_ascii_lowercase();
-        if lowered.contains("<fallbackpackagefolders") {
-            bail!(
-                "Unsupported {} (applies to {}): <fallbackPackageFolders> changes where restore reads packages from",
-                path.display(),
-                csproj.display()
-            );
-        }
-        let mut rest = lowered.as_str();
-        let original = content.as_str();
-        let mut offset = 0;
-        while let Some(start) = rest.find("<packagesources") {
-            let section_start = offset + start;
-            let section_end = lowered[section_start..]
-                .find("</packagesources")
-                .map(|end| section_start + end)
-                .unwrap_or(lowered.len());
-            for tag in original[section_start..section_end].split('<').skip(1) {
-                if !tag.to_ascii_lowercase().starts_with("add") {
-                    continue;
-                }
-                let attrs = tag.split('>').next().unwrap_or_default();
-                let value = extract_attr(attrs, "value").unwrap_or_default();
-                if value.trim() != NUGET_ORG_FEED {
-                    bail!(
-                        "Unsupported package source '{}' in {} (applies to {}): only {NUGET_ORG_FEED} is trusted",
-                        value.trim(),
-                        path.display(),
-                        csproj.display()
-                    );
-                }
-            }
-            offset = section_end;
-            rest = &lowered[offset..];
-        }
-    }
-    Ok(())
-}
-
 fn reject_global_json_msbuild_sdks(dir: &Path, csproj: &Path) -> Result<()> {
     let global_json = dir.join("global.json");
     if !super::path_detected(&global_json)? {
@@ -309,7 +254,7 @@ fn reject_global_json_msbuild_sdks(dir: &Path, csproj: &Path) -> Result<()> {
     Ok(())
 }
 
-fn strip_xml_comments(content: &str) -> String {
+pub(super) fn strip_xml_comments(content: &str) -> String {
     let mut sanitized = String::with_capacity(content.len());
     let mut index = 0usize;
 
@@ -419,7 +364,7 @@ fn read_quoted<'a>(chars: &mut Chars, text: &'a str, quote: char) -> Option<&'a 
     None
 }
 
-fn extract_attr(tag_content: &str, attr: &str) -> Option<String> {
+pub(super) fn extract_attr(tag_content: &str, attr: &str) -> Option<String> {
     let mut chars = tag_content.char_indices().peekable();
 
     while let Some((start, ch)) = chars.next() {

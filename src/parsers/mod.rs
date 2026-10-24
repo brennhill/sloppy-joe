@@ -4,6 +4,7 @@ pub mod csproj;
 pub mod gemfile;
 pub mod go_mod;
 pub mod jvm;
+mod nuget_config;
 pub mod package_json;
 pub mod pipfile;
 pub mod pyproject_toml;
