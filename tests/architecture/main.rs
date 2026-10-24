@@ -14,6 +14,7 @@ mod items;
 mod raw_reads;
 mod roots;
 mod scanner_tests;
+mod syn_graph;
 mod test_files;
 
 use baseline::*;

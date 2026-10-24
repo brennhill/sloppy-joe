@@ -149,3 +149,7 @@ layer src/parsers/jvm.rs -> registry
 edges, file lines, per-function complexity, and `ProjectInputKind::` placement. It compares the first three to the baseline
 and fails on any worse value, any unclassified module, and any stale (now-better) entry. A single
 `#[test]` per rule keeps failures readable.
+
+## Second oracle for layer direction
+
+`tests/architecture/syn_graph.rs` parses every production file with `syn` (dev-dependency) and resolves `use` trees, aliases, `self::`/`super::` chains, `use crate::*` globs, crate-root re-exports and macro token streams on its own, then applies the same layer table. The baseline lists no layer edge, so the text scanner and this oracle must both report none; a bypass has to fool two unrelated implementations. Items defined in `src/lib.rs` itself (`Dependency`, `ScanOptions`) belong to no layer in either.

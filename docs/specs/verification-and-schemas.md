@@ -1,7 +1,7 @@
 # Closed Lock-Entry Schemas, Differential Testing, Layer Enforcement, Threat Model
 
 **Created**: 2026-10-24
-**Status**: Draft (step 4 done: npm, composer, cargo, uv, poetry, pipenv, pnpm, yarn, bun; gradle.lockfile grammar closed; step 7 threat model written; steps 5, 6, 8 open)
+**Status**: Draft (step 4 done: npm, composer, cargo, uv, poetry, pipenv, pnpm, yarn, bun; gradle.lockfile grammar closed; step 7 threat model written; step 5 metamorphic suite and step 6 syn oracle started; real-tool harness, replacing the text scanner and step 8 open)
 **Input**: items 4-7 of the answer to "any feedback on architectural improvements to prevent these
 issues?", after `untrusted-input-hardening.md` (items 1-3) was implemented.
 
@@ -71,6 +71,10 @@ Items 1-3 close config files, ambient inputs and the read path. Four gaps remain
 - **Given** the layer table, **when** `cargo test` runs, **then** layer direction is verified by a
   `syn`-parsed use-graph, replacing the text scan, with the same rules and baseline semantics.
 - Splitting into workspace crates is deferred until the parse-based check shows the real graph.
+- Implemented so far: `tests/architecture/syn_graph.rs`, an independent `syn` oracle for layer
+  direction that runs next to the text scanner (dev-dependencies `syn`, `proc-macro2`). Both must
+  report no layer edge. Replacing the text scanner outright, and moving the size and complexity
+  counters onto `syn`, are not done.
 
 ### 7. Threat model
 
