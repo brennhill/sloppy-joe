@@ -9,6 +9,8 @@ pub const EXISTENCE_REGISTRY_UNREACHABLE: &str = "existence/registry-unreachable
 
 // -- Metadata signals --
 pub const STEERING_DISTRIBUTION_NAME: &str = "steering/distribution-name";
+pub const STEERING_NEW_DEPENDENCY: &str = "steering/new-dependency";
+pub const STEERING_BASELINE_UNAVAILABLE: &str = "steering/baseline-unavailable";
 pub const METADATA_VERSION_AGE: &str = "metadata/version-age";
 pub const METADATA_NEW_PACKAGE: &str = "metadata/new-package";
 pub const METADATA_LOW_DOWNLOADS: &str = "metadata/low-downloads";
@@ -119,6 +121,8 @@ mod tests {
             EXISTENCE,
             EXISTENCE_REGISTRY_UNREACHABLE,
             STEERING_DISTRIBUTION_NAME,
+            STEERING_NEW_DEPENDENCY,
+            STEERING_BASELINE_UNAVAILABLE,
             METADATA_VERSION_AGE,
             METADATA_NEW_PACKAGE,
             METADATA_LOW_DOWNLOADS,

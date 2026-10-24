@@ -26,8 +26,8 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
   presence is the signal, code tokens only raise a quiet case.
 - **Trust Sigstore/attestations**: AsyncAPI shipped malicious releases with valid provenance.
   Out of scope.
-- **Dependency added since the git base ("agent-introduced")**: needs a VCS baseline in the
-  engine; not built.
+- **Dependency added since the git base ("agent-introduced")**: built as opt-in `--base-ref`,
+  because without a ref there is no baseline and guessing one (HEAD) would run git on every scan.
 
 ## Acceptance Criteria
 
@@ -54,6 +54,13 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 - `steering/distribution-name`: a PyPI dependency equals (PEP 503) a listed import or command
   name. Warning; error when the package is under a year old or its history is unknown. Hits are
   similarity-flagged for deeper inspection.
+- `steering/new-dependency` (only with `--base-ref <REF>`, e.g. `HEAD` locally or `origin/main`
+  in CI): a direct dependency the manifest did not declare at the ref (PEP 503 names on PyPI;
+  version bumps are not new; a manifest absent at the ref makes all its dependencies new).
+  Warning; error when the package is under 90 days old or its first-publication date is
+  unreadable. Hits are similarity-flagged for wheel and tarball inspection.
+- `steering/baseline-unavailable`: with `--base-ref`, an unresolvable ref, missing repository
+  or unreadable git blocks; a manifest that cannot be parsed alone at the ref warns.
 - The PyPI version date is the newest file upload of the release, so a file added later to an
   old release cannot pass the age gate.
 
@@ -63,13 +70,17 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
   redirects, hashed before parsing, never extracted. Zip64, unknown compression and oversize
   hook files are reported, not skipped.
 - Wheel results are cached by sha256 through `cache.rs`; failures are never cached.
-- No new dependencies; no new UI or config keys.
+- The baseline manifest is read with `git cat-file` (no pager, textconv or hooks) after the ref
+  is checked to be a plain ref and to resolve to a commit, then parsed by the project's own
+  manifest parser from a private temporary directory. Only the manifest file is restored.
+- No new dependencies and no config keys; one CLI flag, `--base-ref`.
 
 ## Scope Boundaries
 
 - Not covered: sdist `setup.py`, hook code beyond the listed tokens, `.pth` path entries,
-  Yarn Berry/other non-PyPI lock hashes, requirements.txt `--hash`, newly-added-dependency
-  detection, MCP name similarity, attestation status.
+  Yarn Berry/other non-PyPI lock hashes, requirements.txt `--hash`, MCP name similarity,
+  attestation status. Baseline comparison covers direct manifest dependencies only, and a
+  manifest that needs sibling files (`-r other.txt`) cannot be compared.
 
 ## I/O Contracts
 
@@ -80,7 +91,7 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 ## Context Anchors
 
 - `src/registry/pypi_release.rs`, `src/registry/cadence.rs`, `src/registry/wheel.rs`
-- `src/checks/wheel_verification.rs`, `src/checks/python_lockfile_hashes.rs`,
+- `src/engine/baseline.rs`, `src/checks/wheel_verification.rs`, `src/checks/python_lockfile_hashes.rs`,
   `src/checks/release_cadence.rs`, `src/checks/steering.rs`
 - `src/lockfiles/python_hashes.rs`
 

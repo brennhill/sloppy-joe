@@ -88,6 +88,18 @@ impl Check for SimilarityCheck {
                 acc.similarity_flagged.insert(issue.package.clone());
             }
             acc.issues.extend(steering);
+            if let Some(base_ref) = ctx.opts.base_ref.as_deref() {
+                let added = super::steering::check_new_dependencies(
+                    ctx.checkable_deps,
+                    acc.metadata_lookups.as_deref().unwrap_or_default(),
+                    &ctx.opts.new_dependencies,
+                    base_ref,
+                );
+                for issue in &added {
+                    acc.similarity_flagged.insert(issue.package.clone());
+                }
+                acc.issues.extend(added);
+            }
             Ok(())
         })
     }

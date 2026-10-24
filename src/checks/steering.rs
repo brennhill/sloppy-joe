@@ -65,6 +65,18 @@ const WRONG_NAMES: &[(&str, &str)] = &[
     ("aws", "awscli"),
 ];
 
+/// Identity of a dependency for comparing declarations across manifests:
+/// ecosystem plus the registry's own spelling rules (PEP 503 on PyPI).
+pub(crate) fn dependency_key(dep: &Dependency) -> String {
+    let name = dep.package_name();
+    let name = if dep.ecosystem == Ecosystem::PyPI {
+        normalize_name(name)
+    } else {
+        name.to_string()
+    };
+    format!("{}:{name}", dep.ecosystem.as_str())
+}
+
 /// A package created within this many hours counts as young.
 const YOUNG_HOURS: u64 = 365 * 24;
 
@@ -126,6 +138,61 @@ pub(crate) fn check_wrong_distribution_names(
         );
     }
     issues
+}
+
+/// A dependency added since `--base-ref` is scrutinised more: it is the one a
+/// code generator most plausibly just guessed.
+const NEW_DEPENDENCY_YOUNG_HOURS: u64 = 90 * 24;
+
+/// Issues for dependencies in `new_keys` (see `engine::baseline`). A warning
+/// asks for review; the package being young or unreadable makes it blocking.
+pub(crate) fn check_new_dependencies(
+    deps: &[Dependency],
+    lookups: &[MetadataLookup],
+    new_keys: &HashSet<String>,
+    base_ref: &str,
+) -> Vec<Issue> {
+    let mut seen = HashSet::new();
+    let mut issues = Vec::new();
+    for dep in deps {
+        let key = dependency_key(dep);
+        if !new_keys.contains(&key) || !seen.insert(key) {
+            continue;
+        }
+        let package = dep.package_name();
+        let lookup = lookups
+            .iter()
+            .find(|l| l.ecosystem == dep.ecosystem && dependency_key_of(l) == dependency_key(dep));
+        let created = lookup
+            .and_then(|l| l.metadata.as_ref())
+            .and_then(|meta| meta.created.as_deref());
+        let age_days = created.and_then(age_in_hours).map(|h| h / 24);
+        let young = age_days.is_none_or(|days| days * 24 < NEW_DEPENDENCY_YOUNG_HOURS);
+        let severity = if young { Severity::Error } else { Severity::Warning };
+        let detail = match age_days {
+            Some(days) => format!("It was first published {days} days ago."),
+            None => "Its first-publication date could not be read.".to_string(),
+        };
+        issues.push(
+            Issue::new(package, names::STEERING_NEW_DEPENDENCY, severity)
+                .message(format!(
+                    "'{}' was added to the manifest since '{}'. Newly added dependencies are the ones a code generator most plausibly guessed. {detail}",
+                    sanitize_for_terminal(package),
+                    sanitize_for_terminal(base_ref)
+                ))
+                .fix("Confirm the package is the one you intended: check its registry page, publisher and source repository, then keep it. Pin the version you reviewed."),
+        );
+    }
+    issues
+}
+
+fn dependency_key_of(lookup: &MetadataLookup) -> String {
+    let name = if lookup.ecosystem == Ecosystem::PyPI {
+        normalize_name(&lookup.package)
+    } else {
+        lookup.package.clone()
+    };
+    format!("{}:{name}", lookup.ecosystem.as_str())
 }
 
 #[cfg(test)]
@@ -222,5 +289,61 @@ mod tests {
             assert_ne!(normalize_name(wrong), normalize_name(right), "{wrong}");
             assert!(seen.insert(normalize_name(wrong)), "duplicate {wrong}");
         }
+    }
+
+    fn keys(deps: &[&Dependency]) -> HashSet<String> {
+        deps.iter().map(|d| dependency_key(d)).collect()
+    }
+
+    #[test]
+    fn new_young_dependency_blocks_and_names_the_ref() {
+        let d = dep("Fresh_Lib", Ecosystem::PyPI);
+        let issues = check_new_dependencies(
+            std::slice::from_ref(&d),
+            &[lookup("fresh-lib", Some("2999-01-01T00:00:00Z"))],
+            &keys(&[&d]),
+            "origin/main",
+        );
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].check, "steering/new-dependency");
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].message.contains("origin/main"));
+    }
+
+    #[test]
+    fn new_established_dependency_warns() {
+        let d = dep("requests", Ecosystem::PyPI);
+        let issues = check_new_dependencies(
+            std::slice::from_ref(&d),
+            &[lookup("requests", Some("2012-01-01T00:00:00Z"))],
+            &keys(&[&d]),
+            "HEAD",
+        );
+        assert_eq!(issues[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn unreadable_history_blocks() {
+        let d = dep("mystery", Ecosystem::PyPI);
+        let issues = check_new_dependencies(std::slice::from_ref(&d), &[], &keys(&[&d]), "HEAD");
+        assert_eq!(issues[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn dependencies_not_in_the_new_set_are_quiet() {
+        let d = dep("requests", Ecosystem::PyPI);
+        assert!(check_new_dependencies(&[d], &[], &HashSet::new(), "HEAD").is_empty());
+    }
+
+    #[test]
+    fn keys_ignore_pypi_spelling_but_not_other_ecosystems() {
+        assert_eq!(
+            dependency_key(&dep("Foo_Bar", Ecosystem::PyPI)),
+            dependency_key(&dep("foo-bar", Ecosystem::PyPI))
+        );
+        assert_ne!(
+            dependency_key(&dep("Foo", Ecosystem::Npm)),
+            dependency_key(&dep("foo", Ecosystem::Npm))
+        );
     }
 }

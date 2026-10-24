@@ -92,6 +92,7 @@ pub async fn warm_cache(
         python_platform: None,
         python_arch: None,
         python_version: None,
+        ..Default::default()
     };
     scan_with_config(project_dir, project_type, config, &opts).await
 }
@@ -119,6 +120,7 @@ pub async fn scan_with_source_full(
         python_platform: None,
         python_arch: None,
         python_version: None,
+        ..Default::default()
     };
     scan_with_source_full_options(project_dir, project_type, config_source, &opts).await
 }
@@ -190,6 +192,13 @@ pub struct ScanOptions<'a> {
     pub python_arch: Option<String>,
     /// Override the Python target version for marker evaluation.
     pub python_version: Option<String>,
+    /// Git ref whose manifests are the baseline for "newly added dependency"
+    /// scrutiny (--base-ref). `None` disables it.
+    pub base_ref: Option<String>,
+    /// Keys (see `checks::steering::dependency_key`) of the project's dependencies
+    /// added since `base_ref`. Set per project by the engine, never by callers.
+    #[doc(hidden)]
+    pub new_dependencies: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

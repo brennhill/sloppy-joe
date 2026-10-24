@@ -236,7 +236,8 @@ pub(crate) async fn scan_with_config(
             }
         };
         let project = resolved.as_ref().unwrap_or(project);
-        match scan_one_project(project, &config, &client, &osv_client, opts).await {
+        let project_opts = with_new_dependencies(project, opts, &mut acc.issues);
+        match scan_one_project(project, &config, &client, &osv_client, &project_opts).await {
             Ok(report) => acc.record_report(&project.spec, report),
             Err(error) => acc.record_failure(&project.spec, error)?,
         }
@@ -254,6 +255,43 @@ pub(crate) async fn scan_with_config(
 
     persist_scan_state(&projects, &report, &cache_base, &config, opts);
     Ok(report)
+}
+
+/// `opts` plus the project's dependencies added since `--base-ref`. A baseline that cannot be
+/// read is reported, never skipped silently: an unusable ref or repository blocks, a manifest
+/// that cannot be parsed alone warns.
+pub(crate) fn with_new_dependencies<'a>(
+    project: &ParsedProject,
+    opts: &ScanOptions<'a>,
+    issues: &mut Vec<Issue>,
+) -> ScanOptions<'a> {
+    let mut project_opts = opts.clone();
+    let Some(base_ref) = opts.base_ref.as_deref() else {
+        return project_opts;
+    };
+    match new_dependency_keys(&project.spec, &project.deps, base_ref) {
+        Ok(keys) => project_opts.new_dependencies = keys,
+        Err(error) => {
+            let (severity, why) = match error {
+                BaselineError::Unusable(error) => (Severity::Error, error),
+                BaselineError::Unparsed(error) => (Severity::Warning, error),
+            };
+            issues.push(
+                Issue::new(
+                    project.spec.manifest_path.display().to_string(),
+                    names::STEERING_BASELINE_UNAVAILABLE,
+                    severity,
+                )
+                .message(format!(
+                    "Could not compare '{}' with '{}', so newly added dependencies were not singled out: {why:#}",
+                    project.spec.manifest_path.display(),
+                    base_ref
+                ))
+                .fix("Check that --base-ref names a commit present in this checkout (fetch more history in shallow clones) and that the manifest parses on its own at that ref."),
+            );
+        }
+    }
+    project_opts
 }
 
 /// The error for a scan whose project discovery found nothing. The legacy parser's own error says

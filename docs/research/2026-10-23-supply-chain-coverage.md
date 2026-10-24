@@ -66,7 +66,7 @@ Spec: `docs/specs/python-supply-chain-signals.md`. Attestation/provenance report
 | Execution on install beyond scripts (`binding.gyp`, `.pth`) | Done | npm gyp counts as an install script; PyPI wheels are read for `*.pth` import lines and `sitecustomize`/`usercustomize` (`metadata/python-startup-hook`). sdist `setup.py` and hook code beyond a token list are not analyzed. |
 | Maintainer change, version burst, dormancy-then-release | Done | Publisher change and publisher/script history; `metadata/dormant-release` and `metadata/release-burst` for PyPI and npm. Other registries carry no cadence data yet. |
 | Cooldown window for new versions | Done | `min_version_age_hours`, default 72. The PyPI version date is the newest file upload. |
-| Dependency steering | Partly done | Guessed import/command names for PyPI. "Dependency newly added since the git base" is not built (needs a VCS baseline). |
+| Dependency steering | Done | Guessed import/command names for PyPI (`steering/distribution-name`); `--base-ref <REF>` singles out dependencies added since a git ref (`steering/new-dependency`), stricter when young. |
 | Lockfile integrity and non-registry sources | Done for npm-family and Python | `metadata/lockfile-integrity-*` for npm lockfiles, `poetry.lock`, `uv.lock`, `Pipfile.lock`. `requirements.txt --hash` and Yarn Berry are not compared. |
 | MCP server package name similarity | Out of scope | |
 | Report attestation/provenance status | Out of scope | |

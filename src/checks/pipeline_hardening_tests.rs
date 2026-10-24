@@ -101,3 +101,55 @@ async fn download_disparity_evidence_reaches_similarity_in_default_pipeline() {
         "{calls:?}"
     );
 }
+
+#[tokio::test]
+async fn dependency_added_since_the_base_ref_is_flagged_and_marked_for_deeper_checks() {
+    let deps = vec![crate::Dependency {
+        name: "express".into(),
+        version: Some("1.0.0".into()),
+        ecosystem: crate::Ecosystem::Npm,
+        actual_name: None,
+    }];
+    let config = crate::config::SloppyJoeConfig::default();
+    let resolution = crate::lockfiles::ResolutionResult::default();
+    let opts = crate::ScanOptions {
+        no_cache: true,
+        disable_osv_disk_cache: true,
+        base_ref: Some("origin/main".into()),
+        new_dependencies: ["npm:express".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let registry = FakeRegistry {
+        metadata_calls: Mutex::new(Vec::new()),
+    };
+    let ctx = CheckContext {
+        checkable_deps: &deps,
+        non_internal_deps: &deps,
+        config: &config,
+        registry: &registry,
+        osv_client: &NoOsv,
+        resolution: &resolution,
+        ecosystem: crate::Ecosystem::Npm,
+        opts: &opts,
+    };
+    let mut acc = ScanAccumulator::new();
+    SimilarityCheck.run(&ctx, &mut acc).await.unwrap();
+    let issue = acc
+        .issues
+        .iter()
+        .find(|i| i.check == "steering/new-dependency")
+        .expect("new-dependency issue");
+    assert!(issue.message.contains("origin/main"));
+    assert!(acc.similarity_flagged.contains("express"));
+
+    // Without --base-ref the signal does not exist.
+    let quiet = crate::ScanOptions {
+        no_cache: true,
+        disable_osv_disk_cache: true,
+        ..Default::default()
+    };
+    let ctx = CheckContext { opts: &quiet, ..ctx };
+    let mut acc = ScanAccumulator::new();
+    SimilarityCheck.run(&ctx, &mut acc).await.unwrap();
+    assert!(acc.issues.iter().all(|i| i.check != "steering/new-dependency"));
+}

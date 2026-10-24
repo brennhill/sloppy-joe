@@ -116,6 +116,11 @@ enum Commands {
         #[arg(long)]
         paranoid: bool,
 
+        /// Singles out dependencies added since this git ref (for example HEAD, or
+        /// origin/main in CI) for extra scrutiny. Off unless given.
+        #[arg(long, value_name = "REF")]
+        base_ref: Option<String>,
+
         /// Disable reading from disk caches, including OSV.
         #[arg(long)]
         no_cache: bool,
@@ -432,6 +437,7 @@ struct CheckArgs {
     config: Option<String>,
     deep: bool,
     paranoid: bool,
+    base_ref: Option<String>,
     no_cache: bool,
     cache_dir: Option<PathBuf>,
     python_groups: Option<String>,
@@ -466,6 +472,8 @@ async fn run_check(args: CheckArgs) {
         python_platform: args.python_platform,
         python_arch: args.python_arch,
         python_version: args.python_version,
+        base_ref: args.base_ref,
+        ..Default::default()
     };
     match sloppy_joe::scan_with_source_full_options(
         &dir,
@@ -703,6 +711,7 @@ async fn main() {
             config,
             deep,
             paranoid,
+            base_ref,
             no_cache,
             cache_dir,
             python_groups,
@@ -721,6 +730,7 @@ async fn main() {
                 config,
                 deep,
                 paranoid,
+                base_ref,
                 no_cache,
                 cache_dir,
                 python_groups,
