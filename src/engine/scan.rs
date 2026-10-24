@@ -21,20 +21,62 @@ pub(crate) fn local_overlay_relaxation_issues(config: &config::SloppyJoeConfig) 
         .collect()
 }
 
-pub(crate) async fn scan_with_config(
+/// Per-project results gathered while scanning a repository.
+struct ScanAccumulator {
+    /// True when exactly one project is scanned: its failure fails the whole scan.
+    single_project: bool,
+    total_packages: usize,
+    issues: Vec<Issue>,
+    review_candidates: Vec<report::ReviewExceptionCandidate>,
+    runs: Vec<report::ProjectScan>,
+}
+
+impl ScanAccumulator {
+    /// Record a project that could not be scanned, or propagate its error for a lone project.
+    fn record_failure(&mut self, spec: &ProjectInputSpec, error: anyhow::Error) -> Result<()> {
+        if self.single_project {
+            return Err(error);
+        }
+        self.issues.push(incomplete_project_issue(spec, &error));
+        self.runs.push(project_scan_summary(
+            spec,
+            0,
+            report::ProjectScanStatus::Unsupported,
+        ));
+        Ok(())
+    }
+
+    fn record_report(&mut self, spec: &ProjectInputSpec, mut report: ScanReport) {
+        let manifest = spec.manifest_path.display().to_string();
+        let blocked = report.has_errors()
+            || self.issues.iter().any(|issue| {
+                issue.project.as_deref() == Some(manifest.as_str())
+                    && issue.severity == Severity::Error
+            });
+        let status = if blocked {
+            report::ProjectScanStatus::Blocked
+        } else {
+            report::ProjectScanStatus::Passed
+        };
+        self.runs
+            .push(project_scan_summary(spec, report.packages_checked, status));
+        for issue in &mut report.issues {
+            issue.project = Some(manifest.clone());
+        }
+        self.total_packages += report.packages_checked;
+        self.issues.extend(report.issues);
+        self.review_candidates.extend(report.review_candidates);
+    }
+}
+
+/// Bind every JS project to its package manager and lockfile; projects that cannot be bound,
+/// or whose workspace members are not all scanned, are returned with their error.
+fn bind_js_projects(
     project_dir: &std::path::Path,
-    project_type: Option<&str>,
-    config: config::SloppyJoeConfig,
-    opts: &ScanOptions<'_>,
-) -> Result<ScanReport> {
-    let cache_base = opts
-        .cache_dir
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
-    cache::ensure_cache_dir_outside_project(&cache_base, project_dir)?;
-    let mut specs = unbound_project_inputs_with_config(project_dir, project_type, &config)?;
+    specs: &mut [ProjectInputSpec],
+) -> std::collections::HashMap<std::path::PathBuf, anyhow::Error> {
     let mut binding_errors = std::collections::HashMap::new();
-    for spec in &mut specs {
+    for spec in specs.iter_mut() {
         if spec.kind != ProjectInputKind::Npm {
             continue;
         }
@@ -53,7 +95,7 @@ pub(crate) async fn scan_with_config(
         .filter(|spec| spec.kind == ProjectInputKind::Npm)
         .filter_map(|spec| std::fs::canonicalize(spec.project_dir()).ok())
         .collect();
-    for spec in &specs {
+    for spec in specs.iter() {
         if spec.kind != ProjectInputKind::Npm || binding_errors.contains_key(&spec.manifest_path) {
             continue;
         }
@@ -62,195 +104,95 @@ pub(crate) async fn scan_with_config(
             binding_errors.insert(spec.manifest_path.clone(), error);
         }
     }
-    let usable_specs: Vec<_> = specs
-        .iter()
-        .filter(|spec| !binding_errors.contains_key(&spec.manifest_path))
-        .cloned()
-        .collect();
-    let mut preflight_warnings = local_overlay_relaxation_issues(&config);
-    let mut projects = Vec::new();
-    let mut project_runs = Vec::new();
-    for spec in &specs {
-        let prepared = (|| -> Result<Vec<ParsedProject>> {
-            if let Some(error) = binding_errors.remove(&spec.manifest_path) {
-                return Err(error);
-            }
-            let warnings = preflight_selected_project_inputs(
-                project_dir,
-                &usable_specs,
-                std::slice::from_ref(spec),
-                &config,
-                opts,
-            )?;
-            let parsed = parse_project_inputs_with_options(
-                project_dir,
-                std::slice::from_ref(spec),
-                &config,
-                opts,
-            )?;
-            preflight_warnings.extend(warnings.into_iter().map(|mut issue| {
-                issue.project = Some(spec.manifest_path.display().to_string());
-                issue
-            }));
-            Ok(parsed)
-        })();
-        match prepared {
-            Ok(parsed) => projects.extend(parsed),
-            Err(error) => {
-                if specs.len() == 1 {
-                    return Err(error);
-                }
-                preflight_warnings.push(incomplete_project_issue(spec, &error));
-                project_runs.push(project_scan_summary(
-                    spec,
-                    0,
-                    report::ProjectScanStatus::Unsupported,
-                ));
-            }
+    binding_errors
+}
+
+/// Reasons a fast scan recommends a full scan; empty outside fast mode.
+fn fast_mode_full_scan_reasons(
+    projects: &[ParsedProject],
+    cache_base: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Vec<report::FullScanRecommendationReason> {
+    if !matches!(opts.scan_mode, ScanMode::Fast) {
+        return Vec::new();
+    }
+    match full_scan_recommendation_reasons_for_projects(
+        projects,
+        cache_base,
+        config,
+        opts,
+        cache::now_epoch(),
+    ) {
+        Ok(reasons) => reasons,
+        Err(reason) => {
+            eprintln!(
+                "Skipping full-scan recommendation state: {}",
+                report::sanitize_for_terminal(&reason)
+            );
+            vec![report::FullScanRecommendationReason::NoSuccessfulFullScan]
         }
     }
-    if projects.is_empty() && project_runs.is_empty() {
-        parsers::parse_dependencies(project_dir, project_type)?;
-        return Ok(ScanReport::from_issues(0, preflight_warnings));
+}
+
+/// Maven versions come from properties, management sections, BOMs and the parent chain, not only
+/// from the declarations themselves. `None` means the project needs no resolution.
+async fn with_resolved_maven_versions(
+    project: &ParsedProject,
+    client: &reqwest::Client,
+) -> Result<Option<ParsedProject>> {
+    if project.spec.kind != ProjectInputKind::Maven || project.unlocked_tooling {
+        return Ok(None);
     }
-    let full_scan_reasons = if matches!(opts.scan_mode, ScanMode::Fast) {
-        match full_scan_recommendation_reasons_for_projects(
-            &projects,
-            &cache_base,
-            &config,
-            opts,
-            cache::now_epoch(),
-        ) {
-            Ok(reasons) => reasons,
-            Err(reason) => {
-                eprintln!(
-                    "Skipping full-scan recommendation state: {}",
-                    report::sanitize_for_terminal(&reason)
-                );
-                vec![report::FullScanRecommendationReason::NoSuccessfulFullScan]
-            }
-        }
-    } else {
-        Vec::new()
+    let deps = parsers::jvm::resolve_maven_versions(
+        &project.spec.manifest_path,
+        project.deps.clone(),
+        client.clone(),
+    )
+    .await?;
+    Ok(Some(ParsedProject {
+        deps,
+        ..project.clone()
+    }))
+}
+
+/// Run all checks for one project, including the Gradle plugin implementation checks.
+async fn scan_one_project(
+    project: &ParsedProject,
+    config: &config::SloppyJoeConfig,
+    client: &reqwest::Client,
+    osv_client: &checks::malicious::RealOsvClient,
+    opts: &ScanOptions<'_>,
+) -> Result<ScanReport> {
+    // A project with no declared dependencies is still scanned: its
+    // lockfile may list installable packages.
+    let registry = match gradle_plugin_scan::plugin_registry_for(project, client.clone())? {
+        Some(registry) => registry,
+        None => registry::registry_for_with_client(project.spec.kind.ecosystem(), client.clone())?,
     };
+    let mut report =
+        scan_parsed_project(project, config.clone(), &*registry, osv_client, opts).await?;
+    let issues = gradle_plugin_scan::project_implementation_issues(
+        project,
+        client.clone(),
+        osv_client,
+        opts,
+    )
+    .await?;
+    report.issues.extend(issues);
+    Ok(report)
+}
 
-    // Scan each ecosystem separately, merge reports
-    let client = registry::http_client();
-    let osv_client = checks::malicious::RealOsvClient::with_client(client.clone());
-    let mut total_packages = 0;
-    let mut all_issues = preflight_warnings;
-    let mut all_review_candidates = Vec::new();
-
-    for project in &projects {
-        // Maven versions come from properties, management sections, BOMs and
-        // the parent chain, not only from the declarations themselves.
-        let resolved_project;
-        let project = if project.spec.kind == ProjectInputKind::Maven && !project.unlocked_tooling {
-            match parsers::jvm::resolve_maven_versions(
-                &project.spec.manifest_path,
-                project.deps.clone(),
-                client.clone(),
-            )
-            .await
-            {
-                Ok(deps) => {
-                    resolved_project = ParsedProject {
-                        deps,
-                        ..project.clone()
-                    };
-                    &resolved_project
-                }
-                Err(error) => {
-                    if specs.len() == 1 {
-                        return Err(error);
-                    }
-                    all_issues.push(incomplete_project_issue(&project.spec, &error));
-                    project_runs.push(project_scan_summary(
-                        &project.spec,
-                        0,
-                        report::ProjectScanStatus::Unsupported,
-                    ));
-                    continue;
-                }
-            }
-        } else {
-            project
-        };
-        // A project with no declared dependencies is still scanned: its
-        // lockfile may list installable packages.
-        let registry = match gradle_plugin_scan::plugin_registry_for(project, client.clone())? {
-            Some(registry) => registry,
-            None => {
-                registry::registry_for_with_client(project.spec.kind.ecosystem(), client.clone())?
-            }
-        };
-        let result =
-            scan_parsed_project(project, config.clone(), &*registry, &osv_client, opts).await;
-        let result = match result {
-            Ok(mut report) => gradle_plugin_scan::project_implementation_issues(
-                project,
-                client.clone(),
-                &osv_client,
-                opts,
-            )
-            .await
-            .map(|issues| {
-                report.issues.extend(issues);
-                report
-            }),
-            Err(error) => Err(error),
-        };
-        match result {
-            Ok(mut report) => {
-                let status = if report.has_errors()
-                    || all_issues.iter().any(|issue| {
-                        issue.project.as_deref()
-                            == Some(project.spec.manifest_path.to_string_lossy().as_ref())
-                            && issue.severity == Severity::Error
-                    }) {
-                    report::ProjectScanStatus::Blocked
-                } else {
-                    report::ProjectScanStatus::Passed
-                };
-                project_runs.push(project_scan_summary(
-                    &project.spec,
-                    report.packages_checked,
-                    status,
-                ));
-                for issue in &mut report.issues {
-                    issue.project = Some(project.spec.manifest_path.display().to_string());
-                }
-                total_packages += report.packages_checked;
-                all_issues.extend(report.issues);
-                all_review_candidates.extend(report.review_candidates);
-            }
-            Err(error) => {
-                if specs.len() == 1 {
-                    return Err(error);
-                }
-                all_issues.push(incomplete_project_issue(&project.spec, &error));
-                project_runs.push(project_scan_summary(
-                    &project.spec,
-                    0,
-                    report::ProjectScanStatus::Unsupported,
-                ));
-            }
-        }
-    }
-
-    let report = ScanReport::from_issues_with_review_candidates(
-        total_packages,
-        all_issues,
-        all_review_candidates,
-    );
-    let mut report = report;
-    report.full_scan_reasons = full_scan_reasons;
-    project_runs.sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
-    report.projects = project_runs;
-
-    // Save hash after successful scan
+/// Remember the dependency hash and full-scan fingerprint so later runs can skip or escalate.
+fn persist_scan_state(
+    projects: &[ParsedProject],
+    report: &ScanReport,
+    cache_base: &std::path::Path,
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) {
     if !opts.no_cache {
-        match scan_hash_for_projects(&projects, &config, opts) {
+        match scan_hash_for_projects(projects, config, opts) {
             Ok(hash) => {
                 let hash_path = cache_base.join("scan-hash.json");
                 cache::atomic_write_json(
@@ -273,14 +215,106 @@ pub(crate) async fn scan_with_config(
     if opts.scan_mode.runs_full_checks()
         && !report.has_errors()
         && let Err(reason) =
-            persist_successful_full_scan_fingerprint(&projects, &cache_base, &config, opts)
+            persist_successful_full_scan_fingerprint(projects, cache_base, config, opts)
     {
         eprintln!(
             "Not caching successful full-scan fingerprint for this run: {}",
             report::sanitize_for_terminal(&reason)
         );
     }
+}
 
+pub(crate) async fn scan_with_config(
+    project_dir: &std::path::Path,
+    project_type: Option<&str>,
+    config: config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+) -> Result<ScanReport> {
+    let cache_base = opts
+        .cache_dir
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| cache::user_cache_dir().join("sloppy-joe"));
+    cache::ensure_cache_dir_outside_project(&cache_base, project_dir)?;
+    let mut specs = unbound_project_inputs_with_config(project_dir, project_type, &config)?;
+    let mut binding_errors = bind_js_projects(project_dir, &mut specs);
+    let usable_specs: Vec<_> = specs
+        .iter()
+        .filter(|spec| !binding_errors.contains_key(&spec.manifest_path))
+        .cloned()
+        .collect();
+    let mut acc = ScanAccumulator {
+        single_project: specs.len() == 1,
+        total_packages: 0,
+        issues: local_overlay_relaxation_issues(&config),
+        review_candidates: Vec::new(),
+        runs: Vec::new(),
+    };
+    let mut projects = Vec::new();
+    for spec in &specs {
+        let prepared = (|| -> Result<Vec<ParsedProject>> {
+            if let Some(error) = binding_errors.remove(&spec.manifest_path) {
+                return Err(error);
+            }
+            let warnings = preflight_selected_project_inputs(
+                project_dir,
+                &usable_specs,
+                std::slice::from_ref(spec),
+                &config,
+                opts,
+            )?;
+            let parsed = parse_project_inputs_with_options(
+                project_dir,
+                std::slice::from_ref(spec),
+                &config,
+                opts,
+            )?;
+            acc.issues.extend(warnings.into_iter().map(|mut issue| {
+                issue.project = Some(spec.manifest_path.display().to_string());
+                issue
+            }));
+            Ok(parsed)
+        })();
+        match prepared {
+            Ok(parsed) => projects.extend(parsed),
+            Err(error) => acc.record_failure(spec, error)?,
+        }
+    }
+    if projects.is_empty() && acc.runs.is_empty() {
+        parsers::parse_dependencies(project_dir, project_type)?;
+        return Ok(ScanReport::from_issues(0, acc.issues));
+    }
+    let full_scan_reasons = fast_mode_full_scan_reasons(&projects, &cache_base, &config, opts);
+
+    // Scan each ecosystem separately, merge reports
+    let client = registry::http_client();
+    let osv_client = checks::malicious::RealOsvClient::with_client(client.clone());
+
+    for project in &projects {
+        let resolved = match with_resolved_maven_versions(project, &client).await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                acc.record_failure(&project.spec, error)?;
+                continue;
+            }
+        };
+        let project = resolved.as_ref().unwrap_or(project);
+        match scan_one_project(project, &config, &client, &osv_client, opts).await {
+            Ok(report) => acc.record_report(&project.spec, report),
+            Err(error) => acc.record_failure(&project.spec, error)?,
+        }
+    }
+
+    let mut report = ScanReport::from_issues_with_review_candidates(
+        acc.total_packages,
+        acc.issues,
+        acc.review_candidates,
+    );
+    report.full_scan_reasons = full_scan_reasons;
+    acc.runs
+        .sort_by(|a, b| a.manifest_path.cmp(&b.manifest_path));
+    report.projects = acc.runs;
+
+    persist_scan_state(&projects, &report, &cache_base, &config, opts);
     Ok(report)
 }
 
@@ -325,355 +359,6 @@ pub(crate) fn incomplete_project_issue(spec: &ProjectInputSpec, error: &anyhow::
     issue.project = Some(spec.manifest_path.display().to_string());
     issue
 }
-
-/// Packages routed by a repo `.npmrc` are private: their names are never sent
-/// to the public registry or OSV. The route itself is repo-controlled, so in CI
-/// it blocks unless the exact route + registry is allowlisted in out-of-repo
-/// `trusted_registries.npm` (otherwise a PR could add `.npmrc` to opt a public
-/// malicious package out of every check).
-pub(crate) fn private_npm_issue(
-    dep: &Dependency,
-    source: &str,
-    registries: &npm_config::NpmRegistries,
-    config: &config::SloppyJoeConfig,
-    opts: &ScanOptions<'_>,
-) -> Issue {
-    let (route, registry) = registries
-        .private_route(dep.package_name())
-        .expect("private npm issue requires a private route");
-    let version = dep.version.as_deref().unwrap_or("locked version");
-    let mut issue = if matches!(opts.scan_mode, ScanMode::Ci)
-        && !config.is_trusted_npm_registry(route, registry)
-    {
-        Issue::new(&dep.name, checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE, Severity::Error)
-            .message(format!("Package '{}' at {} is routed by the project's .npmrc ({} route) to a registry that is not allowlisted in the sloppy-joe config. A repository-controlled registry redirect cannot opt packages out of public existence, similarity, metadata, and advisory checks.", dep.package_name(), version, route))
-            .fix(format!("If this registry is approved, add {{\"name\": \"{route}\", \"source\": \"<registry URL>\"}} to trusted_registries.npm in the out-of-repo sloppy-joe config. Otherwise remove the registry route from .npmrc."))
-    } else {
-        Issue::new(&dep.name, checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED, Severity::Warning)
-            .message(format!("Private registry package '{}' at {} is unvetted: public existence, similarity, metadata, and advisory checks do not verify this registry's contents.", dep.package_name(), version))
-            .fix("Review private registry access, upstream provenance, and package contents separately. Private hosting does not guarantee a safe release.")
-    };
-    issue.source = Some(source.to_string());
-    issue
-}
-
-pub(crate) async fn scan_parsed_project(
-    project: &ParsedProject,
-    config: config::SloppyJoeConfig,
-    registry: &dyn Registry,
-    osv_client: &dyn OsvClient,
-    opts: &ScanOptions<'_>,
-) -> Result<ScanReport> {
-    if project.deps.is_empty() && project.unlocked_tooling {
-        return Ok(ScanReport::empty());
-    }
-    let mut config = config;
-    if project.unlocked_tooling {
-        // No lockfile can pin build tooling, so version-sensitive checks are reported as
-        // skipped (warnings) while name-level checks still run and block.
-        config.allow_unresolved_versions = true;
-    }
-
-    let ecosystem = project.spec.kind.ecosystem();
-    let registries = project
-        .spec
-        .js_binding
-        .as_ref()
-        .map(|b| b.npm_registries.clone())
-        .unwrap_or_default();
-    let mut lockfile_data = lockfile_data_for_scan(project, &project.deps, &config, opts)?;
-    if project.deps.is_empty()
-        && lockfile_data.transitive_deps.is_empty()
-        && lockfile_data.resolution.issues.is_empty()
-    {
-        return Ok(ScanReport::empty());
-    }
-    let mut private_issues = Vec::new();
-    let mut public_deps = Vec::new();
-    let mut private_direct = std::collections::HashSet::new();
-    for dep in &project.deps {
-        if registries.private_registry(dep.package_name()).is_some() {
-            private_direct.insert((
-                dep.package_name().to_string(),
-                lockfile_data
-                    .resolution
-                    .exact_version(dep)
-                    .map(str::to_string),
-            ));
-            private_issues.push(private_npm_issue(dep, "direct", &registries, &config, opts));
-        } else {
-            public_deps.push(dep.clone());
-        }
-    }
-    lockfile_data.transitive_deps.retain(|dep| {
-        if registries.private_registry(dep.package_name()).is_none() {
-            return true;
-        }
-        if !private_direct.contains(&(dep.package_name().to_string(), dep.version.clone())) {
-            private_issues.push(private_npm_issue(
-                dep,
-                "transitive",
-                &registries,
-                &config,
-                opts,
-            ));
-        }
-        false
-    });
-    let private_count = private_issues.len();
-    let (checkable, non_internal, internal) = classify_deps(&public_deps, &config, ecosystem);
-
-    let ctx = checks::CheckContext {
-        checkable_deps: &checkable,
-        non_internal_deps: &non_internal,
-        config: &config,
-        registry,
-        osv_client,
-        resolution: &lockfile_data.resolution,
-        ecosystem,
-        opts,
-    };
-    let mut acc = checks::ScanAccumulator::new();
-    acc.issues.extend(alias_identity_issues(&non_internal));
-
-    if !opts.scan_mode.runs_full_checks() {
-        let canonical = checks::pipeline::CanonicalCheck;
-        canonical.run(&ctx, &mut acc).await?;
-        acc.issues.extend(lockfile_data.resolution.issues.clone());
-        acc.issues.extend(unresolved_version_policy_issues(
-            &non_internal,
-            &lockfile_data.resolution,
-            &config,
-        ));
-        mark_source(&mut acc.issues, "direct");
-        acc.issues.extend(private_issues);
-        return Ok(ScanReport::from_issues_with_review_candidates(
-            non_internal.len() + private_count,
-            acc.issues,
-            acc.review_candidates,
-        ));
-    }
-
-    let pipeline = checks::pipeline::default_pipeline();
-    for check in &pipeline {
-        check.run(&ctx, &mut acc).await?;
-    }
-    mark_source(&mut acc.issues, "direct");
-
-    if !internal.is_empty() {
-        let internal_resolution = lockfile_data_for_scan(project, &internal, &config, opts)
-            .map(|ld| ld.resolution)
-            .unwrap_or_default();
-        let internal_ctx = checks::CheckContext {
-            checkable_deps: &[],
-            non_internal_deps: &internal,
-            config: &config,
-            registry,
-            osv_client,
-            resolution: &internal_resolution,
-            ecosystem,
-            opts,
-        };
-        let mut internal_acc = checks::ScanAccumulator::new();
-        let osv_check: Box<dyn checks::Check> = Box::new(checks::pipeline::MaliciousCheck);
-        osv_check.run(&internal_ctx, &mut internal_acc).await?;
-        mark_source(&mut internal_acc.issues, "direct");
-        acc.issues.extend(internal_acc.issues);
-    }
-
-    let transitive_count =
-        scan_transitive_dependencies(&lockfile_data, &ctx, &project.deps, &mut acc).await?;
-
-    // Routed (private) package names are never sent to the public registry or
-    // OSV. Unallowlisted routes in CI block through `private_issues` instead.
-    acc.issues.extend(private_issues);
-    Ok(ScanReport::from_issues_with_review_candidates(
-        non_internal.len() + transitive_count + private_count,
-        acc.issues,
-        acc.review_candidates,
-    ))
-}
-
-#[cfg(test)]
-pub(crate) async fn scan_with_services_inner(
-    project_dir: &std::path::Path,
-    config: config::SloppyJoeConfig,
-    deps: Vec<Dependency>,
-    registry: &dyn Registry,
-    osv_client: &dyn OsvClient,
-    opts: &ScanOptions<'_>,
-) -> Result<ScanReport> {
-    scan_with_services_inner_for_kind(None, project_dir, config, deps, registry, osv_client, opts)
-        .await
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) async fn scan_with_services_inner_for_kind(
-    project_kind: Option<ProjectInputKind>,
-    project_dir: &std::path::Path,
-    config: config::SloppyJoeConfig,
-    deps: Vec<Dependency>,
-    registry: &dyn Registry,
-    osv_client: &dyn OsvClient,
-    opts: &ScanOptions<'_>,
-) -> Result<ScanReport> {
-    if deps.is_empty() {
-        return Ok(ScanReport::empty());
-    }
-
-    let ecosystem = deps[0].ecosystem;
-    if ecosystem == Ecosystem::PyPI
-        && let Some(project_kind) = project_kind
-    {
-        let specs = detected_project_inputs_with_config(project_dir, Some("pypi"), &config)?;
-        let preflight_warnings =
-            preflight_project_inputs_with_options(project_dir, &specs, &config, opts)?;
-        let projects = parse_project_inputs_with_options(project_dir, &specs, &config, opts)?;
-        if let Some(project) = projects.into_iter().find(|project| {
-            std::mem::discriminant(&project.spec.kind) == std::mem::discriminant(&project_kind)
-        }) {
-            let mut report =
-                scan_parsed_project(&project, config, registry, osv_client, opts).await?;
-            report.issues.splice(0..0, preflight_warnings);
-            return Ok(report);
-        }
-    }
-    let python_profile = (ecosystem == Ecosystem::PyPI)
-        .then(|| active_python_lockfile_profile(opts, &PythonRootExtras::new()));
-
-    // Classify deps into three tiers
-    let (checkable, non_internal, internal) = classify_deps(&deps, &config, ecosystem);
-
-    // Parse lockfile once
-    let lockfile_data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
-        project_dir,
-        project_kind,
-        &non_internal,
-        None,
-        python_profile.as_ref(),
-    )?;
-
-    // Build context + accumulator, run pipeline on direct deps
-    let pipeline = checks::pipeline::default_pipeline();
-    let ctx = checks::CheckContext {
-        checkable_deps: &checkable,
-        non_internal_deps: &non_internal,
-        config: &config,
-        registry,
-        osv_client,
-        resolution: &lockfile_data.resolution,
-        ecosystem,
-        opts,
-    };
-    let mut acc = checks::ScanAccumulator::new();
-    acc.issues.extend(alias_identity_issues(&non_internal));
-    for check in &pipeline {
-        check.run(&ctx, &mut acc).await?;
-    }
-    mark_source(&mut acc.issues, "direct");
-
-    // Run OSV on internal packages (they skip all other checks but still need vuln scanning)
-    if !internal.is_empty() {
-        let internal_resolution =
-            lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
-                project_dir,
-                project_kind,
-                &internal,
-                None,
-                python_profile.as_ref(),
-            )
-            .map(|ld| ld.resolution)
-            .unwrap_or_default();
-        let internal_ctx = checks::CheckContext {
-            checkable_deps: &[],
-            non_internal_deps: &internal,
-            config: &config,
-            registry,
-            osv_client,
-            resolution: &internal_resolution,
-            ecosystem,
-            opts,
-        };
-        let mut internal_acc = checks::ScanAccumulator::new();
-        let osv_check: Box<dyn checks::Check> = Box::new(checks::pipeline::MaliciousCheck);
-        osv_check.run(&internal_ctx, &mut internal_acc).await?;
-        mark_source(&mut internal_acc.issues, "direct");
-        acc.issues.extend(internal_acc.issues);
-    }
-
-    let transitive_count =
-        scan_transitive_dependencies(&lockfile_data, &ctx, &deps, &mut acc).await?;
-
-    Ok(ScanReport::from_issues_with_review_candidates(
-        non_internal.len() + transitive_count,
-        acc.issues,
-        acc.review_candidates,
-    ))
-}
-
-pub(crate) async fn scan_transitive_dependencies(
-    lockfile_data: &lockfiles::LockfileData,
-    ctx: &checks::CheckContext<'_>,
-    direct_deps: &[Dependency],
-    acc: &mut checks::ScanAccumulator,
-) -> Result<usize> {
-    let direct_resolution = lockfile_data.resolve_transitive(direct_deps)?;
-    let direct_versions: std::collections::HashSet<_> = direct_deps
-        .iter()
-        .filter_map(|dep| {
-            direct_resolution
-                .exact_version(dep)
-                .map(|version| (dep.package_name(), version))
-        })
-        .collect();
-    let transitive_deps: Vec<_> = lockfile_data
-        .transitive_deps
-        .iter()
-        .filter(|dep| {
-            !direct_versions.contains(&(
-                dep.package_name(),
-                dep.version.as_deref().unwrap_or_default(),
-            ))
-        })
-        .cloned()
-        .collect();
-    let (checkable, non_internal, internal) =
-        classify_deps(&transitive_deps, ctx.config, ctx.ecosystem);
-    let mut trans_acc = checks::ScanAccumulator::new();
-    trans_acc.similarity_flagged = acc.similarity_flagged.clone();
-    if !non_internal.is_empty() {
-        let resolution = lockfile_data.resolve_transitive(&non_internal)?;
-        let trans_ctx = checks::CheckContext {
-            checkable_deps: &checkable,
-            non_internal_deps: &non_internal,
-            resolution: &resolution,
-            ..*ctx
-        };
-        for check in checks::pipeline::default_pipeline() {
-            if check.name() != "similarity" || ctx.opts.deep || ctx.ecosystem == Ecosystem::Npm {
-                check.run(&trans_ctx, &mut trans_acc).await?;
-            }
-        }
-    }
-    if !internal.is_empty() {
-        let resolution = lockfile_data.resolve_transitive(&internal)?;
-        let internal_ctx = checks::CheckContext {
-            checkable_deps: &[],
-            non_internal_deps: &internal,
-            resolution: &resolution,
-            ..*ctx
-        };
-        checks::pipeline::MaliciousCheck
-            .run(&internal_ctx, &mut trans_acc)
-            .await?;
-    }
-    mark_source(&mut trans_acc.issues, "transitive");
-    acc.issues.extend(trans_acc.issues);
-    acc.review_candidates.extend(trans_acc.review_candidates);
-    Ok(non_internal.len())
-}
-
 /// Classify deps into three tiers. Returns (checkable, non_internal, internal).
 /// - checkable: full checks (similarity, existence, canonical, metadata, osv)
 /// - non_internal: allowed + checkable (canonical, metadata, osv)
