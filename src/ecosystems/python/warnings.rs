@@ -5,13 +5,15 @@ use super::*;
 pub(crate) fn validate_pipfile_lockfile(
     spec: &ProjectInputSpec,
     config: &config::SloppyJoeConfig,
-) -> Result<()> {
+) -> Result<Vec<Issue>> {
     let Some(path) = selected_lockfile_path(spec) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let lock = lockfiles::pipfile_lock::read_lockfile_at(&path)?;
     let pipfile = parsers::pipfile::parse_file_categories(&spec.manifest_path)?;
-    lockfiles::pipfile_lock::validate(&lock, &pipfile, &path, config)
+    lockfiles::pipfile_lock::validate(&lock, &pipfile, &path, config)?;
+    let applied = lock_schema::check_pipfile_entries(&lock, &path, &config.config_key_allow)?;
+    Ok(crate::config_surface::issues(&applied))
 }
 
 pub(crate) fn python_legacy_warning(spec: &ProjectInputSpec) -> Issue {

@@ -287,8 +287,8 @@ impl PythonFlavor for Pipfile {
         spec: &ProjectInputSpec,
         _parsed: &ParsedInput,
     ) -> Result<Vec<Issue>> {
-        let warnings = legacy_validation(spec);
-        validate_pipfile_lockfile(spec, ctx.scan.config)?;
+        let mut warnings = legacy_validation(spec);
+        warnings.extend(validate_pipfile_lockfile(spec, ctx.scan.config)?);
         Ok(warnings)
     }
 

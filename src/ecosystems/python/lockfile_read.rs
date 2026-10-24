@@ -72,6 +72,9 @@ pub(crate) fn read_validated_poetry_lockfile(
         },
     )?;
     let mut warnings = validation.warnings;
+    warnings.extend(crate::config_surface::issues(
+        &lock_schema::check_poetry_entries(&lockfile, &path, &config.config_key_allow)?,
+    ));
     let authorized_sources =
         crate::lockfiles::python::authorized_source_urls_for_reachable_packages(
             &lockfile,
@@ -162,11 +165,14 @@ pub(crate) fn read_validated_uv_lockfile(
         Some(&reachable_packages),
         Some(&authorized_sources),
     )?;
-    let warnings = unused_python_source_warnings(
+    let mut warnings = unused_python_source_warnings(
         &spec.manifest_path,
         &declared_sources,
         &used_source_urls,
         &used_source_names,
     );
+    warnings.extend(crate::config_surface::issues(
+        &lock_schema::check_uv_entries(&lockfile, &path, &config.config_key_allow)?,
+    ));
     Ok((lockfile, warnings))
 }

@@ -93,6 +93,9 @@ pub const KNOWN_SURFACES: &[&str] = &[
     "package-lock.json",
     "composer.lock",
     "Cargo.lock",
+    "uv.lock",
+    "poetry.lock",
+    "Pipfile.lock",
 ];
 
 /// One entry of the scanner config's `config_key_allow`: permit one exact key on one surface.

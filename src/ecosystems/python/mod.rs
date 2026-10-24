@@ -3,6 +3,7 @@ use super::*;
 mod ambient_inputs;
 mod flavors;
 mod interpreter_config;
+mod lock_schema;
 mod lockfile_read;
 mod parse;
 mod specs;

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Python: `uv.lock` and `poetry.lock` `[[package]]` entries and `Pipfile.lock` `default`/`develop` entries are held to closed key schemas; a key the tool does not write blocks, naming the entry and the key (`config_key_allow` with file `uv.lock`, `poetry.lock` or `Pipfile.lock` permits one more exact key).
 - Cargo: `Cargo.lock` `[[package]]` entries are held to a closed key schema; a key Cargo does not write blocks, naming the entry and the key (`config_key_allow` with file `Cargo.lock` permits one more exact key).
 - Composer: `composer.lock` package entries are held to a closed key schema; a key Composer's lock dumper does not write blocks, naming the entry and the key (`config_key_allow` with file `composer.lock` permits one more exact key; `transport-options` is never allowed).
 - npm: lockfile entries in `package-lock.json`/`npm-shrinkwrap.json` are held to a closed key schema. An entry key that npm's arborist does not write now blocks, naming the entry and the key; a `config_key_allow` entry with file `package-lock.json` permits one more exact key and is reported as a `config/key-allowed` warning. Spec: `docs/specs/verification-and-schemas.md`.
