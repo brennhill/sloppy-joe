@@ -35,8 +35,8 @@ pub struct GradlePluginRegistry {
     requested: HashMap<String, String>,
 }
 
-/// Tests point the plugin portal at a local mock. Thread-local so parallel tests cannot see each
-/// other's override, and compiled out of release builds.
+// Tests point the plugin portal at a local mock. Thread-local so parallel tests cannot see each
+// other's override, and compiled out of release builds.
 #[cfg(test)]
 thread_local! {
     pub(crate) static TEST_PORTAL_URL: std::cell::RefCell<Option<String>> =
