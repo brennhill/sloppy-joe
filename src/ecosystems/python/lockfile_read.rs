@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 pub(crate) struct ValidatedPoetryLockfile {
     pub(crate) warnings: Vec<Issue>,
@@ -161,45 +161,4 @@ pub(crate) fn read_validated_uv_lockfile(
         &used_source_names,
     );
     Ok((lockfile, warnings))
-}
-
-pub(crate) fn lockfile_data_for_scan(
-    project: &ParsedProject,
-    deps: &[Dependency],
-    config: &config::SloppyJoeConfig,
-    opts: &ScanOptions<'_>,
-) -> Result<lockfiles::LockfileData> {
-    if project.unlocked_tooling {
-        return Ok(lockfiles::LockfileData::reduced_confidence_from_manifest(
-            deps,
-        ));
-    }
-    if project.spec.kind == ProjectInputKind::PyProjectPoetry {
-        let validated = read_validated_poetry_lockfile(
-            &project.spec,
-            deps,
-            &project.python_root_extras,
-            config,
-            opts,
-        )?;
-        if !validated.fully_trusted {
-            return Ok(lockfiles::LockfileData::reduced_confidence_from_manifest(
-                deps,
-            ));
-        }
-    }
-
-    let python_profile = (project.spec.kind.ecosystem() == Ecosystem::PyPI)
-        .then(|| active_python_lockfile_profile(opts, &project.python_root_extras));
-    let mut data = lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
-        project.spec.project_dir(),
-        Some(project.spec.kind.lockfile_kind()),
-        deps,
-        project.spec.lockfile_path_override.as_deref(),
-        python_profile.as_ref(),
-    )?;
-    if project.deps.is_empty() && python_manifest_declares_no_dependencies(&project.spec)? {
-        data.scan_all_locked_packages()?;
-    }
-    Ok(data)
 }

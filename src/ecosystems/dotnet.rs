@@ -29,6 +29,16 @@ impl EcosystemSupport for Dotnet {
         })
     }
 
+    fn lockfile_data(
+        &self,
+        _config: &config::SloppyJoeConfig,
+        _opts: &ScanOptions<'_>,
+        project: &ParsedProject,
+        deps: &[Dependency],
+    ) -> Result<lockfiles::LockfileData> {
+        common::read_lockfile_data(project, deps, None)
+    }
+
     fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
         if path.file_name().and_then(|name| name.to_str()) == Some("packages.config") {
             parsers::csproj::reject_packages_config(path)?;

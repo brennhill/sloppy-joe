@@ -27,6 +27,7 @@ use common::*;
 pub(crate) mod test_access {
     pub(crate) use super::cargo::*;
     pub(crate) use super::js::*;
+    pub(crate) use super::python::*;
 }
 
 /// What a plugin needs to know about the scan it is part of.
@@ -78,6 +79,15 @@ pub(crate) trait EcosystemSupport: Sync {
 
     /// Dependencies (and warnings/tooling) the scan checks for this project.
     fn parse(&self, ctx: &ScanCtx<'_>, spec: &ProjectInputSpec) -> Result<ParsedInput>;
+
+    /// What the checks run against: the project's lockfile, parsed and reconciled with `deps`.
+    fn lockfile_data(
+        &self,
+        config: &config::SloppyJoeConfig,
+        opts: &ScanOptions<'_>,
+        project: &ParsedProject,
+        deps: &[Dependency],
+    ) -> Result<lockfiles::LockfileData>;
 
     /// Classify a manifest path as one of this plugin's kinds. Unsupported lookalikes the scan
     /// would otherwise skip silently (e.g. `gems.rb`) are errors, never `None`.
@@ -137,6 +147,22 @@ pub(crate) fn for_kind(kind: ProjectInputKind) -> &'static dyn EcosystemSupport 
         .copied()
         .find(|plugin| plugin.kinds().contains(&kind))
         .unwrap_or_else(|| panic!("no ecosystem plugin registered for {kind:?}"))
+}
+
+/// Lockfile data for scanning `deps` of `project`. Tooling that no lockfile records is
+/// scanned from the manifest alone, with reduced confidence.
+pub(crate) fn lockfile_data(
+    config: &config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+    project: &ParsedProject,
+    deps: &[Dependency],
+) -> Result<lockfiles::LockfileData> {
+    if project.unlocked_tooling {
+        return Ok(lockfiles::LockfileData::reduced_confidence_from_manifest(
+            deps,
+        ));
+    }
+    for_kind(project.spec.kind).lockfile_data(config, opts, project, deps)
 }
 
 /// The kind of project the manifest at `path` is, if it is one.

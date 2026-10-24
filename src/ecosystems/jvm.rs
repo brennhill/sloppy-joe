@@ -37,6 +37,16 @@ impl EcosystemSupport for Jvm {
         }
     }
 
+    fn lockfile_data(
+        &self,
+        _config: &config::SloppyJoeConfig,
+        _opts: &ScanOptions<'_>,
+        project: &ParsedProject,
+        deps: &[Dependency],
+    ) -> Result<lockfiles::LockfileData> {
+        common::read_lockfile_data(project, deps, None)
+    }
+
     fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
         Ok(common::kind_for_file_name(self.kinds(), path))
     }

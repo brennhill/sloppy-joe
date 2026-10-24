@@ -29,6 +29,16 @@ impl EcosystemSupport for Ruby {
         })
     }
 
+    fn lockfile_data(
+        &self,
+        _config: &config::SloppyJoeConfig,
+        _opts: &ScanOptions<'_>,
+        project: &ParsedProject,
+        deps: &[Dependency],
+    ) -> Result<lockfiles::LockfileData> {
+        common::read_lockfile_data(project, deps, None)
+    }
+
     fn detect(&self, path: &Path) -> Result<Option<ProjectInputKind>> {
         // Bundler 2 prefers these over Gemfile / Gemfile.lock, so a scan that only reads
         // the old names would miss the dependencies Bundler actually installs.

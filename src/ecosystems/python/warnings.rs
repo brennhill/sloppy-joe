@@ -1,4 +1,4 @@
-use crate::*;
+use super::*;
 
 /// When a Pipfile.lock is committed, reconcile it with the Pipfile and check
 /// every locked entry's provenance before anything is scanned.

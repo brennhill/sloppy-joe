@@ -278,3 +278,18 @@ pub(crate) fn ensure_one_lockfile_readable(
         help
     )
 }
+
+/// Lockfile data for the checks, read from the project's own lockfile.
+pub(super) fn read_lockfile_data(
+    project: &ParsedProject,
+    deps: &[Dependency],
+    python_profile: Option<&lockfiles::PythonLockfileProfile>,
+) -> Result<lockfiles::LockfileData> {
+    lockfiles::LockfileData::parse_for_kind_with_lockfile_and_profile(
+        project.spec.project_dir(),
+        Some(project.spec.kind.lockfile_kind()),
+        deps,
+        project.spec.lockfile_path_override.as_deref(),
+        python_profile,
+    )
+}

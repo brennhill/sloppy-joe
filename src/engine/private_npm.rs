@@ -55,7 +55,7 @@ pub(crate) async fn scan_parsed_project(
         .as_ref()
         .map(|b| b.npm_registries.clone())
         .unwrap_or_default();
-    let mut lockfile_data = lockfile_data_for_scan(project, &project.deps, &config, opts)?;
+    let mut lockfile_data = ecosystems::lockfile_data(&config, opts, project, &project.deps)?;
     if project.deps.is_empty()
         && lockfile_data.transitive_deps.is_empty()
         && lockfile_data.resolution.issues.is_empty()
@@ -135,7 +135,7 @@ pub(crate) async fn scan_parsed_project(
     mark_source(&mut acc.issues, "direct");
 
     if !internal.is_empty() {
-        let internal_resolution = lockfile_data_for_scan(project, &internal, &config, opts)
+        let internal_resolution = ecosystems::lockfile_data(&config, opts, project, &internal)
             .map(|ld| ld.resolution)
             .unwrap_or_default();
         let internal_ctx = checks::CheckContext {

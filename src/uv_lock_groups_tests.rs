@@ -153,7 +153,7 @@ fn main_project(dir: &std::path::Path, opts: &ScanOptions<'_>) -> ParsedProject 
 
 fn transitive_names(project: &ParsedProject, opts: &ScanOptions<'_>) -> Vec<String> {
     let config = config::SloppyJoeConfig::default();
-    let data = lockfile_data_for_scan(project, &project.deps, &config, opts).unwrap();
+    let data = ecosystems::lockfile_data(&config, opts, project, &project.deps).unwrap();
     let mut names: Vec<String> = data
         .transitive_deps
         .iter()
@@ -416,8 +416,8 @@ dev = [{{ name = "evil-uv-dev", specifier = ">=1" }}]
         project.deps
     );
     let config = config::SloppyJoeConfig::default();
-    let data =
-        lockfile_data_for_scan(&project, &project.deps, &config, &ScanOptions::default()).unwrap();
+    let data = ecosystems::lockfile_data(&config, &ScanOptions::default(), &project, &project.deps)
+        .unwrap();
     let evil = project
         .deps
         .iter()
