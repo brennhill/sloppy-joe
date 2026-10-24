@@ -212,3 +212,22 @@ gem "rails",
     );
     cleanup(&dir);
 }
+
+#[test]
+fn gemspec_reflection_calls_that_build_dependency_names_block() {
+    for call in [
+        "s.public_send(\"add_\" + \"dependency\", \"evil\")",
+        "s.send(:add_dependency, 'evil')",
+        "s.__send__('add_dependency', 'evil')",
+        "s.method(:add_dependency).call('evil')",
+    ] {
+        let dir = setup_dir("source 'https://rubygems.org'\ngemspec\n");
+        std::fs::write(
+            dir.join("demo.gemspec"),
+            format!("Gem::Specification.new do |s|\n  s.name = 'demo'\n  {call}\nend\n"),
+        )
+        .unwrap();
+        assert!(parse(&dir).is_err(), "{call}");
+        cleanup(&dir);
+    }
+}

@@ -218,6 +218,22 @@ fn read_dependency_call_literals(
     Ok(literals)
 }
 
+/// Calls that can build a method name at runtime (`public_send("add_" + "dependency", ..)`) and
+/// so hide a dependency declaration from the literal `add_dependency` scan.
+const REFLECTION_CALLS: &[&str] = &[
+    "send",
+    "public_send",
+    "__send__",
+    "method",
+    "public_method",
+    "define_method",
+    "instance_exec",
+    "class_exec",
+    "module_exec",
+    "const_get",
+    "binding",
+];
+
 fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependency>> {
     let path = gemspec_path(project_dir, name)?;
     if !super::path_detected(&path)? {
@@ -242,7 +258,7 @@ fn parse_gemspec(project_dir: &Path, name: Option<&str>) -> Result<Vec<Dependenc
     if text.contains(".dependencies")
         || text
             .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .any(|w| w.contains("eval"))
+            .any(|w| w.contains("eval") || REFLECTION_CALLS.contains(&w))
     {
         return Err(unsupported("it modifies dependencies dynamically"));
     }
