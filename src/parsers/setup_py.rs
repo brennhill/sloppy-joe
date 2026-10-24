@@ -243,101 +243,136 @@ fn extract_argument_literal(
     Ok(Some(value[..=end].to_string()))
 }
 
+/// Tracks whether a scan position is Python code, as opposed to a string literal or comment.
+#[derive(Default)]
+struct PythonLexer {
+    in_single: bool,
+    in_double: bool,
+    escape: bool,
+    in_comment: bool,
+}
+
+impl PythonLexer {
+    /// Feed the next character; true when it is code (outside strings and comments).
+    fn is_code(&mut self, ch: char) -> bool {
+        if self.in_comment {
+            self.in_comment = ch != '\n';
+            return false;
+        }
+        if self.escape {
+            self.escape = false;
+            return false;
+        }
+        let in_string = self.in_single || self.in_double;
+        match ch {
+            '\\' if in_string => {
+                self.escape = true;
+                false
+            }
+            '\'' if !self.in_double => {
+                self.in_single = !self.in_single;
+                false
+            }
+            '"' if !self.in_single => {
+                self.in_double = !self.in_double;
+                false
+            }
+            '#' if !in_string => {
+                self.in_comment = true;
+                false
+            }
+            _ => !in_string,
+        }
+    }
+}
+
 fn extract_setup_call(content: &str) -> Result<Option<String>> {
     let mut setup_call = None;
     let bytes = content.as_bytes();
     let mut index = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escape = false;
+    let mut lexer = PythonLexer::default();
 
     while index < bytes.len() {
-        let byte = bytes[index];
-        if escape {
-            escape = false;
+        if !lexer.is_code(bytes[index] as char) || !is_setup_call_at(bytes, index) {
             index += 1;
             continue;
         }
-
-        match byte {
-            b'\\' if in_single || in_double => {
-                escape = true;
-                index += 1;
-            }
-            b'\'' if !in_double => {
-                in_single = !in_single;
-                index += 1;
-            }
-            b'"' if !in_single => {
-                in_double = !in_double;
-                index += 1;
-            }
-            b'#' if !in_single && !in_double => {
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-            }
-            _ if in_single || in_double => {
-                index += 1;
-            }
-            b's' if bytes[index..].starts_with(b"setup(")
-                && is_identifier_boundary_at(bytes, index.checked_sub(1))
-                && is_identifier_boundary_at(bytes, Some(index + "setup".len())) =>
-            {
-                let start = index + "setup(".len();
-                let end = matching_parenthesis(content, start - 1)?;
-                if setup_call.is_some() {
-                    bail!("Scan not supported: multiple setup.py setup() calls");
-                }
-                let prefix = content[..index]
-                    .strip_suffix("setuptools.")
-                    .unwrap_or(&content[..index]);
-                for line in prefix.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    if matches!(
-                        line.split('#').next().unwrap().trim(),
-                        "from setuptools import setup"
-                            | "import setuptools"
-                            | "from distutils.core import setup"
-                    ) {
-                        continue;
-                    }
-                    if let Some((name, value)) = line.split_once('=') {
-                        let name = name.trim();
-                        let value = value.trim();
-                        if !name.is_empty()
-                            && name
-                                .bytes()
-                                .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
-                            && matches!(value.as_bytes().first(), Some(b'\'' | b'"'))
-                        {
-                            let (_, consumed) = parse_python_string(value, 0)?;
-                            let tail = value[consumed..].trim();
-                            if tail.is_empty() || tail.starts_with('#') {
-                                continue;
-                            }
-                        }
-                    }
-                    bail!("Scan not supported: executable setup.py preamble");
-                }
-                if content[end + 1..].lines().any(|line| {
-                    let line = line.trim();
-                    !line.is_empty() && !line.starts_with('#')
-                }) {
-                    bail!("Scan not supported: executable statements after setup()");
-                }
-                validate_literal_setup_arguments(&content[start..end])?;
-                setup_call = Some(content[start..end].to_string());
-                index = end + 1;
-            }
-            _ => index += 1,
+        let start = index + "setup(".len();
+        let end = matching_parenthesis(content, start - 1)?;
+        if setup_call.is_some() {
+            bail!("Scan not supported: multiple setup.py setup() calls");
         }
+        validate_setup_preamble(&content[..index])?;
+        if content[end + 1..].lines().any(|line| {
+            let line = line.trim();
+            !line.is_empty() && !line.starts_with('#')
+        }) {
+            bail!("Scan not supported: executable statements after setup()");
+        }
+        validate_literal_setup_arguments(&content[start..end])?;
+        setup_call = Some(content[start..end].to_string());
+        index = end + 1;
     }
 
     Ok(setup_call)
+}
+
+fn skip_to_end_of_line(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index] != b'\n' {
+        index += 1;
+    }
+    index
+}
+
+/// `setup(` at `index`, as a whole identifier.
+fn is_setup_call_at(bytes: &[u8], index: usize) -> bool {
+    bytes[index..].starts_with(b"setup(")
+        && is_identifier_boundary_at(bytes, index.checked_sub(1))
+        && is_identifier_boundary_at(bytes, Some(index + "setup".len()))
+}
+
+/// Everything before `setup(` may only be setuptools imports and plain string assignments.
+fn validate_setup_preamble(before_setup: &str) -> Result<()> {
+    let prefix = before_setup
+        .strip_suffix("setuptools.")
+        .unwrap_or(before_setup);
+    for line in prefix.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || is_setup_import(line) {
+            continue;
+        }
+        if is_plain_string_assignment(line)? {
+            continue;
+        }
+        bail!("Scan not supported: executable setup.py preamble");
+    }
+    Ok(())
+}
+
+fn is_setup_import(line: &str) -> bool {
+    matches!(
+        line.split('#').next().unwrap().trim(),
+        "from setuptools import setup" | "import setuptools" | "from distutils.core import setup"
+    )
+}
+
+/// `name = "literal"` with nothing but a comment after the literal.
+fn is_plain_string_assignment(line: &str) -> Result<bool> {
+    let Some((name, value)) = line.split_once('=') else {
+        return Ok(false);
+    };
+    let name = name.trim();
+    let value = value.trim();
+    let is_identifier = !name.is_empty()
+        && name
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_');
+    if !is_identifier || !matches!(value.as_bytes().first(), Some(b'\'' | b'"')) {
+        return Ok(false);
+    }
+    let (_, consumed) = parse_python_string(value, 0)?;
+    let tail = value[consumed..].trim();
+    Ok(tail.is_empty() || tail.starts_with('#'))
 }
 
 fn validate_literal_setup_arguments(content: &str) -> Result<()> {
@@ -350,9 +385,7 @@ fn validate_literal_setup_arguments(content: &str) -> Result<()> {
                 index = parse_python_string(content, index)?.1;
             }
             b'#' => {
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
+                index = skip_to_end_of_line(bytes, index);
             }
             b'[' | b'{' => {
                 depth += 1;
@@ -363,21 +396,7 @@ fn validate_literal_setup_arguments(content: &str) -> Result<()> {
                 index += 1;
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
-                let start = index;
-                while bytes
-                    .get(index)
-                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
-                {
-                    index += 1;
-                }
-                let token = &content[start..index];
-                let mut next = index;
-                skip_ws(bytes, &mut next);
-                if !(matches!(token, "True" | "False" | "None")
-                    || depth == 0 && bytes.get(next) == Some(&b'='))
-                {
-                    bail!("Scan not supported: nonliteral setup.py argument");
-                }
+                index = check_literal_identifier(content, index, depth)?;
             }
             b'0'..=b'9' | b',' | b':' | b'=' | b'.' | b'+' | b'-' => {
                 index += 1;
@@ -391,78 +410,72 @@ fn validate_literal_setup_arguments(content: &str) -> Result<()> {
     Ok(())
 }
 
+/// An identifier is literal only as `True`/`False`/`None` or a top-level keyword name.
+/// Returns the index just past it.
+fn check_literal_identifier(content: &str, start: usize, depth: usize) -> Result<usize> {
+    let bytes = content.as_bytes();
+    let mut index = start;
+    while bytes
+        .get(index)
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == b'_')
+    {
+        index += 1;
+    }
+    let token = &content[start..index];
+    let mut next = index;
+    skip_ws(bytes, &mut next);
+    let is_keyword_name = depth == 0 && bytes.get(next) == Some(&b'=');
+    if !(matches!(token, "True" | "False" | "None") || is_keyword_name) {
+        bail!("Scan not supported: nonliteral setup.py argument");
+    }
+    Ok(index)
+}
+
 fn find_keyword_assignment(content: &str, key: &str) -> Result<Option<usize>> {
     let mut assignment_start = None;
     let mut depth = 0usize;
     let bytes = content.as_bytes();
     let mut index = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escape = false;
+    let mut lexer = PythonLexer::default();
 
     while index < bytes.len() {
         let byte = bytes[index];
-        if escape {
-            escape = false;
+        if !lexer.is_code(byte as char) {
             index += 1;
             continue;
         }
 
         match byte {
-            b'\\' if in_single || in_double => {
-                escape = true;
-                index += 1;
-            }
-            b'\'' if !in_double => {
-                in_single = !in_single;
-                index += 1;
-            }
-            b'"' if !in_single => {
-                in_double = !in_double;
-                index += 1;
-            }
-            b'#' if !in_single && !in_double => {
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-            }
-            _ if in_single || in_double => {
-                index += 1;
-            }
             b'*' if bytes.get(index + 1) == Some(&b'*') => {
                 // Expanded keyword arguments may supply or override dependency declarations.
                 bail!("Scan not supported: expanded setup.py keyword arguments");
             }
-            b'(' | b'[' | b'{' => {
-                depth += 1;
-                index += 1;
-            }
-            b')' | b']' | b'}' => {
-                depth = depth.saturating_sub(1);
-                index += 1;
-            }
-            _ if depth == 0
-                && bytes[index..].starts_with(key.as_bytes())
-                && is_identifier_boundary_at(bytes, index.checked_sub(1))
-                && is_identifier_boundary_at(bytes, Some(index + key.len())) =>
-            {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && is_keyword_at(bytes, index, key) => {
                 let mut assignment = index + key.len();
-                while let Some(next) = bytes.get(assignment) {
-                    if !next.is_ascii_whitespace() {
-                        break;
-                    }
+                while bytes.get(assignment).is_some_and(u8::is_ascii_whitespace) {
                     assignment += 1;
                 }
                 if bytes.get(assignment) == Some(&b'=') {
                     assignment_start = Some(assignment + 1);
                 }
                 index += key.len();
+                continue;
             }
-            _ => index += 1,
+            _ => {}
         }
+        index += 1;
     }
 
     Ok(assignment_start)
+}
+
+/// `key` at `index`, as a whole identifier.
+fn is_keyword_at(bytes: &[u8], index: usize, key: &str) -> bool {
+    bytes[index..].starts_with(key.as_bytes())
+        && is_identifier_boundary_at(bytes, index.checked_sub(1))
+        && is_identifier_boundary_at(bytes, Some(index + key.len()))
 }
 
 fn is_identifier_boundary_at(bytes: &[u8], index: Option<usize>) -> bool {
@@ -476,37 +489,20 @@ fn matching_parenthesis(input: &str, open_index: usize) -> Result<usize> {
 }
 
 fn matching_delimiter(input: &str, start: usize, open: char, close: char) -> Result<usize> {
-    let mut in_comment = false;
     let mut depth = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escape = false;
+    let mut lexer = PythonLexer::default();
 
     for (idx, ch) in input.char_indices().skip_while(|(idx, _)| *idx < start) {
-        if in_comment {
-            in_comment = ch != '\n';
+        if !lexer.is_code(ch) {
             continue;
         }
-        if escape {
-            escape = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_single || in_double => {
-                escape = true;
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Ok(idx);
             }
-            '\'' if !in_double => in_single = !in_single,
-            '"' if !in_single => in_double = !in_double,
-            '#' if !in_single && !in_double => in_comment = true,
-            _ if in_single || in_double => {}
-            _ if ch == open => depth += 1,
-            _ if ch == close => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Ok(idx);
-                }
-            }
-            _ => {}
         }
     }
 
