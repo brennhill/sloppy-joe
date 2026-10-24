@@ -70,6 +70,7 @@
 - Invalidate scan guidance when effective registry routing changes.
 - Resolve npm workspace dependency ranges from the authoritative root lockfile.
 - Internal: removed every layer-direction violation from the architecture baseline. Shared helpers moved to foundation modules (`names`, `http`, `fsutil`, plus `ecosystem`/`cache`/`report`), `config` bootstrap and repo discovery moved to a `bootstrap` module (`sloppy_joe::bootstrap::{template_json, greenfield_json, discover_current_json, print_template}`, previously under `sloppy_joe::config`), and the Python version-specifier matcher moved to `parsers`. `src/lib.rs` is now an entry-point file (7.8k → ~290 lines); the scan orchestration lives in `src/engine/`, split by concern. No scan behavior changes.
+- Internal: the architecture baseline no longer lists any oversized file or over-complex function. Every source file is under 800 lines and every function is within the cyclomatic cap of 15 (the similarity check, scan orchestration, preflight, Gradle/setup.py/marker scanners and `main` were split into smaller steps). Only the `ProjectInputKind` placement entries remain. No scan behavior changes.
 
 
 ## 1.2.0
