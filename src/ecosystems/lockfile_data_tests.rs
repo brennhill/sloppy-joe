@@ -102,20 +102,21 @@ fn every_lockfile_backed_kind_has_a_locked_project_fixture() {
     }
 }
 
-#[test]
-fn lockfile_data_surfaces_packages_only_the_lockfile_pins() {
+/// Parse the row's project with `mutate` applied to its lockfile text and return the sorted names
+/// of the direct and the lockfile-reported transitive dependencies.
+fn locked_names(row: &LockedProject, mutate: &dyn Fn(&str) -> String) -> Result<Vec<String>> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let config = config::SloppyJoeConfig::default();
     let opts = ScanOptions::default();
-    for row in LOCKED {
-        let dir = std::env::temp_dir().join(format!(
-            "sj-lockdata-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(row.manifest), row.manifest_content).unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "sj-lockdata-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let outcome = (|| {
+        std::fs::write(dir.join(row.manifest), row.manifest_content)?;
         // A Poetry lockfile must carry the hash of its pyproject.
         let lockfile = if row.lockfile_content.contains("__CONTENT_HASH__") {
             let hash = crate::lockfiles::python::poetry_content_hash_for_test(row.manifest_content)
@@ -124,7 +125,7 @@ fn lockfile_data_surfaces_packages_only_the_lockfile_pins() {
         } else {
             row.lockfile_content.to_string()
         };
-        std::fs::write(dir.join(row.lockfile), lockfile).unwrap();
+        std::fs::write(dir.join(row.lockfile), mutate(&lockfile))?;
         let spec = ProjectInputSpec {
             kind: row.kind,
             manifest_path: dir.join(row.manifest),
@@ -137,32 +138,104 @@ fn lockfile_data_surfaces_packages_only_the_lockfile_pins() {
             config: &config,
             opts: &opts,
         };
-        let parsed = plugin
-            .parse(&scan, &spec)
-            .unwrap_or_else(|err| panic!("{:?}: {err}", row.kind));
+        let parsed = plugin.parse(&scan, &spec)?;
         let project = ParsedProject {
             spec,
             deps: parsed.deps.clone(),
             python_root_extras: parsed.python_root_extras.clone(),
             unlocked_tooling: false,
         };
-        let data = plugin
-            .lockfile_data(&config, &opts, &project, &parsed.deps)
+        let data = plugin.lockfile_data(&config, &opts, &project, &parsed.deps)?;
+        let mut names: Vec<String> = parsed
+            .deps
+            .iter()
+            .chain(data.transitive_deps.iter())
+            .map(|dep| dep.package_name().to_string())
+            .collect();
+        names.sort();
+        Ok(names)
+    })();
+    let _ = std::fs::remove_dir_all(dir);
+    outcome
+}
+
+#[test]
+fn lockfile_data_surfaces_packages_only_the_lockfile_pins() {
+    for row in LOCKED {
+        let names = locked_names(row, &|text| text.to_string())
             .unwrap_or_else(|err| panic!("{:?}: {err}", row.kind));
         let Some(transitive) = row.transitive else {
             continue;
         };
-        let names: Vec<&str> = data
-            .transitive_deps
-            .iter()
-            .map(|dep| dep.package_name())
-            .collect();
         assert!(
-            names.contains(&transitive),
+            names.iter().any(|name| name == transitive),
             "{:?}: lockfile_data must report the lockfile-only package {}, got {names:?}",
             row.kind,
             transitive
         );
-        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Formatting-only mutations of a lockfile. The scanner may reject a mutation it cannot model, but
+/// if it accepts one it must read exactly the same packages: a different reading is a parser
+/// differential, the bug class behind most red-team findings.
+type Mutation = (&'static str, fn(&str) -> String);
+
+const MUTATIONS: &[Mutation] = &[
+    ("crlf", |text| text.replace('\n', "\r\n")),
+    ("trailing blank lines", |text| format!("{text}\n\n")),
+    ("leading blank line", |text| format!("\n{text}")),
+    ("bom", |text| format!("\u{feff}{text}")),
+    ("nul", |text| format!("{text}\0")),
+    ("lone cr", |text| text.replacen('\n', "\r", 1)),
+    ("line separator", |text| text.replacen('\n', "\u{2028}", 1)),
+    ("next line", |text| text.replacen('\n', "\u{85}", 1)),
+    ("vertical tab", |text| text.replacen('\n', "\u{b}", 1)),
+    ("form feed", |text| text.replacen('\n', "\u{c}", 1)),
+    ("tab indent", |text| text.replace("  ", "\t")),
+];
+
+#[test]
+fn formatting_mutations_never_change_what_the_scanner_reads() {
+    let mut accepted = 0;
+    for row in LOCKED {
+        let baseline = locked_names(row, &|text| text.to_string())
+            .unwrap_or_else(|err| panic!("{:?}: {err}", row.kind));
+        for (name, mutate) in MUTATIONS {
+            if let Ok(names) = locked_names(row, mutate) {
+                assert_eq!(
+                    names, baseline,
+                    "{:?}: the '{name}' mutation was accepted but changed the packages read",
+                    row.kind
+                );
+                accepted += 1;
+            }
+        }
+    }
+    // Some mutations are harmless (CRLF in JSON); if none were accepted the comparison is vacuous.
+    assert!(
+        accepted > 0,
+        "no mutation was accepted, so nothing was compared"
+    );
+}
+
+#[test]
+fn nul_and_bom_are_never_silently_accepted_in_line_oriented_locks() {
+    for row in LOCKED {
+        // go.sum is read in the preflight stage (`check_go_sum`), not by this one.
+        let line_oriented = matches!(row.kind, ProjectInputKind::Ruby | ProjectInputKind::Gradle);
+        if !line_oriented {
+            continue;
+        }
+        for (name, mutate) in MUTATIONS
+            .iter()
+            .filter(|(n, _)| matches!(*n, "nul" | "bom"))
+        {
+            assert!(
+                locked_names(row, mutate).is_err(),
+                "{:?}: a lockfile with a {name} must be refused",
+                row.kind
+            );
+        }
     }
 }

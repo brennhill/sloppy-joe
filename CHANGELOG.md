@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ruby: a `Gemfile.lock` line indented with a tab or another non-space character now blocks. Bundler reads only space-indented entries, so such a line was silently dropped from the scan (a tab-indented transitive gem was never checked). Found by the new metamorphic test, which mutates each fixture lockfile (CRLF, BOM, NUL, lone CR, U+2028, U+0085, VT, FF, tab indentation) and requires the scanner to read the same packages or refuse the file.
 - Gradle: a `gradle.lockfile` line that is not `group:artifact:version=configurations`, `empty=configurations` or a comment now blocks, naming the line, instead of being skipped (a skipped line could hide a pinned dependency from the scan).
 - Bun: `bun.lock` package entries are held to a closed shape; a tuple with more than four elements blocks, and a metadata key Bun does not write blocks, naming the entry and the key (`config_key_allow` with file `bun.lock` permits one more exact metadata key).
 - Yarn: `yarn.lock` entries (classic and Berry) are held to a closed key schema; a property or section Yarn does not write blocks, naming the entry and the key (`config_key_allow` with file `yarn.lock` permits one more exact key).

@@ -62,6 +62,9 @@ Items 1-3 close config files, ambient inputs and the read path. Four gaps remain
   comment insertion), **then** the scanner verdict is identical or the mutation is rejected as
   unmodeled. The suite runs in plain `cargo test`.
 - Real-tool runs are opt-in (they need the tools); the metamorphic suite is not.
+- Implemented so far: the metamorphic suite over the `lockfile_data` fixtures
+  (`src/ecosystems/lockfile_data_tests.rs`). It does not yet reach the preflight stage (go.sum,
+  schema checks) or manifests; the real-tool harness is not started.
 
 ### 6. Compile-enforced layering
 

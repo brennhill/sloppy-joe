@@ -163,7 +163,19 @@ fn parse_gem_versions(content: &str) -> Result<std::collections::HashMap<String,
     let mut in_specs = false;
     let mut section = "";
 
-    for line in crate::untrusted::rows(content) {
+    for (number, line) in crate::untrusted::rows(content).enumerate() {
+        // Bundler's lockfile grammar is indented with spaces only; a tab-indented spec line is
+        // not a spec to Bundler, so reading it any other way would drop or invent gems.
+        if line
+            .chars()
+            .take_while(|ch| ch.is_whitespace())
+            .any(|ch| ch != ' ')
+        {
+            anyhow::bail!(
+                "Gemfile.lock line {} is indented with something other than spaces. Bundler reads only space-indented entries, so the scanner cannot tell which gems this lock pins. Regenerate it with `bundle lock`.",
+                number + 1
+            );
+        }
         if !line.is_empty() && !line.starts_with(char::is_whitespace) {
             section = line.trim();
             if matches!(section, "GIT" | "PATH" | "PLUGIN SOURCE") {
@@ -234,6 +246,16 @@ DEPENDENCIES
 
     fn dep(name: &str, version: Option<&str>) -> Dependency {
         crate::test_helpers::dep_with(name, version, crate::Ecosystem::Ruby)
+    }
+
+    #[test]
+    fn non_space_indentation_blocks_instead_of_dropping_gems() {
+        let tabbed = GEMFILE_LOCK.replace("    rails (7.0.4)", "\trails (7.0.4)");
+        assert_ne!(tabbed, GEMFILE_LOCK);
+        let err = parse_gem_versions(&tabbed).unwrap_err().to_string();
+        assert!(err.contains("indented"), "{err}");
+        let nbsp = GEMFILE_LOCK.replace("    pg (1.4.5)", "\u{a0}\u{a0}\u{a0}\u{a0}pg (1.4.5)");
+        assert!(parse_gem_versions(&nbsp).is_err());
     }
 
     #[test]
