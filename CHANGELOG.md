@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.0.0
+
+Major release: behaviour changes that can newly block a scan, most of which close the red-team findings.
+
+- Breaking: the Action is now tagged `v2`; `latest` resolves to the 2.x release.
+- Breaking: Python environment markers no longer remove a package from the scan, and `--python-platform`, `--python-arch` and `--python-version` only choose which locked versions Poetry/uv resolve. A package with a different source per platform can now block with "resolves from multiple sources".
+- Breaking: `--ci` no longer errors on legacy Python manifests beside Poetry/uv; they are scanned as their own projects.
+- Breaking: pnpm lockfiles must be `lockfileVersion: '9.0'`; names matching only an `internal` prefix block unless the public registry has no package of that name; Gradle subprojects no longer inherit a root's top-level `dependencyLocking` block.
+
 - New command: `sloppy-joe fix-lockfile [--dir D] [--type T] [--config C] [--write] [--json]`. It plans every lockfile problem `check` blocks on as `fixable`, `guided` (manual command and the reason automation is refused) or `human` (no safe fix), runs the fixable ones in a private 0700 scratch copy (argv only, environment built from nothing, scripts disabled by flag and environment, timeout, output cap, no stdin), and writes a candidate only with `--write` and only if it keeps every reachable locked version, integrity and source, parses with the scanner's own parser and passes a `check --full` rescan; the previous file is kept as `<name>.sloppy-joe.bak`. Fixable: npm, pnpm (including 6.x to 9.0), Bun (including `bun.lockb`), Yarn Berry, Cargo, Composer, uv, Poetry (only when every package is locked with a wheel), go.sum, shadow lockfiles. Guided: Yarn Classic, Pipfile.lock, hash-locked requirements, Bundler, Gradle, .NET. Integrity, source and provenance findings, pins that disagree with the lockfile and dependency rewrites are never auto-fixed. Spec: `docs/specs/fix-lockfile.md`.
 - Every blocking lockfile-format or staleness error now names the exact manual command and its minimum tool version and points at `sloppy-joe fix-lockfile`. The go.sum remedy is now `go mod download all` (a bare `go mod download` stopped recording content hashes in Go 1.17).
 
