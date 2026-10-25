@@ -200,10 +200,9 @@ fn central_directory_pointing_past_the_data_is_an_error() {
         .unwrap()
         + 42;
     wheel[at..at + 4].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
-    let facts = inspect_wheel(&wheel).unwrap();
-    // The entry is a hook whose content could not be read: reported, never skipped.
-    assert_eq!(facts.startup_hooks.len(), 1);
-    assert!(facts.startup_hooks[0].unreadable.is_some());
+    // Every entry's local header is checked against the directory, so the
+    // whole wheel is unverifiable: reported, never skipped.
+    assert!(inspect_wheel(&wheel).is_err());
 }
 
 #[test]

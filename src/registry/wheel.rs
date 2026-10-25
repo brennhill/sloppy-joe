@@ -6,26 +6,23 @@
 //! by `site`. Compromised releases (LiteLLM 1.82.8, the Hades campaign) used
 //! exactly this to run before any application code.
 //!
-//! The wheel is read in memory and never extracted. The central directory is
-//! authoritative, as it is for Python's own `zipfile`. Anything this reader
-//! cannot model (zip64, unknown compression, bad offsets, too many entries) is
-//! an error, not a pass.
+//! The wheel is read in memory and never extracted. Anything this reader
+//! cannot model, or that installers could read differently (zip64, a second
+//! central directory, mismatched local headers, ambiguous member names: see
+//! `archive` and `layout`), is an error, not a pass. Unknown compression and
+//! oversize hook files are reported as unreadable hooks.
 
+mod archive;
 mod layout;
 mod pth;
 
 use super::npm_tarball::{IntegrityMismatch, download_tarball, hex};
 use super::pypi_release::PypiFile;
 use anyhow::{Result, anyhow, bail};
-use flate2::read::DeflateDecoder;
+use archive::{Entry, central_entries};
 use layout::Role;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 
-const EOCD_SIGNATURE: u32 = 0x0605_4b50;
-const CENTRAL_SIGNATURE: u32 = 0x0201_4b50;
-const LOCAL_SIGNATURE: u32 = 0x0403_4b50;
-const MAX_ENTRIES: usize = 100_000;
 /// Hook files larger than this are reported unread (and treated as risky).
 const MAX_HOOK_BYTES: u64 = 256 * 1024;
 /// Executable lines kept per hook for the report.
@@ -62,107 +59,18 @@ pub struct WheelFacts {
     pub startup_hooks: Vec<StartupHook>,
 }
 
-fn u16_at(data: &[u8], at: usize) -> Result<usize> {
-    let bytes = data
-        .get(at..at + 2)
-        .ok_or_else(|| anyhow!("truncated zip"))?;
-    Ok(u16::from_le_bytes([bytes[0], bytes[1]]) as usize)
-}
-
-fn u32_at(data: &[u8], at: usize) -> Result<u32> {
-    let bytes = data
-        .get(at..at + 4)
-        .ok_or_else(|| anyhow!("truncated zip"))?;
-    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-struct Entry {
-    name: String,
-    method: usize,
-    compressed: usize,
-    uncompressed: u64,
-    local_offset: usize,
-}
-
-fn find_eocd(data: &[u8]) -> Result<usize> {
-    let floor = data.len().saturating_sub(22 + 65_535);
-    (floor..=data.len().saturating_sub(22))
-        .rev()
-        .find(|at| u32_at(data, *at).is_ok_and(|sig| sig == EOCD_SIGNATURE))
-        .ok_or_else(|| anyhow!("not a zip archive (no end-of-central-directory record)"))
-}
-
-fn central_entries(data: &[u8]) -> Result<Vec<Entry>> {
-    let eocd = find_eocd(data)?;
-    let total = u16_at(data, eocd + 10)?;
-    let directory_size = u32_at(data, eocd + 12)?;
-    let directory_offset = u32_at(data, eocd + 16)?;
-    if total == 0xFFFF || directory_size == u32::MAX || directory_offset == u32::MAX {
-        bail!("zip64 archives are not supported");
-    }
-    if total > MAX_ENTRIES {
-        bail!("archive has {total} entries (limit {MAX_ENTRIES})");
-    }
-    let mut at = directory_offset as usize;
-    let mut entries = Vec::with_capacity(total);
-    for _ in 0..total {
-        if u32_at(data, at)? != CENTRAL_SIGNATURE {
-            bail!("corrupt central directory");
+/// The strongest startup role the entry takes under any of its names, and
+/// the name that gives it. Directory names (`.../`) install nothing.
+fn strongest_role(entry: &Entry) -> Result<Option<(Role, &str)>> {
+    let mut best: Option<(Role, &str)> = None;
+    for name in entry.names.iter().filter(|n| !n.ends_with('/')) {
+        if let Some(role) = layout::roles(name)?.into_iter().max()
+            && best.is_none_or(|(strongest, _)| role > strongest)
+        {
+            best = Some((role, name));
         }
-        let name_len = u16_at(data, at + 28)?;
-        let extra_len = u16_at(data, at + 30)?;
-        let comment_len = u16_at(data, at + 32)?;
-        let name_bytes = data
-            .get(at + 46..at + 46 + name_len)
-            .ok_or_else(|| anyhow!("truncated central directory"))?;
-        entries.push(Entry {
-            name: String::from_utf8_lossy(name_bytes).into_owned(),
-            method: u16_at(data, at + 10)?,
-            compressed: u32_at(data, at + 20)? as usize,
-            uncompressed: u64::from(u32_at(data, at + 24)?),
-            local_offset: u32_at(data, at + 42)? as usize,
-        });
-        at += 46 + name_len + extra_len + comment_len;
     }
-    Ok(entries)
-}
-
-fn entry_bytes(data: &[u8], entry: &Entry) -> Result<Vec<u8>> {
-    if entry.uncompressed > MAX_HOOK_BYTES {
-        bail!("{} bytes (limit {MAX_HOOK_BYTES})", entry.uncompressed);
-    }
-    if u32_at(data, entry.local_offset)? != LOCAL_SIGNATURE {
-        bail!("local header does not match the central directory");
-    }
-    let name_len = u16_at(data, entry.local_offset + 26)?;
-    let extra_len = u16_at(data, entry.local_offset + 28)?;
-    let start = entry.local_offset + 30 + name_len + extra_len;
-    let raw = data
-        .get(start..start + entry.compressed)
-        .ok_or_else(|| anyhow!("entry data runs past the end of the archive"))?;
-    match entry.method {
-        0 => Ok(raw.to_vec()),
-        8 => {
-            let mut out = Vec::new();
-            DeflateDecoder::new(raw)
-                .take(MAX_HOOK_BYTES + 1)
-                .read_to_end(&mut out)?;
-            if out.len() as u64 > MAX_HOOK_BYTES {
-                bail!("decompresses beyond {MAX_HOOK_BYTES} bytes");
-            }
-            Ok(out)
-        }
-        other => bail!("unsupported compression method {other}"),
-    }
-}
-
-/// The strongest startup role `name` takes, if any. Directory entries
-/// (`.../`) install nothing.
-fn strongest_role(name: &str) -> Result<Option<Role>> {
-    if name.ends_with('/') {
-        return Ok(None);
-    }
-    Ok(layout::roles(name)?.into_iter().max())
+    Ok(best)
 }
 
 fn hook(path: &str, kind: HookKind, mut code: Vec<String>) -> Option<StartupHook> {
@@ -184,7 +92,7 @@ fn hook(path: &str, kind: HookKind, mut code: Vec<String>) -> Option<StartupHook
 fn member_hook(data: &[u8], entry: &Entry, path: &str, role: Role) -> Option<StartupHook> {
     let content = match role {
         Role::Customize => return hook(path, HookKind::CustomizeModule, Vec::new()),
-        Role::Pth | Role::Start => entry_bytes(data, entry),
+        Role::Pth | Role::Start => archive::entry_bytes(data, entry, MAX_HOOK_BYTES),
     };
     let unreadable_kind = match role {
         Role::Start => HookKind::StartEntryPoint,
@@ -219,10 +127,10 @@ fn member_hook(data: &[u8], entry: &Entry, path: &str, role: Role) -> Option<Sta
 pub fn inspect_wheel(data: &[u8]) -> Result<WheelFacts> {
     let mut hooks = Vec::new();
     for entry in central_entries(data)? {
-        let Some(role) = strongest_role(&entry.name)? else {
+        let Some((role, path)) = strongest_role(&entry)? else {
             continue;
         };
-        hooks.extend(member_hook(data, &entry, &entry.name, role));
+        hooks.extend(member_hook(data, &entry, path, role));
     }
     Ok(WheelFacts {
         startup_hooks: hooks,
@@ -312,3 +220,7 @@ mod layout_tests;
 #[cfg(test)]
 #[path = "wheel_pth_tests.rs"]
 mod pth_tests;
+
+#[cfg(test)]
+#[path = "wheel_archive_tests.rs"]
+mod archive_tests;
