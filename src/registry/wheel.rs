@@ -15,6 +15,7 @@
 //! oversize hook files are reported as unreadable hooks.
 
 mod archive;
+pub(crate) mod core_metadata;
 mod environment;
 mod layout;
 mod pth;

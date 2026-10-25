@@ -93,7 +93,7 @@ impl RegistryMetadata for FakePypi {
                     "urllib3<3,>=1.21.1".to_string(),
                     "ghost-helper>=1".to_string(),
                 ],
-                metadata_missing: false,
+                ..PypiRequiresDist::default()
             }),
             _ => Self::versions(name).map(|_| PypiRequiresDist::default()),
         })

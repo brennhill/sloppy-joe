@@ -112,6 +112,20 @@ impl super::RegistryMetadata for PypiRegistry {
         super::pypi_release::requires_dist_from_body(&body, version).map(Some)
     }
 
+    async fn pypi_wheel_requires_dist(
+        &self,
+        package_name: &str,
+        wheel: &super::pypi_release::PypiCoreMetadata,
+    ) -> Result<Vec<String>> {
+        self.validate_name(package_name)?;
+        super::wheel::core_metadata::fetch_requires_dist(
+            &self.wheel_client,
+            &self.files_origin,
+            wheel,
+        )
+        .await
+    }
+
     async fn inspect_pypi_wheel(
         &self,
         package_name: &str,

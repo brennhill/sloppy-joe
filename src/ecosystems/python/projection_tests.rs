@@ -1,5 +1,5 @@
 use super::*;
-use crate::registry::pypi_release::{PypiRequiresDist, PypiVersionListing};
+use crate::registry::pypi_release::{PypiCoreMetadata, PypiRequiresDist, PypiVersionListing};
 use crate::registry::{RegistryExistence, RegistryMetadata};
 use async_trait::async_trait;
 use std::sync::Mutex;
@@ -11,6 +11,8 @@ struct FakePypi {
     listings: HashMap<String, Vec<(String, bool)>>,
     requires: HashMap<(String, String), PypiRequiresDist>,
     failing: BTreeSet<String>,
+    /// `Requires-Dist` of a wheel's core metadata, by wheel file name; `None` fails the read.
+    wheels: HashMap<String, Option<Vec<String>>>,
     calls: Mutex<Vec<String>>,
 }
 
@@ -33,7 +35,7 @@ impl FakePypi {
             (name.to_string(), version.to_string()),
             PypiRequiresDist {
                 requirements: entries.iter().map(|e| e.to_string()).collect(),
-                metadata_missing: false,
+                ..PypiRequiresDist::default()
             },
         );
         self
@@ -46,7 +48,41 @@ impl FakePypi {
             PypiRequiresDist {
                 requirements: Vec::new(),
                 metadata_missing: true,
+                wheel_metadata: None,
             },
+        );
+        self
+    }
+
+    /// A release with a wheel whose core metadata declares `wheel_entries` (`None`: the read
+    /// fails), while the JSON API lists `json_entries` (`None`: `requires_dist: null`).
+    fn wheel(
+        mut self,
+        name: &str,
+        version: &str,
+        json_entries: Option<&[&str]>,
+        wheel_entries: Option<&[&str]>,
+    ) -> Self {
+        let filename = format!("{name}-{version}-py3-none-any.whl");
+        self.requires.insert(
+            (name.to_string(), version.to_string()),
+            PypiRequiresDist {
+                requirements: json_entries
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect(),
+                metadata_missing: false,
+                wheel_metadata: Some(PypiCoreMetadata {
+                    filename: filename.clone(),
+                    wheel_url: format!("https://files.pythonhosted.org/{filename}"),
+                    sha256: "00".repeat(32),
+                }),
+            },
+        );
+        self.wheels.insert(
+            filename,
+            wheel_entries.map(|entries| entries.iter().map(|e| e.to_string()).collect()),
         );
         self
     }
@@ -106,6 +142,21 @@ impl RegistryMetadata for FakePypi {
             .requires
             .get(&(name.to_string(), version.to_string()))
             .cloned())
+    }
+
+    async fn pypi_wheel_requires_dist(
+        &self,
+        _name: &str,
+        wheel: &PypiCoreMetadata,
+    ) -> Result<Vec<String>> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("wheel {}", wheel.filename));
+        match self.wheels.get(&wheel.filename) {
+            Some(Some(entries)) => Ok(entries.clone()),
+            _ => anyhow::bail!("core metadata download returned HTTP 503"),
+        }
     }
 }
 
@@ -499,4 +550,82 @@ async fn a_release_without_dependency_metadata_warns_that_its_dependencies_are_u
     assert_eq!(warning.package, "legacy-sdist");
     assert_eq!(warning.severity, Severity::Warning);
     assert!(warning.message.contains("0.3"), "{}", warning.message);
+}
+
+#[tokio::test]
+async fn a_wheels_core_metadata_replaces_the_json_api_requirements() {
+    // The JSON API took `requires_dist` from an sdist uploaded first; the wheel pip installs
+    // declares another dependency.
+    let registry = FakePypi::default()
+        .package("a", &["1.0"])
+        .wheel("a", "1.0", Some(&["decoy"]), Some(&["payload>=1"]))
+        .package("payload", &["1.0"])
+        .package("decoy", &["1.0"]);
+    let projection = project(&registry, vec![root("a", "")]).await;
+    assert_eq!(names(&projection), vec!["payload==1.0"]);
+    assert!(projection.issues.is_empty(), "{:?}", projection.issues);
+    assert!(
+        registry
+            .calls()
+            .contains(&"wheel a-1.0-py3-none-any.whl".to_string())
+    );
+}
+
+#[tokio::test]
+async fn null_requires_dist_with_a_wheel_follows_the_wheels_dependencies() {
+    let registry = FakePypi::default()
+        .package("a", &["1.0"])
+        .wheel("a", "1.0", None, Some(&["payload"]))
+        .package("payload", &["2.0"]);
+    let projection = project(&registry, vec![root("a", "")]).await;
+    assert_eq!(names(&projection), vec!["payload==2.0"]);
+    assert!(projection.issues.is_empty(), "{:?}", projection.issues);
+}
+
+#[tokio::test]
+async fn a_failed_core_metadata_read_blocks_and_nothing_is_followed() {
+    let registry = FakePypi::default()
+        .package("a", &["1.0"])
+        .wheel("a", "1.0", Some(&["decoy"]), None)
+        .package("decoy", &["1.0"]);
+    let projection = project(&registry, vec![root("a", "")]).await;
+    assert!(projection.deps.is_empty(), "{:?}", projection.deps);
+    let issue = projection
+        .issues
+        .iter()
+        .find(|issue| issue.check == checks::names::RESOLUTION_PYTHON_PROJECTION_FAILED)
+        .expect("a failed core metadata read must block");
+    assert_eq!(issue.severity, Severity::Error);
+    assert_eq!(issue.package, "a");
+    assert!(issue.message.contains("HTTP 503"), "{}", issue.message);
+}
+
+#[tokio::test]
+async fn core_metadata_reads_count_against_the_fetch_bound() {
+    let registry = FakePypi::default()
+        .package("a", &["1.0"])
+        .wheel("a", "1.0", None, Some(&[]));
+    // One version listing and one JSON release body fit; the wheel's metadata is a third read.
+    let bounds = Bounds {
+        fetches: 2,
+        ..Bounds::default()
+    };
+    let projection = project_with(&registry, vec![root("a", "")], bounds).await;
+    assert_eq!(
+        bound_issues(&projection).len(),
+        1,
+        "{:?}",
+        projection.issues
+    );
+    assert!(registry.calls().len() <= 2, "{:?}", registry.calls());
+    let exact = Bounds {
+        fetches: 3,
+        ..Bounds::default()
+    };
+    let projection = project_with(&registry, vec![root("a", "")], exact).await;
+    assert!(
+        bound_issues(&projection).is_empty(),
+        "{:?}",
+        projection.issues
+    );
 }

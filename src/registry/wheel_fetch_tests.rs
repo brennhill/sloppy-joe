@@ -127,3 +127,114 @@ fn url_validation_rejects_credentials_queries_and_non_wheels() {
         assert!(validate_wheel_url(bad, &origin).is_err(), "{bad}");
     }
 }
+
+/// Like [`serve`], answering 200 with `body` only for a path ending in `suffix` (404 otherwise).
+async fn serve_path(suffix: &'static str, body: Vec<u8>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let read = stream.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                let path = request.split(' ').nth(1).unwrap_or("");
+                let (status, body) = if path.ends_with(suffix) {
+                    (200, body)
+                } else {
+                    (404, Vec::new())
+                };
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            });
+        }
+    });
+    origin
+}
+
+fn core_metadata(origin: &str, sha256: String) -> crate::registry::pypi_release::PypiCoreMetadata {
+    crate::registry::pypi_release::PypiCoreMetadata {
+        filename: "p-1.0-py3-none-any.whl".into(),
+        wheel_url: format!("{origin}/packages/p-1.0-py3-none-any.whl"),
+        sha256,
+    }
+}
+
+const METADATA: &[u8] = b"Metadata-Version: 2.1\nName: p\nRequires-Dist: urllib3>=1\n\nbody\n";
+
+#[tokio::test]
+async fn wheel_core_metadata_is_read_from_the_metadata_file_beside_the_wheel() {
+    let origin = serve_path(
+        "/packages/p-1.0-py3-none-any.whl.metadata",
+        METADATA.to_vec(),
+    )
+    .await;
+    let registry = PypiRegistry::for_test(&origin);
+    let requires = registry
+        .pypi_wheel_requires_dist("p", &core_metadata(&origin, sha(METADATA)))
+        .await
+        .unwrap();
+    assert_eq!(requires, vec!["urllib3>=1".to_string()]);
+}
+
+#[tokio::test]
+async fn wheel_core_metadata_with_another_digest_is_an_integrity_error() {
+    let origin = serve_path(".metadata", METADATA.to_vec()).await;
+    let registry = PypiRegistry::for_test(&origin);
+    let error = registry
+        .pypi_wheel_requires_dist("p", &core_metadata(&origin, "00".repeat(32)))
+        .await
+        .unwrap_err();
+    assert!(
+        error.downcast_ref::<IntegrityMismatch>().is_some(),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn wheel_core_metadata_that_cannot_be_fetched_is_an_error() {
+    // PyPI said the file exists; a 404 is a failed lookup, not "no dependencies".
+    let origin = serve_path("/never", Vec::new()).await;
+    let registry = PypiRegistry::for_test(&origin);
+    let error = registry
+        .pypi_wheel_requires_dist("p", &core_metadata(&origin, sha(METADATA)))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("404"), "{error}");
+}
+
+#[tokio::test]
+async fn wheel_core_metadata_is_only_fetched_from_the_file_host() {
+    let origin = serve_path(".metadata", METADATA.to_vec()).await;
+    let registry = PypiRegistry::for_test(&origin);
+    for url in [
+        "http://127.0.0.1:1/p-1.0-py3-none-any.whl",
+        &format!("{origin}/p-1.0.tar.gz"),
+        &format!("{origin}/p-1.0-py3-none-any.whl?x=.metadata"),
+    ] {
+        let mut metadata = core_metadata(&origin, sha(METADATA));
+        metadata.wheel_url = url.to_string();
+        assert!(
+            registry
+                .pypi_wheel_requires_dist("p", &metadata)
+                .await
+                .is_err(),
+            "{url}"
+        );
+    }
+    assert!(
+        registry
+            .pypi_wheel_requires_dist("../x", &core_metadata(&origin, sha(METADATA)))
+            .await
+            .is_err()
+    );
+}

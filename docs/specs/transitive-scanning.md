@@ -90,6 +90,13 @@ projected from PyPI metadata instead of read from a lockfile.
   differ from what pip installs.
 - **Given** `requests==2.31.0`, **When** the projection runs, **Then** it reads that release's
   metadata without listing versions.
+- **Given** a release with a wheel whose core metadata file PyPI serves (PEP 658/714
+  `core-metadata` hash on the file), **Then** the `Requires-Dist` of that file (fetched from the
+  PyPI file host, sha256-verified) is followed instead of `info.requires_dist`, which PyPI takes
+  from the first file uploaded; each read counts against the metadata-fetch bound, and a failed
+  read blocks with `resolution/python-projection-failed`. **Given** `requires_dist: null` and no
+  wheel with a hashed core metadata file, **Then** `resolution/python-unprojectable` warns that
+  the release's dependencies are unknown.
 - **Given** a requirement with `extra == "socks"`, **When** `socks` is not requested, **Then** it is
   not followed; **Given** a `sys_platform == "win32"` marker on a Linux runner, **Then** it is
   followed (markers are evaluated for every environment; undecided counts as true).
@@ -205,8 +212,11 @@ Projection adds, all with `"source": "transitive"`:
 The registry contract gains `RegistryMetadata::pypi_versions(name)` (every listed version and
 whether it is yanked; `None` when the package does not exist) and
 `RegistryMetadata::pypi_requires_dist(name, version)` (`info.requires_dist` from
-`/pypi/<name>/<version>/json`, with `metadata_missing` when it is `null` and the release has no
-wheel). Registries that cannot answer return an error.
+`/pypi/<name>/<version>/json`, with `metadata_missing` when it is `null` and no wheel has a
+hashed core metadata file, and `wheel_metadata` naming the wheel to read when one has) and
+`RegistryMetadata::pypi_wheel_requires_dist(name, wheel)` (the `Requires-Dist` of
+`<wheel url>.metadata`, verified against its published sha256). Registries that cannot answer
+return an error.
 
 ### Data shapes
 

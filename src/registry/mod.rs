@@ -179,6 +179,17 @@ pub trait RegistryMetadata: Send + Sync {
         anyhow::bail!("this registry does not publish PyPI dependency metadata")
     }
 
+    /// PyPI only: the `Requires-Dist` of a wheel's core metadata file (PEP 658), verified against
+    /// the sha256 PyPI published for it. A registry that cannot answer returns an error.
+    async fn pypi_wheel_requires_dist(
+        &self,
+        package_name: &str,
+        wheel: &pypi_release::PypiCoreMetadata,
+    ) -> Result<Vec<String>> {
+        let _ = (package_name, wheel);
+        anyhow::bail!("this registry does not serve PyPI wheel metadata")
+    }
+
     /// Fetch the current owner list for a package when the registry exposes it.
     /// Used only for review-oriented output such as exception candidate evidence.
     async fn owners(&self, package_name: &str) -> Result<Option<Vec<String>>> {

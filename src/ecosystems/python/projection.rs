@@ -14,6 +14,7 @@
 //! from a private index are not looked up on PyPI at all.
 
 use super::*;
+mod core_metadata;
 mod requires;
 mod select;
 
@@ -307,6 +308,7 @@ impl<'a> Projector<'a> {
                 Err(error) => self.fail(&name, Some(&version), &error),
             }
         }
+        self.read_wheel_metadata().await;
     }
 
     /// Follow the requirements of every chosen version; the names whose specifiers or extras
@@ -343,6 +345,13 @@ impl<'a> Projector<'a> {
             .requires
             .get(&(name.to_string(), version.to_string()))?
         {
+            Some(declared) if declared.wheel_metadata.is_some() => {
+                // Only reachable when the read was not made (an exceeded bound): never follow
+                // the JSON API's list in place of the wheel's.
+                let error = anyhow::anyhow!("the wheel's core metadata was not read");
+                self.fail(name, Some(version), &error);
+                None
+            }
             Some(declared) => {
                 if declared.metadata_missing {
                     self.unknown_metadata
@@ -507,7 +516,7 @@ fn unknown_metadata_warning(name: &str, version: &str, manifest: &str) -> Issue 
         Severity::Warning,
     )
     .message(format!(
-        "PyPI publishes no dependency metadata for '{} {}' (no wheel, and its sdist declares no Requires-Dist), reached while projecting the transitive dependencies of '{manifest}'. Whatever its setup.py installs was not projected or scanned.",
+        "PyPI publishes no dependency metadata for '{} {}' (no wheel with a core metadata file to read, and the JSON API lists no Requires-Dist), reached while projecting the transitive dependencies of '{manifest}'. Whatever its setup.py installs was not projected or scanned.",
         report::sanitize_for_terminal(name),
         report::sanitize_for_terminal(version),
     ))

@@ -106,14 +106,30 @@ pub(crate) fn versions_from_body(body: &Value) -> anyhow::Result<Vec<PypiVersion
         .collect())
 }
 
+/// A wheel whose core metadata file PyPI serves beside it (PEP 658/714: `<wheel url>.metadata`),
+/// with the sha256 PyPI publishes for that file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PypiCoreMetadata {
+    pub filename: String,
+    /// The wheel's URL; the metadata file is this URL with `.metadata` appended.
+    pub wheel_url: String,
+    /// Lowercase hex sha256 of the metadata file.
+    pub sha256: String,
+}
+
 /// The `Requires-Dist` PyPI publishes for one release.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PypiRequiresDist {
+    /// `info.requires_dist` of the JSON API. PyPI fills it from the first file uploaded, which
+    /// may be an sdist that declares nothing, so a wheel's core metadata replaces it.
     pub requirements: Vec<String>,
-    /// PyPI has no dependency metadata for the release: `requires_dist` is `null` and the
-    /// release has no wheel, whose `METADATA` would be authoritative. Old sdists leave it empty
-    /// even when `setup.py` installs dependencies, so the requirements are unknown, not none.
+    /// PyPI has no dependency metadata for the release: `requires_dist` is `null` and no wheel
+    /// has a core metadata file to read instead. Old sdists leave it empty even when `setup.py`
+    /// installs dependencies, so the requirements are unknown, not none.
     pub metadata_missing: bool,
+    /// A wheel whose core metadata the caller must read: its `Requires-Dist` is what pip
+    /// installs, and replaces `requirements`.
+    pub wheel_metadata: Option<PypiCoreMetadata>,
 }
 
 /// `info.requires_dist` of a version body (`/pypi/<name>/<version>/json`). Any other shape
@@ -128,16 +144,13 @@ pub(crate) fn requires_dist_from_body(
     if info.get("version").and_then(Value::as_str) != Some(version) {
         anyhow::bail!("PyPI release metadata describes another version than {version}");
     }
+    let wheel_metadata = readable_wheel_metadata(body);
     let requirements = match info.get("requires_dist") {
         None | Some(Value::Null) => {
-            let has_wheel = body["urls"].as_array().is_some_and(|files| {
-                files
-                    .iter()
-                    .any(|file| file_kind(file) == PypiFileKind::Wheel)
-            });
             return Ok(PypiRequiresDist {
                 requirements: Vec::new(),
-                metadata_missing: !has_wheel,
+                metadata_missing: wheel_metadata.is_none(),
+                wheel_metadata,
             });
         }
         Some(Value::Array(entries)) => entries
@@ -154,7 +167,43 @@ pub(crate) fn requires_dist_from_body(
     Ok(PypiRequiresDist {
         requirements,
         metadata_missing: false,
+        wheel_metadata,
     })
+}
+
+/// The sha256 of a file's core metadata (PEP 658 `data-dist-info-metadata`, renamed
+/// `core-metadata` by PEP 714). `true` without hashes, `false` or absent: none to verify against,
+/// so the file is never read.
+fn core_metadata_sha256(file: &Value) -> Option<String> {
+    [
+        "core-metadata",
+        "data-dist-info-metadata",
+        "core_metadata",
+        "data_dist_info_metadata",
+    ]
+    .iter()
+    .find_map(|key| file[*key]["sha256"].as_str())
+    .filter(|digest| !digest.is_empty())
+    .map(str::to_ascii_lowercase)
+}
+
+/// The wheel of a version body (`urls`) whose core metadata to read: a non-yanked one when there
+/// is one, with a hashed metadata file.
+fn readable_wheel_metadata(body: &Value) -> Option<PypiCoreMetadata> {
+    let candidates = body["urls"].as_array()?.iter().filter_map(|file| {
+        if file_kind(file) != PypiFileKind::Wheel {
+            return None;
+        }
+        let metadata = PypiCoreMetadata {
+            filename: file["filename"].as_str()?.to_string(),
+            wheel_url: file["url"].as_str()?.to_string(),
+            sha256: core_metadata_sha256(file)?,
+        };
+        Some((file["yanked"].as_bool().unwrap_or(false), metadata))
+    });
+    candidates
+        .min_by_key(|(yanked, _)| *yanked)
+        .map(|(_, metadata)| metadata)
 }
 
 /// Whether `version` is safe as one URL path segment: PEP 440 characters only.
@@ -254,22 +303,89 @@ mod tests {
             ]
         );
         assert!(!declared.metadata_missing);
-        let wheel = json!({"info": {"version": "2.0", "requires_dist": null},
-                           "urls": [{"packagetype": "sdist"}, {"packagetype": "bdist_wheel"}]});
-        let none = requires_dist_from_body(&wheel, "2.0").unwrap();
-        assert!(none.requirements.is_empty());
-        assert!(
-            !none.metadata_missing,
-            "a wheel's METADATA is authoritative"
+        assert!(declared.wheel_metadata.is_none(), "no wheel to read");
+    }
+
+    fn wheel_entry(name: &str, core_metadata: Value, yanked: bool) -> Value {
+        json!({
+            "filename": name,
+            "url": format!("https://files.pythonhosted.org/packages/x/{name}"),
+            "packagetype": "bdist_wheel",
+            "core-metadata": core_metadata,
+            "yanked": yanked,
+        })
+    }
+
+    #[test]
+    fn null_requires_dist_with_a_wheel_reads_the_wheels_core_metadata() {
+        // PyPI fills `info` from the first file uploaded: an old sdist that declares nothing
+        // hides the wheel's dependencies, so the wheel's own metadata must be read.
+        let body = json!({"info": {"version": "2.0", "requires_dist": null},
+                          "urls": [{"packagetype": "sdist"},
+                                   wheel_entry("p-2.0-py3-none-any.whl", json!({"sha256": "ABCD"}), false)]});
+        let declared = requires_dist_from_body(&body, "2.0").unwrap();
+        assert!(declared.requirements.is_empty());
+        assert!(!declared.metadata_missing);
+        assert_eq!(
+            declared.wheel_metadata,
+            Some(PypiCoreMetadata {
+                filename: "p-2.0-py3-none-any.whl".into(),
+                wheel_url: "https://files.pythonhosted.org/packages/x/p-2.0-py3-none-any.whl"
+                    .into(),
+                sha256: "abcd".into(),
+            })
         );
     }
 
     #[test]
-    fn null_requires_dist_on_an_sdist_only_release_means_the_dependencies_are_unknown() {
+    fn a_wheels_core_metadata_is_preferred_over_the_json_list() {
+        let body = json!({"info": {"version": "2.0", "requires_dist": ["urllib3"]},
+                          "urls": [wheel_entry("p-2.0-py3-none-any.whl", json!({"sha256": "ab"}), false)]});
+        let declared = requires_dist_from_body(&body, "2.0").unwrap();
+        assert_eq!(declared.requirements, vec!["urllib3".to_string()]);
+        assert!(!declared.metadata_missing);
+        assert_eq!(declared.wheel_metadata.unwrap().sha256, "ab");
+    }
+
+    #[test]
+    fn the_wheel_read_is_a_non_yanked_one_with_a_hashed_metadata_file() {
+        let body = json!({"info": {"version": "2.0", "requires_dist": null}, "urls": [
+            wheel_entry("a.whl", json!(false), false),
+            wheel_entry("b.whl", json!(true), false),
+            wheel_entry("c.whl", json!({"sha256": "cc"}), true),
+            {"filename": "d.whl", "url": "https://files.pythonhosted.org/d.whl",
+             "packagetype": "bdist_wheel", "data-dist-info-metadata": {"sha256": "dd"}},
+        ]});
+        let declared = requires_dist_from_body(&body, "2.0").unwrap();
+        assert_eq!(declared.wheel_metadata.unwrap().filename, "d.whl");
+        let only_yanked = json!({"info": {"version": "2.0", "requires_dist": null},
+                                 "urls": [wheel_entry("c.whl", json!({"sha256": "cc"}), true)]});
+        let declared = requires_dist_from_body(&only_yanked, "2.0").unwrap();
+        assert_eq!(declared.wheel_metadata.unwrap().filename, "c.whl");
+    }
+
+    #[test]
+    fn a_json_list_without_a_readable_wheel_is_used_as_published() {
+        let body = json!({"info": {"version": "2.0", "requires_dist": ["urllib3"]},
+                          "urls": [wheel_entry("p.whl", json!(false), false)]});
+        let declared = requires_dist_from_body(&body, "2.0").unwrap();
+        assert_eq!(declared.requirements, vec!["urllib3".to_string()]);
+        assert!(!declared.metadata_missing);
+        assert!(declared.wheel_metadata.is_none());
+    }
+
+    #[test]
+    fn null_requires_dist_without_readable_dependency_metadata_means_the_dependencies_are_unknown()
+    {
         for body in [
             json!({"info": {"version": "0.3", "requires_dist": null},
                    "urls": [{"packagetype": "sdist"}]}),
             json!({"info": {"version": "0.3"}}),
+            // A wheel exists but PyPI serves no hashed core metadata file for it: its
+            // dependencies are unknown, never silently none.
+            json!({"info": {"version": "0.3", "requires_dist": null},
+                   "urls": [{"packagetype": "sdist"},
+                            wheel_entry("p-0.3-py3-none-any.whl", json!(false), false)]}),
         ] {
             let unknown = requires_dist_from_body(&body, "0.3").unwrap();
             assert!(unknown.requirements.is_empty());
