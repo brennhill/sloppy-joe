@@ -51,8 +51,9 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 - `<dist>.data/` files installed outside `site-packages` are `metadata/python-startup-hook`s
   too, always blocking. pip and uv install `data/<rest>` at `sys.prefix/<rest>` and
   `scripts/<rest>` in `bin` (`Scripts`), replacing existing files; `headers/` (include
-  directory) and other data (`share/`, `etc/`, `include/`, `lib/*.so`, `lib/pkgconfig/`) are
-  not reported, nor are ordinary scripts. Reported, after the path normalization above:
+  directory) and other data (`share/`, `etc/`, `include/`, `lib/pkgconfig/`, static archives,
+  shared libraries in `lib/` under names the interpreter does not load) are not reported, nor
+  are ordinary scripts. Reported, after the path normalization above:
   - Standard-library overwrite (`StdlibOverwrite`): anything under `data/lib/python*/` or
     `data/lib/pypy*/` (also `lib64/`) other than its `site-packages`/`dist-packages`, including
     `lib/python3XY.zip`; `data/Lib/` files Windows imports (`.py`, `.pyc`, `.pyw`, `.pyd`);
@@ -68,8 +69,33 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
   - Environment overwrite (`EnvironmentOverwrite`): `python`, `python3`, `python3.12`,
     `python3.13t`, `pythonw`, `pypy3` (with or without `.exe`) and the activation scripts
     (`activate`, `activate.<shell>`, `Activate.ps1`, `activate_this.py`, `deactivate.*`) in the
-    scripts directory; `pyvenv.cfg`, `*._pth`, `python*.exe`/`.dll` and `vcruntime*.dll` at the
-    prefix.
+    scripts directory (`python3.7m`-style ABI suffixes included); `pyvenv.cfg`, `*._pth`,
+    `python*.exe`/`.dll` and `vcruntime*.dll` at the prefix; a macOS framework build's
+    `data/Python` (the interpreter library `bin/python3` links) and anything under
+    `data/Resources/Python.app/` (the binary `bin/python3` executes).
+  - Shared-library overwrite (`EnvironmentOverwrite`): a shared library (`.so`, `.so.N`,
+    `.dylib`, `.dll`) directly in `data/lib/` or `data/lib64/` (any case) whose name, before the
+    first `.` or `-` and without trailing version digits, is the interpreter's own library
+    (`libpython*`, `libpypy*`) or one the interpreter and its standard-library extension modules
+    link: `libssl`, `libcrypto`, `libffi`, `libz`, `libbz2`, `libb2`, `liblzma`, `libzstd`,
+    `libsqlite3`, `libmpdec`, `libexpat`, `libreadline`, `libedit`, `libhistory`, `libuuid`,
+    `libcrypt`, `libnsl`, `libtirpc`, `libdb`, `libintl`, `libiconv`, `libc`, `libm`, `libdl`,
+    `libpthread`, `librt`, `libutil`, `libgcc_s`, `libstdc++`, `libatomic`, and the
+    `libtcl*`, `libtk*`, `libicu*`, `libncurses*`, `libtinfo*`, `libpanel*`, `libform*`,
+    `libmenu*`, `libgdbm*` families. An `--enable-shared` interpreter (the official Docker
+    images, prefix `/usr/local`) loads `lib/libpython3.X.so.1.0` through its `RUNPATH` at every
+    start, and pip running as root replaces it (checked against `python:3.12-slim`: the
+    interpreter then fails to start); conda environments load `lib/libssl.so.3` etc. through
+    `RPATH $ORIGIN/../..` (checked against `condaforge/miniforge3`: `import ssl` loads the
+    wheel's copy), as python.org macOS builds do by install name. Any shared library in a
+    Debian multiarch directory (`data/lib/<x>-linux-<y>/`) is reported too: Debian and Ubuntu
+    list `/usr/local/lib/<triplet>` ahead of `/lib/<triplet>`, so after the next `ldconfig` it
+    replaces the system's copy for every program (checked against `python:3.12`: `import zlib`
+    then loads the wheel's `libz.so.1`). Other library names in `data/lib/` are not reported:
+    Intel's `mkl`, `intel-openmp`, `tbb` and `intel-cmplr-lib-rt` wheels install dozens there
+    (`libmkl_core.so.3`, `libiomp5.so`, `libtbb.so.12`), and on Debian-based images
+    `/usr/local/lib` comes after the multiarch directories even after `ldconfig`, so a new name
+    there replaces no system library.
 - `.pth`/`.start` lines are read every way a supported Python reads them: a leading UTF-8 BOM
   is dropped, lines split on every `str.splitlines` break (lone `\r`, `\x0b`, `\x0c`,
   `\x1c`-`\x1e`, NEL, U+2028, U+2029), the file is decoded as UTF-8 and as Latin-1 (the locale
@@ -123,7 +149,10 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 ## Scope Boundaries
 
 - Not covered: sdist `setup.py`, hook code beyond the listed tokens, `<dist>.data/data/`
-  files that other programs execute (`etc/jupyter/` server extensions, shell profiles), console
+  files that other programs execute (`etc/jupyter/` server extensions, shell profiles),
+  shared libraries in `data/lib/` named after a library a third-party package loads (a conda
+  environment's `libopenblas`) or one a later `ldconfig` would add for a program that finds
+  no other copy, console
   entry points (`entry_points.txt`) named `python` or `activate`, scripts that shadow
   third-party module names, Yarn Berry/other non-PyPI lock hashes, requirements.txt `--hash`, MCP name similarity,
   attestation status. Baseline comparison covers direct manifest dependencies only, and a
