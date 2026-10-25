@@ -144,19 +144,67 @@ pub(crate) fn workspace_pattern_parts_match(pattern_parts: &[&str], path_parts: 
     }
 }
 
+/// One path segment against a Cargo (`glob` crate) pattern: `*`, `?`, `[abc]`, `[a-c]`, `[!abc]`.
+/// An unterminated `[` is a literal. Matching is case sensitive, as in Cargo.
 pub(crate) fn wildcard_segment_matches(pattern: &str, value: &str) -> bool {
-    if pattern == "*" {
-        return true;
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let value = value.chars().collect::<Vec<_>>();
+    glob_chars_match(&pattern, &value)
+}
+
+fn glob_chars_match(pattern: &[char], value: &[char]) -> bool {
+    match pattern.split_first() {
+        None => value.is_empty(),
+        Some(('*', rest)) => (0..=value.len()).any(|skip| glob_chars_match(rest, &value[skip..])),
+        Some(('?', rest)) => value
+            .split_first()
+            .is_some_and(|(_, value_rest)| glob_chars_match(rest, value_rest)),
+        Some(('[', rest)) => match parse_char_class(rest) {
+            Some((class, after)) => value.split_first().is_some_and(|(c, value_rest)| {
+                class.matches(*c) && glob_chars_match(after, value_rest)
+            }),
+            None => value
+                .split_first()
+                .is_some_and(|(c, value_rest)| *c == '[' && glob_chars_match(rest, value_rest)),
+        },
+        Some((literal, rest)) => value
+            .split_first()
+            .is_some_and(|(c, value_rest)| c == literal && glob_chars_match(rest, value_rest)),
     }
-    match pattern.split_once('*') {
-        None => pattern == value,
-        Some((prefix, suffix)) => {
-            if !value.starts_with(prefix) || !value.ends_with(suffix) {
-                return false;
-            }
-            value.len() >= prefix.len() + suffix.len()
+}
+
+struct CharClass {
+    negated: bool,
+    ranges: Vec<(char, char)>,
+}
+
+impl CharClass {
+    fn matches(&self, c: char) -> bool {
+        self.ranges.iter().any(|(lo, hi)| *lo <= c && c <= *hi) != self.negated
+    }
+}
+
+/// Parses the text after `[`; returns the class and what follows the closing `]`.
+fn parse_char_class(pattern: &[char]) -> Option<(CharClass, &[char])> {
+    let (negated, body) = match pattern.split_first() {
+        Some(('!', rest)) => (true, rest),
+        _ => (false, pattern),
+    };
+    // A `]` right after the opening is a member, not the end.
+    let close = body.iter().skip(1).position(|c| *c == ']')? + 1;
+    let members = &body[..close];
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < members.len() {
+        if i + 2 < members.len() && members[i + 1] == '-' {
+            ranges.push((members[i], members[i + 2]));
+            i += 3;
+        } else {
+            ranges.push((members[i], members[i]));
+            i += 1;
         }
     }
+    Some((CharClass { negated, ranges }, &body[close + 1..]))
 }
 
 pub(crate) fn ancestor_dirs_inclusive(
@@ -281,4 +329,47 @@ pub(super) fn read_lockfile_data(
         project.spec.lockfile_path_override.as_deref(),
         python_profile,
     )
+}
+
+#[cfg(test)]
+mod cargo_glob_tests {
+    use super::{wildcard_segment_matches as m, workspace_pattern_matches_parts};
+
+    #[test]
+    fn question_mark_matches_exactly_one_character() {
+        assert!(m("crate-?", "crate-a"));
+        assert!(!m("crate-?", "crate-"));
+        assert!(!m("crate-?", "crate-ab"));
+    }
+
+    #[test]
+    fn character_classes_ranges_and_negation() {
+        assert!(m("c[abc]", "cb"));
+        assert!(!m("c[abc]", "cd"));
+        assert!(m("c[a-c]", "cc"));
+        assert!(m("c[!a-c]", "cd"));
+        assert!(!m("c[!a-c]", "ca"));
+        assert!(m("[]]x", "]x"));
+    }
+
+    #[test]
+    fn several_stars_in_one_segment() {
+        assert!(m("a*b*c", "aXXbYYc"));
+        assert!(!m("a*b*c", "aXXbYY"));
+        assert!(m("*", ""));
+    }
+
+    #[test]
+    fn unterminated_bracket_is_a_literal() {
+        assert!(m("a[b", "a[b"));
+        assert!(!m("a[b", "ab"));
+    }
+
+    #[test]
+    fn member_patterns_use_the_full_segment_syntax() {
+        let parts = ["crates".to_string(), "x1".to_string()];
+        assert!(workspace_pattern_matches_parts("crates/x?", &parts));
+        assert!(workspace_pattern_matches_parts("crates/x[0-9]", &parts));
+        assert!(!workspace_pattern_matches_parts("crates/x[a-z]", &parts));
+    }
 }
