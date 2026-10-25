@@ -136,6 +136,18 @@ pub(crate) fn read_validated_uv_lockfile(
         &path,
         Some(&lock_profile),
     )?;
+    // Source policy, lock proofs and the scan cover every environment: a package gated on
+    // another platform is installed there.
+    let (coverage_deps, coverage_profile) =
+        python_lockfile_profile_for(spec, opts, root_extras)?.coverage(deps);
+    // Every declared dependency is locked, including those whose marker is false for the
+    // target (`uv lock --check` rejects the lock otherwise).
+    crate::lockfiles::uv::validate_coverage_roots_are_locked(
+        &lockfile,
+        &coverage_deps,
+        &path,
+        &coverage_profile.environment,
+    )?;
     // Bidirectional: every locked root dependency, extra, and group entry must be declared.
     let declared = parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?;
     crate::lockfiles::uv::validate_root_declarations_are_declared(&lockfile, &declared, &path)?;
@@ -144,10 +156,6 @@ pub(crate) fn read_validated_uv_lockfile(
         &spec.manifest_path,
         &config.config_key_allow,
     )?;
-    // Source policy covers every environment: a package gated on another platform is
-    // installed there.
-    let (coverage_deps, coverage_profile) =
-        python_lockfile_profile_for(spec, opts, root_extras)?.coverage(deps);
     let source_intents =
         parsers::pyproject_toml::parse_uv_source_intents_scoped(&spec.manifest_path)?
             .into_iter()

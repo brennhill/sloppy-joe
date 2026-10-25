@@ -525,3 +525,6 @@ mod part20_python_marker_coverage;
 
 #[path = "lib_tests/part21_uv_conflict_markers.rs"]
 mod part21_uv_conflict_markers;
+
+#[path = "lib_tests/part22_python_coverage_roots.rs"]
+mod part22_python_coverage_roots;
