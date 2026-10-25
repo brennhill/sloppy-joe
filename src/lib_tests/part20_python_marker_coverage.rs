@@ -217,3 +217,38 @@ fn a_requirements_dependency_behind_a_false_marker_is_still_scanned() {
     assert!(names.iter().any(|name| name == "evil-win"), "{names:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_full_or_padded_python_version_selects_its_minor_release() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nrequires-python = \">=3.10\"\ndependencies = [\"six==1.17.0; python_version == '3.12'\"]\n\n[tool.uv]\npackage = false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        format!(
+            "version = 1\nrevision = 3\nrequires-python = \">=3.10\"\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\nsource = {{ virtual = \".\" }}\ndependencies = [\n    {{ name = \"six\", marker = \"python_full_version == '3.12.*'\" }},\n]\n\n[package.metadata]\nrequires-dist = [{{ name = \"six\", marker = \"python_full_version == '3.12.*'\", specifier = \"==1.17.0\" }}]\n\n[[package]]\nname = \"six\"\nversion = \"1.17.0\"\nsource = {{ registry = \"https://pypi.org/simple\" }}\n{}",
+            uv_artifacts("six", PYPI_FILES)
+        ),
+    )
+    .unwrap();
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    // `--python-version " 3.12.1 "` (or PYTHON_VERSION=3.12.1 from a Docker image) is Python
+    // 3.12: six is a direct dependency of that target, not only coverage.
+    for version in [" 3.12.1 ", "3.12\n", "3.12"] {
+        let opts = ScanOptions {
+            python_version: Some(version.to_string()),
+            ..linux_target()
+        };
+        let projects = parse_project_inputs_with_options(&dir, &specs, &config, &opts).unwrap();
+        assert!(
+            projects[0].deps.iter().any(|dep| dep.name == "six"),
+            "{version:?}: {:?}",
+            projects[0].deps
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

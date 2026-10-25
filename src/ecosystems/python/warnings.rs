@@ -70,10 +70,11 @@ pub(crate) fn active_python_profile(
         profile.explicit_selection = true;
     }
     if let Some(version) = &opts.python_version {
-        profile.python_version = Some(version.clone());
-        profile.python_full_version = Some(parsers::python_scope::normalize_python_full_version(
-            version,
-        ));
+        // Trimmed and split like the environment settings; an unreadable version is unknown, so
+        // markers on it stay undecided (in scope).
+        let parsed = parsers::python_scope::parse_configured_python_version(version);
+        profile.python_version = parsed.as_ref().map(|parsed| parsed.python_version.clone());
+        profile.python_full_version = parsed.map(|parsed| parsed.python_full_version);
         profile.explicit_selection = true;
     }
     // Every group and extra is scanned unless the operator narrows the selection explicitly.

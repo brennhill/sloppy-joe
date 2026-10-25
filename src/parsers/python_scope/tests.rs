@@ -234,3 +234,90 @@ fn long_marker_chains_stay_flat_and_bounded() {
     let err = evaluate_marker(&chain(20_000), &profile).unwrap_err();
     assert!(err.to_string().contains("tokens"), "{err}");
 }
+
+fn versions_with(
+    settings: &[(&str, &str)],
+    detected: Option<(&str, &str)>,
+) -> (Option<String>, Option<String>) {
+    let lookup = |name: &str| {
+        settings
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.to_string())
+    };
+    python_versions_from(lookup, || {
+        detected.map(|(version, full)| DetectedPythonVersion {
+            python_version: version.to_string(),
+            python_full_version: full.to_string(),
+        })
+    })
+}
+
+fn pair(version: &str, full: &str) -> (Option<String>, Option<String>) {
+    (Some(version.to_string()), Some(full.to_string()))
+}
+
+#[test]
+fn a_configured_python_version_is_trimmed_and_split_into_markers() {
+    assert_eq!(
+        versions_with(&[("PYTHON_VERSION", " 3.12 \n")], None),
+        pair("3.12", "3.12.0")
+    );
+    // Docker images set PYTHON_VERSION to the full version.
+    assert_eq!(
+        versions_with(&[("PYTHON_VERSION", "3.12.1")], None),
+        pair("3.12", "3.12.1")
+    );
+    assert_eq!(
+        versions_with(&[("SLOPPY_JOE_PYTHON_VERSION", "3.13.0rc1")], None),
+        pair("3.13", "3.13.0rc1")
+    );
+}
+
+#[test]
+fn an_unreadable_python_version_setting_is_unknown_not_the_host() {
+    assert_eq!(
+        versions_with(&[("PYTHON_VERSION", "banana")], Some(("3.12", "3.12.4"))),
+        (None, None)
+    );
+    // A blank setting is no setting.
+    assert_eq!(
+        versions_with(&[("PYTHON_VERSION", "  ")], Some(("3.12", "3.12.4"))),
+        pair("3.12", "3.12.4")
+    );
+}
+
+#[test]
+fn a_configured_version_never_mixes_with_the_host_full_version() {
+    assert_eq!(
+        versions_with(&[("PYTHON_VERSION", "3.11")], Some(("3.12", "3.12.4"))),
+        pair("3.11", "3.11.0")
+    );
+    assert_eq!(
+        versions_with(
+            &[
+                ("PYTHON_VERSION", "3.11"),
+                ("PYTHON_FULL_VERSION", "3.11.2")
+            ],
+            None
+        ),
+        pair("3.11", "3.11.2")
+    );
+    assert_eq!(
+        versions_with(
+            &[
+                ("PYTHON_VERSION", "3.11"),
+                ("PYTHON_FULL_VERSION", "3.12.1")
+            ],
+            None
+        ),
+        (Some("3.11".to_string()), None)
+    );
+    assert_eq!(
+        versions_with(
+            &[("PYTHON_FULL_VERSION", " 3.12.1 ")],
+            Some(("3.10", "3.10.2"))
+        ),
+        pair("3.12", "3.12.1")
+    );
+}

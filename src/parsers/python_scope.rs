@@ -205,28 +205,15 @@ pub(crate) fn normalize_scope_name(name: &str) -> String {
 
 impl PythonProfile {
     pub(crate) fn runtime_for_current_host() -> Self {
-        let detected = detected_host_python_version();
-        let python_version = std::env::var("SLOPPY_JOE_PYTHON_VERSION")
-            .ok()
-            .or_else(|| std::env::var("PYTHON_VERSION").ok())
-            .or_else(|| {
-                detected
-                    .as_ref()
-                    .map(|version| version.python_version.clone())
-            });
+        let (python_version, python_full_version) = python_versions_from(
+            |name| std::env::var(name).ok(),
+            detected_host_python_version,
+        );
         Self {
             target_platform: current_sys_platform().to_string(),
             target_arch: std::env::consts::ARCH.to_string(),
-            python_version: python_version.clone(),
-            python_full_version: std::env::var("SLOPPY_JOE_PYTHON_FULL_VERSION")
-                .ok()
-                .or_else(|| std::env::var("PYTHON_FULL_VERSION").ok())
-                .or_else(|| {
-                    detected
-                        .as_ref()
-                        .map(|version| version.python_full_version.clone())
-                })
-                .or_else(|| python_version.as_deref().map(normalize_python_full_version)),
+            python_version,
+            python_full_version,
             all_groups: true,
             all_extras: true,
             selected_groups: BTreeSet::new(),
