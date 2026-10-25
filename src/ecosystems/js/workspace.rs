@@ -1,10 +1,36 @@
+use super::workspace_glob::{Negation, WorkspaceGlobs};
 use super::*;
 
 pub(crate) struct WorkspaceRoot {
     pub(crate) manifest_path: std::path::PathBuf,
     pub(crate) project_dir: std::path::PathBuf,
-    pub(crate) patterns: Vec<String>,
+    pub(crate) globs: WorkspaceGlobs,
     pub(crate) manager: JsPackageManager,
+}
+
+impl WorkspaceRoot {
+    /// Whether `dir` is one of this workspace's declared members.
+    pub(crate) fn declares_member(&self, dir: &std::path::Path) -> bool {
+        self.globs.matches(&self.project_dir, dir)
+    }
+}
+
+/// Compile the member patterns declared in `source`; pnpm-workspace.yaml negations are global,
+/// package.json `workspaces` negations ordered.
+fn compile_workspace_globs(
+    patterns: &[String],
+    negation: Negation,
+    source: &std::path::Path,
+) -> Result<WorkspaceGlobs> {
+    WorkspaceGlobs::compile(patterns, negation)
+        .map_err(|err| anyhow::anyhow!("Broken manifest '{}': {err}", source.display()))
+}
+
+fn manager_negation(manager: JsPackageManager) -> Negation {
+    match manager {
+        JsPackageManager::Pnpm => Negation::Global,
+        _ => Negation::Ordered,
+    }
 }
 
 pub(crate) fn validate_workspace_npm_dependency(
@@ -28,13 +54,7 @@ pub(crate) fn validate_workspace_npm_dependency(
         .into_iter()
         .flat_map(|dirs| dirs.iter())
         .filter(|dir| *dir != canonical_project_dir)
-        .filter(|dir| {
-            workspace_patterns_match(
-                &workspace_root.project_dir,
-                dir,
-                workspace_root.patterns.iter().map(String::as_str),
-            )
-        })
+        .filter(|dir| workspace_root.declares_member(dir))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -239,23 +259,15 @@ pub(crate) fn find_js_workspace_root(
         let manifest_path = ancestor_dir.join("package.json");
         if parsers::path_detected(&manifest_path)? {
             let manifest = read_npm_manifest_value(&manifest_path)?;
-            if ancestor_dir != canonical_project_dir {
-                let manifest_patterns = parse_npm_workspaces(&manifest_path, &manifest)?;
-                let pnpm_patterns = parse_pnpm_workspaces(&ancestor_dir)?;
-                let applicable =
-                    manifest_patterns
-                        .iter()
-                        .chain(pnpm_patterns.iter())
-                        .any(|patterns| {
-                            workspace_patterns_match(
-                                &ancestor_dir,
-                                canonical_project_dir,
-                                patterns.iter().map(String::as_str),
-                            )
-                        });
-                if !applicable {
-                    continue;
-                }
+            if ancestor_dir != canonical_project_dir
+                && !any_workspace_declares(
+                    &ancestor_dir,
+                    &manifest_path,
+                    &manifest,
+                    canonical_project_dir,
+                )?
+            {
+                continue;
             }
             let manager = detect_js_manager(&ancestor_dir, &manifest_path, &manifest)?;
             let Some(patterns) =
@@ -263,20 +275,19 @@ pub(crate) fn find_js_workspace_root(
             else {
                 continue;
             };
-
-            if ancestor_dir == canonical_project_dir
-                || workspace_patterns_match(
-                    &ancestor_dir,
-                    canonical_project_dir,
-                    patterns.iter().map(String::as_str),
-                )
+            let root = WorkspaceRoot {
+                globs: compile_workspace_globs(
+                    &patterns,
+                    manager_negation(manager),
+                    &manifest_path,
+                )?,
+                manifest_path,
+                project_dir: ancestor_dir.clone(),
+                manager,
+            };
+            if ancestor_dir == canonical_project_dir || root.declares_member(canonical_project_dir)
             {
-                return Ok(Some(WorkspaceRoot {
-                    manifest_path: manifest_path.clone(),
-                    project_dir: ancestor_dir.clone(),
-                    patterns,
-                    manager,
-                }));
+                return Ok(Some(root));
             }
         }
 
@@ -287,24 +298,41 @@ pub(crate) fn find_js_workspace_root(
         let Some(patterns) = parse_pnpm_workspaces(&ancestor_dir)? else {
             continue;
         };
-
-        if ancestor_dir == canonical_project_dir
-            || workspace_patterns_match(
-                &ancestor_dir,
-                canonical_project_dir,
-                patterns.iter().map(String::as_str),
-            )
-        {
-            return Ok(Some(WorkspaceRoot {
-                manifest_path: pnpm_workspace_path,
-                project_dir: ancestor_dir,
-                patterns,
-                manager: JsPackageManager::Pnpm,
-            }));
+        let root = WorkspaceRoot {
+            globs: compile_workspace_globs(&patterns, Negation::Global, &pnpm_workspace_path)?,
+            manifest_path: pnpm_workspace_path,
+            project_dir: ancestor_dir.clone(),
+            manager: JsPackageManager::Pnpm,
+        };
+        if ancestor_dir == canonical_project_dir || root.declares_member(canonical_project_dir) {
+            return Ok(Some(root));
         }
     }
 
     Ok(None)
+}
+
+/// Whether the `workspaces` of the package.json at `manifest_path`, or a pnpm-workspace.yaml
+/// beside it, declares `project_dir` a member.
+fn any_workspace_declares(
+    workspace_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    manifest: &serde_json::Value,
+    project_dir: &std::path::Path,
+) -> Result<bool> {
+    let pnpm_path = workspace_dir.join("pnpm-workspace.yaml");
+    let declared = [
+        parse_npm_workspaces(manifest_path, manifest)?
+            .map(|p| (p, Negation::Ordered, manifest_path)),
+        parse_pnpm_workspaces(workspace_dir)?.map(|p| (p, Negation::Global, pnpm_path.as_path())),
+    ];
+    for (patterns, negation, source) in declared.into_iter().flatten() {
+        if compile_workspace_globs(&patterns, negation, source)?.matches(workspace_dir, project_dir)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn parse_js_workspace_patterns(
@@ -387,12 +415,7 @@ pub(crate) fn workspace_manifest_paths(
     Ok(specs
         .into_iter()
         .filter(|spec| {
-            spec.kind == ProjectInputKind::Npm
-                && workspace_patterns_match(
-                    &workspace_root.project_dir,
-                    spec.project_dir(),
-                    workspace_root.patterns.iter().map(String::as_str),
-                )
+            spec.kind == ProjectInputKind::Npm && workspace_root.declares_member(spec.project_dir())
         })
         .map(|spec| spec.manifest_path)
         .collect())

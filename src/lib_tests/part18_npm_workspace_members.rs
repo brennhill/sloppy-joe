@@ -346,3 +346,106 @@ async fn a_symlinked_manifest_blocks_even_beside_a_healthy_project() {
     assert!(blocked, "a symlinked manifest must not be skipped silently");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A pnpm workspace whose root lockfile installs `evil-pkg` into `packages/a`, while
+/// `packages/a` carries its own clean lockfile. Returns whether the scan blocked.
+async fn pnpm_member_with_shadow_lockfile_blocks(workspace_yaml: &str) -> bool {
+    let dir = unique_dir();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("packages/a")).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","private":true,"packageManager":"pnpm@9.15.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("pnpm-workspace.yaml"), workspace_yaml).unwrap();
+    std::fs::write(
+        dir.join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .: {}\n  packages/a:\n    dependencies:\n      evil-pkg:\n        specifier: 6.6.6\n        version: 6.6.6\npackages:\n  evil-pkg@6.6.6:\n    resolution: {integrity: sha512-AAAA}\nsnapshots:\n  evil-pkg@6.6.6: {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/a/package.json"),
+        r#"{"name":"a","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("packages/a/pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .: {}\n",
+    )
+    .unwrap();
+    let opts = ScanOptions {
+        scan_mode: ScanMode::Fast,
+        no_cache: true,
+        ..Default::default()
+    };
+    let blocked = match scan_with_source_full_options(&dir, Some("npm"), None, &opts).await {
+        Err(_) => true,
+        Ok(report) => report.has_errors() || report.has_incomplete_projects(),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    blocked
+}
+
+#[tokio::test]
+async fn pnpm_workspace_glob_syntax_cannot_hide_a_member_behind_its_own_lockfile() {
+    assert!(
+        !pnpm_member_with_shadow_lockfile_blocks("packages:\n  - 'other/*'\n").await,
+        "control: a project outside the workspace is scanned on its own"
+    );
+    for pattern in [
+        "packages/*",
+        "packages/{a,b}",
+        "{packages,apps}/a",
+        "packages/?",
+        "packages/[a-c]",
+        "packages/[!b]",
+        "packages/{a..c}",
+        "packages/**",
+        "Packages/A",
+    ] {
+        let yaml = format!("packages:\n  - '{pattern}'\n");
+        assert!(
+            pnpm_member_with_shadow_lockfile_blocks(&yaml).await,
+            "'{pattern}' declares packages/a a member, so its own lockfile must not stand in for the workspace lockfile"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unsupported_workspace_glob_syntax_blocks_instead_of_matching_nothing() {
+    for pattern in [
+        "packages/@(a|b)",
+        "packages/+(a)",
+        "packages/\\a",
+        "packages/[[:alpha:]]",
+        "packages/{a",
+        "packages/[a",
+        "../outside/*",
+        "!!packages/a",
+    ] {
+        let yaml = format!("packages:\n  - 'other/*'\n  - '{pattern}'\n");
+        assert!(
+            pnpm_member_with_shadow_lockfile_blocks(&yaml).await,
+            "'{pattern}' cannot be evaluated exactly, so it must block"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pnpm_workspace_negation_excludes_a_member_whatever_the_order() {
+    for yaml in [
+        "packages:\n  - 'packages/*'\n  - '!packages/a'\n",
+        "packages:\n  - '!packages/a'\n  - 'packages/*'\n",
+    ] {
+        assert!(
+            !pnpm_member_with_shadow_lockfile_blocks(yaml).await,
+            "pnpm excludes negated members, so packages/a installs on its own: {yaml}"
+        );
+    }
+    assert!(
+        pnpm_member_with_shadow_lockfile_blocks("packages:\n  - 'packages/*'\n  - '!packages/b'\n")
+            .await,
+        "excluding a different member keeps packages/a in the workspace"
+    );
+}

@@ -12,6 +12,7 @@ mod npm_lock_schema;
 mod npm_lockfile_checks;
 mod pnpm_lock_schema;
 mod workspace;
+mod workspace_glob;
 mod yarn_lock_schema;
 
 pub(crate) use binding::*;
