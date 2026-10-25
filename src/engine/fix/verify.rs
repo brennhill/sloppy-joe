@@ -130,6 +130,7 @@ pub(super) fn preview(items: &[String]) -> String {
 }
 
 /// Runs the `check --full` scan on a candidate tree.
+#[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait::async_trait]
 pub(super) trait CandidateScanner: Sync {
     async fn scan(
