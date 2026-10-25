@@ -1,5 +1,5 @@
 use super::*;
-use crate::registry::pypi_release::PypiVersionListing;
+use crate::registry::pypi_release::{PypiRequiresDist, PypiVersionListing};
 use crate::registry::{RegistryExistence, RegistryMetadata};
 use async_trait::async_trait;
 use std::sync::Mutex;
@@ -9,7 +9,7 @@ use std::sync::Mutex;
 #[derive(Default)]
 struct FakePypi {
     listings: HashMap<String, Vec<(String, bool)>>,
-    requires: HashMap<(String, String), Vec<String>>,
+    requires: HashMap<(String, String), PypiRequiresDist>,
     failing: BTreeSet<String>,
     calls: Mutex<Vec<String>>,
 }
@@ -31,7 +31,22 @@ impl FakePypi {
     fn requires(mut self, name: &str, version: &str, entries: &[&str]) -> Self {
         self.requires.insert(
             (name.to_string(), version.to_string()),
-            entries.iter().map(|e| e.to_string()).collect(),
+            PypiRequiresDist {
+                requirements: entries.iter().map(|e| e.to_string()).collect(),
+                metadata_missing: false,
+            },
+        );
+        self
+    }
+
+    /// A release PyPI publishes no dependency metadata for (sdist only, `requires_dist: null`).
+    fn without_metadata(mut self, name: &str, version: &str) -> Self {
+        self.requires.insert(
+            (name.to_string(), version.to_string()),
+            PypiRequiresDist {
+                requirements: Vec::new(),
+                metadata_missing: true,
+            },
         );
         self
     }
@@ -75,7 +90,11 @@ impl RegistryMetadata for FakePypi {
         }))
     }
 
-    async fn pypi_requires_dist(&self, name: &str, version: &str) -> Result<Option<Vec<String>>> {
+    async fn pypi_requires_dist(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<PypiRequiresDist>> {
         self.calls
             .lock()
             .unwrap()
@@ -348,17 +367,23 @@ async fn exceeding_the_package_bound_blocks_and_names_it() {
         .package("b", &["1.0"])
         .package("c", &["1.0"]);
     let bounds = Bounds {
-        packages: 3,
+        packages: 2,
         ..Bounds::default()
     };
     let projection = project_with(&registry, vec![root("root", "")], bounds).await;
     let issues = bound_issues(&projection);
     assert_eq!(issues.len(), 1);
     assert!(
-        issues[0].message.contains("package bound (3"),
+        issues[0].message.contains("package bound (2 projected"),
         "{}",
         issues[0].message
     );
+    let exact = Bounds {
+        packages: 3,
+        ..Bounds::default()
+    };
+    let projection = project_with(&registry, vec![root("root", "")], exact).await;
+    assert!(bound_issues(&projection).is_empty());
 }
 
 #[tokio::test]
@@ -434,4 +459,44 @@ async fn a_direct_dependency_is_never_reported_as_projected() {
         .package("b", &["1.0", "2.0"]);
     let projection = project(&registry, vec![root("a", ""), root("b", "==1.0")]).await;
     assert!(projection.deps.is_empty(), "{:?}", projection.deps);
+}
+
+#[tokio::test]
+async fn direct_dependencies_do_not_count_against_the_package_bound() {
+    let mut registry = FakePypi::default();
+    let mut roots = Vec::new();
+    for index in 0..5 {
+        let name = format!("direct{index}");
+        registry = registry.package(&name, &["1.0"]);
+        roots.push(root(&name, "==1.0"));
+    }
+    let bounds = Bounds {
+        packages: 1,
+        ..Bounds::default()
+    };
+    let projection = project_with(&registry, roots, bounds).await;
+    assert!(
+        bound_issues(&projection).is_empty(),
+        "{:?}",
+        projection.issues
+    );
+}
+
+#[tokio::test]
+async fn a_release_without_dependency_metadata_warns_that_its_dependencies_are_unknown() {
+    let registry = FakePypi::default()
+        .package("a", &["1.0"])
+        .requires("a", "1.0", &["legacy-sdist"])
+        .package("legacy-sdist", &["0.3"])
+        .without_metadata("legacy-sdist", "0.3");
+    let projection = project(&registry, vec![root("a", "")]).await;
+    assert_eq!(names(&projection), vec!["legacy-sdist==0.3"]);
+    let warning = projection
+        .issues
+        .iter()
+        .find(|issue| issue.check == checks::names::RESOLUTION_PYTHON_UNPROJECTABLE)
+        .expect("unknown dependency metadata must be visible");
+    assert_eq!(warning.package, "legacy-sdist");
+    assert_eq!(warning.severity, Severity::Warning);
+    assert!(warning.message.contains("0.3"), "{}", warning.message);
 }

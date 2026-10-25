@@ -106,18 +106,40 @@ pub(crate) fn versions_from_body(body: &Value) -> anyhow::Result<Vec<PypiVersion
         .collect())
 }
 
-/// `info.requires_dist` of a version body (`/pypi/<name>/<version>/json`). PyPI writes `null`
-/// when the release declares no requirements. Any other shape, or a body for another version,
-/// is malformed.
-pub(crate) fn requires_dist_from_body(body: &Value, version: &str) -> anyhow::Result<Vec<String>> {
+/// The `Requires-Dist` PyPI publishes for one release.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PypiRequiresDist {
+    pub requirements: Vec<String>,
+    /// PyPI has no dependency metadata for the release: `requires_dist` is `null` and the
+    /// release has no wheel, whose `METADATA` would be authoritative. Old sdists leave it empty
+    /// even when `setup.py` installs dependencies, so the requirements are unknown, not none.
+    pub metadata_missing: bool,
+}
+
+/// `info.requires_dist` of a version body (`/pypi/<name>/<version>/json`). Any other shape
+/// than a list of strings or `null`, or a body for another version, is malformed.
+pub(crate) fn requires_dist_from_body(
+    body: &Value,
+    version: &str,
+) -> anyhow::Result<PypiRequiresDist> {
     let info = body["info"]
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("PyPI release metadata has no info table"))?;
     if info.get("version").and_then(Value::as_str) != Some(version) {
         anyhow::bail!("PyPI release metadata describes another version than {version}");
     }
-    match info.get("requires_dist") {
-        None | Some(Value::Null) => Ok(Vec::new()),
+    let requirements = match info.get("requires_dist") {
+        None | Some(Value::Null) => {
+            let has_wheel = body["urls"].as_array().is_some_and(|files| {
+                files
+                    .iter()
+                    .any(|file| file_kind(file) == PypiFileKind::Wheel)
+            });
+            return Ok(PypiRequiresDist {
+                requirements: Vec::new(),
+                metadata_missing: !has_wheel,
+            });
+        }
         Some(Value::Array(entries)) => entries
             .iter()
             .map(|entry| {
@@ -126,9 +148,13 @@ pub(crate) fn requires_dist_from_body(body: &Value, version: &str) -> anyhow::Re
                     .map(str::to_string)
                     .ok_or_else(|| anyhow::anyhow!("PyPI requires_dist entry is not a string"))
             })
-            .collect(),
+            .collect::<anyhow::Result<Vec<_>>>()?,
         Some(_) => anyhow::bail!("PyPI requires_dist is not a list"),
-    }
+    };
+    Ok(PypiRequiresDist {
+        requirements,
+        metadata_missing: false,
+    })
 }
 
 /// Whether `version` is safe as one URL path segment: PEP 440 characters only.
@@ -218,16 +244,37 @@ mod tests {
         let body = json!({"info": {"version": "2.0", "requires_dist": [
             "urllib3<3,>=1.21.1",
             "PySocks!=1.5.7,>=1.5.6; extra == \"socks\"",
-        ]}});
+        ]}, "urls": [{"packagetype": "sdist"}]});
+        let declared = requires_dist_from_body(&body, "2.0").unwrap();
         assert_eq!(
-            requires_dist_from_body(&body, "2.0").unwrap(),
+            declared.requirements,
             vec![
                 "urllib3<3,>=1.21.1".to_string(),
                 "PySocks!=1.5.7,>=1.5.6; extra == \"socks\"".to_string()
             ]
         );
-        let none = json!({"info": {"version": "2.0", "requires_dist": null}});
-        assert!(requires_dist_from_body(&none, "2.0").unwrap().is_empty());
+        assert!(!declared.metadata_missing);
+        let wheel = json!({"info": {"version": "2.0", "requires_dist": null},
+                           "urls": [{"packagetype": "sdist"}, {"packagetype": "bdist_wheel"}]});
+        let none = requires_dist_from_body(&wheel, "2.0").unwrap();
+        assert!(none.requirements.is_empty());
+        assert!(
+            !none.metadata_missing,
+            "a wheel's METADATA is authoritative"
+        );
+    }
+
+    #[test]
+    fn null_requires_dist_on_an_sdist_only_release_means_the_dependencies_are_unknown() {
+        for body in [
+            json!({"info": {"version": "0.3", "requires_dist": null},
+                   "urls": [{"packagetype": "sdist"}]}),
+            json!({"info": {"version": "0.3"}}),
+        ] {
+            let unknown = requires_dist_from_body(&body, "0.3").unwrap();
+            assert!(unknown.requirements.is_empty());
+            assert!(unknown.metadata_missing, "{body}");
+        }
     }
 
     #[test]

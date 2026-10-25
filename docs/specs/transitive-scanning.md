@@ -75,6 +75,39 @@ tree closes the single largest coverage gap identified in the adversarial securi
 - **Given** a transitive dep where the maintainer changed between versions, **When**
   the scan runs, **Then** `metadata/maintainer-change` is emitted.
 
+### Projected transitive deps (Python manifests without a lockfile)
+
+`requirements*.txt` without hashes, `setup.py`, `setup.cfg`, a non-Poetry/uv `pyproject.toml`
+and a `Pipfile` without `Pipfile.lock` record no transitive tree. Their transitive deps are
+projected from PyPI metadata instead of read from a lockfile.
+
+- **Given** `requirements.txt` with `requests>=2` and PyPI listing `requests` 2.31.0 whose
+  `requires_dist` names `urllib3<3,>=1.21.1` and `ghost-helper>=1` (not on PyPI), **When** a full
+  scan runs, **Then** `urllib3` is checked at the newest non-yanked final version below 3 with
+  `"source": "transitive"`, `ghost-helper` gets a blocking `existence` issue, every finding on a
+  projected package ends with the `[projected transitive: ...]` note, and a
+  `resolution/python-projected-transitives` warning says the versions were projected and may
+  differ from what pip installs.
+- **Given** `requests==2.31.0`, **When** the projection runs, **Then** it reads that release's
+  metadata without listing versions.
+- **Given** a requirement with `extra == "socks"`, **When** `socks` is not requested, **Then** it is
+  not followed; **Given** a `sys_platform == "win32"` marker on a Linux runner, **Then** it is
+  followed (markers are evaluated for every environment; undecided counts as true).
+- **Given** two dependents requiring `shared>=1` and `shared<2`, **Then** `shared` is checked at the
+  newest version satisfying both; **Given** `shared<2` and `shared>=3`, **Then** the newest version
+  each allows is checked and `resolution/python-projected-conflict` warns.
+- **Given** a PyPI lookup that fails, a `Requires-Dist` entry that is a direct URL or local path, or
+  a listed release PyPI serves no metadata for, **Then** `resolution/python-projection-failed`
+  blocks and the rest is still projected.
+- **Given** a closure deeper than 40 levels, with more than 500 projected packages (direct deps not
+  counted) or needing more than 1500 PyPI metadata requests, **Then**
+  `resolution/python-projection-bound` blocks, naming the bound.
+- **Given** a requirements graph with an allowlisted non-PyPI `--index-url`/`--extra-index-url`,
+  **Then** PyPI is not queried for that manifest and `resolution/python-unprojectable` warns;
+  **Given** an `internal` package (direct or transitive), **Then** it is never looked up on PyPI
+  and the same warning names it.
+- **Given** a fast scan, **Then** nothing is projected.
+
 ### Edge cases
 
 - Lockfile contains deps not reachable from any direct dep (orphaned entries from
@@ -83,7 +116,8 @@ tree closes the single largest coverage gap identified in the adversarial securi
   each version independently.
 - Direct dep is also listed in the lockfile's transitive tree: classify as `direct`,
   not `transitive`. Direct takes precedence.
-- Lockfile is absent: no transitive scanning possible. Current behavior preserved.
+- Lockfile is absent: no transitive scanning possible, except for the Python manifests above,
+  whose transitive deps are projected from PyPI metadata and labeled as projected.
 - `--deep` with no lockfile: emit a warning that `--deep` requires a lockfile to
   discover transitive deps.
 
@@ -96,7 +130,13 @@ tree closes the single largest coverage gap identified in the adversarial securi
 - Default behavior must not break existing scans or slow them down significantly.
 - Transitive similarity must be opt-in (`--deep`) due to registry load.
 - Per-ecosystem rate limits must be respected.
-- The tool must not pretend to scan transitives when no lockfile is present.
+- The tool must not pretend to scan transitives when no lockfile is present. Projected Python
+  transitives say so: a summary warning per manifest and a note on every finding.
+- A projection never stops short silently: every failed lookup and every exceeded bound blocks.
+- A projection never asks PyPI about a name another index may serve (a non-PyPI index in the
+  requirements graph, an `internal` package).
+- Package names are validated before any registry URL is built, and versions before they are
+  used as a URL path segment.
 - The system MUST use the existing 7-day similarity cache for `--deep` transitive
   similarity queries.
 - The system MUST use the existing 6-hour OSV cache for transitive OSV queries.
@@ -121,8 +161,12 @@ In scope:
 - Opt-in similarity checking on transitive deps via `--deep`.
 - Labeling issues as direct or transitive with dependency chain info.
 - The `--deep` CLI argument on the `check` subcommand.
+- Projecting the transitive deps of Python manifests without a lockfile from PyPI metadata.
 
 Out of scope:
+- Reproducing pip's resolver for projected deps: `-c` constraint files, pip configuration and
+  environment variables, backtracking, the target interpreter. Projected versions are a model.
+- New CLI flags for the projection; its bounds are fixed.
 - Lockfile formats not yet supported (pnpm, yarn, poetry, etc.).
 - Workspace/monorepo support (scanning multiple lockfiles).
 - Dependency graph visualization.
@@ -146,6 +190,21 @@ sloppy-joe check [--deep] [existing flags...]
 ### Check names emitted
 
 All existing check names apply to transitive deps. No new check families are introduced.
+Projection adds, all with `"source": "transitive"`:
+
+| Check | Severity | When |
+| --- | --- | --- |
+| `resolution/python-projected-transitives` | Warning | A manifest's transitive deps were projected (count, reduced confidence, lockfile remedy). |
+| `resolution/python-projected-conflict` | Warning | No version satisfies every collected specifier of a package. |
+| `resolution/python-unprojectable` | Warning | Non-PyPI index, `internal` package, or a release PyPI has no dependency metadata for. |
+| `resolution/python-projection-failed` | Error | A metadata lookup failed or a requirement cannot be modeled. |
+| `resolution/python-projection-bound` | Error | The depth, package or metadata-fetch bound was exceeded. |
+
+The registry contract gains `RegistryMetadata::pypi_versions(name)` (every listed version and
+whether it is yanked; `None` when the package does not exist) and
+`RegistryMetadata::pypi_requires_dist(name, version)` (`info.requires_dist` from
+`/pypi/<name>/<version>/json`, with `metadata_missing` when it is `null` and the release has no
+wheel). Registries that cannot answer return an error.
 
 ### Data shapes
 
@@ -234,6 +293,11 @@ are near-instant. Existence and OSV queries are lightweight and cached (6h for O
 
 ### Modules
 
+- `src/ecosystems/python/projection.rs` — breadth-first projection with bounds; `projection/select.rs`
+  (PEP 440 version choice) and `projection/requires.rs` (one `Requires-Dist` entry and its marker).
+  Reached through `EcosystemSupport::project_transitives`; the engine scans the result with the
+  transitive pipeline (`src/engine/private_npm.rs`) and names no ecosystem.
+- `src/registry/pypi.rs`, `src/registry/pypi_release.rs` — version listings and `Requires-Dist`.
 - `src/lockfiles/mod.rs` — extend to parse full lockfile tree, not just direct deps
 - `src/lib.rs` — orchestrate transitive checks, add `--deep` flag handling
 - `src/main.rs` — add `--deep` CLI argument

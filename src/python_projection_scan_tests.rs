@@ -1,7 +1,7 @@
 //! Legacy Python manifests without a lockfile: their transitive dependencies are projected from
 //! PyPI metadata and scanned through the normal transitive pipeline, labeled as projected.
 use super::*;
-use crate::registry::pypi_release::PypiVersionListing;
+use crate::registry::pypi_release::{PypiRequiresDist, PypiVersionListing};
 use crate::registry::{PackageMetadata, RegistryExistence, RegistryMetadata};
 use async_trait::async_trait;
 use std::sync::Mutex;
@@ -78,17 +78,24 @@ impl RegistryMetadata for FakePypi {
         }))
     }
 
-    async fn pypi_requires_dist(&self, name: &str, version: &str) -> Result<Option<Vec<String>>> {
+    async fn pypi_requires_dist(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<PypiRequiresDist>> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("requires {name} {version}"));
         Ok(match name {
-            "requests" => Some(vec![
-                "urllib3<3,>=1.21.1".to_string(),
-                "ghost-helper>=1".to_string(),
-            ]),
-            _ => Self::versions(name).map(|_| Vec::new()),
+            "requests" => Some(PypiRequiresDist {
+                requirements: vec![
+                    "urllib3<3,>=1.21.1".to_string(),
+                    "ghost-helper>=1".to_string(),
+                ],
+                metadata_missing: false,
+            }),
+            _ => Self::versions(name).map(|_| PypiRequiresDist::default()),
         })
     }
 }

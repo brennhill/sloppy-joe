@@ -95,7 +95,7 @@ impl super::RegistryMetadata for PypiRegistry {
         &self,
         package_name: &str,
         version: &str,
-    ) -> Result<Option<Vec<String>>> {
+    ) -> Result<Option<super::pypi_release::PypiRequiresDist>> {
         self.validate_name(package_name)?;
         if !super::pypi_release::valid_version_segment(version) {
             anyhow::bail!(

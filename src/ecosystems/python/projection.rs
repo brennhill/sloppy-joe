@@ -106,7 +106,9 @@ pub(crate) struct Projector<'a> {
     manifest: String,
     nodes: BTreeMap<String, Node>,
     listings: HashMap<String, Option<Vec<registry::pypi_release::PypiVersionListing>>>,
-    requires: HashMap<(String, String), Option<Vec<String>>>,
+    requires: HashMap<(String, String), Option<registry::pypi_release::PypiRequiresDist>>,
+    /// Releases PyPI has no dependency metadata for: their requirements are unknown.
+    unknown_metadata: BTreeSet<(String, String)>,
     failed: BTreeSet<String>,
     fetches: usize,
     exceeded: bool,
@@ -132,6 +134,7 @@ impl<'a> Projector<'a> {
             nodes: BTreeMap::new(),
             listings: HashMap::new(),
             requires: HashMap::new(),
+            unknown_metadata: BTreeSet::new(),
             failed: BTreeSet::new(),
             fetches: 0,
             exceeded: false,
@@ -165,8 +168,9 @@ impl<'a> Projector<'a> {
             self.exceed("depth", self.bounds.depth, "dependency levels");
             return BTreeSet::new();
         }
-        if self.nodes.len() > self.bounds.packages {
-            self.exceed("package", self.bounds.packages, "distinct packages");
+        // Direct dependencies are bounded by the manifest itself.
+        if self.nodes.values().filter(|node| !node.direct).count() > self.bounds.packages {
+            self.exceed("package", self.bounds.packages, "projected packages");
             return BTreeSet::new();
         }
         self.fetch_listings(&dirty).await;
@@ -339,7 +343,13 @@ impl<'a> Projector<'a> {
             .requires
             .get(&(name.to_string(), version.to_string()))?
         {
-            Some(entries) => Some(entries.clone()),
+            Some(declared) => {
+                if declared.metadata_missing {
+                    self.unknown_metadata
+                        .insert((name.to_string(), version.to_string()));
+                }
+                Some(declared.requirements.clone())
+            }
             None if !self.listings.contains_key(name) => {
                 if let Some(node) = self.nodes.get_mut(name) {
                     node.force_listing = true;
@@ -443,6 +453,9 @@ impl<'a> Projector<'a> {
                 issues.push(internal_unprojectable_warning(name, &self.manifest));
             }
         }
+        for (name, version) in &self.unknown_metadata {
+            issues.push(unknown_metadata_warning(name, version, &self.manifest));
+        }
         Projection { deps, issues }
     }
 }
@@ -483,6 +496,20 @@ fn conflict_warning(name: &str, conflict: &str, manifest: &str) -> Issue {
     .message(format!(
         "While projecting the transitive dependencies of '{manifest}', '{}': {conflict}. pip would refuse this set or settle it by other rules.",
         report::sanitize_for_terminal(name),
+    ))
+    .fix(LOCK_FIX)
+}
+
+fn unknown_metadata_warning(name: &str, version: &str, manifest: &str) -> Issue {
+    Issue::new(
+        name,
+        checks::names::RESOLUTION_PYTHON_UNPROJECTABLE,
+        Severity::Warning,
+    )
+    .message(format!(
+        "PyPI publishes no dependency metadata for '{} {}' (no wheel, and its sdist declares no Requires-Dist), reached while projecting the transitive dependencies of '{manifest}'. Whatever its setup.py installs was not projected or scanned.",
+        report::sanitize_for_terminal(name),
+        report::sanitize_for_terminal(version),
     ))
     .fix(LOCK_FIX)
 }

@@ -67,6 +67,7 @@ fails when a path named here no longer exists, so this page cannot drift silentl
 | Release after long silence or in a burst | Cadence signals on recent versions | `src/checks/release_cadence.rs` |
 | A guessed import or command name used as a package | Known-mismatch table, stricter when young | `src/checks/steering.rs` |
 | A known-malicious package | OSV check | `docs/specs/vulnerability-coverage.md` |
+| A malicious or hallucinated transitive dependency of a Python manifest with no lockfile (`requirements.txt`, `setup.py`) | The closure is projected from PyPI `Requires-Dist` (markers for every environment) and scanned as transitive, labeled projected; a failed lookup or an exceeded depth, package or fetch bound blocks; another index's or an `internal` package's dependencies are never asked of PyPI and warn | `src/ecosystems/python/projection.rs`, `docs/specs/transitive-scanning.md` |
 | A registry or cache fails and the scan passes | Errors block; caches go through one module | `src/cache.rs`, `docs/specs/lockfile-handling.md` |
 | A cache file is edited or planted to clear packages | Owner, permission and HMAC checks; untrusted entries are refetched | `src/cache/integrity.rs` |
 | A public package carries an `internal` prefix | Prefix matches must be absent from the public registry, else block | `src/engine/internal_source.rs` |
@@ -105,6 +106,9 @@ defense (an OS sandbox is future work). Spec: `docs/specs/fix-lockfile.md`.
 - A malicious operator config, or a compromised registry that lies consistently.
 - Proving a lockfile is what a clean `install` would produce: the scanner checks that nothing in
   it contradicts the manifests and registries, not that it is minimal.
+- Predicting pip's resolution without a lockfile: projected Python transitive versions model pip's
+  choice from PyPI metadata (no constraint files, pip config or backtracking) and may differ from
+  what an install picks. Only a lockfile gives exact transitive coverage.
 
 ## Reading a finding
 

@@ -52,12 +52,24 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - For Poetry and uv, reachable non-PyPI packages must also be authorized by the in-scope root dependency graph; declaring an alternate source does not automatically authorize unrelated transitives.
 - A repo-defined Poetry or uv source named `pypi` is not trusted unless it resolves to the canonical PyPI simple index. A custom index pretending to be `pypi` fails closed.
 - Declared but unused non-PyPI Poetry/uv sources warn and suggest removal for clarity and maintenance.
-- Legacy Python manifests are still scanned for direct dependencies and standard signals like existence, similarity, canonicals, and vulnerabilities.
+- Legacy Python manifests are still scanned for direct dependencies and standard signals like existence, similarity, canonicals, and vulnerabilities. Without a lockfile, their transitive dependencies are projected from PyPI metadata (see [Projected transitive dependencies](#projected-transitive-dependencies-no-lockfile)).
 - Included requirements files are expanded recursively.
 - Legacy `setup.py` and `setup.cfg` scans include `install_requires`, `setup_requires`, `tests_require`, and extras.
 - `setup.cfg` supports both `=` and `:` option delimiters case-insensitive option names, and trailing section comments. `DEFAULT` inheritance reports `Scan not supported` rather than silently omitting inherited dependencies.
 - `setup.py` accepts standard setuptools imports, string metadata assignments, comments, and one `setup(...)` call with literal arguments. Executable preambles, computed metadata, custom source encodings, and trailing statements report `Scan not supported`. It requires complete literal dependency values. Concatenated lists or strings, encoded string escapes, expanded keyword arguments, multiple setup calls, triple-quoted strings, and unrecognized calls report `Scan not supported` (exit 2).
 - `setup.py` keywords are checked against a fixed list. `install_requires`, `setup_requires`, `tests_require`, and `extras_require` (a dict of string keys to lists of strings) are scanned. Standard metadata (`name`, `python_requires`, `classifiers`, `entry_points`, the PEP 314 `requires`/`provides`/`obsoletes`, and similar) is ignored. Unknown or plugin keywords (for example `pbr=True`), repeated keywords, a non-empty `dependency_links`, `options` that set `easy_install`, and string-valued or non-literal dependency values report `Scan not supported`.
+
+## Projected transitive dependencies (no lockfile)
+
+`requirements*.txt` without hashes, `setup.py`, `setup.cfg`, a non-Poetry/uv `pyproject.toml` and a `Pipfile` without `Pipfile.lock` record only the packages they declare; pip resolves the rest at install time. In full and CI scans sloppy-joe projects that closure from PyPI's JSON API so a malicious or hallucinated transitive dependency is still checked:
+
+- Version: an `==` pin is taken as written; otherwise the newest version PyPI lists that every collected specifier allows, skipping yanked releases (unless pinned exactly) and prereleases (unless nothing else matches). Specifiers from every dependent of a package are merged.
+- Requirements: `info.requires_dist` of that release, followed breadth first. Environment markers are evaluated for every environment, so `sys_platform == "win32"` and `python_version < "3.8"` requirements are included, and a marker the evaluator cannot decide counts as true. `extra == "..."` follows the extras requested: the ones a requirements file or `pyproject.toml` names (`requests[socks]`), the ones a transitive requirement names, and, for `setup.py`, `setup.cfg` and `Pipfile` direct dependencies (whose parsers do not record extras), every extra.
+- Checks: projected packages are transitive dependencies (`"source": "transitive"`) and get existence, metadata and OSV checks at the projected version; similarity runs on them with `--deep`. Every finding on them ends with `[projected transitive: ...]`, because pip may install a different version. A package PyPI does not list is still scanned by name, so `existence` reports it.
+- `resolution/python-projected-transitives` (warning) says how many packages were projected and that their versions may differ from what pip installs. For exact coverage, create a lockfile with `uv lock` or `poetry lock`, or run `sloppy-joe fix-lockfile`.
+- `resolution/python-projected-conflict` (warning): no version satisfies every specifier collected for a package. The newest version each specifier allows is checked instead.
+- `resolution/python-unprojectable` (warning): the requirements graph names an `--index-url` or `--extra-index-url` other than PyPI (allowlisted; unlisted ones block), so nothing is projected for that manifest; an `internal` package is never looked up on PyPI and its dependencies are not projected; or PyPI has no dependency metadata for a release (no wheel and `requires_dist: null`, typical of old sdists).
+- Fast scans do not project.
 
 ## What blocks
 
@@ -83,6 +95,7 @@ Legacy Python manifests still scan by default, but they are not the trusted path
   - VCS sources
   - unsupported pip global options such as `--trusted-host`
 - Dynamic `setup.py` dependency construction.
+- While projecting transitive dependencies of a manifest without a lockfile: a PyPI metadata lookup that fails, a `Requires-Dist` entry that is a direct URL or local path, or a release PyPI lists but serves no metadata for (`resolution/python-projection-failed`); and exceeding a projection bound, 40 dependency levels, 500 projected packages (direct dependencies not counted) or 1500 PyPI metadata requests (`resolution/python-projection-bound`). The projection never stops short silently.
 - Legacy Python manifests entirely, if `python_enforcement` is set to `poetry_only`.
 
 ## Current limitations
@@ -93,7 +106,9 @@ Legacy Python manifests still scan by default, but they are not the trusted path
 - Poetry and uv support repo-visible custom indexes by exact normalized URL allowlist only. PyPI stays implicitly trusted as `https://pypi.org/simple/`.
 - `pypi` is treated as a reserved identity, not a user-chosen alias. We are not aware of a legitimate reason to rename a custom index to `pypi`, and doing so is more likely to indicate confusion, misconfiguration, or an attack than a valid use case.
 - `poetry_lock_policy` controls how missing Poetry proofs are handled. `strict` is the recommended CI/production setting. `warn_missing_proofs` still blocks contradictions, but it downgrades missing proof to reduced-confidence mode instead of fully trusted lock coverage.
-- Legacy manifests remain allowed in the default `prefer_poetry` mode, but they warn on every run and do not inherit trusted transitive coverage.
+- Legacy manifests remain allowed in the default `prefer_poetry` mode, but they warn on every run and do not inherit trusted transitive coverage: their projected transitive dependencies are a model of what pip would pick, not a record of what it installed.
+- The projection does not model pip's resolver exactly: it ignores `-c` constraint files, pip configuration and environment variables (`PIP_INDEX_URL`, `pip.conf`), backtracking to older versions, and the target interpreter (every environment's requirements are included). When a later specifier changes a package's chosen version, the requirements the earlier version pulled in are kept, so it can check more packages than pip installs. Its metadata lookups are not cached between runs.
+- A release with no wheel and `requires_dist: null` has unknown dependencies; they are reported (`resolution/python-unprojectable`), not projected.
 - pip-tools still fails closed on unsupported global options and does not yet model editable/local first-party provenance beyond blocking those unsafe forms outright.
 - Dynamic dependency generation fails closed rather than being partially interpreted.
 

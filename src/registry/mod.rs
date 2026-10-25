@@ -174,7 +174,7 @@ pub trait RegistryMetadata: Send + Sync {
         &self,
         package_name: &str,
         version: &str,
-    ) -> Result<Option<Vec<String>>> {
+    ) -> Result<Option<pypi_release::PypiRequiresDist>> {
         let _ = (package_name, version);
         anyhow::bail!("this registry does not publish PyPI dependency metadata")
     }
