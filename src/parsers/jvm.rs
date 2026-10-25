@@ -7,7 +7,10 @@ pub(crate) use pom::*;
 use std::path::Path;
 
 mod gradle_plugins;
+mod locking;
+pub(crate) use locking::{GradleLocking, gradle_locking};
 pub(crate) mod maven_model;
+mod parent_builds;
 mod surfaces;
 mod sysprops;
 mod verification_metadata;
@@ -167,57 +170,6 @@ fn reject_untrusted_gradle_wrapper(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether Gradle enforces `gradle.lockfile` for the build at `path`.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum GradleLocking {
-    /// `dependencyLocking { lockAllConfigurations() }` is active in this build or an enclosing one.
-    Strict,
-    /// Locking is on but `LockMode.LENIENT` lets unlisted dependencies resolve.
-    Lenient,
-    /// Gradle resolves normally and ignores the lockfile.
-    Off,
-}
-
-pub(crate) fn gradle_locking(path: &Path) -> Result<GradleLocking> {
-    let project_dir = std::fs::canonicalize(path.parent().unwrap_or(Path::new(".")))?;
-    let boundary = gradle_boundary(&project_dir)?;
-    let mut locks = false;
-    let mut lenient = false;
-    for dir in project_dir
-        .ancestors()
-        .take_while(|dir| dir.starts_with(&boundary))
-    {
-        for name in ["build.gradle", "build.gradle.kts"] {
-            let script = dir.join(name);
-            if !super::path_detected(&script)? {
-                continue;
-            }
-            let content = super::read_file_limited(&script, super::MAX_MANIFEST_BYTES)?;
-            for token in tokenize_gradle(&content) {
-                match token {
-                    GradleToken::Ident(ident) => {
-                        let last = ident.rsplit('.').next().unwrap_or_default();
-                        locks |= last == "lockAllConfigurations";
-                        lenient |= last == "LENIENT";
-                    }
-                    // `LockMode.valueOf("LENIENT")`.
-                    GradleToken::Literal(text) => {
-                        lenient |= text
-                            .trim_matches(['"', '\''])
-                            .eq_ignore_ascii_case("LENIENT");
-                    }
-                    GradleToken::Symbol(_) => {}
-                }
-            }
-        }
-    }
-    Ok(match (locks, lenient) {
-        (false, _) => GradleLocking::Off,
-        (true, true) => GradleLocking::Lenient,
-        (true, false) => GradleLocking::Strict,
-    })
-}
-
 /// Parse a Gradle build script, the settings scripts that enclose it, and the
 /// plugin requests of both. Custom plugin repositories are returned, not
 /// rejected: the caller decides whether they are allowlisted.
@@ -265,9 +217,54 @@ pub(crate) fn parse_gradle_build_with(
             }
         }
     }
-    let mut deps = Vec::new();
+    let mut deps = literal_dependencies(&tokenize_gradle(&content), path)?;
+    let parents = parent_builds::read_parent_builds(&project_dir, &boundary, &settings)?;
+    deps.extend(parents.deps.iter().cloned());
 
-    let tokens = tokenize_gradle(&content);
+    let mut plugins = gradle_plugins::resolve_plugins(&gradle_plugins::PluginContext {
+        build_path: path,
+        project_dir: &project_dir,
+        boundary: &boundary,
+        build: &script,
+        settings: &settings,
+    })?;
+    for plugin in parent_builds::parent_plugins(&parents, &boundary, &settings)? {
+        if !plugins
+            .iter()
+            .any(|seen| seen.name == plugin.name && seen.version == plugin.version)
+        {
+            plugins.push(plugin);
+        }
+    }
+    let scripts = || std::iter::once(&script).chain(parents.scripts.iter().map(|(_, s)| s));
+    Ok(GradleBuild {
+        deps,
+        plugins,
+        plugin_repositories: gradle_plugins::plugin_repositories(&settings),
+        uses_google_maven: scripts().any(|script| script.uses_google_maven)
+            || settings
+                .iter()
+                .any(|(_, settings)| settings.uses_google_maven),
+        classpath: scripts()
+            .flat_map(|script| &script.classpath)
+            .chain(
+                settings
+                    .iter()
+                    .flat_map(|(_, settings)| &settings.classpath),
+            )
+            .cloned()
+            .collect(),
+        classpath_uses_google_maven: scripts().any(|script| script.buildscript_uses_google)
+            || settings
+                .iter()
+                .any(|(_, settings)| settings.buildscript_uses_google),
+        applied_allows,
+    })
+}
+
+/// `implementation 'g:a:v'`-style declarations among `tokens`.
+fn literal_dependencies(tokens: &[GradleToken], path: &Path) -> Result<Vec<Dependency>> {
+    let mut deps = Vec::new();
     for (idx, token) in tokens.iter().enumerate() {
         if let GradleToken::Ident(config) = token
             && GRADLE_DEPENDENCY_CONFIGS.contains(&config.as_str())
@@ -295,38 +292,7 @@ pub(crate) fn parse_gradle_build_with(
             }
         }
     }
-
-    let plugins = gradle_plugins::resolve_plugins(&gradle_plugins::PluginContext {
-        build_path: path,
-        project_dir: &project_dir,
-        boundary: &boundary,
-        build: &script,
-        settings: &settings,
-    })?;
-    Ok(GradleBuild {
-        deps,
-        plugins,
-        plugin_repositories: gradle_plugins::plugin_repositories(&settings),
-        uses_google_maven: script.uses_google_maven
-            || settings
-                .iter()
-                .any(|(_, settings)| settings.uses_google_maven),
-        classpath: script
-            .classpath
-            .iter()
-            .chain(
-                settings
-                    .iter()
-                    .flat_map(|(_, settings)| &settings.classpath),
-            )
-            .cloned()
-            .collect(),
-        classpath_uses_google_maven: script.buildscript_uses_google
-            || settings
-                .iter()
-                .any(|(_, settings)| settings.buildscript_uses_google),
-        applied_allows,
-    })
+    Ok(deps)
 }
 
 fn extract_gradle_dep(line: &str, source_path: &Path) -> Result<Option<Dependency>> {
