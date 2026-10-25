@@ -138,6 +138,7 @@ fn locked_scan_names(dir: &std::path::Path, opts: &ScanOptions<'_>) -> Vec<Strin
     for project in parse_project_inputs_with_options(dir, &specs, &config, opts).unwrap() {
         names.extend(project.deps.iter().map(|dep| dep.name.clone()));
         let data = ecosystems::lockfile_data(&config, opts, &project, &project.deps).unwrap();
+        names.extend(data.gated_direct_deps.iter().map(|dep| dep.name.clone()));
         names.extend(data.transitive_deps.iter().map(|dep| dep.name.clone()));
     }
     names

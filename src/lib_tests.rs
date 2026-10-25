@@ -528,3 +528,6 @@ mod part21_uv_conflict_markers;
 
 #[path = "lib_tests/part22_python_coverage_roots.rs"]
 mod part22_python_coverage_roots;
+
+#[path = "lib_tests/part23_python_gated_direct_deps.rs"]
+mod part23_python_gated_direct_deps;

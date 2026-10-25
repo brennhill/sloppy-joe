@@ -4,6 +4,7 @@ mod lock_fixer;
 
 mod ambient_inputs;
 mod flavors;
+mod gated;
 mod interpreter_config;
 mod lock_schema;
 mod lockfile_read;
@@ -13,6 +14,7 @@ mod tool_config;
 mod warnings;
 
 use flavors::flavor;
+use gated::promote_gated_direct_deps;
 pub(crate) use lockfile_read::*;
 pub(crate) use parse::*;
 use specs::*;
@@ -97,15 +99,21 @@ impl EcosystemSupport for Python {
         project: &ParsedProject,
         deps: &[Dependency],
     ) -> Result<lockfiles::LockfileData> {
-        if let Some(data) = flavor(project.spec.kind).lockfile_data(config, opts, project, deps)? {
-            return Ok(data);
-        }
         let profile =
             python_lockfile_profile_for(&project.spec, opts, &project.python_root_extras)?;
-        let mut data = common::read_lockfile_data(project, deps, Some(&profile))?;
-        if project.deps.is_empty() && python_manifest_declares_no_dependencies(&project.spec)? {
-            data.scan_all_locked_packages()?;
-        }
+        let mut data = match flavor(project.spec.kind).lockfile_data(config, opts, project, deps)? {
+            Some(data) => data,
+            None => {
+                let mut data = common::read_lockfile_data(project, deps, Some(&profile))?;
+                if project.deps.is_empty()
+                    && python_manifest_declares_no_dependencies(&project.spec)?
+                {
+                    data.scan_all_locked_packages()?;
+                }
+                data
+            }
+        };
+        promote_gated_direct_deps(&mut data, &profile.coverage_roots, &project.deps);
         Ok(data)
     }
 
