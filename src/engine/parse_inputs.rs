@@ -23,16 +23,17 @@ pub(crate) fn parse_project_inputs_with_options(
             deps: parsed.deps,
             python_root_extras: parsed.python_root_extras,
             unlocked_tooling: false,
-            package_indexes: parsed.package_indexes,
+            package_indexes: parsed.package_indexes.clone(),
         });
         let tooling_groups = ecosystems::tooling_groups(spec.kind, parsed.unlocked_tooling_deps);
         for tooling_deps in tooling_groups.into_iter().filter(|deps| !deps.is_empty()) {
+            // The manifest's indexes serve its tooling too.
             projects.push(ParsedProject {
                 spec: spec.clone(),
                 deps: tooling_deps,
                 python_root_extras: PythonRootExtras::new(),
                 unlocked_tooling: true,
-                package_indexes: Vec::new(),
+                package_indexes: parsed.package_indexes.clone(),
             });
         }
     }

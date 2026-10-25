@@ -49,7 +49,8 @@ pub(crate) struct ParsedProject {
     /// Scanned without lockfile reconciliation; unresolved ranges are reported as warnings.
     pub(crate) unlocked_tooling: bool,
     /// Package indexes other than the ecosystem's public registry that the manifest itself
-    /// installs from (a requirements file's `--index-url` / `--extra-index-url`).
+    /// installs from (a requirements file's `--index-url` / `--extra-index-url`, a pyproject's
+    /// `[[tool.pdm.source]]`).
     pub(crate) package_indexes: Vec<String>,
 }
 

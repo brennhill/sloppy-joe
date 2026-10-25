@@ -62,6 +62,35 @@ fn pdm_index_redirects_block() {
 }
 
 #[test]
+fn pdm_sources_other_than_pypi_are_package_indexes() {
+    let indexes = |sources: &str| {
+        let spec = project(
+            &[("pyproject.toml", &format!("{PYPROJECT}\n{sources}"))],
+            "pyproject.toml",
+            ProjectInputKind::PyProjectLegacy,
+        );
+        pdm_source_indexes(&spec.manifest_path).unwrap()
+    };
+    assert!(indexes("").is_empty());
+    assert!(
+        indexes("[[tool.pdm.source]]\nname = \"pypi\"\nurl = \"https://pypi.org/simple\"\n")
+            .is_empty()
+    );
+    assert_eq!(
+        indexes(
+            "[[tool.pdm.source]]\nname = \"pypi\"\nurl = \"https://mirror.example/simple\"\n\
+             [[tool.pdm.source]]\nname = \"private\"\nurl = \"https://packages.example.com/simple\"\n\
+             [[tool.pdm.source]]\nname = \"nourl\"\n"
+        ),
+        vec![
+            config::normalize_python_index_url("https://mirror.example/simple"),
+            config::normalize_python_index_url("https://packages.example.com/simple"),
+            "<PDM source 'nourl' without a URL>".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn hatch_toml_environment_dependencies_block() {
     let spec = project(
         &[

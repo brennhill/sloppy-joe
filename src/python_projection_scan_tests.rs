@@ -120,15 +120,34 @@ async fn scan_requirements(
     opts: &ScanOptions<'_>,
     registry: &FakePypi,
 ) -> ScanReport {
+    let manifest = ("requirements.txt", requirements);
+    scan_manifest(
+        manifest,
+        ProjectInputKind::PyRequirements,
+        config,
+        opts,
+        registry,
+    )
+    .await
+}
+
+/// Scan one manifest (`(file name, content)`) that depends on `requests>=2`.
+async fn scan_manifest(
+    (file_name, content): (&str, &str),
+    kind: ProjectInputKind,
+    config: config::SloppyJoeConfig,
+    opts: &ScanOptions<'_>,
+    registry: &FakePypi,
+) -> ScanReport {
     let dir = unique_dir();
-    std::fs::write(dir.join("requirements.txt"), requirements).unwrap();
+    std::fs::write(dir.join(file_name), content).unwrap();
     let deps = vec![crate::test_helpers::dep_with(
         "requests",
         Some(">=2"),
         Ecosystem::PyPI,
     )];
     let report = scan_with_services_inner_for_kind(
-        Some(ProjectInputKind::PyRequirements),
+        Some(kind),
         &dir,
         config,
         deps,
@@ -231,6 +250,92 @@ async fn a_requirements_file_with_another_index_is_not_projected_from_pypi() {
     assert_eq!(warning.severity, Severity::Warning);
     assert!(warning.message.contains("packages.example.com"));
     assert!(find(&report, "ghost-helper", checks::names::EXISTENCE).is_none());
+}
+
+fn trusting_packages_example() -> config::SloppyJoeConfig {
+    let mut config = config::SloppyJoeConfig::default();
+    config.trusted_indexes.insert(
+        "pypi".to_string(),
+        vec![config::normalize_python_index_url(
+            "https://packages.example.com/simple",
+        )],
+    );
+    config
+}
+
+const PDM_PYPROJECT: &str =
+    "[project]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\"requests>=2\"]\n";
+
+#[tokio::test]
+async fn a_pyproject_with_an_allowlisted_pdm_source_is_not_projected_from_pypi() {
+    for source_name in ["private", "pypi"] {
+        let registry = FakePypi::new();
+        let pyproject = format!(
+            "{PDM_PYPROJECT}\n[[tool.pdm.source]]\nname = \"{source_name}\"\nurl = \"https://packages.example.com/simple\"\n"
+        );
+        let report = scan_manifest(
+            ("pyproject.toml", &pyproject),
+            ProjectInputKind::PyProjectLegacy,
+            trusting_packages_example(),
+            &ScanOptions::default(),
+            &registry,
+        )
+        .await;
+        assert!(registry.calls().is_empty(), "{:?}", registry.calls());
+        let warning = report
+            .issues
+            .iter()
+            .find(|issue| issue.check == checks::names::RESOLUTION_PYTHON_UNPROJECTABLE)
+            .expect("a PDM source makes the manifest unprojectable");
+        assert_eq!(warning.severity, Severity::Warning);
+        assert!(warning.message.contains("packages.example.com"));
+        assert!(find(&report, "ghost-helper", checks::names::EXISTENCE).is_none());
+    }
+}
+
+#[tokio::test]
+async fn a_pdm_source_naming_pypi_itself_still_projects() {
+    let registry = FakePypi::new();
+    let pyproject = format!(
+        "{PDM_PYPROJECT}\n[[tool.pdm.source]]\nname = \"pypi\"\nurl = \"https://pypi.org/simple\"\n"
+    );
+    let report = scan_manifest(
+        ("pyproject.toml", &pyproject),
+        ProjectInputKind::PyProjectLegacy,
+        config::SloppyJoeConfig::default(),
+        &ScanOptions::default(),
+        &registry,
+    )
+    .await;
+    assert!(find(&report, "ghost-helper", checks::names::EXISTENCE).is_some());
+}
+
+#[test]
+fn tooling_of_a_manifest_with_a_pdm_source_keeps_its_indexes() {
+    let dir = unique_dir();
+    let pyproject = format!(
+        "{PDM_PYPROJECT}\n[build-system]\nrequires = [\"setuptools>=61\"]\n\n[[tool.pdm.source]]\nname = \"private\"\nurl = \"https://packages.example.com/simple\"\n"
+    );
+    std::fs::write(dir.join("pyproject.toml"), pyproject).unwrap();
+    let spec = ProjectInputSpec {
+        kind: ProjectInputKind::PyProjectLegacy,
+        manifest_path: dir.join("pyproject.toml"),
+        lockfile_path_override: None,
+        js_binding: None,
+    };
+    let projects = parse_project_inputs(&dir, &[spec], &trusting_packages_example()).unwrap();
+    assert!(projects.iter().any(|project| project.unlocked_tooling));
+    for project in &projects {
+        assert_eq!(
+            project.package_indexes,
+            vec![config::normalize_python_index_url(
+                "https://packages.example.com/simple"
+            )],
+            "unlocked_tooling={}",
+            project.unlocked_tooling
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

@@ -62,14 +62,7 @@ fn reject_pdm_config(spec: &ProjectInputSpec, config: &config::SloppyJoeConfig) 
         return Ok(());
     }
     let pyproject = read_toml(&spec.manifest_path)?;
-    let sources = pyproject
-        .get("tool")
-        .and_then(|tool| tool.get("pdm"))
-        .and_then(|pdm| pdm.get("source"))
-        .and_then(|source| source.as_array());
-    for source in sources.into_iter().flatten() {
-        let url = source.get("url").and_then(|url| url.as_str());
-        let name = source.get("name").and_then(|name| name.as_str());
+    for (name, url) in pdm_sources(&pyproject) {
         let trusted = url.is_some_and(|url| config.is_trusted_index("pypi", url));
         let is_default_name = name.is_some_and(|name| name.eq_ignore_ascii_case("pypi"));
         if !trusted || (is_default_name && url.is_none()) {
@@ -81,6 +74,40 @@ fn reject_pdm_config(spec: &ProjectInputSpec, config: &config::SloppyJoeConfig) 
         }
     }
     Ok(())
+}
+
+/// `(name, url)` of every `[[tool.pdm.source]]` in a parsed pyproject.
+fn pdm_sources(pyproject: &toml::Value) -> impl Iterator<Item = (Option<&str>, Option<&str>)> {
+    pyproject
+        .get("tool")
+        .and_then(|tool| tool.get("pdm"))
+        .and_then(|pdm| pdm.get("source"))
+        .and_then(|source| source.as_array())
+        .into_iter()
+        .flatten()
+        .map(|source| {
+            (
+                source.get("name").and_then(|name| name.as_str()),
+                source.get("url").and_then(|url| url.as_str()),
+            )
+        })
+}
+
+/// The indexes other than PyPI that PDM installs a pyproject's packages from: the normalized URL
+/// of every `[[tool.pdm.source]]` that is not the default index (a source named `pypi` replaces
+/// it). A source without a URL still counts, so nothing is asked of PyPI on its behalf.
+pub(super) fn pdm_source_indexes(pyproject_path: &Path) -> Result<Vec<String>> {
+    let pyproject = read_toml(pyproject_path)?;
+    Ok(pdm_sources(&pyproject)
+        .map(|(name, url)| match url {
+            Some(url) => config::normalize_python_index_url(url),
+            None => format!(
+                "<PDM source '{}' without a URL>",
+                name.unwrap_or("<unnamed>")
+            ),
+        })
+        .filter(|index| index.as_str() != config::normalized_default_pypi_index())
+        .collect())
 }
 
 /// `hatch.toml` declares environments (`[envs.*]`) just like `[tool.hatch.envs]` in pyproject,

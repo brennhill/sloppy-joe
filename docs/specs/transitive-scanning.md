@@ -103,7 +103,9 @@ projected from PyPI metadata instead of read from a lockfile.
   counted) or needing more than 1500 PyPI metadata requests, **Then**
   `resolution/python-projection-bound` blocks, naming the bound.
 - **Given** a requirements graph with an allowlisted non-PyPI `--index-url`/`--extra-index-url`,
-  **Then** PyPI is not queried for that manifest and `resolution/python-unprojectable` warns;
+  or a `pyproject.toml` with an allowlisted `[[tool.pdm.source]]` other than PyPI (its build and
+  tool dependencies included), **Then** PyPI is not queried for that manifest and
+  `resolution/python-unprojectable` warns;
   **Given** an `internal` package (direct or transitive), **Then** it is never looked up on PyPI
   and the same warning names it.
 - **Given** a fast scan, **Then** nothing is projected.
@@ -134,7 +136,7 @@ projected from PyPI metadata instead of read from a lockfile.
   transitives say so: a summary warning per manifest and a note on every finding.
 - A projection never stops short silently: every failed lookup and every exceeded bound blocks.
 - A projection never asks PyPI about a name another index may serve (a non-PyPI index in the
-  requirements graph, an `internal` package).
+  requirements graph or in `[[tool.pdm.source]]`, an `internal` package).
 - Package names are validated before any registry URL is built, and versions before they are
   used as a URL path segment.
 - The system MUST use the existing 7-day similarity cache for `--deep` transitive
