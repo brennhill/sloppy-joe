@@ -30,9 +30,9 @@ inputs:
     required: false
     default: ''
   version:
-    description: 'sloppy-joe version to install (without v prefix). Defaults to latest.'
+    description: 'sloppy-joe version to install (without v prefix). The v1 action line defaults to 1.2.0; use brennhill/sloppy-joe@v2 for 2.x.'
     required: false
-    default: 'latest'
+    default: '1.2.0'
 
 runs:
   using: 'composite'
