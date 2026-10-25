@@ -280,6 +280,12 @@ async fn customize_unreadable_and_overwrite_hooks_block_even_when_paranoid_only(
             code: vec![],
             unreadable: None,
         },
+        StartupHook {
+            path: "p-1.0.data/data/lib/libpython3.12.so.1.0".into(),
+            kind: HookKind::EnvironmentOverwrite,
+            code: vec![],
+            unreadable: None,
+        },
     ] {
         let registry = FakeRegistry::new(vec![(
             "aa",
@@ -531,4 +537,11 @@ fn files_outside_site_packages_are_described_by_what_they_replace() {
         unreadable: None,
     };
     assert!(describe_hook(&env).contains("interpreter"));
+    let library = StartupHook {
+        path: "p-1.0.data/data/lib/libpython3.12.so.1.0".into(),
+        kind: HookKind::EnvironmentOverwrite,
+        code: vec![],
+        unreadable: None,
+    };
+    assert!(describe_hook(&library).contains("a shared library it loads"));
 }

@@ -97,7 +97,7 @@ fn cache_path(cache_dir: Option<&Path>) -> PathBuf {
 /// Version of what `registry::wheel::inspect_wheel` detects. A cache written by
 /// an older inspector is discarded: a wheel it read as clean may hold a hook
 /// the current one finds. Bump whenever detection widens.
-const WHEEL_CACHE_FORMAT: u32 = 3;
+const WHEEL_CACHE_FORMAT: u32 = 4;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WheelCache {
@@ -432,7 +432,7 @@ fn describe_hook(hook: &StartupHook) -> String {
                 "{path} (installed outside site-packages, where it replaces or shadows a standard library module)"
             ),
             HookKind::EnvironmentOverwrite => format!(
-                "{path} (installed outside site-packages, where it replaces the interpreter, its configuration or an activation script)"
+                "{path} (installed outside site-packages, where it replaces the interpreter, a shared library it loads, its configuration or an activation script)"
             ),
             _ => format!("{path} (runs at every interpreter start)"),
         };

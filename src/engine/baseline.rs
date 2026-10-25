@@ -3,8 +3,9 @@
 //! likely to be a guessed name, so it gets extra scrutiny (see
 //! `checks::steering`).
 //!
-//! The manifest at the ref is read with `git cat-file` (plumbing: no pager,
-//! no textconv, no hooks) and parsed by the project's own manifest parser from
+//! Whether the manifest exists at the ref is read from its tree with
+//! `git ls-tree`, and its bytes with `git cat-file` (plumbing: no pager,
+//! no textconv, no hooks); it is parsed by the project's own manifest parser from
 //! a private temporary directory. Only the manifest file is restored, so a
 //! manifest that needs siblings (`-r other.txt`) cannot be compared.
 
@@ -38,9 +39,9 @@ pub(crate) fn validate_ref(base_ref: &str) -> Result<()> {
     Ok(())
 }
 
-/// The git invocation. Its messages are forced into the C locale because `manifest_at_ref`
-/// classifies them by their English text; a localised git would otherwise turn "file absent at
-/// the ref" into a blocking error.
+/// The git invocation. Messages are forced into the C locale so the errors reported are
+/// readable in CI logs; no decision depends on their text. Pathspecs are literal, so a manifest
+/// path holding `*` or starting `:(` names only itself.
 fn git_command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
@@ -49,6 +50,7 @@ fn git_command(root: &Path, args: &[&str]) -> Command {
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_LITERAL_PATHSPECS", "1")
         .env("LC_ALL", "C")
         .env("LANGUAGE", "C")
         .env_remove("GIT_DIR")
@@ -56,37 +58,93 @@ fn git_command(root: &Path, args: &[&str]) -> Command {
     command
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    git_command(root, args)
+/// What a git run produced; only the exit status and stdout decide anything.
+struct GitOutput {
+    ok: bool,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+impl GitOutput {
+    fn stderr(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).trim().to_string()
+    }
+}
+
+fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
+    let output = git_command(root, args)
         .output()
-        .map_err(|e| anyhow!("could not run git: {e}"))
+        .map_err(|e| anyhow!("could not run git: {e}"))?;
+    Ok(GitOutput {
+        ok: output.status.success(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
 }
 
 /// The manifest's bytes at `base_ref`; `None` when the file did not exist there.
 fn manifest_at_ref(root: &Path, base_ref: &str, relative: &str) -> Result<Option<Vec<u8>>> {
+    manifest_at_ref_with(&mut |args| git(root, args), base_ref, relative)
+}
+
+/// `manifest_at_ref` over any git runner. The ref is resolved to one commit id, and whether
+/// the manifest exists there is read from that commit's tree (`ls-tree -z`, which neither
+/// quotes nor localises paths), never from the wording of an error: git 2.34 reports a missing
+/// path as "Not a valid object name", newer versions as "does not exist".
+fn manifest_at_ref_with(
+    git: &mut dyn FnMut(&[&str]) -> Result<GitOutput>,
+    base_ref: &str,
+    relative: &str,
+) -> Result<Option<Vec<u8>>> {
     let commit = format!("{base_ref}^{{commit}}");
-    let verified = git(root, &["rev-parse", "--verify", "--quiet", &commit])?;
-    if !verified.status.success() {
+    let verified = git(&["rev-parse", "--verify", "--quiet", &commit])?;
+    let oid = String::from_utf8_lossy(&verified.stdout).trim().to_string();
+    if !verified.ok {
         bail!(
             "git cannot resolve --base-ref {base_ref:?} to a commit (a shallow clone may lack it)"
         );
     }
-    let object = format!("{base_ref}:{relative}");
-    let blob = git(root, &["cat-file", "blob", &object])?;
-    if blob.status.success() {
-        if blob.stdout.len() as u64 > crate::fsutil::MAX_MANIFEST_BYTES {
-            bail!("{relative} at {base_ref} is larger than the manifest size limit");
-        }
-        return Ok(Some(blob.stdout));
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("git resolved --base-ref {base_ref:?} to {oid:?}, which is not a commit id");
     }
-    let stderr = String::from_utf8_lossy(&blob.stderr);
-    if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
+    let tree_ish = format!("{oid}^{{commit}}");
+    let listing = git(&[
+        "ls-tree",
+        "-z",
+        "--full-tree",
+        "--name-only",
+        &tree_ish,
+        "--",
+        relative,
+    ])?;
+    if !listing.ok {
+        bail!(
+            "git could not list {relative} at {base_ref}: {}",
+            listing.stderr()
+        );
+    }
+    if listing.stdout.is_empty() {
         return Ok(None);
     }
-    bail!(
-        "git could not read {relative} at {base_ref}: {}",
-        stderr.trim()
-    )
+    let expected = [relative.as_bytes(), b"\0"].concat();
+    if listing.stdout != expected {
+        bail!(
+            "git listed {:?} for {relative} at {base_ref}",
+            String::from_utf8_lossy(&listing.stdout)
+        );
+    }
+    let object = format!("{oid}:{relative}");
+    let blob = git(&["cat-file", "blob", &object])?;
+    if !blob.ok {
+        bail!(
+            "git could not read {relative} at {base_ref}: {}",
+            blob.stderr()
+        );
+    }
+    if blob.stdout.len() as u64 > crate::fsutil::MAX_MANIFEST_BYTES {
+        bail!("{relative} at {base_ref} is larger than the manifest size limit");
+    }
+    Ok(Some(blob.stdout))
 }
 
 struct TempDir(PathBuf);

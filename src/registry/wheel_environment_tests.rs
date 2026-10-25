@@ -92,6 +92,109 @@ fn interpreter_and_activation_files_are_environment_overwrites() {
 }
 
 #[test]
+fn the_interpreters_own_library_and_binaries_are_environment_overwrites() {
+    // An --enable-shared interpreter (the official Docker images) loads
+    // <prefix>/lib/libpython3.12.so.1.0 through its RUNPATH at every start; a macOS framework
+    // build loads <prefix>/Python and runs <prefix>/Resources/Python.app/Contents/MacOS/Python.
+    for name in [
+        "sj-1.0.data/data/lib/libpython3.12.so.1.0",
+        "sj-1.0.data/data/lib/libpython3.12.so",
+        "sj-1.0.data/data/lib/libpython3.12.dylib",
+        "sj-1.0.data/data/lib/libpython3.so",
+        "sj-1.0.data/data/lib/libpython3.7m.so.1.0",
+        "sj-1.0.data/data/lib/libpython3.13t.so.1.0",
+        "sj-1.0.data/data/lib64/libpython3.12.so.1.0",
+        "sj-1.0.data/data/lib/libpypy3.10-c.so",
+        "sj-1.0.data/data/LIB/LIBPYTHON3.12.DYLIB",
+        "sj-1.0.data/data/Python",
+        "sj-1.0.data/data/Resources/Python.app/Contents/MacOS/Python",
+        "sj-1.0.data/data/Resources/Python.app/Contents/Info.plist",
+        "sj-1.0.data/scripts/python3.7m",
+        "sj-1.0.data/scripts/python3.7dm",
+        "sj-1.0.data/data/bin/python3.7m",
+    ] {
+        assert_eq!(kinds(name), [HookKind::EnvironmentOverwrite], "{name}");
+    }
+}
+
+#[test]
+fn libraries_the_interpreter_and_its_stdlib_load_are_environment_overwrites() {
+    // conda environments and python.org macOS builds load these from <prefix>/lib (RPATH
+    // `$ORIGIN/../..`, absolute install names): a wheel's copy replaces the interpreter's.
+    for name in [
+        "sj-1.0.data/data/lib/libssl.so.3",
+        "sj-1.0.data/data/lib/libcrypto.3.dylib",
+        "sj-1.0.data/data/lib/libffi.so.8",
+        "sj-1.0.data/data/lib/libz.so.1",
+        "sj-1.0.data/data/lib/libbz2.so.1.0",
+        "sj-1.0.data/data/lib/liblzma.so.5",
+        "sj-1.0.data/data/lib/libzstd.so.1",
+        "sj-1.0.data/data/lib/libsqlite3.so.0",
+        "sj-1.0.data/data/lib/libmpdec.so.4",
+        "sj-1.0.data/data/lib/libexpat.so.1",
+        "sj-1.0.data/data/lib/libreadline.so.8",
+        "sj-1.0.data/data/lib/libncursesw.so.6",
+        "sj-1.0.data/data/lib/libtinfow.so.6",
+        "sj-1.0.data/data/lib/libtcl8.6.dylib",
+        "sj-1.0.data/data/lib/libtcl9tk9.0.so",
+        "sj-1.0.data/data/lib/libtk8.6.so",
+        "sj-1.0.data/data/lib/libicuuc.so.78",
+        "sj-1.0.data/data/lib/libuuid.so.1",
+        "sj-1.0.data/data/lib/libgdbm_compat.so.4",
+        "sj-1.0.data/data/lib/libstdc++.so.6",
+        "sj-1.0.data/data/lib/libgcc_s.so.1",
+        "sj-1.0.data/data/lib/libc.so.6",
+        "sj-1.0.data/data/lib/libm.so.6",
+        "sj-1.0.data/data/lib/libssl-3-x64.dll",
+        "sj-1.0.data/data/lib64/libffi.so.8",
+    ] {
+        assert_eq!(kinds(name), [HookKind::EnvironmentOverwrite], "{name}");
+    }
+}
+
+#[test]
+fn any_shared_library_in_a_multiarch_directory_is_an_environment_overwrite() {
+    // Debian and Ubuntu list <prefix>/lib/<triplet> (prefix /usr/local) ahead of the system's
+    // /lib/<triplet>, so after the next ldconfig it provides that library to every program.
+    for name in [
+        "sj-1.0.data/data/lib/x86_64-linux-gnu/libz.so.1",
+        "sj-1.0.data/data/lib/aarch64-linux-gnu/libcurl.so.4",
+        "sj-1.0.data/data/lib/arm-linux-gnueabihf/libsj.so",
+    ] {
+        assert_eq!(kinds(name), [HookKind::EnvironmentOverwrite], "{name}");
+    }
+}
+
+#[test]
+fn other_libraries_and_files_in_the_prefix_lib_are_not_hooks() {
+    // Intel's mkl, intel-openmp, tbb and intel-cmplr-lib-rt wheels install dozens of libraries
+    // in <prefix>/lib under their own names; nothing the interpreter loads is replaced.
+    for name in [
+        "sj-1.0.data/data/lib/libmkl_core.so.3",
+        "sj-1.0.data/data/lib/libiomp5.so",
+        "sj-1.0.data/data/lib/libtbb.so.12",
+        "sj-1.0.data/data/lib/libimf.so",
+        "sj-1.0.data/data/lib/libzmq.so.5",
+        "sj-1.0.data/data/lib/libcurl.so.4",
+        "sj-1.0.data/data/lib/libmagic.so",
+        "sj-1.0.data/data/lib/libpython3.12.a",
+        "sj-1.0.data/data/lib/libssl.a",
+        "sj-1.0.data/data/lib/libsj.so.1.2",
+        "sj-1.0.data/data/lib/sj/libssl.so.3",
+        "sj-1.0.data/data/lib/x86_64-linux-gnu/pkgconfig/sj.pc",
+        "sj-1.0.data/data/lib/x86_64-linux-gnu/libsj.a",
+        "sj-1.0.data/data/share/libpython3.12.so",
+        "sj-1.0.data/data/Library/bin/libiomp5md.dll",
+        "sj-1.0.data/data/python-sj.txt",
+        "sj-1.0.data/data/share/Python",
+        "sj-1.0.data/data/Resources/sj.app/Contents/MacOS/Python",
+        "sj-1.0.data/scripts/python3.7mx",
+    ] {
+        assert!(kinds(name).is_empty(), "{name}: {:?}", kinds(name));
+    }
+}
+
+#[test]
 fn the_windows_prefix_is_a_site_directory() {
     // On Windows site.getsitepackages() lists sys.prefix itself, so <dist>.data/data/x.pth
     // (installed at <prefix>\x.pth) is processed at every start, in venvs too.

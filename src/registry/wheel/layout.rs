@@ -27,7 +27,8 @@ pub(super) enum Role {
     Customize,
     /// Outside `site-packages`, in or ahead of the standard library (see `environment`).
     Stdlib,
-    /// Outside `site-packages`: the interpreter, its configuration or activation scripts.
+    /// Outside `site-packages`: the interpreter, a shared library it loads, its configuration
+    /// or activation scripts.
     Environment,
 }
 
