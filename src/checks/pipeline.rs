@@ -241,11 +241,15 @@ impl Check for MaliciousCheck {
         acc: &'a mut ScanAccumulator,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
+            // Registry metadata carries the id spellings OSV needs (NuGet).
+            ensure_metadata_lookups(ctx, acc).await;
+            let lookups = acc.metadata_lookups.as_deref().unwrap_or_default();
             let results = if ctx.opts.disable_osv_disk_cache || ctx.opts.no_cache {
                 super::malicious::check_malicious_with_cache(
                     ctx.osv_client,
                     ctx.non_internal_deps,
                     ctx.resolution,
+                    lookups,
                     None,
                 )
                 .await?
@@ -254,6 +258,7 @@ impl Check for MaliciousCheck {
                     ctx.osv_client,
                     ctx.non_internal_deps,
                     ctx.resolution,
+                    lookups,
                     Some(&cache_dir.join("osv-cache.json")),
                 )
                 .await?
@@ -262,6 +267,7 @@ impl Check for MaliciousCheck {
                     ctx.osv_client,
                     ctx.non_internal_deps,
                     ctx.resolution,
+                    lookups,
                 )
                 .await?
             };

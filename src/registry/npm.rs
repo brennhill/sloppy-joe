@@ -173,6 +173,7 @@ fn metadata_from_body(
         npm_tarball,
         pypi_release: None,
         release_cadence: npm_cadence(time, &selected_ver),
+        registry_ids: Vec::new(),
     })
 }
 

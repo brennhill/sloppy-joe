@@ -406,7 +406,7 @@ async fn malformed_registration_data_fails_closed() {
     for body in [
         serde_json::json!({"no_items": true}),
         serde_json::json!({"items": [{"count": 1}]}),
-        serde_json::json!({"items": [{"items": [{"catalogEntry": {"published": "2020-01-01T00:00:00Z"}}]}]}),
+        serde_json::json!({"items": [{"items": [{"catalogEntry": {"id": "Acme.Lib", "published": "2020-01-01T00:00:00Z"}}]}]}),
         serde_json::json!({"items": [{"items": [{"no_catalog": {}}]}]}),
         serde_json::json!(["not", "an", "object"]),
     ] {
@@ -452,6 +452,44 @@ async fn unlisted_sentinel_date_is_not_a_publish_date() {
         .unwrap();
     assert_eq!(meta.latest_version_date, None);
     assert_eq!(meta.created.as_deref(), Some("2020-01-01T00:00:00+00:00"));
+}
+
+#[tokio::test]
+async fn metadata_reports_each_published_id_spelling() {
+    let mut legacy = entry("0.9.0", "2019-01-01T00:00:00+00:00");
+    legacy["catalogEntry"]["id"] = "acme.lib".into();
+    let server = mock_server(move |_| {
+        [(
+            INDEX.to_string(),
+            gz(&inline_index(vec![
+                legacy,
+                entry("1.0.0", "2020-01-01T00:00:00+00:00"),
+                entry("1.1.0", "2020-02-01T00:00:00+00:00"),
+            ])),
+        )]
+        .into()
+    })
+    .await;
+    let meta = registry(&server.origin)
+        .metadata("ACME.LIB", Some("1.0.0"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.registry_ids, vec!["Acme.Lib", "acme.lib"]);
+}
+
+#[tokio::test]
+async fn catalog_entry_for_another_id_fails_closed() {
+    for id in [serde_json::Value::Null, "Other.Lib".into(), "".into()] {
+        let mut wrong = entry("1.0.0", "2020-01-01T00:00:00+00:00");
+        wrong["catalogEntry"]["id"] = id.clone();
+        let route = gz(&inline_index(vec![wrong]));
+        let server = mock_server(move |_| [(INDEX.to_string(), route)].into()).await;
+        let result = registry(&server.origin)
+            .metadata("Acme.Lib", Some("1.0.0"))
+            .await;
+        assert!(result.is_err(), "{id}: {result:?}");
+    }
 }
 
 #[test]

@@ -113,6 +113,8 @@ fn registration_http_client() -> reqwest::Client {
 
 /// One version entry from a registration page.
 struct RegistrationEntry {
+    /// The package id as this version's publisher spelled it.
+    id: String,
     version: String,
     published: Option<String>,
 }
@@ -268,12 +270,21 @@ impl NugetRegistry {
                     .and_then(|version| version.as_str())
                     .filter(|version| !version.trim().is_empty())
                     .ok_or_else(|| malformed(package_name, "an entry has no version"))?;
+                let id = catalog
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .map(str::trim)
+                    .filter(|id| id.eq_ignore_ascii_case(package_name))
+                    .ok_or_else(|| {
+                        malformed(package_name, "an entry has no id for this package")
+                    })?;
                 let published = catalog
                     .get("published")
                     .and_then(|published| published.as_str())
                     .filter(|published| !published.starts_with(UNLISTED_PUBLISHED_PREFIX))
                     .map(str::to_string);
                 entries.push(RegistrationEntry {
+                    id: id.to_string(),
                     version: version.trim().to_string(),
                     published,
                 });
@@ -342,9 +353,14 @@ impl super::RegistryMetadata for NugetRegistry {
             None => entries.last().and_then(|entry| entry.published.clone()),
         };
 
+        let mut registry_ids: Vec<String> = entries.iter().map(|entry| entry.id.clone()).collect();
+        registry_ids.sort();
+        registry_ids.dedup();
+
         Ok(Some(super::PackageMetadata {
             created,
             latest_version_date,
+            registry_ids,
             ..Default::default()
         }))
     }
