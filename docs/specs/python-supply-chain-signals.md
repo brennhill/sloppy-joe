@@ -44,8 +44,32 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
   dropped, `\` is both a literal character (POSIX) and a separator (Windows), Windows trailing
   dots and spaces are trimmed, and a member lands at the top of `site-packages` from the wheel
   root, `<dist>.data/purelib|platlib/`, or any `<dist>.data/<key>/.../site-packages/` (or
-  `dist-packages/`). A name that is absolute, climbs above its directory, contains `:`, or has
-  a segment Windows reduces to nothing makes the wheel unverified, never skipped.
+  `dist-packages/`), or `<dist>.data/data/` itself (Windows `site` treats `sys.prefix` as a site
+  directory, so `<dist>.data/data/x.pth` runs at startup there, in venvs too). A name that is
+  absolute, climbs above its directory, contains `:`, or has a segment Windows reduces to
+  nothing makes the wheel unverified, never skipped.
+- `<dist>.data/` files installed outside `site-packages` are `metadata/python-startup-hook`s
+  too, always blocking. pip and uv install `data/<rest>` at `sys.prefix/<rest>` and
+  `scripts/<rest>` in `bin` (`Scripts`), replacing existing files; `headers/` (include
+  directory) and other data (`share/`, `etc/`, `include/`, `lib/*.so`, `lib/pkgconfig/`) are
+  not reported, nor are ordinary scripts. Reported, after the path normalization above:
+  - Standard-library overwrite (`StdlibOverwrite`): anything under `data/lib/python*/` or
+    `data/lib/pypy*/` (also `lib64/`) other than its `site-packages`/`dist-packages`, including
+    `lib/python3XY.zip`; `data/Lib/` files Windows imports (`.py`, `.pyc`, `.pyw`, `.pyd`);
+    anything under `data/DLLs/`; `data/python3XY.zip`. On a base interpreter (system Python,
+    Docker images) that is the standard library itself, and modules imported at startup
+    (`encodings`) run at every start. Modules Python 3.11+ loads frozen (`site`, `os`, `codecs`)
+    do not run from disk at startup, but are still reported.
+  - A module or package named after a standard-library module (`sys.stdlib_module_names` of
+    3.10-3.15, case-insensitive) directly in the scripts directory (`scripts/json.py`,
+    `data/bin/re.py`, `data/Scripts/typing.pyd`, `scripts/json/`): a console script runs with
+    its own directory first on `sys.path`, so every script in the environment imports it
+    instead of the standard library (`StdlibOverwrite`).
+  - Environment overwrite (`EnvironmentOverwrite`): `python`, `python3`, `python3.12`,
+    `python3.13t`, `pythonw`, `pypy3` (with or without `.exe`) and the activation scripts
+    (`activate`, `activate.<shell>`, `Activate.ps1`, `activate_this.py`, `deactivate.*`) in the
+    scripts directory; `pyvenv.cfg`, `*._pth`, `python*.exe`/`.dll` and `vcruntime*.dll` at the
+    prefix.
 - `.pth`/`.start` lines are read every way a supported Python reads them: a leading UTF-8 BOM
   is dropped, lines split on every `str.splitlines` break (lone `\r`, `\x0b`, `\x0c`,
   `\x1c`-`\x1e`, NEL, U+2028, U+2029), the file is decoded as UTF-8 and as Latin-1 (the locale
@@ -99,8 +123,9 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 ## Scope Boundaries
 
 - Not covered: sdist `setup.py`, hook code beyond the listed tokens, `<dist>.data/data/`
-  files that overwrite the standard library of a non-virtual-environment install,
-  Yarn Berry/other non-PyPI lock hashes, requirements.txt `--hash`, MCP name similarity,
+  files that other programs execute (`etc/jupyter/` server extensions, shell profiles), console
+  entry points (`entry_points.txt`) named `python` or `activate`, scripts that shadow
+  third-party module names, Yarn Berry/other non-PyPI lock hashes, requirements.txt `--hash`, MCP name similarity,
   attestation status. Baseline comparison covers direct manifest dependencies only, and a
   manifest that needs sibling files (`-r other.txt`) cannot be compared.
 
@@ -112,7 +137,8 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 
 ## Context Anchors
 
-- `src/registry/pypi_release.rs`, `src/registry/cadence.rs`, `src/registry/wheel.rs`
+- `src/registry/pypi_release.rs`, `src/registry/cadence.rs`, `src/registry/wheel.rs`,
+  `src/registry/wheel/layout.rs`, `src/registry/wheel/environment.rs`
 - `src/engine/baseline.rs`, `src/checks/wheel_verification.rs`, `src/checks/python_lockfile_hashes.rs`,
   `src/checks/release_cadence.rs`, `src/checks/steering.rs`
 - `src/lockfiles/python_hashes.rs`

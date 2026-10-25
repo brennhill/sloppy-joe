@@ -4,7 +4,9 @@
 //! without being imported: `*.pth` lines starting with `import` execute at
 //! every interpreter start, and `sitecustomize` / `usercustomize` are imported
 //! by `site`. Compromised releases (LiteLLM 1.82.8, the Hades campaign) used
-//! exactly this to run before any application code.
+//! exactly this to run before any application code. A wheel's `<dist>.data/`
+//! directory can also install outside `site-packages`, into the standard
+//! library or over the interpreter and activation scripts (`environment`).
 //!
 //! The wheel is read in memory and never extracted. Anything this reader
 //! cannot model, or that installers could read differently (zip64, a second
@@ -13,8 +15,10 @@
 //! oversize hook files are reported as unreadable hooks.
 
 mod archive;
+mod environment;
 mod layout;
 mod pth;
+mod stdlib;
 
 use super::npm_tarball::{IntegrityMismatch, download_tarball, hex};
 use super::pypi_release::PypiFile;
@@ -41,6 +45,15 @@ pub enum HookKind {
     /// A `*.start` file (Python 3.15, PEP 829) whose `pkg.mod:callable`
     /// entry points `site` calls at startup.
     StartEntryPoint,
+    /// A `<dist>.data/` file installed outside `site-packages` into the
+    /// standard library of a base interpreter (`lib/pythonX.Y/`, Windows
+    /// `Lib\`, `DLLs\`, the stdlib zip), or a stdlib-named module beside the
+    /// console scripts, which import it instead of the standard library's.
+    StdlibOverwrite,
+    /// A `<dist>.data/` file that replaces the environment's interpreter
+    /// (`bin/python3`, `python.exe`, `python3XY.dll`), its configuration
+    /// (`pyvenv.cfg`, `._pth`) or an activation script.
+    EnvironmentOverwrite,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,8 +86,22 @@ fn strongest_role(entry: &Entry) -> Result<Option<(Role, &str)>> {
     Ok(best)
 }
 
+/// Hooks that are reported for what they are, without reading their content.
+fn unread_kind(role: Role) -> Option<HookKind> {
+    match role {
+        Role::Customize => Some(HookKind::CustomizeModule),
+        Role::Stdlib => Some(HookKind::StdlibOverwrite),
+        Role::Environment => Some(HookKind::EnvironmentOverwrite),
+        Role::Pth | Role::Start => None,
+    }
+}
+
 fn hook(path: &str, kind: HookKind, mut code: Vec<String>) -> Option<StartupHook> {
-    if code.is_empty() && kind != HookKind::CustomizeModule {
+    let runs_by_content = matches!(
+        kind,
+        HookKind::PthImport | HookKind::PthPath | HookKind::StartEntryPoint
+    );
+    if code.is_empty() && runs_by_content {
         return None;
     }
     code.truncate(MAX_SHOWN_LINES);
@@ -86,14 +113,14 @@ fn hook(path: &str, kind: HookKind, mut code: Vec<String>) -> Option<StartupHook
     })
 }
 
-/// The hook a member installs: customize modules are hooks unread; `.pth`
-/// and `.start` files are hooks when a line acts at startup, or when they
-/// cannot be read (reported, never skipped).
+/// The hook a member installs: customize modules and files outside
+/// `site-packages` are hooks unread; `.pth` and `.start` files are hooks when
+/// a line acts at startup, or when they cannot be read (reported, never skipped).
 fn member_hook(data: &[u8], entry: &Entry, path: &str, role: Role) -> Option<StartupHook> {
-    let content = match role {
-        Role::Customize => return hook(path, HookKind::CustomizeModule, Vec::new()),
-        Role::Pth | Role::Start => archive::entry_bytes(data, entry, MAX_HOOK_BYTES),
-    };
+    if let Some(kind) = unread_kind(role) {
+        return hook(path, kind, Vec::new());
+    }
+    let content = archive::entry_bytes(data, entry, MAX_HOOK_BYTES);
     let unreadable_kind = match role {
         Role::Start => HookKind::StartEntryPoint,
         _ => HookKind::PthImport,
@@ -224,3 +251,7 @@ mod pth_tests;
 #[cfg(test)]
 #[path = "wheel_archive_tests.rs"]
 mod archive_tests;
+
+#[cfg(test)]
+#[path = "wheel_environment_tests.rs"]
+mod environment_tests;

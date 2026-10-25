@@ -25,10 +25,14 @@ pub(super) enum Role {
     Start,
     /// `sitecustomize` / `usercustomize` as a module, extension, bytecode or package.
     Customize,
+    /// Outside `site-packages`, in or ahead of the standard library (see `environment`).
+    Stdlib,
+    /// Outside `site-packages`: the interpreter, its configuration or activation scripts.
+    Environment,
 }
 
 const CUSTOMIZE: [&str; 2] = ["sitecustomize", "usercustomize"];
-const SITE_DIRS: [&str; 2] = ["site-packages", "dist-packages"];
+pub(super) const SITE_DIRS: [&str; 2] = ["site-packages", "dist-packages"];
 /// `<dist>.data/<key>/` subdirectories whose files go straight into `site-packages`.
 const LIB_SCHEMES: [&str; 2] = ["purelib", "platlib"];
 
@@ -39,9 +43,11 @@ pub(super) fn roles(name: &str) -> Result<Vec<Role>> {
     }
     let mut roles = Vec::new();
     for windows in [false, true] {
-        for landing in landings(&segments(name, windows)?) {
+        let segments = segments(name, windows)?;
+        for landing in landings(&segments) {
             roles.extend(role_at_top(&landing));
         }
+        roles.extend(super::environment::role(&segments));
     }
     roles.sort();
     roles.dedup();
@@ -80,8 +86,10 @@ fn segments(name: &str, windows: bool) -> Result<Vec<String>> {
 
 /// Paths relative to a `site-packages` directory where the member may land:
 /// the root scheme (the name itself), `<dist>.data/purelib|platlib/<rest>`,
-/// and any `<dist>.data/<key>/.../site-packages/<rest>` (the `data` scheme
-/// installs under the environment prefix, which holds `site-packages`).
+/// any `<dist>.data/<key>/.../site-packages/<rest>` (the `data` scheme
+/// installs under the environment prefix, which holds `site-packages`), and
+/// `<dist>.data/data/<rest>` itself: on Windows `site` treats the prefix as a
+/// site directory too (`site.getsitepackages()` lists `sys.prefix`).
 fn landings(segments: &[String]) -> Vec<Vec<String>> {
     let mut found = vec![segments.to_vec()];
     let [data, key, rest @ ..] = segments else {
@@ -90,7 +98,8 @@ fn landings(segments: &[String]) -> Vec<Vec<String>> {
     if !data.to_ascii_lowercase().ends_with(".data") || rest.is_empty() {
         return found;
     }
-    if LIB_SCHEMES.contains(&key.to_ascii_lowercase().as_str()) {
+    let key = key.to_ascii_lowercase();
+    if LIB_SCHEMES.contains(&key.as_str()) || key == "data" {
         found.push(rest.to_vec());
     }
     for (at, segment) in rest.iter().enumerate() {
@@ -101,7 +110,7 @@ fn landings(segments: &[String]) -> Vec<Vec<String>> {
     found
 }
 
-fn module_stem(segment: &str) -> String {
+pub(super) fn module_stem(segment: &str) -> String {
     segment
         .split('.')
         .next()

@@ -254,7 +254,7 @@ async fn paranoid_hook_that_spawns_processes_blocks() {
 }
 
 #[tokio::test]
-async fn sitecustomize_and_unreadable_hooks_block_even_when_paranoid_only() {
+async fn customize_unreadable_and_overwrite_hooks_block_even_when_paranoid_only() {
     for bad in [
         StartupHook {
             path: "sitecustomize.py".into(),
@@ -267,6 +267,18 @@ async fn sitecustomize_and_unreadable_hooks_block_even_when_paranoid_only() {
             kind: HookKind::PthImport,
             code: vec![],
             unreadable: Some("too big".into()),
+        },
+        StartupHook {
+            path: "p-1.0.data/data/lib/python3.12/site.py".into(),
+            kind: HookKind::StdlibOverwrite,
+            code: vec![],
+            unreadable: None,
+        },
+        StartupHook {
+            path: "p-1.0.data/scripts/activate".into(),
+            kind: HookKind::EnvironmentOverwrite,
+            code: vec![],
+            unreadable: None,
         },
     ] {
         let registry = FakeRegistry::new(vec![(
@@ -501,4 +513,22 @@ fn path_and_start_hooks_are_described_by_what_they_do() {
         unreadable: None,
     };
     assert!(describe_hook(&start).contains("calls pkg.boot:run"));
+}
+
+#[test]
+fn files_outside_site_packages_are_described_by_what_they_replace() {
+    let stdlib = StartupHook {
+        path: "p-1.0.data/data/lib/python3.12/encodings/aliases.py".into(),
+        kind: HookKind::StdlibOverwrite,
+        code: vec![],
+        unreadable: None,
+    };
+    assert!(describe_hook(&stdlib).contains("standard library"));
+    let env = StartupHook {
+        path: "p-1.0.data/scripts/python3".into(),
+        kind: HookKind::EnvironmentOverwrite,
+        code: vec![],
+        unreadable: None,
+    };
+    assert!(describe_hook(&env).contains("interpreter"));
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 2.0.1
+
+- Python: wheel inspection now reports `<dist>.data/` files that install outside `site-packages` as blocking `metadata/python-startup-hook`s. pip and uv install `<dist>.data/data/<rest>` at `sys.prefix/<rest>`, so `<dist>.data/data/lib/python3.12/encodings/aliases.py` replaces the standard library of a base interpreter (system Python, Docker images) and runs at every start; `Lib/`, `DLLs/` and the stdlib zip on Windows are covered too. A module named after a standard-library module in the scripts directory (`<dist>.data/scripts/json.py`) is reported because console scripts import it instead of the standard library, as are files that replace the interpreter, `pyvenv.cfg`, `._pth` or an activation script (`<dist>.data/scripts/activate`, `bin/python3`). On Windows `<dist>.data/data/x.pth` and `sitecustomize` at the prefix are startup hooks, since `site` treats the prefix as a site directory. Ordinary scripts, headers and other data files are not reported. Wheel results cached by the older inspector are discarded.
+
 ## 2.0.0
 
 Major release: behaviour changes that can newly block a scan, most of which close the red-team findings.

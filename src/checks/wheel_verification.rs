@@ -19,11 +19,16 @@
 //! that falls beyond a limit, gives a blocking `metadata/wheel-unverified`; a
 //! digest mismatch gives a blocking `metadata/wheel-integrity-mismatch`.
 //!
+//! A `<dist>.data/` file installed outside `site-packages`, into the standard
+//! library or over the interpreter or activation scripts, is reported the same
+//! way.
+//!
 //! A hook is `metadata/python-startup-hook`. Legitimate packages ship some
 //! (namespace packages, `distutils-precedence.pth`), so a hook blocks when the
-//! version is young or flagged, is a `sitecustomize` module, could not be
-//! read, or runs code that spawns processes or reaches the network; otherwise
-//! (a `--paranoid` look at an established version) it is a warning.
+//! version is young or flagged, is a `sitecustomize` module or an overwrite
+//! outside `site-packages`, could not be read, or runs code that spawns
+//! processes or reaches the network; otherwise (a `--paranoid` look at an
+//! established version) it is a warning.
 
 use super::metadata::{MetadataLookup, age_in_hours};
 use crate::Ecosystem;
@@ -92,7 +97,7 @@ fn cache_path(cache_dir: Option<&Path>) -> PathBuf {
 /// Version of what `registry::wheel::inspect_wheel` detects. A cache written by
 /// an older inspector is discarded: a wheel it read as clean may hold a hook
 /// the current one finds. Bump whenever detection widens.
-const WHEEL_CACHE_FORMAT: u32 = 2;
+const WHEEL_CACHE_FORMAT: u32 = 3;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WheelCache {
@@ -406,7 +411,10 @@ fn unit_report(unit: &Unit, outcomes: &HashMap<String, FileOutcome>) -> UnitRepo
 
 fn hook_is_suspicious(hook: &StartupHook) -> bool {
     hook.unreadable.is_some()
-        || hook.kind == HookKind::CustomizeModule
+        || matches!(
+            hook.kind,
+            HookKind::CustomizeModule | HookKind::StdlibOverwrite | HookKind::EnvironmentOverwrite
+        )
         || hook.code.iter().any(|line| {
             let lower = line.to_ascii_lowercase();
             SUSPICIOUS_TOKENS.iter().any(|token| lower.contains(token))
@@ -419,14 +427,25 @@ fn describe_hook(hook: &StartupHook) -> String {
         return format!("{path} (unreadable: {})", sanitize_for_terminal(reason));
     }
     let Some(line) = hook.code.first().map(|l| sanitize_for_terminal(l)) else {
-        return format!("{path} (runs at every interpreter start)");
+        return match hook.kind {
+            HookKind::StdlibOverwrite => format!(
+                "{path} (installed outside site-packages, where it replaces or shadows a standard library module)"
+            ),
+            HookKind::EnvironmentOverwrite => format!(
+                "{path} (installed outside site-packages, where it replaces the interpreter, its configuration or an activation script)"
+            ),
+            _ => format!("{path} (runs at every interpreter start)"),
+        };
     };
     match hook.kind {
         HookKind::PthPath => format!(
             "{path} adds '{line}' to sys.path, where a sitecustomize/usercustomize module runs at startup"
         ),
         HookKind::StartEntryPoint => format!("{path} calls {line} at startup"),
-        HookKind::PthImport | HookKind::CustomizeModule => format!("{path}: {line}"),
+        HookKind::PthImport
+        | HookKind::CustomizeModule
+        | HookKind::StdlibOverwrite
+        | HookKind::EnvironmentOverwrite => format!("{path}: {line}"),
     }
 }
 
@@ -450,7 +469,7 @@ fn hook_issue(unit: &Unit, hooks: &[StartupHook]) -> Issue {
     };
     Issue::new(&unit.package, names::METADATA_PYTHON_STARTUP_HOOK, severity)
         .message(format!(
-            "A wheel of '{}' installs code that Python runs at every interpreter start, before any application code: {}{suffix}. Compromised releases (LiteLLM 1.82.8, the Hades campaign) used startup hooks to run without being imported.",
+            "A wheel of '{}' installs code that Python runs before any application code, at interpreter start or in place of the standard library or interpreter: {}{suffix}. Compromised releases (LiteLLM 1.82.8, the Hades campaign) used startup hooks to run without being imported.",
             label(unit),
             listed.join("; ")
         ))
