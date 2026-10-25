@@ -135,6 +135,17 @@ impl EcosystemSupport for Jvm {
         }))
     }
 
+    async fn project_transitives(
+        &self,
+        _project: &ParsedProject,
+        _config: &config::SloppyJoeConfig,
+        _registry: &dyn registry::Registry,
+        _opts: &ScanOptions<'_>,
+    ) -> Result<ProjectedTransitives> {
+        // The lockfile records every transitive dependency this ecosystem installs.
+        Ok(ProjectedTransitives::default())
+    }
+
     async fn implementation_issues(
         &self,
         project: &ParsedProject,

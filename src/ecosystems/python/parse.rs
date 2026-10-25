@@ -96,7 +96,33 @@ pub(crate) fn parse_python_project_dependencies(
         warnings,
         python_root_extras: root_extras,
         unlocked_tooling_deps,
+        package_indexes: requirements_package_indexes(scan_root, spec),
     })
+}
+
+/// The non-PyPI indexes a requirements graph installs from. Index configuration that cannot be
+/// read blocks the project in preflight; here it still counts as another index, so nothing is
+/// asked of PyPI on its behalf.
+fn requirements_package_indexes(
+    scan_root: &std::path::Path,
+    spec: &ProjectInputSpec,
+) -> Vec<String> {
+    if !matches!(
+        spec.kind,
+        ProjectInputKind::PyRequirements | ProjectInputKind::PyRequirementsTrusted
+    ) {
+        return Vec::new();
+    }
+    match parsers::requirements::source_provenance(&spec.manifest_path, scan_root) {
+        Ok(provenance) => provenance
+            .all_indexes()
+            .filter(|index| {
+                config::normalize_python_index_url(index) != config::normalized_default_pypi_index()
+            })
+            .cloned()
+            .collect(),
+        Err(_) => vec!["<unreadable index configuration>".to_string()],
+    }
 }
 
 /// Poetry and uv resolve environment markers through their lockfile.

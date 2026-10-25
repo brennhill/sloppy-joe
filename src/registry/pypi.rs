@@ -77,6 +77,41 @@ impl super::RegistryMetadata for PypiRegistry {
         Ok(Some(metadata_from_body(&body, version)))
     }
 
+    async fn pypi_versions(
+        &self,
+        package_name: &str,
+    ) -> Result<Option<Vec<super::pypi_release::PypiVersionListing>>> {
+        self.validate_name(package_name)?;
+        let url = format!("https://pypi.org/pypi/{}/json", package_name);
+        let resp = super::retry_get(&self.client, &url).await?;
+        if super::check_metadata_status(resp.status(), "PyPI", package_name)?.is_none() {
+            return Ok(None);
+        }
+        let body: serde_json::Value = resp.json().await?;
+        super::pypi_release::versions_from_body(&body).map(Some)
+    }
+
+    async fn pypi_requires_dist(
+        &self,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Option<Vec<String>>> {
+        self.validate_name(package_name)?;
+        if !super::pypi_release::valid_version_segment(version) {
+            anyhow::bail!(
+                "invalid version for a PyPI metadata query: '{}'",
+                crate::report::sanitize_for_terminal(version)
+            );
+        }
+        let url = format!("https://pypi.org/pypi/{}/{}/json", package_name, version);
+        let resp = super::retry_get(&self.client, &url).await?;
+        if super::check_metadata_status(resp.status(), "PyPI", package_name)?.is_none() {
+            return Ok(None);
+        }
+        let body: serde_json::Value = resp.json().await?;
+        super::pypi_release::requires_dist_from_body(&body, version).map(Some)
+    }
+
     async fn inspect_pypi_wheel(
         &self,
         package_name: &str,

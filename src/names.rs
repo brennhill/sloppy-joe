@@ -107,6 +107,11 @@ pub const RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS: &str =
 pub const RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE: &str =
     "resolution/python-implicit-runtime-profile";
 pub const RESOLUTION_PYTHON_GROUPS_NOT_SCANNED: &str = "resolution/python-groups-not-scanned";
+pub const RESOLUTION_PYTHON_PROJECTED_TRANSITIVES: &str = "resolution/python-projected-transitives";
+pub const RESOLUTION_PYTHON_PROJECTED_CONFLICT: &str = "resolution/python-projected-conflict";
+pub const RESOLUTION_PYTHON_PROJECTION_FAILED: &str = "resolution/python-projection-failed";
+pub const RESOLUTION_PYTHON_PROJECTION_BOUND: &str = "resolution/python-projection-bound";
+pub const RESOLUTION_PYTHON_UNPROJECTABLE: &str = "resolution/python-unprojectable";
 pub const RESOLUTION_VENDORED_SOURCE_UNVERIFIED: &str = "resolution/vendored-source-unverified";
 pub const RESOLUTION_AMBIENT_INPUT_UNDECIDABLE: &str = "resolution/ambient-input-undecidable";
 pub const CONFIG_LOCAL_OVERLAY_RELAXATION: &str = "config/local-overlay-relaxation";
@@ -189,6 +194,11 @@ mod tests {
             RESOLUTION_PYTHON_HASH_LOCKED_REQUIREMENTS,
             RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE,
             RESOLUTION_PYTHON_GROUPS_NOT_SCANNED,
+            RESOLUTION_PYTHON_PROJECTED_TRANSITIVES,
+            RESOLUTION_PYTHON_PROJECTED_CONFLICT,
+            RESOLUTION_PYTHON_PROJECTION_FAILED,
+            RESOLUTION_PYTHON_PROJECTION_BOUND,
+            RESOLUTION_PYTHON_UNPROJECTABLE,
             RESOLUTION_VENDORED_SOURCE_UNVERIFIED,
             RESOLUTION_AMBIENT_INPUT_UNDECIDABLE,
             CONFIG_LOCAL_OVERLAY_RELAXATION,

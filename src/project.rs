@@ -48,6 +48,9 @@ pub(crate) struct ParsedProject {
     /// Build/tooling packages (e.g. `[build-system] requires`) that no lockfile records.
     /// Scanned without lockfile reconciliation; unresolved ranges are reported as warnings.
     pub(crate) unlocked_tooling: bool,
+    /// Package indexes other than the ecosystem's public registry that the manifest itself
+    /// installs from (a requirements file's `--index-url` / `--extra-index-url`).
+    pub(crate) package_indexes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -56,6 +59,8 @@ pub(crate) struct ParsedInput {
     pub(crate) warnings: Vec<Issue>,
     pub(crate) python_root_extras: PythonRootExtras,
     pub(crate) unlocked_tooling_deps: Vec<Dependency>,
+    /// See [`ParsedProject::package_indexes`].
+    pub(crate) package_indexes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

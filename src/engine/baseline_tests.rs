@@ -163,6 +163,7 @@ fn parsed(spec: ProjectInputSpec, deps: Vec<Dependency>) -> ParsedProject {
         deps,
         python_root_extras: crate::parsers::python_scope::PythonRootExtras::new(),
         unlocked_tooling: false,
+        package_indexes: Vec::new(),
     }
 }
 

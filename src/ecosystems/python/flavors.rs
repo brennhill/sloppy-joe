@@ -28,6 +28,20 @@ pub(super) trait PythonFlavor: Sync {
         project: &ParsedProject,
         deps: &[Dependency],
     ) -> Result<Option<lockfiles::LockfileData>>;
+
+    /// Whether the transitive dependencies are projected from PyPI metadata: only when no
+    /// lockfile records them.
+    fn projection(&self, spec: &ProjectInputSpec) -> Projection;
+}
+
+/// How a flavor's transitive dependencies are found when no lockfile records them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Projection {
+    /// A lockfile (or a fully pinned requirements graph) records them.
+    Off,
+    /// Projected from PyPI metadata. `extras_known`: the manifest parser records the extras
+    /// requested of each direct dependency; otherwise every extra of a direct dependency counts.
+    On { extras_known: bool },
 }
 
 pub(super) fn flavor(kind: ProjectInputKind) -> &'static dyn PythonFlavor {
@@ -54,6 +68,10 @@ struct SetupPy;
 struct SetupCfg;
 
 impl PythonFlavor for Poetry {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::Off
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         common::named_lockfile(spec)
     }
@@ -106,6 +124,10 @@ impl PythonFlavor for Poetry {
 }
 
 impl PythonFlavor for Uv {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::Off
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         common::named_lockfile(spec)
     }
@@ -150,6 +172,10 @@ impl PythonFlavor for Uv {
 }
 
 impl PythonFlavor for RequirementsTrusted {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::Off
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         Some(spec.manifest_path.clone())
     }
@@ -190,6 +216,10 @@ fn legacy_validation(spec: &ProjectInputSpec) -> Vec<Issue> {
 }
 
 impl PythonFlavor for Requirements {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::On { extras_known: true }
+    }
+
     fn default_lockfile_path(&self, _spec: &ProjectInputSpec) -> Option<PathBuf> {
         None
     }
@@ -224,6 +254,10 @@ impl PythonFlavor for Requirements {
 }
 
 impl PythonFlavor for PyprojectLegacy {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::On { extras_known: true }
+    }
+
     fn default_lockfile_path(&self, _spec: &ProjectInputSpec) -> Option<PathBuf> {
         None
     }
@@ -257,6 +291,17 @@ impl PythonFlavor for PyprojectLegacy {
 }
 
 impl PythonFlavor for Pipfile {
+    fn projection(&self, spec: &ProjectInputSpec) -> Projection {
+        // Pipfile.lock records the resolved tree; the Pipfile parser drops requested extras.
+        if selected_lockfile_path(spec).is_some() {
+            Projection::Off
+        } else {
+            Projection::On {
+                extras_known: false,
+            }
+        }
+    }
+
     fn default_lockfile_path(&self, spec: &ProjectInputSpec) -> Option<PathBuf> {
         first_existing_lockfile(
             spec.project_dir(),
@@ -295,6 +340,12 @@ impl PythonFlavor for Pipfile {
 }
 
 impl PythonFlavor for SetupPy {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::On {
+            extras_known: false,
+        }
+    }
+
     fn default_lockfile_path(&self, _spec: &ProjectInputSpec) -> Option<PathBuf> {
         None
     }
@@ -328,6 +379,12 @@ impl PythonFlavor for SetupPy {
 }
 
 impl PythonFlavor for SetupCfg {
+    fn projection(&self, _spec: &ProjectInputSpec) -> Projection {
+        Projection::On {
+            extras_known: false,
+        }
+    }
+
     fn default_lockfile_path(&self, _spec: &ProjectInputSpec) -> Option<PathBuf> {
         None
     }

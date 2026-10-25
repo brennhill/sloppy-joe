@@ -9,6 +9,7 @@ mod interpreter_config;
 mod lock_schema;
 mod lockfile_read;
 mod parse;
+mod projection;
 mod specs;
 mod tool_config;
 mod warnings;
@@ -21,6 +22,12 @@ use specs::*;
 pub(crate) use warnings::*;
 
 pub(super) struct Python;
+
+/// Whether `spec`'s transitive dependencies are projected from PyPI metadata.
+#[cfg(test)]
+pub(crate) fn python_projects_transitives(spec: &ProjectInputSpec) -> bool {
+    flavor(spec.kind).projection(spec) != flavors::Projection::Off
+}
 
 #[async_trait::async_trait]
 impl EcosystemSupport for Python {
@@ -38,6 +45,23 @@ impl EcosystemSupport for Python {
         _client: &reqwest::Client,
     ) -> Result<Option<ParsedProject>> {
         Ok(None)
+    }
+
+    async fn project_transitives(
+        &self,
+        project: &ParsedProject,
+        config: &config::SloppyJoeConfig,
+        registry: &dyn registry::Registry,
+        opts: &ScanOptions<'_>,
+    ) -> Result<ProjectedTransitives> {
+        projection::project_transitives(
+            project,
+            config,
+            registry,
+            opts,
+            projection::Bounds::default(),
+        )
+        .await
     }
 
     async fn implementation_issues(

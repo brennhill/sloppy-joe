@@ -157,6 +157,28 @@ pub trait RegistryMetadata: Send + Sync {
         Ok(None)
     }
 
+    /// PyPI only: every version the registry lists for a package, with whether it is yanked.
+    /// `Ok(None)` means the package does not exist. A registry that cannot answer returns an
+    /// error, so a caller projecting dependencies from it blocks instead of seeing no versions.
+    async fn pypi_versions(
+        &self,
+        package_name: &str,
+    ) -> Result<Option<Vec<pypi_release::PypiVersionListing>>> {
+        let _ = package_name;
+        anyhow::bail!("this registry does not list PyPI versions")
+    }
+
+    /// PyPI only: the `Requires-Dist` entries of one version, as PyPI publishes them. `Ok(None)`
+    /// means the registry has no such version. A registry that cannot answer returns an error.
+    async fn pypi_requires_dist(
+        &self,
+        package_name: &str,
+        version: &str,
+    ) -> Result<Option<Vec<String>>> {
+        let _ = (package_name, version);
+        anyhow::bail!("this registry does not publish PyPI dependency metadata")
+    }
+
     /// Fetch the current owner list for a package when the registry exposes it.
     /// Used only for review-oriented output such as exception candidate evidence.
     async fn owners(&self, package_name: &str) -> Result<Option<Vec<String>>> {
@@ -450,6 +472,31 @@ mod tests {
         assert!(registry.validate_name("../etc/passwd").is_err());
         assert!(registry.validate_name("foo\0bar").is_err());
         assert!(registry.validate_name("foo%2fbar").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_registry_without_pypi_dependency_metadata_fails_closed() {
+        let registry = npm::NpmRegistry::new();
+        assert!(registry.pypi_versions("requests").await.is_err());
+        assert!(
+            registry
+                .pypi_requires_dist("requests", "2.31.0")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn pypi_dependency_metadata_queries_validate_names_and_versions_first() {
+        let registry = pypi::PypiRegistry::new();
+        assert!(registry.pypi_versions("../etc").await.is_err());
+        assert!(registry.pypi_requires_dist("../etc", "1.0").await.is_err());
+        let err = registry
+            .pypi_requires_dist("requests", "1/../../x")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid version"), "{err}");
     }
 
     #[test]

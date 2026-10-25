@@ -17,12 +17,12 @@ pub(crate) fn validate_pipfile_lockfile(
 }
 
 pub(crate) fn python_legacy_warning(spec: &ProjectInputSpec) -> Issue {
-    // Only a Pipfile.lock records what a legacy manifest resolves to; otherwise the scan sees the
-    // declared packages and nothing pip pulls in for them.
+    // Only a Pipfile.lock records what a legacy manifest resolves to; otherwise a full scan
+    // projects what pip pulls in from PyPI metadata (resolution/python-projected-transitives).
     let coverage = if selected_lockfile_path(spec).is_some() {
         "sloppy-joe will scan it and the packages its lockfile records"
     } else {
-        "sloppy-joe checks only the packages it declares: without a lockfile, the dependencies pip resolves for them at install time are not scanned"
+        "sloppy-joe checks the packages it declares, and in full scans the transitive dependencies it projects from PyPI metadata; without a lockfile those projected versions may differ from what pip resolves at install time"
     };
     Issue::new(
         spec.manifest_path.display().to_string(),

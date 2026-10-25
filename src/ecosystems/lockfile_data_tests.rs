@@ -157,6 +157,7 @@ fn mutated_names(
             deps: parsed.deps.clone(),
             python_root_extras: parsed.python_root_extras.clone(),
             unlocked_tooling: false,
+            package_indexes: parsed.package_indexes.clone(),
         };
         let data = plugin.lockfile_data(&config, &opts, &project, &parsed.deps)?;
         let mut names: Vec<String> = parsed

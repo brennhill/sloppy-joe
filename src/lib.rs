@@ -165,6 +165,10 @@ mod requirements_index_allowlist_tests;
 #[path = "uv_lock_groups_tests.rs"]
 mod uv_lock_groups_tests;
 
+#[cfg(test)]
+#[path = "python_projection_scan_tests.rs"]
+mod python_projection_scan_tests;
+
 /// Options that control scan behavior, set from CLI flags.
 #[derive(Debug, Clone, Default)]
 pub struct ScanOptions<'a> {

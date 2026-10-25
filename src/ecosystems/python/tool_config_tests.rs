@@ -188,7 +188,7 @@ fn tox_dependency_declarations_cannot_hide() {
 }
 
 #[test]
-fn the_legacy_warning_says_resolved_packages_are_not_scanned_without_a_lockfile() {
+fn the_legacy_warning_says_resolved_packages_are_projected_without_a_lockfile() {
     for (manifest, content, kind) in [
         (
             "requirements.txt",
@@ -213,7 +213,10 @@ fn the_legacy_warning_says_resolved_packages_are_not_scanned_without_a_lockfile(
     ] {
         let spec = project(&[(manifest, content)], manifest, kind);
         let message = python_legacy_warning(&spec).message;
-        assert!(message.contains("not scanned"), "{manifest}: {message}");
+        assert!(
+            message.contains("projects from PyPI metadata") && message.contains("may differ"),
+            "{manifest}: {message}"
+        );
     }
     // A Pipfile.lock is read, so its transitive entries are scanned.
     let spec = project(
@@ -225,5 +228,9 @@ fn the_legacy_warning_says_resolved_packages_are_not_scanned_without_a_lockfile(
         ProjectInputKind::PyPipfile,
     );
     let message = python_legacy_warning(&spec).message;
-    assert!(!message.contains("not scanned"), "{message}");
+    assert!(!message.contains("projects"), "{message}");
+    assert!(
+        message.contains("packages its lockfile records"),
+        "{message}"
+    );
 }

@@ -160,7 +160,8 @@ pub(crate) async fn scan_parsed_project(
     }
 
     let transitive_count =
-        scan_transitive_dependencies(&lockfile_data, &ctx, &project.deps, &mut acc).await?;
+        scan_transitive_dependencies(&lockfile_data, &ctx, &project.deps, &mut acc).await?
+            + scan_projected_transitives(project, &ctx, &mut acc).await?;
 
     // Routed (private) package names are never sent to the public registry or
     // OSV. Unallowlisted routes in CI block through `private_issues` instead.
@@ -300,6 +301,35 @@ pub(crate) async fn scan_with_services_inner_for_kind(
         acc.issues,
         acc.review_candidates,
     ))
+}
+
+/// Transitive dependencies no lockfile records but the plugin projects from registry metadata
+/// get the transitive checks too, and every finding on them carries the plugin's confidence note.
+async fn scan_projected_transitives(
+    project: &ParsedProject,
+    ctx: &checks::CheckContext<'_>,
+    acc: &mut checks::ScanAccumulator,
+) -> Result<usize> {
+    let projected =
+        ecosystems::project_transitives(project, ctx.config, ctx.registry, ctx.opts).await?;
+    let mut issues = projected.issues;
+    mark_source(&mut issues, "transitive");
+    acc.issues.extend(issues);
+    if projected.deps.is_empty() {
+        return Ok(0);
+    }
+    let mut data = lockfiles::LockfileData::reduced_confidence_from_manifest(&[]);
+    data.transitive_deps = projected.deps;
+    let mut projected_acc = checks::ScanAccumulator::new();
+    projected_acc.similarity_flagged = acc.similarity_flagged.clone();
+    let count = scan_transitive_dependencies(&data, ctx, &project.deps, &mut projected_acc).await?;
+    for issue in &mut projected_acc.issues {
+        issue.message = format!("{} {}", issue.message, projected.confidence_note);
+    }
+    acc.issues.extend(projected_acc.issues);
+    acc.review_candidates
+        .extend(projected_acc.review_candidates);
+    Ok(count)
 }
 
 pub(crate) async fn scan_transitive_dependencies(

@@ -77,6 +77,69 @@ pub(crate) fn release_from_body(body: &Value, version: &str) -> Option<PypiRelea
     })
 }
 
+/// One version PyPI lists for a project. pip skips a yanked version unless a requirement pins it
+/// exactly (PEP 592); a version is yanked when every one of its files is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PypiVersionListing {
+    pub version: String,
+    pub yanked: bool,
+}
+
+/// Every version of a project body (`/pypi/<name>/json`) that has files to install, in the
+/// order PyPI lists them. A body without a `releases` table is malformed: it would otherwise
+/// read as a project with nothing to install.
+pub(crate) fn versions_from_body(body: &Value) -> anyhow::Result<Vec<PypiVersionListing>> {
+    let releases = body["releases"]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("PyPI project metadata has no releases table"))?;
+    Ok(releases
+        .iter()
+        .filter_map(|(version, files)| {
+            let files = files.as_array().filter(|files| !files.is_empty())?;
+            Some(PypiVersionListing {
+                version: version.clone(),
+                yanked: files
+                    .iter()
+                    .all(|file| file["yanked"].as_bool().unwrap_or(false)),
+            })
+        })
+        .collect())
+}
+
+/// `info.requires_dist` of a version body (`/pypi/<name>/<version>/json`). PyPI writes `null`
+/// when the release declares no requirements. Any other shape, or a body for another version,
+/// is malformed.
+pub(crate) fn requires_dist_from_body(body: &Value, version: &str) -> anyhow::Result<Vec<String>> {
+    let info = body["info"]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("PyPI release metadata has no info table"))?;
+    if info.get("version").and_then(Value::as_str) != Some(version) {
+        anyhow::bail!("PyPI release metadata describes another version than {version}");
+    }
+    match info.get("requires_dist") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| anyhow::anyhow!("PyPI requires_dist entry is not a string"))
+            })
+            .collect(),
+        Some(_) => anyhow::bail!("PyPI requires_dist is not a list"),
+    }
+}
+
+/// Whether `version` is safe as one URL path segment: PEP 440 characters only.
+pub(crate) fn valid_version_segment(version: &str) -> bool {
+    !version.is_empty()
+        && !version.contains("..")
+        && version
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '+' | '!' | '-' | '_'))
+}
+
 fn version_epoch(files: &Value) -> Option<i64> {
     files
         .as_array()?
@@ -110,6 +173,81 @@ mod tests {
             "upload_time_iso_8601": time,
             "digests": {"sha256": sha},
         })
+    }
+
+    #[test]
+    fn versions_list_every_release_with_files_and_mark_fully_yanked_ones() {
+        let yanked = |name: &str| {
+            let mut entry = file(name, "sdist", "2024-01-01T00:00:00Z", "aa");
+            entry["yanked"] = json!(true);
+            entry
+        };
+        let body = json!({"releases": {
+            "1.0": [file("a", "sdist", "2024-01-01T00:00:00Z", "a")],
+            "1.1": [yanked("b"), file("c", "bdist_wheel", "2024-01-01T00:00:00Z", "c")],
+            "1.2": [yanked("d")],
+            "2.0": [],
+        }});
+        let versions = versions_from_body(&body).unwrap();
+        assert_eq!(
+            versions,
+            vec![
+                PypiVersionListing {
+                    version: "1.0".into(),
+                    yanked: false
+                },
+                PypiVersionListing {
+                    version: "1.1".into(),
+                    yanked: false
+                },
+                PypiVersionListing {
+                    version: "1.2".into(),
+                    yanked: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_project_body_without_releases_is_malformed() {
+        assert!(versions_from_body(&json!({"info": {}})).is_err());
+    }
+
+    #[test]
+    fn requires_dist_reads_the_version_body_and_null_means_none_declared() {
+        let body = json!({"info": {"version": "2.0", "requires_dist": [
+            "urllib3<3,>=1.21.1",
+            "PySocks!=1.5.7,>=1.5.6; extra == \"socks\"",
+        ]}});
+        assert_eq!(
+            requires_dist_from_body(&body, "2.0").unwrap(),
+            vec![
+                "urllib3<3,>=1.21.1".to_string(),
+                "PySocks!=1.5.7,>=1.5.6; extra == \"socks\"".to_string()
+            ]
+        );
+        let none = json!({"info": {"version": "2.0", "requires_dist": null}});
+        assert!(requires_dist_from_body(&none, "2.0").unwrap().is_empty());
+    }
+
+    #[test]
+    fn requires_dist_refuses_malformed_or_mismatched_bodies() {
+        let wrong_type = json!({"info": {"version": "2.0", "requires_dist": "urllib3"}});
+        assert!(requires_dist_from_body(&wrong_type, "2.0").is_err());
+        let wrong_entry = json!({"info": {"version": "2.0", "requires_dist": [1]}});
+        assert!(requires_dist_from_body(&wrong_entry, "2.0").is_err());
+        let other_version = json!({"info": {"version": "3.0", "requires_dist": []}});
+        assert!(requires_dist_from_body(&other_version, "2.0").is_err());
+        assert!(requires_dist_from_body(&json!({}), "2.0").is_err());
+    }
+
+    #[test]
+    fn version_path_segments_are_validated_before_use_in_a_url() {
+        assert!(valid_version_segment("2.31.0"));
+        assert!(valid_version_segment("1!2.0rc1.post3.dev4+local.7"));
+        for bad in ["", "..", "1/../2", "1?x", "1#x", "1%2f", "1 2", "1\n"] {
+            assert!(!valid_version_segment(bad), "{bad:?}");
+        }
     }
 
     #[test]

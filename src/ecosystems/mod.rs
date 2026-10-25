@@ -85,6 +85,18 @@ pub(crate) enum SourcePolicy {
     ReducedConfidence(Issue),
 }
 
+/// Transitive dependencies a project's lockfile does not record, projected from registry metadata
+/// instead. Empty for projects whose lockfile records them (or that have none to project).
+#[derive(Debug, Default)]
+pub(crate) struct ProjectedTransitives {
+    /// Scanned as transitive dependencies.
+    pub(crate) deps: Vec<Dependency>,
+    /// Findings about the projection itself: coverage, conflicts, failed lookups, bounds.
+    pub(crate) issues: Vec<Issue>,
+    /// Appended to every finding on a projected package: how far its version can be trusted.
+    pub(crate) confidence_note: String,
+}
+
 #[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait::async_trait]
 pub(crate) trait EcosystemSupport: Sync {
@@ -203,6 +215,17 @@ pub(crate) trait EcosystemSupport: Sync {
         osv_client: &dyn checks::malicious::OsvClient,
         opts: &ScanOptions<'_>,
     ) -> Result<Vec<Issue>>;
+
+    /// Transitive dependencies to scan that no lockfile records, projected from `registry`'s
+    /// metadata. A failed lookup or an exceeded bound is a blocking issue in the result, never a
+    /// shorter list. Kinds whose lockfile records the full tree return an empty projection.
+    async fn project_transitives(
+        &self,
+        project: &ParsedProject,
+        config: &config::SloppyJoeConfig,
+        registry: &dyn registry::Registry,
+        opts: &ScanOptions<'_>,
+    ) -> Result<ProjectedTransitives>;
 
     /// How `fix-lockfile` handles this project's problems: the ones it fixes (with the command,
     /// files and environment), the ones it only explains, and the ones it refuses. No default:
@@ -360,6 +383,22 @@ pub(crate) async fn resolve_versions(
 ) -> Result<Option<ParsedProject>> {
     for_kind(project.spec.kind)
         .resolve_versions(project, client)
+        .await
+}
+
+/// Transitive dependencies projected for `project` (see [`EcosystemSupport::project_transitives`]).
+/// Unlocked build tooling is scanned from the manifest alone and projects nothing.
+pub(crate) async fn project_transitives(
+    project: &ParsedProject,
+    config: &config::SloppyJoeConfig,
+    registry: &dyn registry::Registry,
+    opts: &ScanOptions<'_>,
+) -> Result<ProjectedTransitives> {
+    if project.unlocked_tooling {
+        return Ok(ProjectedTransitives::default());
+    }
+    for_kind(project.spec.kind)
+        .project_transitives(project, config, registry, opts)
         .await
 }
 
