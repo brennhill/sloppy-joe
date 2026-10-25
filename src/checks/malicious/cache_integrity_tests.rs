@@ -40,6 +40,7 @@ async fn issues_with_cache(path: &Path) -> Vec<Issue> {
         &VulnerableOsv,
         &[dep()],
         &ResolutionResult::default(),
+        &[],
         Some(path),
     )
     .await
