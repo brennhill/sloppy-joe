@@ -1,22 +1,26 @@
 use super::*;
 
+/// Python's `str.isspace()`, which `\s` in pip's patterns and configparser's indentation use:
+/// Unicode whitespace plus the separators U+001C..U+001F that Rust does not count.
+pub(crate) fn is_python_whitespace(ch: char) -> bool {
+    ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch)
+}
+
+/// `text` without leading and trailing Python whitespace.
+pub(crate) fn trim_python_whitespace(text: &str) -> &str {
+    text.trim_matches(is_python_whitespace)
+}
+
+/// pip removes `(^|\s+)#.*$`: a `#` at the start or after Python whitespace begins a comment,
+/// whatever quotes surround it.
 pub(crate) fn strip_inline_comment(line: &str) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut previous_was_whitespace = false;
-
+    let mut previous_was_whitespace = true;
     for (idx, ch) in line.char_indices() {
-        match ch {
-            '\'' if !in_double => in_single = !in_single,
-            '"' if !in_single => in_double = !in_double,
-            '#' if !in_single && !in_double && previous_was_whitespace => {
-                return line[..idx].trim_end();
-            }
-            _ => {}
+        if ch == '#' && previous_was_whitespace {
+            return line[..idx].trim_end_matches(is_python_whitespace);
         }
-        previous_was_whitespace = ch.is_whitespace();
+        previous_was_whitespace = is_python_whitespace(ch);
     }
-
     line
 }
 
