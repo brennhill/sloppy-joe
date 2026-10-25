@@ -27,7 +27,7 @@ fn every_kind_describes_itself_completely() {
         );
         assert_eq!(
             d.lockfile == LockfilePolicy::Required,
-            d.missing_lockfile_help.is_some(),
+            d.missing_lockfile_remedy.is_some(),
             "{kind:?}: missing-lockfile help must exist exactly when a lockfile is required"
         );
     }

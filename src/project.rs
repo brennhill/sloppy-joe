@@ -143,8 +143,8 @@ pub(crate) struct KindDescriptor {
     pub(crate) lockfile: LockfilePolicy,
     /// The lockfile format the lockfile reader parses for this kind.
     pub(crate) lockfile_kind: lockfiles::LockfileKind,
-    /// Remedy shown when the required lockfile is missing; `Some` exactly when `lockfile` is `Required`.
-    pub(crate) missing_lockfile_help: Option<&'static str>,
+    /// The fix for a missing required lockfile; `Some` exactly when `lockfile` is `Required`.
+    pub(crate) missing_lockfile_remedy: Option<&'static crate::remedy::Remedy>,
     /// The blocking message when an explicit `--type` selecting this kind's project type finds no
     /// manifest; set on exactly one kind per project type.
     pub(crate) missing_manifest_message: Option<&'static str>,
@@ -158,6 +158,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
     use InstalledTreePolicy::{Scan, ScanWhenLocked, Skip};
     use LockfilePolicy::{Required, Unsupported};
     use ProjectInputKind as K;
+    use crate::remedy;
     use lockfiles::LockfileKind as L;
     [
         (
@@ -176,9 +177,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest 'package.json' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Run `npm install --package-lock-only` or `npm shrinkwrap`, then commit the lockfile.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::NPM_LOCKFILE),
             },
         ),
         (
@@ -197,9 +196,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required Python manifest is missing for this project type. Expected one of: pyproject.toml, requirements*.txt, Pipfile, setup.cfg, or setup.py.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Run `poetry lock` and commit poetry.lock alongside pyproject.toml.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::POETRY_LOCK),
             },
         ),
         (
@@ -218,9 +215,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Python manifest '{}' uses the uv workflow, which is not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: Some(
-                    "Run `uv lock` and commit uv.lock alongside pyproject.toml.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::UV_LOCK),
             },
         ),
         (
@@ -239,7 +234,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -258,7 +253,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Python manifest '{}' uses hash-locked pip-tools requirements, which are not allowed in poetry_only mode. Use Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -277,7 +272,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -296,7 +291,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -315,7 +310,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -334,7 +329,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 poetry_only_refusal: Some(
                     "Legacy Python manifest '{}' is not allowed in poetry_only mode. Migrate this project to Poetry with pyproject.toml + poetry.lock, or relax python_enforcement to prefer_poetry.",
                 ),
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -353,7 +348,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest 'Cargo.toml' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some("Run `cargo generate-lockfile` and commit Cargo.lock."),
+                missing_lockfile_remedy: Some(&remedy::CARGO_GENERATE_LOCKFILE),
             },
         ),
         (
@@ -372,9 +367,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest 'go.mod' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Run `go mod tidy` so Go records dependency checksums in go.sum.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::GO_SUM),
             },
         ),
         (
@@ -393,9 +386,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest 'Gemfile' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Run `bundle lock` or `bundle install`, then commit Gemfile.lock.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::BUNDLE_LOCK),
             },
         ),
         (
@@ -414,9 +405,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest 'composer.json' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Run `composer update` or `composer install`, then commit composer.lock.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::COMPOSER_LOCK_MISSING),
             },
         ),
         (
@@ -435,9 +424,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest 'build.gradle, build.gradle.kts, or pom.xml' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Enable Gradle dependency locking and run `./gradlew dependencies --write-locks`, then commit gradle.lockfile.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::GRADLE_WRITE_LOCKS),
             },
         ),
         (
@@ -454,7 +441,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                 lockfile_kind: L::ABSENT,
                 missing_manifest_message: None,
                 poetry_only_refusal: None,
-                missing_lockfile_help: None,
+                missing_lockfile_remedy: None,
             },
         ),
         (
@@ -473,9 +460,7 @@ static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
                     "Required manifest '.csproj' is missing for this project type.",
                 ),
                 poetry_only_refusal: None,
-                missing_lockfile_help: Some(
-                    "Run `dotnet restore --use-lock-file` and commit packages.lock.json.",
-                ),
+                missing_lockfile_remedy: Some(&remedy::DOTNET_RESTORE_LOCK),
             },
         ),
     ]
@@ -526,8 +511,8 @@ impl ProjectInputKind {
         self.descriptor().lockfile_kind
     }
 
-    pub(crate) fn missing_lockfile_help(&self) -> Option<&'static str> {
-        self.descriptor().missing_lockfile_help
+    pub(crate) fn missing_lockfile_remedy(&self) -> Option<&'static crate::remedy::Remedy> {
+        self.descriptor().missing_lockfile_remedy
     }
 }
 

@@ -1,25 +1,23 @@
 use super::*;
 
 pub(super) fn broken_manifest(spec: &ProjectInputSpec, err: anyhow::Error) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Broken manifest '{}': {}",
-        spec.manifest_path.display(),
-        err
-    )
+    crate::remedy::rewrap(err, |err| {
+        format!("Broken manifest '{}': {}", spec.manifest_path.display(), err)
+    })
 }
 
 /// Require a readable lockfile at `lockfile`, naming the kind's remedy when it is missing.
 pub(super) fn ensure_kind_lockfile(spec: &ProjectInputSpec, lockfile: &Path) -> Result<()> {
     let descriptor = spec.kind.descriptor();
-    let (LockfilePolicy::Required, Some(help)) =
-        (descriptor.lockfile, descriptor.missing_lockfile_help)
+    let (LockfilePolicy::Required, Some(remedy)) =
+        (descriptor.lockfile, descriptor.missing_lockfile_remedy)
     else {
         anyhow::bail!(
             "Internal error: {} projects have no required lockfile to check",
             descriptor.manifest_label
         );
     };
-    ensure_lockfile_readable(lockfile, help)
+    ensure_lockfile_readable(lockfile, remedy)
 }
 
 /// A lockfile that pins packages while the manifest declares none means the declarations were missed.
@@ -206,41 +204,63 @@ pub(crate) fn first_existing_lockfile(
     })
 }
 
-pub(crate) fn ensure_lockfile_readable(path: &std::path::Path, help: &str) -> Result<()> {
-    parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES)
-        .and_then(|content| {
-            if content.trim().is_empty() {
-                anyhow::bail!("lockfile is empty");
-            }
-            Ok(())
-        })
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is missing or unreadable: {}. Fix: {}",
-                path.display(),
-                err,
-                help
-            )
-        })
+/// Require a readable, non-empty lockfile at `path`. A missing or empty lockfile is a
+/// [`crate::remedy::LockfileProblem`] carrying `remedy`; an unreadable one is not, since
+/// regenerating it would discard what cannot be read.
+pub(crate) fn ensure_lockfile_readable(
+    path: &std::path::Path,
+    remedy: &'static crate::remedy::Remedy,
+) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(crate::remedy::problem(
+                remedy,
+                format!("Required lockfile '{}' is missing.", path.display()),
+            ));
+        }
+        Err(err) => anyhow::bail!(
+            "Required lockfile '{}' could not be inspected: {}. {}",
+            path.display(),
+            err,
+            remedy.fix_text()
+        ),
+        Ok(_) => {}
+    }
+    let content = parsers::read_file_limited(path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
+        anyhow::anyhow!(
+            "Required lockfile '{}' is unreadable: {}. {}",
+            path.display(),
+            err,
+            remedy.fix_text()
+        )
+    })?;
+    if content.trim().is_empty() {
+        return Err(crate::remedy::problem(
+            remedy,
+            format!("Required lockfile '{}' is empty.", path.display()),
+        ));
+    }
+    Ok(())
 }
 
+/// Require that every lockfile among `candidates` in `project_dir` that exists is readable and
+/// that one exists; a missing one carries `remedy` (see [`ensure_lockfile_readable`]).
 pub(crate) fn ensure_one_lockfile_readable(
     project_dir: &std::path::Path,
     candidates: &[&str],
-    help: &str,
+    remedy: &'static crate::remedy::Remedy,
 ) -> Result<()> {
     let mut found_readable = false;
-
     for candidate in candidates {
         let path = project_dir.join(candidate);
         match std::fs::symlink_metadata(&path) {
             Ok(_) => {
                 parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {
                     anyhow::anyhow!(
-                        "Required lockfile '{}' is unreadable: {}. Fix: {}",
+                        "Required lockfile '{}' is unreadable: {}. {}",
                         path.display(),
                         err,
-                        help
+                        remedy.fix_text()
                     )
                 })?;
                 found_readable = true;
@@ -248,24 +268,24 @@ pub(crate) fn ensure_one_lockfile_readable(
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 return Err(anyhow::anyhow!(
-                    "Required lockfile '{}' could not be inspected: {}. Fix: {}",
+                    "Required lockfile '{}' could not be inspected: {}. {}",
                     path.display(),
                     err,
-                    help
+                    remedy.fix_text()
                 ));
             }
         }
     }
-
     if found_readable {
         return Ok(());
     }
-
-    anyhow::bail!(
-        "Required lockfile '{}' is missing. Fix: {}",
-        candidates.join("' or '"),
-        help
-    )
+    Err(crate::remedy::problem(
+        remedy,
+        format!(
+            "Required lockfile '{}' is missing.",
+            candidates.join("' or '")
+        ),
+    ))
 }
 
 /// Lockfile data for the checks, read from the project's own lockfile.

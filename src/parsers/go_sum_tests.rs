@@ -33,7 +33,8 @@ fn required_version_with_no_go_sum_entry_blocks() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("github.com/evil/pkg"), "{err}");
-    assert!(err.contains("go mod tidy"), "{err}");
+    assert!(err.contains("go mod download all"), "{err}");
+    assert!(err.contains("sloppy-joe fix-lockfile"), "{err}");
 }
 
 #[test]

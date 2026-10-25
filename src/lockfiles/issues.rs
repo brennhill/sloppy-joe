@@ -8,7 +8,7 @@ pub(crate) fn stale_orphan_entries_issue(
     lockfile_path: &Path,
     mut names: Vec<String>,
     installer: &str,
-    fix: &str,
+    remedy: &'static crate::remedy::Remedy,
 ) -> Issue {
     names.sort();
     names.dedup();
@@ -37,7 +37,10 @@ pub(crate) fn stale_orphan_entries_issue(
         more,
         installer
     ))
-    .fix(fix)
+    .fix(format!(
+        "Prune the stale entries. {}",
+        remedy.sentence()
+    ))
 }
 
 pub(crate) fn parse_failed_issue(lockfile: &str, detail: String) -> Issue {
@@ -58,10 +61,18 @@ pub(crate) fn missing_entry_issue(dep: &Dependency, lockfile: &str) -> Issue {
             "'{}' is declared in the manifest but was not found in '{}'. Exact version-sensitive checks cannot trust this lockfile state.",
             dep.name, lockfile
         ))
-        .fix(format!(
-            "Regenerate '{}' so it contains the direct dependency '{}', then rerun sloppy-joe.",
-            lockfile, dep.name
-        ))
+        .fix(match crate::remedy::for_missing_entry(lockfile) {
+            Some(remedy) => format!(
+                "Regenerate '{}' so it contains the direct dependency '{}'. {}",
+                lockfile,
+                dep.name,
+                remedy.sentence()
+            ),
+            None => format!(
+                "Regenerate '{}' so it contains the direct dependency '{}', then rerun sloppy-joe. `sloppy-joe fix-lockfile` shows the exact command.",
+                lockfile, dep.name
+            ),
+        })
 }
 
 pub(crate) fn out_of_sync_issue(dep: &Dependency, resolved_version: &str) -> Issue {

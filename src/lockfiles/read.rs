@@ -29,8 +29,9 @@ fn read_npm_lockfile(
 
 fn read_pnpm_override(project_dir: &Path, path: &Path) -> Result<ParsedLockfile> {
     let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
-    let value: serde_yaml::Value = parse_pnpm_lock_guarded(&content)
-        .map_err(|err| anyhow::anyhow!("Failed to parse pnpm-lock.yaml: {}", err))?;
+    let value: serde_yaml::Value = parse_pnpm_lock_guarded(&content).map_err(|err| {
+        crate::remedy::rewrap(err, |err| format!("Failed to parse pnpm-lock.yaml: {err}"))
+    })?;
     let importer_key = pnpm_importer_key(project_dir, path)?;
     Ok(ParsedLockfile::Pnpm {
         value,
@@ -45,10 +46,13 @@ fn read_bun_override(project_dir: &Path, path: &Path) -> Result<ParsedLockfile> 
         .and_then(|name| name.to_str())
         .unwrap_or("bun.lock");
     if file_name == "bun.lockb" {
-        anyhow::bail!(
-            "Legacy Bun binary lockfile '{}' is not supported yet. Regenerate and commit the text bun.lock.",
-            path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::BUN_BINARY_LOCKFILE,
+            format!(
+                "Legacy Bun binary lockfile '{}' is not supported.",
+                path.display()
+            ),
+        ));
     }
     let content = crate::parsers::read_file_limited(path, crate::parsers::MAX_MANIFEST_BYTES)?;
     let value: serde_json::Value = parse_json5_guarded(&content)
@@ -91,8 +95,11 @@ fn read_npm_package_lock(
     )?;
     let value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Failed to parse {}: {}", file_name, err))?;
-    let version = npm::lockfile_version(&value)
-        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+    let version = npm::lockfile_version(&value).map_err(|err| {
+        crate::remedy::rewrap(err, |err| {
+            format!("Broken lockfile '{}': {}", path.display(), err)
+        })
+    })?;
     if version == 1 {
         Ok(ParsedLockfile::NpmLegacy { value, file_name })
     } else {

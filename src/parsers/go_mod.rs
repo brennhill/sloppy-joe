@@ -203,16 +203,22 @@ pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
     unhashed.sort();
     unhashed.dedup();
     if !missing.is_empty() {
-        anyhow::bail!(
-            "go.sum has no checksum for required module version(s): {}. Fix: run `go mod tidy` so Go records dependency checksums in go.sum.",
-            missing.join(", ")
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::GO_SUM,
+            format!(
+                "go.sum has no checksum for required module version(s): {}.",
+                missing.join(", ")
+            ),
+        ));
     }
     if !unhashed.is_empty() {
-        anyhow::bail!(
-            "go.sum has no content hash (the entry without /go.mod) for direct requirement(s): {}. Fix: run `go mod tidy` so Go records the module content checksum in go.sum.",
-            unhashed.join(", ")
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::GO_SUM,
+            format!(
+                "go.sum has no content hash (the entry without /go.mod) for direct requirement(s): {}.",
+                unhashed.join(", ")
+            ),
+        ));
     }
     graph::check_unlisted_modules(go_mod, go_sum)
 }

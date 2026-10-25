@@ -68,7 +68,11 @@ pub(crate) fn read_validated_pnpm_lockfile(
             )
         })?;
     let lockfile: serde_yaml::Value = crate::lockfiles::parse_pnpm_lock_guarded(&content)
-        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
+        .map_err(|err| {
+            crate::remedy::rewrap(err, |err| {
+                format!("Broken lockfile '{}': {}", path.display(), err)
+            })
+        })?;
     validate_pnpm_lockfile_consistency(spec, manifest, &lockfile, &path)?;
     crate::lockfiles::pnpm::validate_provenance(
         &lockfile,
@@ -95,10 +99,13 @@ pub(crate) fn read_validated_bun_lockfile(
         .and_then(|name| name.to_str())
         .unwrap_or("bun.lock");
     if file_name == "bun.lockb" {
-        anyhow::bail!(
-            "Legacy Bun binary lockfile '{}' is not supported yet. Regenerate and commit the text bun.lock.",
-            path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::BUN_BINARY_LOCKFILE,
+            format!(
+                "Legacy Bun binary lockfile '{}' is not supported.",
+                path.display()
+            ),
+        ));
     }
     let content =
         parsers::read_file_limited(&path, parsers::MAX_MANIFEST_BYTES).map_err(|err| {

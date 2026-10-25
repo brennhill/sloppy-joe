@@ -122,11 +122,14 @@ impl EcosystemSupport for Ruby {
             let path = common::named_lockfile(spec).expect("Ruby names Gemfile.lock");
             let content = crate::untrusted::read_line_file(&path)?;
             if !crate::untrusted::rows(&content).any(|line| line.trim_end() == "GEM") {
-                anyhow::bail!(
-                    "Required lockfile '{}' has no GEM section although the Gemfile declares {} gems: the lockfile is malformed or stale. Fix: regenerate it with 'bundle lock'.",
-                    path.display(),
-                    parsed.deps.len()
-                );
+                return Err(crate::remedy::problem(
+                    &crate::remedy::BUNDLE_LOCK,
+                    format!(
+                        "Required lockfile '{}' has no GEM section although the Gemfile declares {} gems: the lockfile is malformed or stale.",
+                        path.display(),
+                        parsed.deps.len()
+                    ),
+                ));
             }
         }
         Ok(Vec::new())

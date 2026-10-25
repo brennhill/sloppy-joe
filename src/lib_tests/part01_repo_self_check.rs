@@ -660,7 +660,9 @@ fn preflight_requires_go_sum_when_external_dependencies_exist() {
         .expect_err("go projects with external deps must require go.sum");
     let msg = err.to_string();
     assert!(msg.contains("go.sum"));
-    assert!(msg.contains("go mod tidy"));
+    assert!(msg.contains("go mod download all"), "{msg}");
+    assert!(msg.contains("Go 1.21"), "{msg}");
+    assert!(msg.contains("sloppy-joe fix-lockfile"), "{msg}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

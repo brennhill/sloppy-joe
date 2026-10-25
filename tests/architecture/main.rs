@@ -38,6 +38,7 @@ const FOUNDATION: &[&str] = &[
     "untrusted",
     "gitindex",
     "config_surface",
+    "remedy",
 ];
 const CONFIG: &[&str] = &["config", "npm_config"];
 const ORCHESTRATION: &[&str] = &["bootstrap", "engine", "lib", "main"];

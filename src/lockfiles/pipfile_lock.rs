@@ -203,18 +203,24 @@ pub(crate) fn validate(
         .and_then(|hash| hash.get("sha256"))
         .and_then(|hash| hash.as_str())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Broken lockfile '{}': _meta.hash.sha256 is missing. Regenerate Pipfile.lock with `pipenv lock`.",
-                path.display()
+            crate::remedy::problem(
+                &crate::remedy::PIPENV_LOCK,
+                format!(
+                    "Broken lockfile '{}': _meta.hash.sha256 is missing.",
+                    path.display()
+                ),
             )
         })?;
     if let Some(expected) = &pipfile.hash
         && !recorded_hash.eq_ignore_ascii_case(expected)
     {
-        bail!(
-            "Required lockfile '{}' is out of date with the Pipfile: _meta.hash does not match the Pipfile's hash, so the lock was generated from a different Pipfile. Run `pipenv lock` and commit Pipfile.lock.",
-            path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::PIPENV_LOCK,
+            format!(
+                "Required lockfile '{}' is out of date with the Pipfile: _meta.hash does not match the Pipfile's hash, so the lock was generated from a different Pipfile.",
+                path.display()
+            ),
+        ));
     }
 
     let declared_sources: BTreeSet<&str> = if pipfile.source_urls.is_empty() {
@@ -256,25 +262,31 @@ pub(crate) fn validate(
                 normalize_distribution_name(dep.package_name()),
             );
             let Some(version) = locked.get(&key) else {
-                bail!(
-                    "Required lockfile '{}' is out of sync with the Pipfile: '{}' is not locked in section '{}'. Run `pipenv lock` and commit Pipfile.lock.",
-                    path.display(),
-                    crate::report::sanitize_for_terminal(dep.package_name()),
-                    crate::report::sanitize_for_terminal(&category.lock_section)
-                );
+                return Err(crate::remedy::problem(
+                    &crate::remedy::PIPENV_LOCK,
+                    format!(
+                        "Required lockfile '{}' is out of sync with the Pipfile: '{}' is not locked in section '{}'.",
+                        path.display(),
+                        crate::report::sanitize_for_terminal(dep.package_name()),
+                        crate::report::sanitize_for_terminal(&category.lock_section)
+                    ),
+                ));
             };
             let satisfied =
                 super::uv::version_matches_uv_specifier(version, dep.version.as_deref())
                     .unwrap_or(false);
             if !satisfied {
-                bail!(
-                    "Required lockfile '{}' is out of sync with the Pipfile: '{}' is locked at {} in section '{}', which does not satisfy '{}'. Run `pipenv lock` and commit Pipfile.lock.",
-                    path.display(),
-                    crate::report::sanitize_for_terminal(dep.package_name()),
-                    crate::report::sanitize_for_terminal(version),
-                    crate::report::sanitize_for_terminal(&category.lock_section),
-                    crate::report::sanitize_for_terminal(dep.version.as_deref().unwrap_or("*"))
-                );
+                return Err(crate::remedy::problem(
+                    &crate::remedy::LOCK_PIN_MISMATCH,
+                    format!(
+                        "Required lockfile '{}' is out of sync with the Pipfile: '{}' is locked at {} in section '{}', which does not satisfy '{}'.",
+                        path.display(),
+                        crate::report::sanitize_for_terminal(dep.package_name()),
+                        crate::report::sanitize_for_terminal(version),
+                        crate::report::sanitize_for_terminal(&category.lock_section),
+                        crate::report::sanitize_for_terminal(dep.version.as_deref().unwrap_or("*"))
+                    ),
+                ));
             }
         }
     }

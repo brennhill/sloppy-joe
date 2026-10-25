@@ -219,10 +219,13 @@ fn ensure_gradle_lockfile_pins_dependencies(
             .is_some_and(|(coordinates, _)| coordinates.matches(':').count() == 2)
     });
     if !pins {
-        anyhow::bail!(
-            "Required lockfile '{}' pins no dependencies although the build declares {declared}: the lockfile is malformed or stale. Fix: regenerate it with 'gradle dependencies --write-locks'.",
-            path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::GRADLE_WRITE_LOCKS,
+            format!(
+                "Required lockfile '{}' pins no dependencies although the build declares {declared}: the lockfile is malformed or stale.",
+                path.display()
+            ),
+        ));
     }
     Ok(())
 }

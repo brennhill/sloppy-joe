@@ -684,5 +684,6 @@ async fn npm_fixture_v1_range_drift_blocks_by_default() {
         .expect_err("legacy npm v1 lockfiles must block by default");
     let msg = err.to_string();
     assert!(msg.contains("legacy npm v5/v6 lockfile"));
-    assert!(msg.contains("modern npm"));
+    assert!(msg.contains("--lockfile-version 3"), "{msg}");
+    assert!(msg.contains("sloppy-joe fix-lockfile"), "{msg}");
 }

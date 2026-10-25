@@ -222,12 +222,27 @@ pub(crate) fn validate_cargo_registry_source(
     });
 
     if !matched {
+        let message = format!(
+            "Cargo.lock did not prove a trusted registry entry for '{}' with source '{}'.",
+            dep.package_name, source
+        );
+        let locked_under_name = cargo_lockfile_entries(lockfile).into_iter().any(|package| {
+            package.get("name").and_then(|value| value.as_str()) == Some(dep.package_name.as_str())
+        });
+        // A crate the lockfile does not record at all is a stale lockfile. One it records from
+        // another source or at another version is a disagreement a person must settle.
+        if !locked_under_name {
+            return Err(crate::remedy::problem(
+                &crate::remedy::CARGO_UPDATE_WORKSPACE,
+                format!(
+                    "{}: {message}",
+                    cargo_issue_message_prefix(checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY)
+                ),
+            ));
+        }
         return Err(cargo_fail(
             checks::names::RESOLUTION_MISSING_LOCKFILE_ENTRY,
-            format!(
-                "Cargo.lock did not prove a trusted registry entry for '{}' with source '{}'.",
-                dep.package_name, source
-            ),
+            message,
         ));
     }
 
@@ -511,7 +526,9 @@ pub(crate) fn validate_cargo_source_policy(
         authoritative_cargo_lockfile_path(scan_root, &spec.manifest_path, config)?;
     ensure_lockfile_readable(
         &authoritative_lockfile,
-        spec.kind.missing_lockfile_help().unwrap(),
+        spec.kind
+            .missing_lockfile_remedy()
+            .expect("Cargo requires a lockfile"),
     )?;
     let lockfile = cargo_lockfile_value(&authoritative_lockfile)?;
     ensure_registry_packages_have_checksums(&lockfile, &authoritative_lockfile)?;

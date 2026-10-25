@@ -49,9 +49,7 @@ pub(crate) fn legacy_npm_v1_warnings(lockfile_path: &std::path::Path) -> Vec<Iss
             "Legacy npm v5/v6 lockfile '{}' is allowed by config, but sloppy-joe treats it as reduced-confidence input. package-lock v1 cannot prove modern npm artifact and graph invariants as strongly as current lockfiles.",
             lockfile_path.display()
         ))
-        .fix(
-            "Regenerate the lockfile with a modern npm and commit the upgraded package-lock.json or npm-shrinkwrap.json.",
-        ),
+        .fix(crate::remedy::NPM_LOCKFILE_UPGRADE.sentence()),
         Issue::new(
             "<lockfile>",
             checks::names::RESOLUTION_NO_TRUSTED_TRANSITIVE_COVERAGE,

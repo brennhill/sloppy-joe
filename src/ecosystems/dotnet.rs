@@ -119,10 +119,13 @@ impl EcosystemSupport for Dotnet {
         common::ensure_no_locked_packages_without_declarations(spec, &parsed.deps)?;
         let value = common::read_json_lockfile(&lockfile)?;
         if !matches!(value["version"].as_u64(), Some(1 | 2)) || !value["dependencies"].is_object() {
-            anyhow::bail!(
-                "Broken lockfile '{}': expected a supported version and dependencies object",
-                lockfile.display()
-            );
+            return Err(crate::remedy::problem(
+                &crate::remedy::DOTNET_RESTORE_LOCK,
+                format!(
+                    "Broken lockfile '{}': expected a supported version and dependencies object.",
+                    lockfile.display()
+                ),
+            ));
         }
         Ok(Vec::new())
     }

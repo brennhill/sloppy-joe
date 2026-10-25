@@ -4,8 +4,11 @@ pub(crate) fn npm_lockfile_version(
     lockfile: &serde_json::Value,
     lockfile_path: &std::path::Path,
 ) -> Result<u64> {
-    crate::lockfiles::npm::lockfile_version(lockfile)
-        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", lockfile_path.display(), err))
+    crate::lockfiles::npm::lockfile_version(lockfile).map_err(|err| {
+        crate::remedy::rewrap(err, |err| {
+            format!("Broken lockfile '{}': {}", lockfile_path.display(), err)
+        })
+    })
 }
 
 pub(crate) fn npm_registry_tarball_path(resolved: &str) -> Option<&str> {
@@ -114,8 +117,8 @@ pub(crate) fn validate_npm_lockfile_consistency(
         for (section, manifest_entries) in &manifest_sections {
             let lock_entries = section_map(&package_entry, section);
             if *manifest_entries != lock_entries {
-                anyhow::bail!(
-                    "Required lockfile '{}' is out of sync with package.json: package entry '{}' does not match its '{}' declarations. Regenerate the lockfile so it matches the manifest exactly.",
+                return Err(stale_npm(format!(
+                    "Required lockfile '{}' is out of sync with package.json: package entry '{}' does not match its '{}' declarations.",
                     lockfile_path.display(),
                     if package_entry_key.is_empty() {
                         "<root>"
@@ -123,16 +126,16 @@ pub(crate) fn validate_npm_lockfile_consistency(
                         package_entry_key
                     },
                     section,
-                );
+                )));
             }
         }
     } else {
         if !package_entry_key.is_empty() {
-            anyhow::bail!(
-                "Required lockfile '{}' is missing workspace package entry '{}'. Regenerate the lockfile from the npm workspace root so it records this project explicitly.",
+            return Err(stale_npm(format!(
+                "Required lockfile '{}' is missing workspace package entry '{}'; regenerate it from the npm workspace root.",
                 lockfile_path.display(),
                 package_entry_key
-            );
+            )));
         }
         let manifest_names: BTreeSet<String> = manifest_sections
             .iter()
@@ -144,10 +147,10 @@ pub(crate) fn validate_npm_lockfile_consistency(
             .map(|deps| deps.keys().cloned().collect())
             .unwrap_or_default();
         if manifest_names != locked_names {
-            anyhow::bail!(
-                "Required lockfile '{}' is out of sync with package.json: direct dependency entries do not match. Regenerate the lockfile so it matches the manifest exactly.",
+            return Err(stale_npm(format!(
+                "Required lockfile '{}' is out of sync with package.json: direct dependency entries do not match.",
                 lockfile_path.display()
-            );
+            )));
         }
     }
 
@@ -169,27 +172,27 @@ pub(crate) fn validate_npm_lockfile_consistency(
                 .and_then(|packages| packages.as_object())
                 .and_then(|packages| lockfiles::npm::installed_package_entry(packages, package_entry_key, &alias_name).map(|(_, entry)| entry))
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
+                    stale_npm(format!(
                         "Required lockfile '{}' is out of sync with package.json: missing npm alias entry for '{}'.",
                         lockfile_path.display(),
                         alias_name
-                    )
+                    ))
                 })?;
             let locked_name = entry.get("name").and_then(|name| name.as_str()).ok_or_else(|| {
-                anyhow::anyhow!(
+                stale_npm(format!(
                     "Required lockfile '{}' is out of sync with package.json: npm alias '{}' is missing its locked package name.",
                     lockfile_path.display(),
                     alias_name
-                )
+                ))
             })?;
             if locked_name != target_name {
-                anyhow::bail!(
+                return Err(stale_npm(format!(
                     "Required lockfile '{}' is out of sync with package.json: npm alias '{}' targets '{}' in the manifest but '{}' in the lockfile.",
                     lockfile_path.display(),
                     alias_name,
                     target_name,
                     locked_name
-                );
+                )));
             }
         }
     }
@@ -267,10 +270,13 @@ pub(crate) fn validate_pnpm_lockfile_consistency(
         .get("importers")
         .and_then(|value| value.get(importer_key))
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is missing importer '{}'. Regenerate pnpm-lock.yaml from the workspace root so it records this project explicitly.",
-                lockfile_path.display(),
-                importer_key
+            crate::remedy::problem(
+                &crate::remedy::PNPM_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is missing importer '{}'; regenerate it from the workspace root.",
+                    lockfile_path.display(),
+                    importer_key
+                ),
             )
         })?;
 
@@ -283,12 +289,15 @@ pub(crate) fn validate_pnpm_lockfile_consistency(
         let manifest_entries = manifest_section_map(manifest, section);
         let lock_entries = importer_section_map(importer, section)?;
         if manifest_entries != lock_entries {
-            anyhow::bail!(
-                "Required lockfile '{}' is out of sync with package.json: importer '{}' does not match its '{}' declarations. Regenerate pnpm-lock.yaml so it matches the manifest exactly.",
-                lockfile_path.display(),
-                importer_key,
-                section
-            );
+            return Err(crate::remedy::problem(
+                &crate::remedy::PNPM_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is out of sync with package.json: importer '{}' does not match its '{}' declarations.",
+                    lockfile_path.display(),
+                    importer_key,
+                    section
+                ),
+            ));
         }
     }
 
@@ -356,14 +365,17 @@ pub(crate) fn validate_bun_lockfile_consistency(
         .get("workspaces")
         .and_then(|value| value.get(workspace_key))
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is missing workspace '{}'. Regenerate bun.lock from the workspace root so it records this project explicitly.",
-                lockfile_path.display(),
-                if workspace_key.is_empty() {
-                    "<root>"
-                } else {
-                    workspace_key
-                }
+            crate::remedy::problem(
+                &crate::remedy::BUN_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is missing workspace '{}'; regenerate it from the workspace root.",
+                    lockfile_path.display(),
+                    if workspace_key.is_empty() {
+                        "<root>"
+                    } else {
+                        workspace_key
+                    }
+                ),
             )
         })?;
 
@@ -376,20 +388,28 @@ pub(crate) fn validate_bun_lockfile_consistency(
         let manifest_entries = manifest_section_map(manifest, section);
         let lock_entries = workspace_section_map(workspace, section)?;
         if manifest_entries != lock_entries {
-            anyhow::bail!(
-                "Required lockfile '{}' is out of sync with package.json: workspace '{}' does not match its '{}' declarations. Regenerate bun.lock so it matches the manifest exactly.",
-                lockfile_path.display(),
-                if workspace_key.is_empty() {
-                    "<root>"
-                } else {
-                    workspace_key
-                },
-                section
-            );
+            return Err(crate::remedy::problem(
+                &crate::remedy::BUN_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is out of sync with package.json: workspace '{}' does not match its '{}' declarations.",
+                    lockfile_path.display(),
+                    if workspace_key.is_empty() {
+                        "<root>"
+                    } else {
+                        workspace_key
+                    },
+                    section
+                ),
+            ));
         }
     }
 
     Ok(())
+}
+
+/// A stale npm lockfile: it does not record what package.json declares.
+fn stale_npm(message: String) -> anyhow::Error {
+    crate::remedy::problem(&crate::remedy::NPM_LOCKFILE, message)
 }
 
 pub(crate) fn pnpm_importer_entry<'a>(

@@ -190,7 +190,7 @@ pub(crate) fn parse_for_importer_with_orphans(
                     .map(|(name, version)| format!("{name}@{version}"))
                     .collect(),
                 "pnpm",
-                "Run `pnpm install` to prune the stale entries from pnpm-lock.yaml, then commit the result.",
+                &crate::remedy::PNPM_LOCKFILE,
             ));
         } else {
             scan.extend(orphans);

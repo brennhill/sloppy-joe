@@ -197,7 +197,7 @@ pub(crate) fn validate_trusted_poetry_lockfile(
             policy,
             source_path,
             "metadata section is missing",
-            "Regenerate poetry.lock with `poetry lock` and commit the fresh lockfile.",
+            MissingProofFix::Remedy(&crate::remedy::POETRY_LOCK),
         )?;
         return Ok(PoetryLockValidation {
             warnings,
@@ -215,7 +215,7 @@ pub(crate) fn validate_trusted_poetry_lockfile(
             policy,
             source_path,
             "lock-version metadata is missing",
-            "Regenerate poetry.lock with a current Poetry and commit the updated lockfile.",
+            MissingProofFix::Remedy(&crate::remedy::POETRY_LOCK),
         )?;
         return Ok(PoetryLockValidation {
             warnings,
@@ -232,7 +232,7 @@ pub(crate) fn validate_trusted_poetry_lockfile(
                 "lock-version '{}' is outside the supported Poetry trust range",
                 lock_version
             ),
-            "Upgrade Poetry if needed, regenerate poetry.lock, and commit the updated lockfile.",
+            MissingProofFix::Remedy(&crate::remedy::POETRY_LOCK),
         )?;
     }
 
@@ -251,10 +251,13 @@ pub(crate) fn validate_trusted_poetry_lockfile(
                     .as_deref()
                     .is_none_or(|legacy| content_hash != legacy)
             {
-                bail!(
-                    "Broken lockfile '{}': poetry.lock content-hash is stale or contradictory to pyproject.toml",
-                    source_path.display()
-                );
+                return Err(crate::remedy::problem(
+                    &crate::remedy::POETRY_LOCK,
+                    format!(
+                        "Broken lockfile '{}': poetry.lock content-hash is stale or contradictory to pyproject.toml.",
+                        source_path.display()
+                    ),
+                ));
             }
         }
         None => handle_poetry_missing_proof(
@@ -263,7 +266,7 @@ pub(crate) fn validate_trusted_poetry_lockfile(
             policy,
             source_path,
             "content-hash metadata is missing",
-            "Regenerate poetry.lock with `poetry lock` and commit the fresh lockfile.",
+            MissingProofFix::Remedy(&crate::remedy::POETRY_LOCK),
         )?,
     }
 
@@ -283,21 +286,32 @@ pub(crate) fn validate_trusted_poetry_lockfile(
     })
 }
 
+/// How a missing Poetry proof is fixed: by regenerating the lockfile, or by something else.
+#[derive(Clone, Copy)]
+enum MissingProofFix {
+    Remedy(&'static crate::remedy::Remedy),
+    Text(&'static str),
+}
+
 fn handle_poetry_missing_proof(
     warnings: &mut Vec<Issue>,
     fully_trusted: &mut bool,
     policy: PoetryLockPolicy,
     source_path: &Path,
     detail: &str,
-    fix: &str,
+    fix: MissingProofFix,
 ) -> Result<()> {
     *fully_trusted = false;
+    let message = format!(
+        "Broken lockfile '{}': trusted Poetry mode requires stronger proof because {}.",
+        source_path.display(),
+        detail
+    );
     match policy {
-        PoetryLockPolicy::Strict => bail!(
-            "Broken lockfile '{}': trusted Poetry mode requires stronger proof because {}",
-            source_path.display(),
-            detail
-        ),
+        PoetryLockPolicy::Strict => match fix {
+            MissingProofFix::Remedy(remedy) => Err(crate::remedy::problem(remedy, message)),
+            MissingProofFix::Text(text) => bail!("{message} Fix: {text}"),
+        },
         PoetryLockPolicy::WarnMissingProofs => {
             warnings.push(
                 Issue::new(
@@ -310,7 +324,10 @@ fn handle_poetry_missing_proof(
                     source_path.display(),
                     detail
                 ))
-                .fix(fix.to_string()),
+                .fix(match fix {
+                    MissingProofFix::Remedy(remedy) => remedy.sentence(),
+                    MissingProofFix::Text(text) => text.to_string(),
+                }),
             );
             Ok(())
         }
@@ -331,11 +348,14 @@ fn validate_manifest_consistency(
             .map(|(_, version)| version)
             .collect();
         if candidates.is_empty() {
-            bail!(
-                "Broken lockfile '{}': '{}' is missing a resolved package entry",
-                source_path.display(),
-                crate::report::sanitize_for_terminal(dep.package_name())
-            );
+            return Err(crate::remedy::problem(
+                &crate::remedy::POETRY_LOCK,
+                format!(
+                    "Broken lockfile '{}': '{}' is missing a resolved package entry.",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(dep.package_name())
+                ),
+            ));
         }
 
         if let Some(exact_manifest) = dep.exact_version() {
@@ -343,11 +363,14 @@ fn validate_manifest_consistency(
                 .iter()
                 .any(|version| version.as_str() == exact_manifest)
             {
-                bail!(
-                    "Broken lockfile '{}': '{}' is out of sync with pyproject.toml",
-                    source_path.display(),
-                    crate::report::sanitize_for_terminal(dep.package_name())
-                );
+                return Err(crate::remedy::problem(
+                    &crate::remedy::LOCK_PIN_MISMATCH,
+                    format!(
+                        "Broken lockfile '{}': '{}' is out of sync with pyproject.toml.",
+                        source_path.display(),
+                        crate::report::sanitize_for_terminal(dep.package_name())
+                    ),
+                ));
             }
             continue;
         }
@@ -358,11 +381,14 @@ fn validate_manifest_consistency(
                     .unwrap_or(false)
             })
         {
-            bail!(
-                "Broken lockfile '{}': '{}' is out of sync with pyproject.toml",
-                source_path.display(),
-                crate::report::sanitize_for_terminal(dep.package_name())
-            );
+            return Err(crate::remedy::problem(
+                &crate::remedy::LOCK_PIN_MISMATCH,
+                format!(
+                    "Broken lockfile '{}': '{}' is out of sync with pyproject.toml.",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(dep.package_name())
+                ),
+            ));
         }
     }
     Ok(())
@@ -414,7 +440,9 @@ fn validate_provenance(
                     "package '{}' is missing trusted artifact identity",
                     crate::report::sanitize_for_terminal(name)
                 ),
-                "Regenerate poetry.lock with artifact hashes present and commit the refreshed lockfile.",
+                MissingProofFix::Text(
+                    "Regenerate poetry.lock with artifact hashes present and commit the refreshed lockfile.",
+                ),
             )?;
         }
     }

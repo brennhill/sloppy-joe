@@ -129,19 +129,20 @@ pub(crate) const PNPM_LOCKFILE_VERSION: &str = "9.0";
 fn ensure_pnpm_lockfile_version(document: &serde_yaml::Value) -> Result<()> {
     match document.get("lockfileVersion") {
         Some(serde_yaml::Value::String(version)) if version == PNPM_LOCKFILE_VERSION => Ok(()),
-        Some(other) => anyhow::bail!(
-            "pnpm-lock.yaml lockfileVersion {} is not supported: only '{}' (pnpm 9 and later) is modeled. Fix: regenerate the lockfile with pnpm 9 or later and commit it.",
-            crate::report::sanitize_for_terminal(
-                &serde_yaml::to_string(other)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string()
+        Some(other) => Err(crate::remedy::problem(
+            &crate::remedy::PNPM_LOCKFILE,
+            format!(
+                "pnpm-lock.yaml lockfileVersion {} is not supported: only '{}' (pnpm 9 and later) is modeled.",
+                crate::report::sanitize_for_terminal(
+                    serde_yaml::to_string(other).unwrap_or_default().trim()
+                ),
+                PNPM_LOCKFILE_VERSION
             ),
-            PNPM_LOCKFILE_VERSION
-        ),
-        None => anyhow::bail!(
-            "pnpm-lock.yaml has no lockfileVersion, so its format is unknown. Fix: regenerate the lockfile with pnpm 9 or later and commit it."
-        ),
+        )),
+        None => Err(crate::remedy::problem(
+            &crate::remedy::PNPM_LOCKFILE,
+            "pnpm-lock.yaml has no lockfileVersion, so its format is unknown.",
+        )),
     }
 }
 

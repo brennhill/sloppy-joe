@@ -318,14 +318,26 @@ pub(crate) struct YarnClassicRegistryEntry {
 }
 
 impl ParsedYarnLock {
+    /// Whether Yarn Berry (2+) wrote this lockfile: only Berry writes a `__metadata` entry.
+    pub(crate) fn is_berry(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.selectors.len() == 1 && entry.selectors[0] == "__metadata")
+    }
+
+    /// The command that regenerates this lockfile.
+    pub(crate) fn remedy(&self) -> &'static crate::remedy::Remedy {
+        if self.is_berry() {
+            &crate::remedy::YARN_BERRY_LOCKFILE
+        } else {
+            &crate::remedy::YARN_CLASSIC_LOCKFILE
+        }
+    }
+
     /// Registry entries of a Yarn classic lockfile. `None` for Yarn Berry,
     /// whose `checksum` hashes Yarn's own zip archive, not the tarball.
     pub(crate) fn classic_registry_entries(&self) -> Option<Vec<YarnClassicRegistryEntry>> {
-        let berry = self
-            .entries
-            .iter()
-            .any(|entry| entry.selectors.len() == 1 && entry.selectors[0] == "__metadata");
-        if berry {
+        if self.is_berry() {
             return None;
         }
         Some(
@@ -564,12 +576,7 @@ fn orphan_entries_issue(
         .filter_map(|index| packages[*index].as_ref())
         .map(|(name, version)| format!("{name}@{version}"))
         .collect::<Vec<_>>();
-    super::stale_orphan_entries_issue(
-        &parsed.path,
-        names,
-        "Yarn",
-        "Run `yarn install` to prune the stale entries from yarn.lock, then commit the result.",
-    )
+    super::stale_orphan_entries_issue(&parsed.path, names, "Yarn", parsed.remedy())
 }
 
 fn split_selectors(header: &str) -> Vec<String> {

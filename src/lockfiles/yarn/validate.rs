@@ -45,16 +45,19 @@ pub(crate) fn validate_manifest_consistency(
                 })
                 .collect::<BTreeMap<_, _>>();
             if manifest_entries != lock_entries {
-                anyhow::bail!(
-                    "Required lockfile '{}' is out of sync with package.json: workspace '{}' does not match its '{}' declarations. Regenerate yarn.lock so it matches the manifest exactly.",
-                    parsed.path.display(),
-                    if package_entry_key.is_empty() {
-                        "<root>"
-                    } else {
-                        package_entry_key
-                    },
-                    section
-                );
+                return Err(crate::remedy::problem(
+                    parsed.remedy(),
+                    format!(
+                        "Required lockfile '{}' is out of sync with package.json: workspace '{}' does not match its '{}' declarations.",
+                        parsed.path.display(),
+                        if package_entry_key.is_empty() {
+                            "<root>"
+                        } else {
+                            package_entry_key
+                        },
+                        section
+                    ),
+                ));
             }
         }
 
@@ -69,12 +72,15 @@ pub(crate) fn validate_manifest_consistency(
                 .into_iter()
                 .any(|selector| parsed.by_selector.contains_key(&selector))
             {
-                anyhow::bail!(
-                    "Required lockfile '{}' is out of sync with package.json: '{}'@'{}' is missing from yarn.lock.",
-                    parsed.path.display(),
-                    name,
-                    requested
-                );
+                return Err(crate::remedy::problem(
+                    parsed.remedy(),
+                    format!(
+                        "Required lockfile '{}' is out of sync with package.json: '{}'@'{}' is missing from yarn.lock.",
+                        parsed.path.display(),
+                        name,
+                        requested
+                    ),
+                ));
             }
         }
     }
@@ -221,12 +227,15 @@ pub(crate) fn validate_workspace_target(
     if parsed.by_selector.contains_key(&selector) {
         return Ok(());
     }
-    anyhow::bail!(
-        "Required lockfile '{}' is out of sync with package.json: local Yarn workspace dependency '{}' is missing selector '{}'.",
-        parsed.path.display(),
-        dep_name,
-        selector
-    );
+    Err(crate::remedy::problem(
+        parsed.remedy(),
+        format!(
+            "Required lockfile '{}' is out of sync with package.json: local Yarn workspace dependency '{}' is missing selector '{}'.",
+            parsed.path.display(),
+            dep_name,
+            selector
+        ),
+    ))
 }
 
 pub(crate) fn validate_yarn_berry_resolution_identity(

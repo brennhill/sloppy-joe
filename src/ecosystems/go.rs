@@ -190,8 +190,11 @@ fn check_go_sum(spec: &ProjectInputSpec) -> Result<Option<Issue>> {
         return Ok(Some(vendored_source_warning(spec)));
     }
     let go_sum = crate::untrusted::read_line_file(&go_sum_path)?;
-    parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum)
-        .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", go_sum_path.display(), err))?;
+    parsers::go_mod::check_go_sum_entries(&manifest_content, &go_sum).map_err(|err| {
+        crate::remedy::rewrap(err, |err| {
+            format!("Broken lockfile '{}': {}", go_sum_path.display(), err)
+        })
+    })?;
     Ok(None)
 }
 

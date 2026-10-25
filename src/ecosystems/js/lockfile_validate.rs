@@ -5,19 +5,25 @@ pub(crate) fn validate_js_manifest_security_policy(
     manifest: &serde_json::Value,
 ) -> Result<()> {
     if manifest.get("overrides").is_some() {
-        anyhow::bail!(
-            "package.json '{}' uses npm overrides. Overrides change the resolved dependency graph, and sloppy-joe does not yet have strict override verification. Remove overrides or review this project with another control until strict support exists.",
-            spec.manifest_path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::JS_DEPENDENCY_REWRITE,
+            format!(
+                "package.json '{}' uses npm overrides. Overrides change the resolved dependency graph, and sloppy-joe does not yet have strict override verification.",
+                spec.manifest_path.display()
+            ),
+        ));
     }
     if manifest.get("resolutions").is_some()
         || manifest.get("pnpm").is_some()
         || manifest.get("patchedDependencies").is_some()
     {
-        anyhow::bail!(
-            "Unsupported JS dependency rewrite configuration in '{}': resolutions, pnpm settings and patchedDependencies cannot be verified against the lockfile",
-            spec.manifest_path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::JS_DEPENDENCY_REWRITE,
+            format!(
+                "Unsupported JS dependency rewrite configuration in '{}': resolutions, pnpm settings and patchedDependencies cannot be verified against the lockfile.",
+                spec.manifest_path.display()
+            ),
+        ));
     }
 
     Ok(())
@@ -31,41 +37,69 @@ pub(crate) fn validate_npm_lockfile_version(
     let version = npm_lockfile_version(lockfile, lockfile_path)?;
 
     if version == 1 && !config.allow_legacy_npm_v1_lockfile {
-        anyhow::bail!(
-            "This repo is using a legacy npm v5/v6 lockfile ('{}', lockfileVersion: 1). Regenerate with a modern npm. If you must keep it temporarily, set allow_legacy_npm_v1_lockfile to true.",
-            lockfile_path.display()
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::NPM_LOCKFILE_UPGRADE,
+            format!(
+                "This repo is using a legacy npm v5/v6 lockfile ('{}', lockfileVersion: 1). If you must keep it temporarily, set allow_legacy_npm_v1_lockfile to true.",
+                lockfile_path.display()
+            ),
+        ));
     }
 
     Ok(())
 }
 
-fn js_lockfile_help(spec: &ProjectInputSpec) -> String {
-    match spec.js_binding.as_ref().map(|binding| binding.manager) {
-        Some(JsPackageManager::Pnpm) => {
-            "Run `pnpm install --lockfile-only` and commit pnpm-lock.yaml.".to_string()
+/// Whether the Yarn project rooted at `root_dir` uses Yarn Berry (2+) rather than Yarn Classic:
+/// the lockfile format decides, then `.yarnrc.yml` (Berry's settings file), then `packageManager`.
+pub(crate) fn yarn_is_berry(root_dir: &Path) -> bool {
+    let lockfile = root_dir.join("yarn.lock");
+    if let Ok(content) = crate::untrusted::read_line_file(&lockfile) {
+        return content.contains("__metadata:");
+    }
+    if crate::parsers::path_detected(&root_dir.join(".yarnrc.yml")).unwrap_or(false) {
+        return true;
+    }
+    read_npm_manifest_value(&root_dir.join("package.json"))
+        .ok()
+        .and_then(|manifest| {
+            let field = manifest.get("packageManager")?.as_str()?.to_string();
+            let major = field.strip_prefix("yarn@")?.split('.').next()?.parse::<u32>().ok()?;
+            Some(major >= 2)
+        })
+        .unwrap_or(false)
+}
+
+/// The command that writes this JS project's lockfile.
+pub(crate) fn js_lockfile_remedy(spec: &ProjectInputSpec) -> &'static crate::remedy::Remedy {
+    use crate::remedy::*;
+    let Some(binding) = &spec.js_binding else {
+        return &NPM_LOCKFILE;
+    };
+    match binding.manager {
+        JsPackageManager::Npm => &NPM_LOCKFILE,
+        JsPackageManager::Pnpm => &PNPM_LOCKFILE,
+        JsPackageManager::Bun => &BUN_LOCKFILE,
+        JsPackageManager::Yarn => {
+            let root = binding
+                .root_manifest_path
+                .parent()
+                .unwrap_or_else(|| spec.project_dir());
+            if yarn_is_berry(root) {
+                &YARN_BERRY_LOCKFILE
+            } else {
+                &YARN_CLASSIC_LOCKFILE
+            }
         }
-        Some(JsPackageManager::Yarn) => {
-            "Commit the authoritative yarn.lock for this project.".to_string()
-        }
-        Some(JsPackageManager::Bun) => {
-            "Commit the authoritative bun.lock or bun.lockb for this project.".to_string()
-        }
-        _ => spec
-            .kind
-            .missing_lockfile_help()
-            .unwrap_or("Commit the authoritative lockfile for this project.")
-            .to_string(),
     }
 }
 
 pub(crate) fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec) -> Result<()> {
-    let help = js_lockfile_help(spec);
+    let remedy = js_lockfile_remedy(spec);
     let Some(binding) = &spec.js_binding else {
         return ensure_one_lockfile_readable(
             spec.project_dir(),
             &["npm-shrinkwrap.json", "package-lock.json"],
-            &help,
+            remedy,
         );
     };
     let root_dir = binding
@@ -97,17 +131,20 @@ pub(crate) fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec)
         None
     };
     if let Some(shadow) = shadow_lockfile {
-        anyhow::bail!(
-            "Found shadow JS lockfile '{}' under workspace project '{}'. The authoritative {} lockfile lives at '{}'. Remove the child lockfile and keep the workspace root lockfile as the single source of truth.",
-            shadow.display(),
-            spec.manifest_path.display(),
-            binding.manager.as_str(),
-            binding
-                .lockfile_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<missing>".to_string())
-        );
+        return Err(crate::remedy::problem(
+            &crate::remedy::JS_SHADOW_LOCKFILE,
+            format!(
+                "Found shadow JS lockfile '{}' under workspace project '{}'. The authoritative {} lockfile lives at '{}'.",
+                shadow.display(),
+                spec.manifest_path.display(),
+                binding.manager.as_str(),
+                binding
+                    .lockfile_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<missing>".to_string())
+            ),
+        ));
     }
     let Some(path) = &binding.lockfile_path else {
         let expected = super::managers::manager(binding.manager)
@@ -116,15 +153,17 @@ pub(crate) fn ensure_authoritative_js_lockfile_readable(spec: &ProjectInputSpec)
             .map(|name| format!("'{name}'"))
             .collect::<Vec<_>>()
             .join(" or ");
-        anyhow::bail!(
-            "Required lockfile {} is missing for {} project '{}'. Fix: {}",
-            expected,
-            binding.manager.as_str(),
-            spec.manifest_path.display(),
-            help
-        );
+        return Err(crate::remedy::problem(
+            remedy,
+            format!(
+                "Required lockfile {} is missing for {} project '{}'.",
+                expected,
+                binding.manager.as_str(),
+                spec.manifest_path.display(),
+            ),
+        ));
     };
-    ensure_lockfile_readable(path, &help)
+    ensure_lockfile_readable(path, remedy)
 }
 
 #[cfg(test)]

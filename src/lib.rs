@@ -24,6 +24,7 @@ pub(crate) use project::*;
 mod config_surface;
 mod gitindex;
 pub mod registry;
+pub(crate) mod remedy;
 pub mod report;
 mod untrusted;
 mod version;
@@ -309,3 +310,7 @@ mod lockfile_integrity_scan_tests;
 #[cfg(test)]
 #[path = "go_sum_preflight_tests.rs"]
 mod go_sum_preflight_tests;
+
+#[cfg(test)]
+#[path = "lockfile_remedy_tests.rs"]
+mod lockfile_remedy_tests;

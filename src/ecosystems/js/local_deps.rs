@@ -391,10 +391,13 @@ pub(crate) fn validate_local_npm_lockfile_target(
         .and_then(|packages| packages.as_object())
         .and_then(|packages| lockfiles::npm::installed_package_entry(packages, spec.npm_lockfile_package_key(), dep_name).map(|(_, entry)| entry))
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is out of sync with package.json: local npm dependency '{}' is missing its lockfile entry.",
-                lockfile_path.display(),
-                dep_name
+            crate::remedy::problem(
+                &crate::remedy::NPM_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is out of sync with package.json: local npm dependency '{}' is missing its lockfile entry.",
+                    lockfile_path.display(),
+                    dep_name
+                ),
             )
         })?;
 
@@ -473,18 +476,24 @@ pub(crate) fn validate_local_pnpm_lockfile_target(
         .get("importers")
         .and_then(|value| value.get(importer_key))
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is out of sync: importer '{}' is missing.",
-                lockfile_path.display(),
-                importer_key
+            crate::remedy::problem(
+                &crate::remedy::PNPM_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is out of sync: importer '{}' is missing.",
+                    lockfile_path.display(),
+                    importer_key
+                ),
             )
         })?;
     let version = pnpm_importer_entry(importer, dep_name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Required lockfile '{}' is out of sync: local pnpm dependency '{}' is missing from importer '{}'.",
-            lockfile_path.display(),
-            dep_name,
-            importer_key
+        crate::remedy::problem(
+            &crate::remedy::PNPM_LOCKFILE,
+            format!(
+                "Required lockfile '{}' is out of sync: local pnpm dependency '{}' is missing from importer '{}'.",
+                lockfile_path.display(),
+                dep_name,
+                importer_key
+            ),
         )
     })?;
     let resolved = version
@@ -553,10 +562,13 @@ pub(crate) fn validate_local_bun_lockfile_target(
         .and_then(|value| value.first())
         .and_then(|value| value.as_str())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Required lockfile '{}' is out of sync with package.json: local Bun dependency '{}' is missing its lockfile package entry.",
-                lockfile_path.display(),
-                dep_name
+            crate::remedy::problem(
+                &crate::remedy::BUN_LOCKFILE,
+                format!(
+                    "Required lockfile '{}' is out of sync with package.json: local Bun dependency '{}' is missing its lockfile package entry.",
+                    lockfile_path.display(),
+                    dep_name
+                ),
             )
         })?;
 
