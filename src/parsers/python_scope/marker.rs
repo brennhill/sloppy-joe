@@ -1,4 +1,11 @@
+//! PEP 508 environment markers: tokenizer and parser. Evaluation lives in `marker_eval`.
 use super::*;
+
+/// Markers with more tokens than this are refused. Real markers (including the long ones uv and
+/// Poetry write) stay far below it; unbounded input would make evaluation quadratic.
+pub(crate) const MAX_MARKER_TOKENS: usize = 4096;
+/// Parentheses nested deeper than this are refused instead of exhausting the stack.
+pub(crate) const MAX_MARKER_DEPTH: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MarkerValue {
@@ -6,7 +13,7 @@ pub(crate) enum MarkerValue {
     Literal(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MarkerOperator {
     Eq,
     NotEq,
@@ -14,8 +21,27 @@ pub(crate) enum MarkerOperator {
     LtEq,
     Gt,
     GtEq,
+    Compatible,
+    ArbitraryEq,
     In,
     NotIn,
+}
+
+impl MarkerOperator {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::NotEq => "!=",
+            Self::Lt => "<",
+            Self::LtEq => "<=",
+            Self::Gt => ">",
+            Self::GtEq => ">=",
+            Self::Compatible => "~=",
+            Self::ArbitraryEq => "===",
+            Self::In => "in",
+            Self::NotIn => "not in",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,21 +51,17 @@ pub(crate) enum MarkerExpr {
         op: MarkerOperator,
         right: MarkerValue,
     },
-    And(Box<MarkerExpr>, Box<MarkerExpr>),
-    Or(Box<MarkerExpr>, Box<MarkerExpr>),
+    /// Every operand must hold. Chains stay flat, so a long `a and b and ...` does not nest.
+    And(Vec<MarkerExpr>),
+    /// Any operand may hold.
+    Or(Vec<MarkerExpr>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MarkerToken {
     Ident(String),
     String(String),
-    Eq,
-    NotEq,
-    Lt,
-    LtEq,
-    Gt,
-    GtEq,
-    In,
+    Op(MarkerOperator),
     Not,
     And,
     Or,
@@ -47,266 +69,29 @@ pub(crate) enum MarkerToken {
     RParen,
 }
 
-#[cfg(test)]
-pub(crate) fn evaluate_marker(marker: &str, profile: &PythonProfile) -> Result<bool> {
-    evaluate_marker_with_extra(marker, profile, None)
-}
-
-/// Evaluate a project-level marker against the profile's extra selection. When every extra is
-/// in scope, the marker matches if it holds for the base install or for any extra it names.
-pub(crate) fn evaluate_marker_for_profile_extras(
-    marker: &str,
-    profile: &PythonProfile,
-) -> Result<bool> {
-    if !profile.all_extras {
-        return evaluate_marker_for_extras(marker, profile, &profile.selected_extras);
-    }
-    let mut candidates: BTreeSet<String> = BTreeSet::from([String::new()]);
-    for token in tokenize_marker(marker)? {
-        if let MarkerToken::String(value) = token {
-            candidates.insert(value);
-        }
-    }
-    for extra in &candidates {
-        if evaluate_marker_with_extra(marker, profile, Some(extra))? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub(crate) fn evaluate_marker_for_extras(
-    marker: &str,
-    profile: &PythonProfile,
-    active_extras: &BTreeSet<String>,
-) -> Result<bool> {
-    if active_extras.is_empty() {
-        return evaluate_marker_with_extra(marker, profile, Some(""));
-    }
-    for extra in active_extras {
-        if evaluate_marker_with_extra(marker, profile, Some(extra))? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub(crate) fn evaluate_marker_with_extra(
-    marker: &str,
-    profile: &PythonProfile,
-    active_extra: Option<&str>,
-) -> Result<bool> {
-    let tokens = tokenize_marker(marker)?;
-    let mut parser = MarkerParser {
-        tokens: &tokens,
-        index: 0,
-    };
-    let expr = parser.parse_expr()?;
-    if parser.index != parser.tokens.len() {
-        bail!(
-            "Unsupported Python environment marker '{}': trailing tokens are not supported",
-            crate::report::sanitize_for_terminal(marker)
-        );
-    }
-    // Undecided counts as true: the dependency stays in scope.
-    Ok(expr.evaluate(profile, active_extra)? != Some(false))
-}
-
-fn names_environment(value: &MarkerValue) -> bool {
-    matches!(value, MarkerValue::Variable(name) if name != "extra")
-}
-
-impl MarkerExpr {
-    /// `None` when the marker cannot be decided: the profile stands for every environment and
-    /// the marker depends on one.
-    pub(crate) fn evaluate(
-        &self,
-        profile: &PythonProfile,
-        active_extra: Option<&str>,
-    ) -> Result<Option<bool>> {
-        match self {
-            Self::Compare { left, right, .. }
-                if profile.any_environment
-                    && (names_environment(left) || names_environment(right)) =>
-            {
-                Ok(None)
-            }
-            Self::Compare { left, op, right } => {
-                let left = resolve_marker_value(left, profile, active_extra)?;
-                let right = resolve_marker_value(right, profile, active_extra)?;
-                Ok(Some(compare_with_operator(&left, op, &right)))
-            }
-            Self::And(left, right) => kleene(left, right, false, profile, active_extra),
-            Self::Or(left, right) => kleene(left, right, true, profile, active_extra),
-        }
-    }
-}
-
-/// Kleene logic: `settles` decides the pair on its own (`false` for `and`, `true` for `or`);
-/// otherwise an undecided operand leaves the pair undecided.
-fn kleene(
-    left: &MarkerExpr,
-    right: &MarkerExpr,
-    settles: bool,
-    profile: &PythonProfile,
-    active_extra: Option<&str>,
-) -> Result<Option<bool>> {
-    let left = left.evaluate(profile, active_extra)?;
-    if left == Some(settles) {
-        return Ok(left);
-    }
-    let right = right.evaluate(profile, active_extra)?;
-    Ok(match (left, right) {
-        (_, Some(value)) if value == settles => Some(settles),
-        (Some(_), right) => right,
-        (None, _) => None,
+/// The marker variables PEP 508 defines, plus the legacy dotted spellings `packaging` still
+/// accepts. Anything else is a syntax error, as it is for pip.
+pub(crate) fn canonical_marker_variable(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "os_name" | "os.name" => "os_name",
+        "sys_platform" | "sys.platform" => "sys_platform",
+        "platform_machine" | "platform.machine" => "platform_machine",
+        "platform_python_implementation"
+        | "platform.python_implementation"
+        | "python_implementation" => "platform_python_implementation",
+        "platform_release" => "platform_release",
+        "platform_system" => "platform_system",
+        "platform_version" | "platform.version" => "platform_version",
+        "python_version" => "python_version",
+        "python_full_version" => "python_full_version",
+        "implementation_name" => "implementation_name",
+        "implementation_version" => "implementation_version",
+        "extra" => "extra",
+        _ => return None,
     })
 }
 
-fn compare_with_operator(left: &str, op: &MarkerOperator, right: &str) -> bool {
-    let ordering = compare_marker_values(left, right);
-    match op {
-        MarkerOperator::Eq => ordering == Some(std::cmp::Ordering::Equal),
-        MarkerOperator::NotEq => ordering != Some(std::cmp::Ordering::Equal),
-        MarkerOperator::Lt => ordering == Some(std::cmp::Ordering::Less),
-        MarkerOperator::LtEq => ordering.is_some_and(|o| o != std::cmp::Ordering::Greater),
-        MarkerOperator::Gt => ordering == Some(std::cmp::Ordering::Greater),
-        MarkerOperator::GtEq => ordering.is_some_and(|o| o != std::cmp::Ordering::Less),
-        MarkerOperator::In => marker_membership(left, right),
-        MarkerOperator::NotIn => !marker_membership(left, right),
-    }
-}
-
-pub(crate) fn resolve_marker_value(
-    value: &MarkerValue,
-    profile: &PythonProfile,
-    active_extra: Option<&str>,
-) -> Result<String> {
-    match value {
-        MarkerValue::Literal(value) => Ok(value.clone()),
-        MarkerValue::Variable(name) => resolve_marker_variable(name, profile, active_extra),
-    }
-}
-
-fn os_name_for(platform: &str) -> String {
-    match platform {
-        "win32" => "nt",
-        "darwin" | "linux" => "posix",
-        other => other,
-    }
-    .to_string()
-}
-
-fn platform_system_for(platform: &str) -> String {
-    match platform {
-        "win32" => "Windows",
-        "darwin" => "Darwin",
-        "linux" => "Linux",
-        other => other,
-    }
-    .to_string()
-}
-
-pub(crate) fn resolve_marker_variable(
-    name: &str,
-    profile: &PythonProfile,
-    active_extra: Option<&str>,
-) -> Result<String> {
-    match name {
-        "sys_platform" => Ok(profile.target_platform.clone()),
-        "os_name" => Ok(os_name_for(&profile.target_platform)),
-        "platform_system" => Ok(platform_system_for(&profile.target_platform)),
-        "platform_machine" => Ok(profile.target_arch.clone()),
-        "platform_python_implementation" => Ok("CPython".to_string()),
-        "implementation_name" => Ok("cpython".to_string()),
-        "implementation_version" => profile.python_full_version.clone().or_else(|| {
-            profile
-                .python_version
-                .as_deref()
-                .map(normalize_python_full_version)
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Python environment marker requires an explicit implementation version for trusted evaluation"
-            )
-        }),
-        "python_version" => profile.python_version.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Python environment marker requires an explicit Python version for trusted evaluation"
-            )
-        }),
-        "python_full_version" => profile.python_full_version.clone().or_else(|| {
-            profile
-                .python_version
-                .as_ref()
-                .map(|version| format!("{version}.0"))
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Python environment marker requires an explicit full Python version for trusted evaluation"
-            )
-        }),
-        "platform_release" => {
-            resolve_host_platform_metadata(name, profile, "-r", "PLATFORM_RELEASE")
-        }
-        "platform_version" => {
-            resolve_host_platform_metadata(name, profile, "-v", "PLATFORM_VERSION")
-        }
-        "extra" => Ok(active_extra.unwrap_or("").to_string()),
-        other => bail!(
-            "Unsupported Python environment marker variable '{}'",
-            crate::report::sanitize_for_terminal(other)
-        ),
-    }
-}
-
-pub(crate) fn compare_marker_values(left: &str, right: &str) -> Option<std::cmp::Ordering> {
-    if looks_like_python_version(left) && looks_like_python_version(right) {
-        return Some(compare_python_versions(left, right));
-    }
-    Some(left.cmp(right))
-}
-
-pub(crate) fn looks_like_python_version(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == '*')
-}
-
-pub(crate) fn compare_python_versions(left: &str, right: &str) -> std::cmp::Ordering {
-    let mut left_parts = left.split('.').map(parse_version_part);
-    let mut right_parts = right.split('.').map(parse_version_part);
-    loop {
-        match (left_parts.next(), right_parts.next()) {
-            (None, None) => return std::cmp::Ordering::Equal,
-            (Some(left), None) => {
-                if left != 0 {
-                    return std::cmp::Ordering::Greater;
-                }
-            }
-            (None, Some(right)) => {
-                if right != 0 {
-                    return std::cmp::Ordering::Less;
-                }
-            }
-            (Some(left), Some(right)) => match left.cmp(&right) {
-                std::cmp::Ordering::Equal => {}
-                ordering => return ordering,
-            },
-        }
-    }
-}
-
-pub(crate) fn parse_version_part(part: &str) -> u64 {
-    part.parse::<u64>().unwrap_or(0)
-}
-
-pub(crate) fn marker_membership(left: &str, right: &str) -> bool {
-    right.contains(left)
-}
-
-fn unsupported_marker(marker: &str, detail: impl std::fmt::Display) -> anyhow::Error {
+pub(crate) fn unsupported_marker(marker: &str, detail: impl std::fmt::Display) -> anyhow::Error {
     anyhow::anyhow!(
         "Unsupported Python environment marker '{}': {detail}",
         crate::report::sanitize_for_terminal(marker)
@@ -323,17 +108,22 @@ fn tokenize_operator(
     chars: &[char],
     index: usize,
 ) -> Result<Option<(MarkerToken, usize)>> {
-    let followed_by_eq = chars.get(index + 1) == Some(&'=');
-    let token = match (chars[index], followed_by_eq) {
+    let next = chars.get(index + 1).copied();
+    let op = |op| MarkerToken::Op(op);
+    let token = match (chars[index], next) {
         ('(', _) => (MarkerToken::LParen, 1),
         (')', _) => (MarkerToken::RParen, 1),
-        ('=', true) => (MarkerToken::Eq, 2),
-        ('!', true) => (MarkerToken::NotEq, 2),
-        ('<', true) => (MarkerToken::LtEq, 2),
-        ('<', false) => (MarkerToken::Lt, 1),
-        ('>', true) => (MarkerToken::GtEq, 2),
-        ('>', false) => (MarkerToken::Gt, 1),
-        (ch @ ('=' | '!'), false) => {
+        ('=', Some('=')) if chars.get(index + 2) == Some(&'=') => {
+            (op(MarkerOperator::ArbitraryEq), 3)
+        }
+        ('=', Some('=')) => (op(MarkerOperator::Eq), 2),
+        ('!', Some('=')) => (op(MarkerOperator::NotEq), 2),
+        ('~', Some('=')) => (op(MarkerOperator::Compatible), 2),
+        ('<', Some('=')) => (op(MarkerOperator::LtEq), 2),
+        ('<', _) => (op(MarkerOperator::Lt), 1),
+        ('>', Some('=')) => (op(MarkerOperator::GtEq), 2),
+        ('>', _) => (op(MarkerOperator::Gt), 1),
+        (ch @ ('=' | '!' | '~'), _) => {
             return Err(unsupported_marker(marker, format!("unexpected '{ch}'")));
         }
         _ => return Ok(None),
@@ -362,7 +152,7 @@ fn tokenize_identifier(chars: &[char], index: usize) -> (MarkerToken, usize) {
         "and" => MarkerToken::And,
         "or" => MarkerToken::Or,
         "not" => MarkerToken::Not,
-        "in" => MarkerToken::In,
+        "in" => MarkerToken::Op(MarkerOperator::In),
         _ => MarkerToken::Ident(ident),
     };
     (token, len)
@@ -391,100 +181,140 @@ pub(crate) fn tokenize_marker(marker: &str) -> Result<Vec<MarkerToken>> {
             ));
         };
         tokens.push(token);
+        if tokens.len() > MAX_MARKER_TOKENS {
+            return Err(unsupported_marker(
+                marker,
+                format!("more than {MAX_MARKER_TOKENS} tokens"),
+            ));
+        }
         index += len;
     }
     Ok(tokens)
 }
 
+/// Parse a whole marker. Unknown variables, trailing tokens and excessive nesting are errors.
+pub(crate) fn parse_marker(marker: &str) -> Result<MarkerExpr> {
+    let tokens = tokenize_marker(marker)?;
+    let mut parser = MarkerParser {
+        marker,
+        tokens: &tokens,
+        index: 0,
+        depth: 0,
+    };
+    let expr = parser.parse_or()?;
+    if parser.index != tokens.len() {
+        return Err(unsupported_marker(
+            marker,
+            "trailing tokens are not supported",
+        ));
+    }
+    Ok(expr)
+}
+
 pub(crate) struct MarkerParser<'a> {
-    pub(crate) tokens: &'a [MarkerToken],
-    pub(crate) index: usize,
+    marker: &'a str,
+    tokens: &'a [MarkerToken],
+    index: usize,
+    depth: usize,
 }
 
 impl MarkerParser<'_> {
-    pub(crate) fn parse_expr(&mut self) -> Result<MarkerExpr> {
-        self.parse_or()
-    }
-
-    pub(crate) fn parse_or(&mut self) -> Result<MarkerExpr> {
-        let mut expr = self.parse_and()?;
+    fn parse_or(&mut self) -> Result<MarkerExpr> {
+        let mut items = vec![self.parse_and()?];
         while matches!(self.peek(), Some(MarkerToken::Or)) {
             self.index += 1;
-            let right = self.parse_and()?;
-            expr = MarkerExpr::Or(Box::new(expr), Box::new(right));
+            items.push(self.parse_and()?);
         }
-        Ok(expr)
+        Ok(flatten(items, MarkerExpr::Or))
     }
 
-    pub(crate) fn parse_and(&mut self) -> Result<MarkerExpr> {
-        let mut expr = self.parse_primary()?;
+    fn parse_and(&mut self) -> Result<MarkerExpr> {
+        let mut items = vec![self.parse_primary()?];
         while matches!(self.peek(), Some(MarkerToken::And)) {
             self.index += 1;
-            let right = self.parse_primary()?;
-            expr = MarkerExpr::And(Box::new(expr), Box::new(right));
+            items.push(self.parse_primary()?);
         }
-        Ok(expr)
+        Ok(flatten(items, MarkerExpr::And))
     }
 
-    pub(crate) fn parse_primary(&mut self) -> Result<MarkerExpr> {
-        if matches!(self.peek(), Some(MarkerToken::LParen)) {
-            self.index += 1;
-            let expr = self.parse_expr()?;
-            match self.next() {
-                Some(MarkerToken::RParen) => return Ok(expr),
-                _ => bail!("Unsupported Python environment marker: unclosed '('"),
-            }
+    fn parse_primary(&mut self) -> Result<MarkerExpr> {
+        if !matches!(self.peek(), Some(MarkerToken::LParen)) {
+            return self.parse_compare();
         }
-        self.parse_compare()
+        self.index += 1;
+        self.depth += 1;
+        if self.depth > MAX_MARKER_DEPTH {
+            return Err(unsupported_marker(
+                self.marker,
+                format!("parentheses nested deeper than {MAX_MARKER_DEPTH}"),
+            ));
+        }
+        let expr = self.parse_or()?;
+        self.depth -= 1;
+        match self.next() {
+            Some(MarkerToken::RParen) => Ok(expr),
+            _ => Err(unsupported_marker(self.marker, "unclosed '('")),
+        }
     }
 
-    pub(crate) fn parse_compare(&mut self) -> Result<MarkerExpr> {
+    fn parse_compare(&mut self) -> Result<MarkerExpr> {
         let left = self.parse_value()?;
         let op = self.parse_operator()?;
         let right = self.parse_value()?;
         Ok(MarkerExpr::Compare { left, op, right })
     }
 
-    pub(crate) fn parse_value(&mut self) -> Result<MarkerValue> {
+    fn parse_value(&mut self) -> Result<MarkerValue> {
+        let marker = self.marker;
         match self.next() {
-            Some(MarkerToken::Ident(value)) => Ok(MarkerValue::Variable(value.to_string())),
+            Some(MarkerToken::Ident(name)) => canonical_marker_variable(name)
+                .map(|name| MarkerValue::Variable(name.to_string()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Unsupported Python environment marker variable '{}'",
+                        crate::report::sanitize_for_terminal(name)
+                    )
+                }),
             Some(MarkerToken::String(value)) => Ok(MarkerValue::Literal(value.to_string())),
-            token => bail!("Unsupported Python environment marker value: {:?}", token),
+            token => Err(unsupported_marker(marker, format!("unexpected {token:?}"))),
         }
     }
 
-    pub(crate) fn parse_operator(&mut self) -> Result<MarkerOperator> {
+    fn parse_operator(&mut self) -> Result<MarkerOperator> {
+        let marker = self.marker;
         match self.next() {
-            Some(MarkerToken::Eq) => Ok(MarkerOperator::Eq),
-            Some(MarkerToken::NotEq) => Ok(MarkerOperator::NotEq),
-            Some(MarkerToken::Lt) => Ok(MarkerOperator::Lt),
-            Some(MarkerToken::LtEq) => Ok(MarkerOperator::LtEq),
-            Some(MarkerToken::Gt) => Ok(MarkerOperator::Gt),
-            Some(MarkerToken::GtEq) => Ok(MarkerOperator::GtEq),
-            Some(MarkerToken::In) => Ok(MarkerOperator::In),
+            Some(MarkerToken::Op(op)) => Ok(*op),
             Some(MarkerToken::Not) => match self.next() {
-                Some(MarkerToken::In) => Ok(MarkerOperator::NotIn),
-                token => bail!(
-                    "Unsupported Python environment marker operator after 'not': {:?}",
-                    token
-                ),
+                Some(MarkerToken::Op(MarkerOperator::In)) => Ok(MarkerOperator::NotIn),
+                token => Err(unsupported_marker(
+                    marker,
+                    format!("unexpected {token:?} after 'not'"),
+                )),
             },
-            token => bail!(
-                "Unsupported Python environment marker operator: {:?}",
-                token
-            ),
+            token => Err(unsupported_marker(
+                marker,
+                format!("expected an operator, found {token:?}"),
+            )),
         }
     }
 
-    pub(crate) fn peek(&self) -> Option<&MarkerToken> {
+    fn peek(&self) -> Option<&MarkerToken> {
         self.tokens.get(self.index)
     }
 
-    pub(crate) fn next(&mut self) -> Option<&MarkerToken> {
+    fn next(&mut self) -> Option<&MarkerToken> {
         let token = self.tokens.get(self.index);
         if token.is_some() {
             self.index += 1;
         }
         token
+    }
+}
+
+fn flatten(mut items: Vec<MarkerExpr>, combine: fn(Vec<MarkerExpr>) -> MarkerExpr) -> MarkerExpr {
+    if items.len() == 1 {
+        items.pop().expect("one item")
+    } else {
+        combine(items)
     }
 }

@@ -1,5 +1,7 @@
 mod marker;
 pub(crate) use marker::*;
+mod marker_eval;
+pub(crate) use marker_eval::*;
 mod host;
 use crate::Dependency;
 use anyhow::{Result, bail};
@@ -145,13 +147,27 @@ impl PythonScopedDependency {
     }
 
     pub(crate) fn is_in_scope(&self, profile: &PythonProfile) -> Result<bool> {
+        if !self.is_selected(profile) {
+            return Ok(false);
+        }
+        if !profile.any_environment && self.shorthand_excludes(profile)? {
+            return Ok(false);
+        }
+        match &self.marker {
+            Some(marker) => evaluate_marker_for_profile_extras(marker, profile),
+            None => Ok(true),
+        }
+    }
+
+    /// Whether the group and extra selection includes this dependency.
+    fn is_selected(&self, profile: &PythonProfile) -> bool {
         if !self.groups.is_empty()
             && !self
                 .groups
                 .iter()
                 .any(|group| profile.includes_group(group))
         {
-            return Ok(false);
+            return false;
         }
         if !self.extras.is_empty()
             && !self
@@ -159,36 +175,26 @@ impl PythonScopedDependency {
                 .iter()
                 .any(|extra| profile.includes_extra(extra))
         {
-            return Ok(false);
+            return false;
         }
-        if !self.runtime_default && self.groups.is_empty() && self.extras.is_empty() {
-            return Ok(false);
-        }
-        if profile.any_environment {
-            return match &self.marker {
-                Some(marker) => evaluate_marker_for_profile_extras(marker, profile),
-                None => Ok(true),
-            };
-        }
-        if let Some(constraint) = &self.python_constraint {
-            let version = profile.python_version.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Poetry python shorthand requires an explicit Python version for trusted evaluation"
-                )
-            })?;
-            if !super::python_version::version_matches_uv_specifier(version, Some(constraint))? {
-                return Ok(false);
-            }
+        self.runtime_default || !self.groups.is_empty() || !self.extras.is_empty()
+    }
+
+    /// Whether a Poetry `python`/`platform` shorthand is decided false for the profile. An unknown
+    /// Python version leaves the shorthand undecided, so the dependency stays.
+    fn shorthand_excludes(&self, profile: &PythonProfile) -> Result<bool> {
+        if let Some(constraint) = &self.python_constraint
+            && let Some(version) = profile.python_version.as_deref()
+            && !super::python_version::version_matches_uv_specifier(version, Some(constraint))?
+        {
+            return Ok(true);
         }
         if let Some(constraint) = &self.platform_constraint
             && !poetry_platform_constraint_matches(&profile.target_platform, constraint)?
         {
-            return Ok(false);
+            return Ok(true);
         }
-        if let Some(marker) = &self.marker {
-            return evaluate_marker_for_profile_extras(marker, profile);
-        }
-        Ok(true)
+        Ok(false)
     }
 }
 

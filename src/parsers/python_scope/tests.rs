@@ -106,8 +106,8 @@ fn implementation_version_marker_uses_full_python_version() {
 fn platform_release_marker_uses_profile_value() {
     let profile = PythonProfile::runtime_for_current_host();
     assert!(
-        resolve_marker_variable("platform_release", &profile, None).is_ok(),
-        "platform_release should be a supported marker variable"
+        resolve_marker_variable("platform_release", &profile, None).is_some(),
+        "platform_release should resolve for the host"
     );
 }
 
@@ -115,7 +115,122 @@ fn platform_release_marker_uses_profile_value() {
 fn platform_version_marker_uses_profile_value() {
     let profile = PythonProfile::runtime_for_current_host();
     assert!(
-        resolve_marker_variable("platform_version", &profile, None).is_ok(),
-        "platform_version should be a supported marker variable"
+        resolve_marker_variable("platform_version", &profile, None).is_some(),
+        "platform_version should resolve for the host"
     );
+}
+
+#[test]
+fn python_version_wildcards_match_like_pip() {
+    let profile = PythonProfile::for_target("linux", "3.12");
+    assert!(evaluate_marker(r#"python_version == "3.*""#, &profile).unwrap());
+    assert!(!evaluate_marker(r#"python_version != "3.*""#, &profile).unwrap());
+    assert!(!evaluate_marker(r#"python_version == "2.*""#, &profile).unwrap());
+}
+
+#[test]
+fn prerelease_interpreters_compare_by_pep440() {
+    let mut profile = PythonProfile::for_target("linux", "3.13");
+    profile.python_full_version = Some("3.13.0rc1".to_string());
+    assert!(!evaluate_marker(r#"python_full_version >= "3.13""#, &profile).unwrap());
+    // PEP 440 (pip) excludes 3.13.0rc1 from `< 3.13`; uv's ordering includes it. Undecided,
+    // so the dependency stays in scope.
+    assert!(evaluate_marker(r#"python_full_version < "3.13""#, &profile).unwrap());
+    assert!(evaluate_marker(r#"python_full_version < "3.12""#, &profile).is_ok_and(|v| !v));
+    assert!(evaluate_marker(r#"python_full_version >= "3.13.0rc1""#, &profile).unwrap());
+}
+
+#[test]
+fn platform_machine_uses_the_name_python_reports_on_each_os() {
+    let mac = PythonProfile::for_target_with_arch("darwin", "3.12", "aarch64");
+    assert!(evaluate_marker(r#"platform_machine == "arm64""#, &mac).unwrap());
+    assert!(!evaluate_marker(r#"platform_machine == "aarch64""#, &mac).unwrap());
+    let linux = PythonProfile::for_target_with_arch("linux", "3.12", "arm64");
+    assert!(evaluate_marker(r#"platform_machine == "aarch64""#, &linux).unwrap());
+    let windows = PythonProfile::for_target_with_arch("win32", "3.12", "x86_64");
+    assert!(evaluate_marker(r#"platform_machine == "AMD64""#, &windows).unwrap());
+}
+
+#[test]
+fn comparisons_the_tools_disagree_on_count_as_true() {
+    let linux = PythonProfile::for_target("linux", "3.12");
+    // `< "3.*"` is not a PEP 440 specifier: pip falls back to strings, uv rejects it.
+    assert!(evaluate_marker(r#"python_version < "3.*""#, &linux).unwrap());
+    assert!(evaluate_marker(r#"python_version >= "3.*""#, &linux).unwrap());
+    // A decided false still settles an `and`.
+    assert!(
+        !evaluate_marker(
+            r#"python_version < "3.*" and sys_platform == "win32""#,
+            &linux
+        )
+        .unwrap()
+    );
+    // An OS whose machine names the table does not know.
+    let other = PythonProfile::for_target_with_arch("freebsd", "3.12", "aarch64");
+    assert!(evaluate_marker(r#"platform_machine == "x86_64""#, &other).unwrap());
+    assert!(evaluate_marker(r#"platform_machine != "x86_64""#, &other).unwrap());
+}
+
+#[test]
+fn an_unknown_python_version_is_undecided_not_an_error() {
+    let mut profile = PythonProfile::for_target("linux", "3.12");
+    profile.python_version = None;
+    profile.python_full_version = None;
+    assert!(evaluate_marker(r#"python_version >= "3.8""#, &profile).unwrap());
+    assert!(evaluate_marker(r#"python_version < "3.8""#, &profile).unwrap());
+    let mut dep = PythonScopedDependency::runtime(
+        crate::test_helpers::dep_with("legacy", Some("==1.0"), crate::Ecosystem::PyPI),
+        None,
+    );
+    dep.python_constraint = Some("<3.8".to_string());
+    assert!(dep.is_in_scope(&profile).unwrap());
+}
+
+#[test]
+fn extra_names_compare_normalized() {
+    let profile = PythonProfile::for_target("linux", "3.12");
+    let selected = BTreeSet::from(["foo-bar".to_string()]);
+    assert!(evaluate_marker_for_extras(r#"extra == "Foo_Bar""#, &profile, &selected).unwrap());
+    assert!(evaluate_marker_for_profile_extras(r#"extra == "Foo_Bar""#, &profile).unwrap());
+}
+
+#[test]
+fn compatible_release_and_dotted_aliases_are_supported() {
+    let profile = PythonProfile::for_target("linux", "3.12");
+    assert!(evaluate_marker(r#"python_full_version ~= "3.12.0""#, &profile).unwrap());
+    assert!(!evaluate_marker(r#"python_full_version ~= "3.11.0""#, &profile).unwrap());
+    assert!(evaluate_marker(r#"sys.platform == "linux""#, &profile).unwrap());
+    assert!(evaluate_marker(r#"os.name == "posix""#, &profile).unwrap());
+}
+
+#[test]
+fn deeply_nested_markers_are_refused_instead_of_overflowing_the_stack() {
+    let profile = PythonProfile::for_target("linux", "3.12");
+    let nested = |depth: usize| {
+        format!(
+            "{}sys_platform == 'linux'{}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        )
+    };
+    assert!(evaluate_marker(&nested(MAX_MARKER_DEPTH), &profile).unwrap());
+    let err = evaluate_marker(&nested(MAX_MARKER_DEPTH + 1), &profile).unwrap_err();
+    assert!(err.to_string().contains("nested"), "{err}");
+    let err = evaluate_marker(&nested(200_000), &profile).unwrap_err();
+    assert!(err.to_string().contains("tokens"), "{err}");
+}
+
+#[test]
+fn long_marker_chains_stay_flat_and_bounded() {
+    let profile = PythonProfile::for_target("linux", "3.12");
+    let chain = |clauses: usize| {
+        (0..clauses)
+            .map(|i| format!("platform_release != 'x{i}'"))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    };
+    // 1000 clauses evaluate without deep recursion.
+    assert!(evaluate_marker(&chain(1000), &profile).is_ok());
+    let err = evaluate_marker(&chain(20_000), &profile).unwrap_err();
+    assert!(err.to_string().contains("tokens"), "{err}");
 }

@@ -59,7 +59,9 @@ pub(crate) fn detect_python_version_from_command(command: &str) -> Option<Detect
     let output = std::process::Command::new(command)
         .args([
             "-c",
-            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}'); print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')",
+            // `platform.python_version()` is what PEP 508 calls python_full_version: it keeps
+            // a prerelease suffix (`3.13.0rc1`) that `major.minor.micro` would drop.
+            "import platform, sys; print(f'{sys.version_info.major}.{sys.version_info.minor}'); print(platform.python_version())",
         ])
         .output()
         .ok()?;
@@ -102,43 +104,31 @@ pub(crate) fn current_sys_platform() -> &'static str {
     }
 }
 
+/// `platform_release` / `platform_version` for the profile: the `SLOPPY_JOE_<NAME>` or `<NAME>`
+/// setting, else `uname` when the profile is the host. `None` (undecided) otherwise.
 pub(crate) fn resolve_host_platform_metadata(
-    marker_name: &str,
     profile: &PythonProfile,
     uname_flag: &str,
     env_name: &str,
-) -> Result<String> {
-    if let Ok(value) = std::env::var(format!("SLOPPY_JOE_{env_name}"))
-        && !value.trim().is_empty()
-    {
-        return Ok(value);
-    }
-    if let Ok(value) = std::env::var(env_name)
-        && !value.trim().is_empty()
-    {
-        return Ok(value);
+) -> Option<String> {
+    for name in [format!("SLOPPY_JOE_{env_name}"), env_name.to_string()] {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            return Some(value.trim().to_string());
+        }
     }
     if profile.target_platform != current_sys_platform()
         || profile.target_arch != std::env::consts::ARCH
     {
-        bail!(
-            "Python environment marker '{}' requires explicit target metadata; set SLOPPY_JOE_{} for trusted evaluation",
-            marker_name,
-            env_name
-        );
+        return None;
     }
     let detected = detected_host_platform_metadata();
-    let value = match uname_flag {
+    match uname_flag {
         "-r" => detected.platform_release,
         "-v" => detected.platform_version,
         _ => None,
-    };
-    value.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Python environment marker '{}' requires host platform metadata for trusted evaluation",
-            marker_name
-        )
-    })
+    }
 }
 
 pub(crate) fn poetry_platform_constraint_matches(
