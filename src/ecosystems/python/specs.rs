@@ -1,56 +1,5 @@
 use super::*;
 
-pub(super) fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
-    let trusted_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| {
-            matches!(
-                spec.kind,
-                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-            )
-        })
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-    let legacy_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyProjectLegacy)
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-    let trusted_requirements_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted)
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-
-    specs.retain(|spec| {
-        if !spec.kind.is_python() {
-            return true;
-        }
-        // `requirements/*.txt` belongs to the project in the parent directory.
-        let owner_dir = if parsers::requirements::is_in_requirements_directory(&spec.manifest_path)
-        {
-            spec.project_dir().parent().unwrap_or(spec.project_dir())
-        } else {
-            spec.project_dir()
-        };
-        if trusted_pyproject_dirs.contains(spec.project_dir())
-            || trusted_pyproject_dirs.contains(owner_dir)
-        {
-            return matches!(
-                spec.kind,
-                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-            );
-        }
-        if trusted_requirements_dirs.contains(spec.project_dir()) {
-            if legacy_pyproject_dirs.contains(spec.project_dir()) {
-                return true;
-            }
-            return spec.kind == ProjectInputKind::PyRequirementsTrusted;
-        }
-        true
-    });
-}
-
 pub(super) fn reject_ambiguous_python_project_inputs(specs: &[ProjectInputSpec]) -> Result<()> {
     let mut trusted_requirements_dirs = std::collections::HashSet::new();
     let mut legacy_pyproject_dirs = std::collections::HashSet::new();

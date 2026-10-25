@@ -102,7 +102,7 @@ content-hash = "981cb674b020e2aa2e4686d20cf177bc0fe8b0f6003e339f61debabe80576858
 }
 
 #[test]
-fn parse_project_inputs_respects_explicit_python_arch_for_marker_evaluation() {
+fn a_lockfile_less_pyproject_scans_dependencies_for_every_arch() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("pyproject.toml"),
@@ -127,8 +127,10 @@ dependencies = [
         &python_profile_opts_with_arch(&[], &[], Some("3.12"), Some("aarch64")),
     )
     .expect("explicit aarch64 profile should parse");
+    // No lockfile resolves the markers, so a machine of either arch installs from this file:
+    // both dependencies are scanned whatever arch is selected.
     assert!(arm[0].deps.iter().any(|dep| dep.name == "arm-only"));
-    assert!(!arm[0].deps.iter().any(|dep| dep.name == "x86-only"));
+    assert!(arm[0].deps.iter().any(|dep| dep.name == "x86-only"));
 
     let x86 = parse_project_inputs_with_options(
         &dir,
@@ -138,7 +140,7 @@ dependencies = [
     )
     .expect("explicit x86_64 profile should parse");
     assert!(x86[0].deps.iter().any(|dep| dep.name == "x86-only"));
-    assert!(!x86[0].deps.iter().any(|dep| dep.name == "arm-only"));
+    assert!(x86[0].deps.iter().any(|dep| dep.name == "arm-only"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

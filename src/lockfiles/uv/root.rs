@@ -363,12 +363,16 @@ pub(crate) fn select_root_dependency(
             continue;
         }
         selected = true;
-        merge_selected_scalar(
-            &mut version,
-            entry.version.as_deref(),
-            normalized_name,
-            "dependency version",
-        )?;
+        // Across every environment a root may lock one version per fork; the coverage graph
+        // leaves the version open and walks them all.
+        if !profile.any_environment {
+            merge_selected_scalar(
+                &mut version,
+                entry.version.as_deref(),
+                normalized_name,
+                "dependency version",
+            )?;
+        }
         requested_extras.extend(entry.requested_extras.iter().cloned());
     }
     Ok(selected.then_some(UvSelectedRootDependency {

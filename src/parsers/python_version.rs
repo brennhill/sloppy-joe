@@ -25,24 +25,32 @@ pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str
         }
     }
     let constraints: pep440_rs::VersionSpecifiers = clauses.join(",").parse()?;
-    Ok(constraints.iter().all(|constraint| {
-        match constraint.operator() {
-            // shortcut: guard truncated wildcards in pep440_rs 0.7.3; remove after an upstream fix.
-            pep440_rs::Operator::EqualStar | pep440_rs::Operator::NotEqualStar => {
-                let prefix = constraint.version();
-                let matches = prefix.epoch() == version.epoch()
-                    && prefix.release().iter().enumerate().all(|(index, part)| {
-                        version.release().get(index).copied().unwrap_or_default() == *part
-                    });
-                if *constraint.operator() == pep440_rs::Operator::EqualStar {
-                    matches
-                } else {
-                    !matches
-                }
+    Ok(constraints
+        .iter()
+        .all(|constraint| specifier_contains(constraint, &version)))
+}
+
+/// Whether `version` satisfies `constraint` by PEP 440, prereleases included.
+pub(crate) fn specifier_contains(
+    constraint: &pep440_rs::VersionSpecifier,
+    version: &pep440_rs::Version,
+) -> bool {
+    match constraint.operator() {
+        // shortcut: guard truncated wildcards in pep440_rs 0.7.3; remove after an upstream fix.
+        pep440_rs::Operator::EqualStar | pep440_rs::Operator::NotEqualStar => {
+            let prefix = constraint.version();
+            let matches = prefix.epoch() == version.epoch()
+                && prefix.release().iter().enumerate().all(|(index, part)| {
+                    version.release().get(index).copied().unwrap_or_default() == *part
+                });
+            if *constraint.operator() == pep440_rs::Operator::EqualStar {
+                matches
+            } else {
+                !matches
             }
-            _ => constraint.contains(&version),
         }
-    }))
+        _ => constraint.contains(version),
+    }
 }
 
 fn parse_numeric_release(value: &str) -> Result<Vec<u64>> {

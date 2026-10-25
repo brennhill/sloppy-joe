@@ -24,10 +24,17 @@ pub(crate) fn parse_python_project_dependencies(
     };
 
     let profile = active_python_profile(opts);
+    let coverage = profile.for_every_environment();
+    // Where a lockfile resolves the project, markers pick the target's versions and the
+    // lockfile coverage graph still scans every environment. Without a lockfile markers decide
+    // nothing: a dependency gated on another platform is installed there, so it is scanned.
+    let lockfile_backed = lockfile_resolves_markers(spec.kind);
+    let target = if lockfile_backed { &profile } else { &coverage };
     let mut warnings = Vec::new();
-    if scoped
-        .iter()
-        .any(parsers::python_scope::PythonScopedDependency::has_environment_scope)
+    if lockfile_backed
+        && scoped
+            .iter()
+            .any(parsers::python_scope::PythonScopedDependency::has_environment_scope)
         && !profile.explicit_selection
     {
         warnings.push(implicit_runtime_profile_warning(spec));
@@ -38,21 +45,24 @@ pub(crate) fn parse_python_project_dependencies(
     let mut tool_env_deps = Vec::new();
     let mut root_extras: PythonRootExtras = PythonRootExtras::new();
     for dep in &scoped {
-        if dep.is_in_scope(&profile)? {
-            if dep.unlocked_tool_env {
-                // Hatch/PDM environments are installable but never recorded in uv.lock or
-                // poetry.lock: scan them as unlocked tooling instead of reporting lock drift.
-                tool_env_deps.push(dep.dependency.clone());
-                continue;
-            }
-            if !dep.requested_extras.is_empty() {
-                root_extras
-                    .entry(parsers::requirements::normalize_distribution_name(
-                        dep.dependency.package_name(),
-                    ))
-                    .or_default()
-                    .extend(dep.requested_extras.iter().cloned());
-            }
+        if !dep.is_in_scope(&coverage)? {
+            continue;
+        }
+        if dep.unlocked_tool_env {
+            // Hatch/PDM environments are installable but never recorded in uv.lock or
+            // poetry.lock: scan them as unlocked tooling instead of reporting lock drift.
+            tool_env_deps.push(dep.dependency.clone());
+            continue;
+        }
+        if !dep.requested_extras.is_empty() {
+            root_extras
+                .entry(parsers::requirements::normalize_distribution_name(
+                    dep.dependency.package_name(),
+                ))
+                .or_default()
+                .extend(dep.requested_extras.iter().cloned());
+        }
+        if dep.is_in_scope(target)? {
             deps.push(dep.dependency.clone());
         }
     }
@@ -87,4 +97,49 @@ pub(crate) fn parse_python_project_dependencies(
         python_root_extras: root_extras,
         unlocked_tooling_deps,
     })
+}
+
+/// Poetry and uv resolve environment markers through their lockfile.
+fn lockfile_resolves_markers(kind: ProjectInputKind) -> bool {
+    matches!(
+        kind,
+        ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
+    )
+}
+
+/// The manifest dependencies of a Poetry or uv project in every environment (groups and extras
+/// still follow the selection): the roots its lockfile is walked from for source policy and for
+/// the packages the scan checks, so a root whose marker is false for the target is not lost.
+pub(crate) fn python_coverage_roots(
+    spec: &ProjectInputSpec,
+    opts: &ScanOptions<'_>,
+) -> Result<Vec<Dependency>> {
+    let scoped = match spec.kind {
+        ProjectInputKind::PyProjectPoetry => {
+            parsers::pyproject_toml::parse_poetry_scoped_file(&spec.manifest_path)?
+        }
+        ProjectInputKind::PyProjectUv => {
+            parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?
+        }
+        _ => return Ok(Vec::new()),
+    };
+    let coverage = active_python_profile(opts).for_every_environment();
+    let mut roots = Vec::new();
+    for dep in scoped {
+        if !dep.unlocked_tool_env && dep.is_in_scope(&coverage)? {
+            roots.push(dep.dependency);
+        }
+    }
+    Ok(roots)
+}
+
+/// The lockfile profile for `spec`: the target environment, with the coverage roots filled in.
+pub(crate) fn python_lockfile_profile_for(
+    spec: &ProjectInputSpec,
+    opts: &ScanOptions<'_>,
+    root_extras: &PythonRootExtras,
+) -> Result<lockfiles::PythonLockfileProfile> {
+    let mut profile = active_python_lockfile_profile(opts, root_extras);
+    profile.coverage_roots = python_coverage_roots(spec, opts)?;
+    Ok(profile)
 }

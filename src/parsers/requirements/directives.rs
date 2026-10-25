@@ -47,7 +47,7 @@ pub(crate) fn collect_included_paths(
             .with_context(|| format!("Failed to read {}", normalized_path.display()))?;
 
     for entry in logical_requirement_lines(&content)? {
-        let line = strip_inline_comment(&entry).trim();
+        let line = trim_python_whitespace(strip_inline_comment(&entry));
         if let Some(include) = requirement_include_target(line) {
             let (include_target, installs) = match include {
                 IncludeDirective::Requirement(path) => (path, true),
