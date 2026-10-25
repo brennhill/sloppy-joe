@@ -47,10 +47,12 @@ impl Ecosystem {
         matches!(self, Self::PyPI | Self::Cargo | Self::Dotnet | Self::Php)
     }
 
-    /// Max concurrent registry queries for similarity checks.
+    /// Max concurrent registry queries for similarity checks. Cargo's probes
+    /// go to the sparse index (a CDN); its rate-limited web API has its own
+    /// process-wide bound in `registry::crates_io`.
     pub fn similarity_concurrency(&self) -> usize {
         match self {
-            Self::Cargo => 2,
+            Self::Cargo => 10,
             Self::Go => 5,
             _ => 20,
         }
@@ -332,7 +334,7 @@ mod tests {
 
     #[test]
     fn similarity_concurrency_values() {
-        assert_eq!(Ecosystem::Cargo.similarity_concurrency(), 2);
+        assert_eq!(Ecosystem::Cargo.similarity_concurrency(), 10);
         assert_eq!(Ecosystem::Go.similarity_concurrency(), 5);
         assert_eq!(Ecosystem::Npm.similarity_concurrency(), 20);
     }

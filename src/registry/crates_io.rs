@@ -219,9 +219,10 @@ impl super::RegistryExistence for CratesIoRegistry {
         let Some(spellings) = separator_spellings(package_name) else {
             return self.api_exists(package_name).await;
         };
+        let probes = spellings.iter().map(|spelling| self.index_has(spelling));
         let mut failure = None;
-        for spelling in spellings {
-            match self.index_has(&spelling).await {
+        for result in futures::future::join_all(probes).await {
+            match result {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(err) => failure = failure.or(Some(err)),

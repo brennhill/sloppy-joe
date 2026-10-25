@@ -203,6 +203,14 @@ async fn a_name_absent_under_every_spelling_is_absent() {
 }
 
 #[tokio::test]
+async fn other_spellings_are_probed_together() {
+    let server = mock_server(Routes::new(), Duration::from_millis(150)).await;
+    assert!(!server.registry().exists("a-b_cd").await.unwrap());
+    assert_eq!(server.requests().len(), 4);
+    assert_eq!(server.max_in_flight.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn a_name_with_many_separators_falls_back_to_the_web_api() {
     let server = mock_server(
         routes(&[("/api/v1/crates/a-b-c-d-e", 200, "{}")]),

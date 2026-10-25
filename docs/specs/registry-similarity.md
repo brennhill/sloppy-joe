@@ -126,8 +126,13 @@ primary coverage bottleneck for typosquatting detection.
 
 ### Per-registry concurrency limits
 
-- **Given** dependencies from crates.io, **When** mutation queries execute, **Then** at
-  most 2 concurrent requests are made to crates.io.
+- **Given** dependencies from crates.io, **When** mutation queries execute, **Then** they
+  are answered from the sparse index (`index.crates.io`, the CDN Cargo reads) with at most
+  10 mutations probed at once, and the rate-limited web API (`crates.io/api/v1`) is asked
+  only for names with more than three `-`/`_` separators, with at most 4 web API requests
+  in flight per process. A miss on the index also probes the other `-`/`_` spellings,
+  since crates.io treats them as one name. (Was: at most 2 concurrent requests to the
+  web API, which still tripped its rate limit; see bd sj-g5p.)
 - **Given** dependencies from the Go module proxy, **When** mutation queries execute,
   **Then** at most 5 concurrent requests are made.
 - **Given** dependencies from npm, PyPI, or other registries, **When** mutation queries
@@ -196,7 +201,7 @@ In scope:
 - 7-day disk cache for similarity existence results (`~/.cache/sloppy-joe/`).
 - `--cache-dir` CLI flag to override cache location.
 - `--no-cache` CLI flag to disable all disk caching.
-- Per-registry concurrency limits (crates.io: 2, Go: 5, others: 20).
+- Per-registry concurrency limits (crates.io sparse index: 10, crates.io web API: 4 per process, Go: 5, others: 20).
 - Fail-closed on registry errors: any registry failure blocks the build.
 - Input validation on package names: rejects path traversal (`..`) and null bytes.
 - Mutation cap of 50 per dependency to bound registry queries.

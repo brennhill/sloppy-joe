@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.0.1
+
+- Cargo: scans no longer trip crates.io's rate limit. Before, a 221-package lockfile sent about 630 requests to the crates.io web API, which answered HTTP 429 (no `Retry-After`) for minutes, and the lookups in flight were blocked as "registry lookup failed". Existence checks and similarity probes now read the sparse index (`index.crates.io`), a CDN with no rate limit. crates.io treats `-` and `_` as one name, so a miss also probes the other spellings, and names with more than three separators still ask the web API. Metadata is fetched from the web API once per crate (all locked versions of a crate share the answer), with at most 4 requests in flight. The same lockfile now makes about 200 web API requests, and the scan takes about 35s instead of 80s. Similarity probes for Cargo run 10 at a time instead of 2.
+- HTTP 429 handling: a rate-limited response pauses every request to that host, not only the one that got it. Without `Retry-After` the backoff grows to 30s, over about 90s, with jitter; `Retry-After` is honoured up to 60s. Once a request to a host has given up, the others make a single attempt for two minutes, since the scan is already blocked.
+- A failed registry lookup now says why it failed. The per-package `existence` issue reads "...because its registry lookup failed (crates.io metadata lookup for 'x' returned HTTP 429 Too Many Requests (the registry is rate limiting this client; ...))". `metadata/registry-unreachable`, `existence/registry-unreachable` and `similarity/registry-unreachable` list up to three distinct errors. Transport errors are reduced to their kind (`request timed out`, `could not connect`) without the URL, and control characters are escaped. Check names are unchanged, and every failed lookup still blocks.
+
 ## 2.0.0
 
 Major release: behaviour changes that can newly block a scan, most of which close the red-team findings.
