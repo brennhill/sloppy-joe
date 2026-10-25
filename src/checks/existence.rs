@@ -1,6 +1,6 @@
 use crate::Dependency;
 use crate::Ecosystem;
-use crate::checks::metadata::MetadataLookup;
+use crate::checks::metadata::{LookupFailure, MetadataLookup};
 use crate::registry::Registry;
 use crate::report::{Issue, Severity};
 use anyhow::Result;
@@ -29,6 +29,7 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
 
     let total_queries = results.len();
     let mut error_count = 0usize;
+    let mut causes = Vec::new();
     let mut issues = Vec::new();
 
     for (name, result) in &results {
@@ -49,8 +50,9 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
                         .registry_url(url),
                 );
             }
-            Err(_) => {
+            Err(err) => {
                 error_count += 1;
+                causes.push(crate::http::describe_error(err));
             }
         }
     }
@@ -66,10 +68,11 @@ pub async fn check_existence(registry: &dyn Registry, deps: &[Dependency]) -> Re
             )
             .message(format!(
                 "Registry queries failed for {} of {} existence checks ({:.0}%). \
-                     Existence detection is unreliable. Fix network connectivity or retry.",
+                     Existence detection is unreliable. Fix network connectivity or retry.{}",
                 error_count,
                 total_queries,
-                error_rate * 100.0
+                error_rate * 100.0,
+                super::failure_examples(causes.iter().map(String::as_str))
             ))
             .fix("Ensure the registry is reachable and retry the scan."),
         );
@@ -82,7 +85,17 @@ pub(crate) fn check_existence_from_metadata(
     ecosystem: Ecosystem,
     deps: &[Dependency],
     lookups: &[MetadataLookup],
+    failures: &[LookupFailure],
 ) -> Vec<Issue> {
+    let failure_map: HashMap<(&str, Option<&str>), &str> = failures
+        .iter()
+        .map(|failure| {
+            (
+                (failure.package.as_str(), failure.version.as_deref()),
+                failure.cause.as_str(),
+            )
+        })
+        .collect();
     let lookup_map: HashMap<(String, Option<String>), bool> = lookups
         .iter()
         .map(|lookup| {
@@ -116,11 +129,16 @@ pub(crate) fn check_existence_from_metadata(
         } else {
             // The lookup itself failed (rate limit, timeout, server error): the package is
             // unverified, not known to be missing. It still blocks.
+            let cause = failure_map
+                .get(&(dep.package_name(), dep.version.as_deref()))
+                .map(|cause| format!(" ({cause})"))
+                .unwrap_or_default();
             Issue::new(dep.package_name(), super::names::EXISTENCE, Severity::Error)
                 .message(format!(
-                    "Could not verify that package '{}' exists on the {} registry because its registry lookup failed. This is a registry or network problem, not evidence that the package is missing.",
+                    "Could not verify that package '{}' exists on the {} registry because its registry lookup failed{}. This is a registry or network problem, not evidence that the package is missing.",
                     dep.package_name(),
-                    ecosystem
+                    ecosystem,
+                    cause
                 ))
                 .fix("Retry the scan. If it keeps failing, check connectivity to the registry or rate limiting.")
         };
@@ -242,6 +260,24 @@ mod tests {
             "Any existence lookup failure should trigger fail-closed"
         );
     }
+
+    #[tokio::test]
+    async fn the_unreachable_issue_names_the_cause() {
+        let registry = FakeRegistry {
+            existing: vec![],
+            fail: true,
+        };
+        let issues = check_existence(&registry, &[dep("react")]).await.unwrap();
+        let issue = issues
+            .iter()
+            .find(|i| i.check == crate::names::EXISTENCE_REGISTRY_UNREACHABLE)
+            .unwrap();
+        assert!(
+            issue.message.contains("registry unavailable"),
+            "{}",
+            issue.message
+        );
+    }
 }
 
 #[cfg(test)]
@@ -258,8 +294,25 @@ mod lookup_failure_message_tests {
     }
 
     #[test]
+    fn a_failed_lookup_names_its_cause_and_keeps_the_existence_check() {
+        let failure = LookupFailure {
+            package: "anyhow".into(),
+            version: Some("1.0.0".into()),
+            cause: "crates.io metadata lookup for 'anyhow' returned HTTP 429 Too Many Requests"
+                .into(),
+        };
+        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[], &[failure]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].check, crate::names::EXISTENCE);
+        assert_eq!(issues[0].severity, Severity::Error);
+        let message = &issues[0].message;
+        assert!(message.starts_with("Could not verify"), "{message}");
+        assert!(message.contains("HTTP 429 Too Many Requests"), "{message}");
+    }
+
+    #[test]
     fn a_failed_lookup_blocks_without_claiming_the_package_is_missing() {
-        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[]);
+        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[], &[]);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].severity, Severity::Error);
         assert!(
@@ -281,7 +334,7 @@ mod lookup_failure_message_tests {
             exists: false,
             metadata: None,
         };
-        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[lookup]);
+        let issues = check_existence_from_metadata(Ecosystem::Cargo, &[dep()], &[lookup], &[]);
         assert!(issues[0].message.contains("does not exist"));
     }
 }

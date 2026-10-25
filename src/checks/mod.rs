@@ -54,6 +54,9 @@ pub struct ScanAccumulator {
     /// Metadata lookups — written by MetadataCheck,
     /// read by ExistenceCheck for existence-from-metadata.
     pub metadata_lookups: Option<Vec<metadata::MetadataLookup>>,
+    /// Metadata lookups that failed, with their causes — written with
+    /// metadata_lookups, read by ExistenceCheck to explain each failure.
+    pub metadata_failures: Vec<metadata::LookupFailure>,
     /// Review-mode exception candidates derived from supported findings.
     pub review_candidates: Vec<crate::report::ReviewExceptionCandidate>,
 }
@@ -64,6 +67,7 @@ impl ScanAccumulator {
             issues: Vec::new(),
             similarity_flagged: HashSet::new(),
             metadata_lookups: None,
+            metadata_failures: Vec::new(),
             review_candidates: Vec::new(),
         }
     }
@@ -79,6 +83,31 @@ impl Default for ScanAccumulator {
 /// Returns true if the check should emit a fail-closed blocking issue.
 pub(crate) fn has_query_errors(error_count: usize) -> bool {
     error_count > 0
+}
+
+/// Distinct failure causes shown in an aggregate `registry-unreachable` message.
+const MAX_FAILURE_EXAMPLES: usize = 3;
+
+/// " Errors: a; b; c (and N more)." for an aggregate `registry-unreachable`
+/// message, from causes already passed through `crate::http::describe_error`.
+/// Empty when there are none.
+pub(crate) fn failure_examples<'a>(causes: impl IntoIterator<Item = &'a str>) -> String {
+    let mut distinct: Vec<&str> = Vec::new();
+    for cause in causes {
+        if !distinct.contains(&cause) {
+            distinct.push(cause);
+        }
+    }
+    if distinct.is_empty() {
+        return String::new();
+    }
+    let shown = distinct[..distinct.len().min(MAX_FAILURE_EXAMPLES)].join("; ");
+    let hidden = distinct.len().saturating_sub(MAX_FAILURE_EXAMPLES);
+    if hidden == 0 {
+        format!(" Errors: {shown}.")
+    } else {
+        format!(" Errors: {shown} (and {hidden} more).")
+    }
 }
 
 /// A composable check. Checks execute in pipeline order and can read/write
@@ -115,6 +144,16 @@ mod tests {
     fn multiple_errors_still_trigger_fail_closed() {
         assert!(has_query_errors(2));
         assert!(has_query_errors(10));
+    }
+
+    #[test]
+    fn failure_examples_show_a_few_distinct_causes() {
+        assert_eq!(failure_examples([]), "");
+        assert_eq!(failure_examples(["a", "a"]), " Errors: a.");
+        assert_eq!(
+            failure_examples(["a", "b", "c", "d", "e", "a"]),
+            " Errors: a; b; c (and 2 more)."
+        );
     }
 
     #[test]

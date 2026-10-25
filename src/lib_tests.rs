@@ -531,3 +531,6 @@ mod part22_python_coverage_roots;
 
 #[path = "lib_tests/part23_python_gated_direct_deps.rs"]
 mod part23_python_gated_direct_deps;
+
+#[path = "lib_tests/part24_lookup_failure_cause.rs"]
+mod part24_lookup_failure_cause;

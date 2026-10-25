@@ -44,7 +44,11 @@ impl CandidateLookup {
     }
 }
 
-fn registry_unreachable_issue(error_count: usize, total_queries: usize) -> Issue {
+fn registry_unreachable_issue(
+    error_count: usize,
+    total_queries: usize,
+    causes: &[String],
+) -> Issue {
     let error_rate = error_count as f64 / total_queries.max(1) as f64;
     Issue::new(
         "<registry>",
@@ -53,10 +57,11 @@ fn registry_unreachable_issue(error_count: usize, total_queries: usize) -> Issue
     )
     .message(format!(
         "Registry queries failed for {} of {} similarity checks ({:.0}%). \
-         Similarity detection is unreliable. Fix network connectivity or retry.",
+         Similarity detection is unreliable. Fix network connectivity or retry.{}",
         error_count,
         total_queries,
-        error_rate * 100.0
+        error_rate * 100.0,
+        crate::checks::failure_examples(causes.iter().map(String::as_str))
     ))
     .fix("Ensure the registry is reachable. Use --no-cache to bypass stale cache data.")
 }
@@ -486,6 +491,7 @@ impl<'a> Run<'a> {
     async fn check_case_variants(&mut self) {
         let mut queries = 0usize;
         let mut errors = 0usize;
+        let mut causes = Vec::new();
         for dep in self.deps {
             if self.flagged.contains(dep.package_name()) {
                 continue;
@@ -498,8 +504,9 @@ impl<'a> Run<'a> {
             queries += 1;
             let exists = match self.registry.exists(&dep_lower).await {
                 Ok(exists) => exists,
-                Err(_) => {
+                Err(err) => {
                     errors += 1;
+                    causes.push(crate::http::describe_error(&err));
                     continue;
                 }
             };
@@ -529,7 +536,7 @@ impl<'a> Run<'a> {
         }
         if crate::checks::has_query_errors(errors) {
             self.issues
-                .push(registry_unreachable_issue(errors, queries));
+                .push(registry_unreachable_issue(errors, queries, &causes));
         }
     }
 }
@@ -572,7 +579,13 @@ pub(crate) async fn check_similarity_with_options(
     let lookup = run.lookup_candidates(queries, cache_dir, no_cache).await;
     // Fail closed when the registry is unreachable.
     if crate::checks::has_query_errors(lookup.error_count) {
-        let issue = registry_unreachable_issue(lookup.error_count, lookup.total_queries());
+        let causes: Vec<String> = lookup
+            .fresh_results
+            .iter()
+            .filter_map(|(_, _, result)| result.as_ref().err())
+            .map(crate::http::describe_error)
+            .collect();
+        let issue = registry_unreachable_issue(lookup.error_count, lookup.total_queries(), &causes);
         run.issues.push(issue);
         return Ok(run.issues);
     }
