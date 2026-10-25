@@ -11,17 +11,10 @@ pub(super) fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputS
         })
         .map(|spec| spec.project_dir().to_path_buf())
         .collect();
-    let legacy_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyProjectLegacy)
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-    let trusted_requirements_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted)
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
 
+    // A hash-locked requirements file is one install input among the others in its directory:
+    // pip installs `requirements-dev.txt`, `setup.py` and `setup.cfg` just as well, so each is
+    // scanned as its own project instead of being hidden behind the trusted file.
     specs.retain(|spec| {
         if !spec.kind.is_python() {
             return true;
@@ -40,12 +33,6 @@ pub(super) fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputS
                 spec.kind,
                 ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
             );
-        }
-        if trusted_requirements_dirs.contains(spec.project_dir()) {
-            if legacy_pyproject_dirs.contains(spec.project_dir()) {
-                return true;
-            }
-            return spec.kind == ProjectInputKind::PyRequirementsTrusted;
         }
         true
     });

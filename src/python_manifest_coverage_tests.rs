@@ -272,3 +272,50 @@ fn requirements_directory_beside_poetry_project_is_treated_like_sibling_requirem
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const SIX_HASH_LOCKED: &str = "six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81\n";
+
+fn scanned_dependency_names(dir: &std::path::Path) -> Vec<String> {
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(dir, Some("pypi"), &config).unwrap();
+    parse_project_inputs(dir, &specs, &config)
+        .unwrap()
+        .iter()
+        .flat_map(|project| project.deps.iter().map(|dep| dep.name.clone()))
+        .collect()
+}
+
+#[test]
+fn a_hash_locked_requirements_file_does_not_hide_sibling_manifests() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("requirements.txt"), SIX_HASH_LOCKED).unwrap();
+    std::fs::write(dir.join("requirements-dev.txt"), "evil-dev==1.0\n").unwrap();
+    std::fs::write(
+        dir.join("setup.cfg"),
+        "[metadata]\nname = demo\n\n[options]\ninstall_requires =\n    evil-cfg==1.0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("setup.py"),
+        "from setuptools import setup\nsetup(name=\"demo\", install_requires=[\"evil-py==1.0\"])\n",
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted),
+        "{specs:#?}"
+    );
+    let names = scanned_dependency_names(&dir);
+    for expected in ["six", "evil-dev", "evil-cfg", "evil-py"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
