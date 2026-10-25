@@ -233,6 +233,8 @@ fn long_marker_chains_stay_flat_and_bounded() {
     assert!(evaluate_marker(&chain(1000), &profile).is_ok());
     let err = evaluate_marker(&chain(20_000), &profile).unwrap_err();
     assert!(err.to_string().contains("tokens"), "{err}");
+    // The refusal quotes the start of the marker, not all 600 KB of it.
+    assert!(err.to_string().len() < 400, "{}", err.to_string().len());
 }
 
 fn versions_with(

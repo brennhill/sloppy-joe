@@ -91,10 +91,19 @@ pub(crate) fn canonical_marker_variable(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Characters of a refused marker quoted in the error; the rest is elided.
+const QUOTED_MARKER_CHARS: usize = 160;
+
 pub(crate) fn unsupported_marker(marker: &str, detail: impl std::fmt::Display) -> anyhow::Error {
+    let quoted: String = marker.chars().take(QUOTED_MARKER_CHARS).collect();
+    let elided = if marker.chars().nth(QUOTED_MARKER_CHARS).is_some() {
+        "..."
+    } else {
+        ""
+    };
     anyhow::anyhow!(
-        "Unsupported Python environment marker '{}': {detail}",
-        crate::report::sanitize_for_terminal(marker)
+        "Unsupported Python environment marker '{}{elided}': {detail}",
+        crate::report::sanitize_for_terminal(&quoted)
     )
 }
 
