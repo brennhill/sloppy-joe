@@ -346,3 +346,39 @@ async fn overlong_names_block_instead_of_fanning_out_into_registry_probes() {
     );
     assert!(registry.queried.lock().unwrap().is_empty());
 }
+
+/// Fails every probe the way a rate-limited registry does.
+struct FailingRegistry;
+
+#[async_trait]
+impl RegistryExistence for FailingRegistry {
+    async fn exists(&self, package_name: &str) -> Result<bool> {
+        anyhow::bail!("crates.io sparse index lookup for '{package_name}' returned HTTP 503")
+    }
+
+    fn ecosystem(&self) -> &str {
+        "cargo"
+    }
+}
+
+#[async_trait]
+impl RegistryMetadata for FailingRegistry {}
+
+#[tokio::test]
+async fn failed_similarity_probes_block_and_name_their_cause() {
+    let deps = vec![dep("tokio", Ecosystem::Cargo)];
+    let issues = check_similarity(&FailingRegistry, &deps, Ecosystem::Cargo)
+        .await
+        .unwrap();
+    let issue = issues
+        .iter()
+        .find(|issue| issue.check == crate::names::SIMILARITY_REGISTRY_UNREACHABLE)
+        .expect("failed probes must block");
+    assert_eq!(issue.severity, Severity::Error);
+    assert!(
+        issue.message.contains("returned HTTP 503"),
+        "{}",
+        issue.message
+    );
+    assert!(issue.message.contains("more"), "{}", issue.message);
+}

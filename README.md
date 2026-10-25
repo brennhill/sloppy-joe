@@ -593,7 +593,7 @@ jobs:
 - uses: brennhill/sloppy-joe@v2
   with:
     dir: ./packages/api
-    version: '2.0.0'
+    version: '2.0.1'
 ```
 
 ### GitLab CI
@@ -614,7 +614,7 @@ Add it to your `.pre-commit-config.yaml`:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/brennhill/sloppy-joe
-    rev: v2.0.0
+    rev: v2.0.1
     hooks:
       - id: sloppy-joe
 ```
@@ -660,9 +660,11 @@ Each mutation generator tags its output, so the reported check type (e.g., `simi
 
 sloppy-joe is designed for CI pipelines where flaky failures are unacceptable.
 
-**Retry with backoff.** All registry HTTP calls retry 3 times with exponential backoff (200ms, 400ms, 800ms) on transient failures (5xx, timeouts, connection errors). A single network blip won't fail your build.
+**Retry with backoff.** All registry HTTP calls retry 3 times with exponential backoff (200ms, 400ms, 800ms) on transient failures (5xx, timeouts, connection errors). A single network blip won't fail your build. A rate-limited request (HTTP 429) pauses every request to that registry host, then retries with backoff up to 30s (or the `Retry-After` it was given, up to 60s) for about 90 seconds. Once one request has given up, the others make a single attempt.
 
-**Fail-closed on query errors.** If registry or OSV queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The scan no longer relies on per-ecosystem thresholds or sample-size cutoffs before it blocks.
+**crates.io.** Existence checks and similarity probes read the sparse index (`index.crates.io`), which is not rate limited. Only metadata (creation date, downloads, publishers, repository) comes from the rate-limited web API, once per crate and with at most 4 requests in flight.
+
+**Fail-closed on query errors.** If registry or OSV queries fail, sloppy-joe emits a blocking `registry-unreachable` error instead of silently skipping checks. The error and the per-package `existence` issue name the cause (for example `returned HTTP 429 Too Many Requests` or `request timed out`). The scan no longer relies on per-ecosystem thresholds or sample-size cutoffs before it blocks.
 
 **Similarity cache.** Mutation existence results are cached for up to seven days, then refreshed. OSV results have a one-hour cache lifetime. `--no-cache` bypasses disk reads; future-dated caches are discarded. The cache directory (`--cache-dir`, or the user cache directory) must be outside the scanned repository's git root, or the scan root when there is no git root; otherwise the scan stops with an error, because committed files could forge cached results. A relative `XDG_CACHE_HOME` is ignored. A cache file is only trusted when it and its directory belong to the current user, are not group- or world-writable, and match the integrity record (HMAC-SHA256 under a per-user key in the sloppy-joe config directory, never in a cache directory) written with it; anything else, such as a hand-edited `osv-cache.json` or a cache directory copied from elsewhere, is discarded with a warning and fetched again. Code running as your own user can read the key, so this does not defend against that user. Full/CI scans still perform online work beyond similarity-cache hits.
 

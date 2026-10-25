@@ -269,10 +269,11 @@ pub(crate) fn check_metadata_status(
     }
     if !status.is_success() {
         anyhow::bail!(
-            "{} metadata lookup for '{}' returned HTTP {}",
+            "{} metadata lookup for '{}' returned HTTP {}{}",
             registry_name,
             package_name,
-            status
+            status,
+            status_hint(status)
         );
     }
     Ok(Some(()))
@@ -290,13 +291,23 @@ pub(crate) fn check_existence_status(
     }
     if !status.is_success() {
         anyhow::bail!(
-            "{} lookup for '{}' returned HTTP {}",
+            "{} lookup for '{}' returned HTTP {}{}",
             registry_name,
             package_name,
-            status
+            status,
+            status_hint(status)
         );
     }
     Ok(true)
+}
+
+/// What a failing status means, for the person reading the issue.
+fn status_hint(status: reqwest::StatusCode) -> &'static str {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        " (the registry is rate limiting this client; still limited after backing off and retrying)"
+    } else {
+        ""
+    }
 }
 
 /// Strip semver prefixes like ^, ~, >= from a version string.
@@ -476,6 +487,24 @@ mod tests {
             check_existence_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "test", "pkg")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_rate_limited_lookup_says_so() {
+        let err =
+            check_existence_status(reqwest::StatusCode::TOO_MANY_REQUESTS, "crates.io", "pkg")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("HTTP 429 Too Many Requests"), "{err}");
+        assert!(err.contains("rate limiting"), "{err}");
+        let err = check_metadata_status(reqwest::StatusCode::TOO_MANY_REQUESTS, "crates.io", "pkg")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rate limiting"), "{err}");
+        let err = check_existence_status(reqwest::StatusCode::BAD_GATEWAY, "crates.io", "pkg")
+            .unwrap_err()
+            .to_string();
+        assert!(err.ends_with("returned HTTP 502 Bad Gateway"), "{err}");
     }
 
     #[test]

@@ -78,3 +78,6 @@ mod part01_age_in_hours;
 
 #[path = "metadata_tests/part02_review_candidates_skip.rs"]
 mod part02_review_candidates_skip;
+
+#[path = "metadata_tests/part03_lookup_failures.rs"]
+mod part03_lookup_failures;

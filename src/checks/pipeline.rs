@@ -37,10 +37,11 @@ async fn ensure_metadata_lookups(ctx: &CheckContext<'_>, acc: &mut ScanAccumulat
     if acc.metadata_lookups.is_some() {
         return;
     }
-    let (lookups, fetch_issues) =
+    let fetch =
         super::metadata::fetch_metadata(ctx.registry, ctx.non_internal_deps, ctx.resolution).await;
-    acc.issues.extend(fetch_issues);
-    acc.metadata_lookups = Some(lookups);
+    acc.issues.extend(fetch.issues);
+    acc.metadata_failures = fetch.failures;
+    acc.metadata_lookups = Some(fetch.lookups);
 }
 
 /// Similarity check: generates mutations and queries registry.
@@ -217,6 +218,7 @@ impl Check for ExistenceCheck {
                     ctx.ecosystem,
                     ctx.checkable_deps,
                     lookups,
+                    &acc.metadata_failures,
                 )
             } else {
                 super::existence::check_existence(ctx.registry, ctx.checkable_deps).await?

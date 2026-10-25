@@ -22,11 +22,28 @@ pub struct MetadataLookup {
     pub metadata: Option<PackageMetadata>,
 }
 
+/// A metadata lookup that failed, and why.
+#[derive(Debug, Clone)]
+pub struct LookupFailure {
+    pub package: String,
+    pub version: Option<String>,
+    /// Described by `crate::http::describe_error`.
+    pub cause: String,
+}
+
+/// Everything `fetch_metadata` learned: the lookups that answered, the ones
+/// that failed (with causes), and the blocking issue the failures raise.
+pub(crate) struct MetadataFetch {
+    pub lookups: Vec<MetadataLookup>,
+    pub failures: Vec<LookupFailure>,
+    pub issues: Vec<Issue>,
+}
+
 pub(crate) async fn fetch_metadata(
     registry: &dyn Registry,
     deps: &[Dependency],
     resolution: &ResolutionResult,
-) -> (Vec<MetadataLookup>, Vec<Issue>) {
+) -> MetadataFetch {
     // Pre-compute per-dep data to avoid borrowing deps inside the async stream.
     let prepared: Vec<_> = deps
         .iter()
@@ -56,7 +73,7 @@ pub(crate) async fn fetch_metadata(
                     Ok(MetadataLookup {
                         package: package.clone(),
                         ecosystem,
-                        version,
+                        version: version.clone(),
                         resolved_version: exact_version,
                         unresolved_version,
                         exists,
@@ -64,7 +81,7 @@ pub(crate) async fn fetch_metadata(
                     })
                 }
                 .await;
-                (package, result)
+                (package, version, result)
             },
         )
         .buffer_unordered(10)
@@ -72,19 +89,22 @@ pub(crate) async fn fetch_metadata(
         .await;
 
     let total_queries = results.len();
-    let mut error_count = 0usize;
     let mut lookups = Vec::new();
+    let mut failures = Vec::new();
     let mut issues = Vec::new();
 
-    for (_package, result) in results {
+    for (package, version, result) in results {
         match result {
             Ok(lookup) => lookups.push(lookup),
-            Err(_) => {
-                error_count += 1;
-            }
+            Err(err) => failures.push(LookupFailure {
+                package,
+                version,
+                cause: crate::http::describe_error(&err),
+            }),
         }
     }
 
+    let error_count = failures.len();
     if super::has_query_errors(error_count) {
         let error_rate = error_count as f64 / total_queries.max(1) as f64;
         issues.push(
@@ -95,16 +115,21 @@ pub(crate) async fn fetch_metadata(
             )
             .message(format!(
                 "Registry queries failed for {} of {} metadata checks ({:.0}%). \
-                     Metadata detection is unreliable. Fix network connectivity or retry.",
+                     Metadata detection is unreliable. Fix network connectivity or retry.{}",
                 error_count,
                 total_queries,
-                error_rate * 100.0
+                error_rate * 100.0,
+                super::failure_examples(failures.iter().map(|f| f.cause.as_str()))
             ))
             .fix("Ensure the registry is reachable and retry the scan."),
         );
     }
 
-    (lookups, issues)
+    MetadataFetch {
+        lookups,
+        failures,
+        issues,
+    }
 }
 
 pub(crate) fn issues_from_lookups(
@@ -282,7 +307,11 @@ pub async fn check_metadata(
     similarity_flagged: &HashSet<String>,
     resolution: &ResolutionResult,
 ) -> Result<Vec<Issue>> {
-    let (mut lookups, mut issues) = fetch_metadata(registry, deps, resolution).await;
+    let MetadataFetch {
+        mut lookups,
+        mut issues,
+        ..
+    } = fetch_metadata(registry, deps, resolution).await;
     issues.extend(
         super::tarball_verification::verify_npm_tarballs(
             registry,
