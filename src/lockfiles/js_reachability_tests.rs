@@ -480,3 +480,107 @@ fn pnpm_entries_with_invalid_package_names_block() {
     assert!(pnpm::parse_all_from_value(&lock).is_err());
     assert!(pnpm::parse_all_from_value_for_importer(&lock, ".").is_err());
 }
+
+/// pnpm installs a `file:` directory package's dependencies; they are reached through it.
+const PNPM_FILE_DEP_LOCK: &str = "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      a:\n        specifier: file:vendor/a\n        version: file:vendor/a\npackages:\n  a@file:vendor/a:\n    resolution: {directory: vendor/a, type: directory}\n  b@file:vendor/b:\n    resolution: {directory: vendor/b, type: directory}\n  lodash@4.17.20:\n    resolution: {integrity: sha512-a}\n  is-number@7.0.0:\n    resolution: {integrity: sha512-a}\n  ghost@1.0.0:\n    resolution: {integrity: sha512-a}\nsnapshots:\n  a@file:vendor/a:\n    dependencies:\n      lodash: 4.17.20\n      b: file:vendor/b\n  b@file:vendor/b:\n    dependencies:\n      is-number: 7.0.0\n  lodash@4.17.20: {}\n  is-number@7.0.0: {}\n  ghost@1.0.0: {}\n";
+
+#[test]
+fn pnpm_file_dependency_subtree_is_scanned_not_called_stale() {
+    let lock: serde_yaml::Value = serde_yaml::from_str(PNPM_FILE_DEP_LOCK).unwrap();
+    let (deps, issues) =
+        pnpm::parse_for_importer_with_orphans(&lock, ".", Path::new("pnpm-lock.yaml")).unwrap();
+    let names = deps.iter().map(|dep| dep.name.as_str()).collect::<Vec<_>>();
+    assert!(names.contains(&"lodash"), "{names:?}");
+    assert!(
+        names.contains(&"is-number"),
+        "a file: package reached through another: {names:?}"
+    );
+    assert!(
+        !names.contains(&"a") && !names.contains(&"b"),
+        "the directories are repository source, not registry packages: {names:?}"
+    );
+    assert!(!names.contains(&"ghost"), "{names:?}");
+    let orphan = issues
+        .iter()
+        .find(|issue| issue.check == ORPHAN_CHECK)
+        .expect("the unreached entry is still flagged");
+    assert!(orphan.message.contains("ghost@1.0.0"), "{}", orphan.message);
+    assert!(
+        !orphan.message.contains("lodash") && !orphan.message.contains("vendor/a"),
+        "{}",
+        orphan.message
+    );
+}
+
+const BERRY_INLINE_MANIFEST: &str =
+    r#"{"name":"app","packageManager":"yarn@4.5.0","dependencies":{"left-pad":"1.3.0"}}"#;
+
+fn berry_inline_lock(dependencies: &str) -> String {
+    format!(
+        "__metadata:\n  version: 8\n  cacheKey: 10c0\n\n\"app@workspace:.\":\n  version: 0.0.0-use.local\n  resolution: \"app@workspace:.\"\n  dependencies:\n    left-pad: \"npm:1.3.0\"\n  languageName: unknown\n  linkType: soft\n\n\"is-number@npm:7.0.0\":\n  version: 7.0.0\n  resolution: \"is-number@npm:7.0.0\"\n  checksum: 10c0/a\n  languageName: node\n  linkType: hard\n\n\"@s/x@npm:1.0.0\":\n  version: 1.0.0\n  resolution: \"@s/x@npm:1.0.0\"\n  checksum: 10c0/a\n  languageName: node\n  linkType: hard\n\n\"left-pad@npm:1.3.0\":\n  version: 1.3.0\n  resolution: \"left-pad@npm:1.3.0\"\n  dependencies: {dependencies}\n  checksum: 10c0/a\n  languageName: node\n  linkType: hard\n"
+    )
+}
+
+#[test]
+fn berry_inline_dependency_maps_are_walked_like_block_maps() {
+    for inline in [
+        r#"{ is-number: "npm:7.0.0", "@s/x": "npm:1.0.0" }"#,
+        r#"{"is-number":"npm:7.0.0","@s/x":'npm:1.0.0',}"#,
+        r#"{ is-number: npm:7.0.0, '@s/x': npm:1.0.0 }"#,
+    ] {
+        let lock = yarn_project(BERRY_INLINE_MANIFEST, &berry_inline_lock(inline))
+            .unwrap_or_else(|err| panic!("{inline}: {err}"));
+        let names = scanned(&lock);
+        assert!(
+            names.contains(&"is-number".to_string()),
+            "{inline}: {names:?}"
+        );
+        assert!(names.contains(&"@s/x".to_string()), "{inline}: {names:?}");
+        assert!(
+            orphan_issue(&lock).is_none(),
+            "{inline}: {:?}",
+            lock.resolution.issues
+        );
+    }
+    let lock = yarn_project(BERRY_INLINE_MANIFEST, &berry_inline_lock("{}")).unwrap();
+    assert!(
+        orphan_issue(&lock).is_some_and(|issue| issue.message.contains("is-number@7.0.0")),
+        "an empty inline map reaches nothing: {:?}",
+        lock.resolution.issues
+    );
+}
+
+#[test]
+fn yarn_yaml_constructs_the_line_parser_does_not_model_block() {
+    for value in [
+        "[is-number]",
+        "&deps",
+        "*deps",
+        "!!map",
+        "|",
+        ">",
+        "# hidden",
+        "%x",
+        "@x",
+        "- a",
+        "{ is-number: { nested: x } }",
+        "{ is-number: \"npm:7.0.0\"",
+        "{ is-number: npm:7.0.0 } # c",
+        "{is-number:npm:7.0.0}",
+        "{ is-number: }",
+        "{ is-number: \"npm:\\u0037.0.0\" }",
+        "{ is-number: npm:7.0.0,, x: y }",
+    ] {
+        let lock = berry_inline_lock(value);
+        assert!(
+            yarn_project(BERRY_INLINE_MANIFEST, &lock).is_err(),
+            "dependencies: {value} must block"
+        );
+    }
+    let nested = berry_inline_lock("\n    is-number: *anchor");
+    assert!(yarn_project(BERRY_INLINE_MANIFEST, &nested).is_err());
+    let nested = berry_inline_lock("\n    is-number: { a: b }");
+    assert!(yarn_project(BERRY_INLINE_MANIFEST, &nested).is_err());
+    let control = berry_inline_lock("\n    is-number: \"npm:7.0.0\"\n    \"@s/x\": npm:1.0.0");
+    assert!(yarn_project(BERRY_INLINE_MANIFEST, &control).is_ok());
+}

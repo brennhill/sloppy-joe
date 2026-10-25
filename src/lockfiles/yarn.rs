@@ -1,3 +1,4 @@
+mod flow;
 mod validate;
 use crate::Dependency;
 use anyhow::Result;
@@ -149,7 +150,12 @@ fn parse_entry_body(
             )
         })?;
         entry.keys.push(key.clone());
-        entry.set_property(&key, normalize_yarn_value(&value));
+        match flow::property_value(&value).map_err(|reason| unmodeled(path, *index, &reason))? {
+            flow::InlineValue::Map(section) => {
+                entry.sections.insert(key, section);
+            }
+            flow::InlineValue::Scalar => entry.set_property(&key, normalize_yarn_value(&value)),
+        }
         *index += 1;
     }
     Ok(entry)
@@ -177,10 +183,20 @@ fn parse_nested_section(
                 *index + 1
             )
         })?;
+        flow::section_value(&value).map_err(|reason| unmodeled(path, *index, &reason))?;
         section.insert(name, normalize_yarn_value(&value));
         *index += 1;
     }
     Ok(section)
+}
+
+fn unmodeled(path: &Path, index: usize, reason: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Broken lockfile '{}': line {}: {}. Fix: regenerate the lockfile with yarn install.",
+        path.display(),
+        index + 1,
+        reason
+    )
 }
 
 impl YarnLockEntry {

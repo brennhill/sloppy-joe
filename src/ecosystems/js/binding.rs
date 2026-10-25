@@ -282,13 +282,10 @@ pub(crate) fn collect_unscanned_workspace_members(
         let Ok(canonical) = std::fs::canonicalize(&path) else {
             continue;
         };
-        if workspace_patterns_match(
-            &root.project_dir,
-            &canonical,
-            root.patterns.iter().map(String::as_str),
-        ) && ["package.json", "package.yaml", "package.json5"]
-            .iter()
-            .any(|manifest| path.join(manifest).is_file())
+        if root.declares_member(&canonical)
+            && ["package.json", "package.yaml", "package.json5"]
+                .iter()
+                .any(|manifest| path.join(manifest).is_file())
             && !scanned.contains(&canonical)
         {
             hidden.push(canonical.clone());

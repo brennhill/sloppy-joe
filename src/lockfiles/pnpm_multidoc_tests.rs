@@ -289,3 +289,28 @@ fn yaml_merge_keys_fail_closed_because_pnpm_expands_them() {
     );
     assert!(result.is_err(), "merge keys must be rejected");
 }
+
+#[test]
+fn only_the_lockfile_format_the_parser_models_is_accepted() {
+    let body = "importers:\n  .:\n    dependencies:\n      lodash:\n        specifier: 4.17.20\n        version: 4.17.20\npackages:\n  /lodash@4.17.20:\n    resolution: {integrity: sha512-a}\n";
+    for version in [
+        "lockfileVersion: '6.0'\n",
+        "lockfileVersion: '5.4'\n",
+        "lockfileVersion: 5.4\n",
+        "lockfileVersion: 9.0\n",
+        "lockfileVersion: '99.0'\n",
+        "lockfileVersion: ''\n",
+        "",
+    ] {
+        let err = parse_pnpm_lock_guarded(&format!("{version}{body}"))
+            .expect_err(version)
+            .to_string();
+        assert!(err.contains("lockfileVersion"), "{version}: {err}");
+    }
+    assert!(parse_pnpm_lock_guarded(MAIN_DOC.trim_start_matches("---\n")).is_ok());
+    let old_env = ENV_DOC.replace("lockfileVersion: '9.0'", "lockfileVersion: '6.0'");
+    let err = parse_pnpm_lock_guarded(&format!("{old_env}{MAIN_DOC}")).unwrap_err();
+    assert!(err.to_string().contains("lockfileVersion"), "{err}");
+    let old_main = MAIN_DOC.replace("lockfileVersion: '9.0'", "lockfileVersion: '6.0'");
+    assert!(parse_pnpm_lock_guarded(&format!("{ENV_DOC}{old_main}")).is_err());
+}
