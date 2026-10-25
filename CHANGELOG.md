@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.1.0
+
 - Python: the projection now reads a release's dependencies from its wheel. PyPI's JSON API fills `info.requires_dist` from the first file uploaded, so a release whose old sdist was uploaded before the wheel showed `requires_dist: null` and was projected as having no dependencies, and an sdist could declare other dependencies than the wheel pip installs. When a wheel of the release has a core metadata file (PEP 658/714 `core-metadata` hash), the projection fetches `<wheel url>.metadata` from the PyPI file host (HTTPS, no redirects), checks it against the published sha256 and follows its `Requires-Dist` instead. Each read counts against the 1500-request metadata-fetch bound; a failed read or a hash mismatch blocks with `resolution/python-projection-failed`. `requires_dist: null` with no wheel whose core metadata PyPI serves now warns with `resolution/python-unprojectable` (dependencies unknown) instead of projecting nothing.
 - Registry API: `RegistryMetadata` gains `pypi_wheel_requires_dist`, and `PypiRequiresDist` gains `wheel_metadata` (the wheel whose core metadata replaces `requirements`).
 
