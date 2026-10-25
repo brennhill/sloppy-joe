@@ -84,6 +84,7 @@ pub(crate) enum SourcePolicy {
     ReducedConfidence(Issue),
 }
 
+#[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait::async_trait]
 pub(crate) trait EcosystemSupport: Sync {
     /// The project kinds this plugin owns. Every kind is owned by exactly one plugin.
