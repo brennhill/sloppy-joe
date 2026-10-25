@@ -35,3 +35,6 @@ mod part02_parse_config_content;
 
 #[path = "tests/part03_config_key_allow.rs"]
 mod part03_config_key_allow;
+
+#[path = "tests/part04_internal_match.rs"]
+mod part04_internal_match;
