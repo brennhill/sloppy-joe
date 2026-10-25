@@ -115,6 +115,22 @@ fn an_unresolvable_ref_is_a_configuration_error() {
 }
 
 #[test]
+fn git_runs_in_the_c_locale_so_its_errors_are_classified_in_english() {
+    let command = git_command(std::path::Path::new("."), &["status"]);
+    let envs: std::collections::HashMap<_, _> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(|v| v.to_owned())))
+        .collect();
+    for key in ["LC_ALL", "LANGUAGE"] {
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new(key)),
+            Some(&Some(std::ffi::OsString::from("C"))),
+            "{key} must be C"
+        );
+    }
+}
+
+#[test]
 fn refs_that_look_like_options_are_refused_before_git_runs() {
     for bad in ["--output=/tmp/x", "-n", "", "a b", "HEAD;rm", "x\ny"] {
         assert!(validate_ref(bad).is_err(), "{bad:?}");

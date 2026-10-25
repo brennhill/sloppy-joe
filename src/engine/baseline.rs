@@ -38,15 +38,26 @@ pub(crate) fn validate_ref(base_ref: &str) -> Result<()> {
     Ok(())
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    Command::new("git")
+/// The git invocation. Its messages are forced into the C locale because `manifest_at_ref`
+/// classifies them by their English text; a localised git would otherwise turn "file absent at
+/// the ref" into a blocking error.
+fn git_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(root)
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
         .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_WORK_TREE");
+    command
+}
+
+fn git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+    git_command(root, args)
         .output()
         .map_err(|e| anyhow!("could not run git: {e}"))
 }
