@@ -120,12 +120,21 @@ jobs:
           install -m 0644 Cargo.lock /tmp/sloppy-joe-self-check/Cargo.lock
 
       # Runs this checkout's action.yml and install script against the published
-      # 1.2.0 binary, so changes to the install path are exercised before a release.
+      # 2.0.0 binary, so changes to the install path are exercised before a release.
       - name: Check own dependencies with the checked-out action
         uses: ./
         with:
           config: /tmp/sloppy-joe-self-check.json
           dir: /tmp/sloppy-joe-self-check
           type: cargo
-          version: 1.2.0
+          version: 2.0.0
+          args: --no-cache
+
+      # No version input: exercises the `latest` resolution against the newest published release.
+      - name: Check own dependencies with the default (latest) version
+        uses: ./
+        with:
+          config: /tmp/sloppy-joe-self-check.json
+          dir: /tmp/sloppy-joe-self-check
+          type: cargo
           args: --no-cache
