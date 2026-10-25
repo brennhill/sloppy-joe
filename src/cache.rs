@@ -1,6 +1,10 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+mod integrity;
+#[cfg(test)]
+mod integrity_tests;
+
 /// Return the platform-appropriate user cache directory.
 pub fn user_cache_dir() -> PathBuf {
     user_cache_dir_from(|name| std::env::var_os(name))
@@ -385,7 +389,7 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) {
         return;
     };
     let tmp_path = cache_tmp_path(path);
-    if std::fs::write(&tmp_path, json).is_err() {
+    if std::fs::write(&tmp_path, &json).is_err() {
         return;
     }
     #[cfg(unix)]
@@ -398,6 +402,33 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, data: &T) {
         }
     }
     if std::fs::rename(&tmp_path, path).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
+    write_integrity_record(path, json.as_bytes());
+}
+
+/// Record the MAC of the bytes just written to `path`. Without a record the file is never
+/// trusted on read, so a failure here only costs a refetch.
+fn write_integrity_record(path: &Path, content: &[u8]) {
+    let mac_path = integrity::mac_path(path);
+    let Some(mac) = integrity::seal(path, content) else {
+        let _ = std::fs::remove_file(&mac_path);
+        return;
+    };
+    if ensure_no_symlink(&mac_path).is_err() {
+        return;
+    }
+    let tmp_path = cache_tmp_path(&mac_path);
+    if std::fs::write(&tmp_path, mac).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+    if std::fs::rename(&tmp_path, &mac_path).is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
 }
@@ -465,19 +496,41 @@ pub fn atomic_write_json_checked<T: serde::Serialize>(path: &Path, data: &T) -> 
 }
 
 /// Read and deserialize a JSON cache file, returning None if expired, missing,
-/// symlinked, or unparseable.
+/// symlinked, unparseable, or untrusted (see `read_trusted_json`).
 pub fn read_json_cache<T: serde::de::DeserializeOwned>(
     path: &Path,
     ttl_secs: u64,
     timestamp_extractor: impl FnOnce(&T) -> u64,
 ) -> Option<T> {
-    if ensure_no_symlink(path).is_err() {
-        return None;
-    }
-    let content = std::fs::read_to_string(path).ok()?;
-    let data: T = serde_json::from_str(&content).ok()?;
+    let data: T = read_trusted_json(path).ok()??;
     let age = now_epoch().checked_sub(timestamp_extractor(&data))?;
     if age < ttl_secs { Some(data) } else { None }
+}
+
+/// Read a JSON cache file only if it passes the ownership and integrity checks: owned by the
+/// current user, not group/world-writable, and matching the integrity record written with it.
+/// `Ok(None)` when the file does not exist. A file that fails a check is never returned; the
+/// reason is reported once on stderr and returned, and the caller refetches.
+pub fn read_trusted_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> std::result::Result<Option<T>, String> {
+    if std::fs::symlink_metadata(path).is_err() {
+        return Ok(None);
+    }
+    let checked = (|| {
+        ensure_no_symlink(path).map_err(|e| e.to_string())?;
+        let content = std::fs::read(path).map_err(|e| e.to_string())?;
+        integrity::verify(path, &content)?;
+        serde_json::from_slice::<T>(&content).map_err(|e| e.to_string())
+    })();
+    checked.map(Some).map_err(|reason| {
+        let reason = format!(
+            "discarding untrusted cache file {}: {reason}",
+            path.display()
+        );
+        eprintln!("{}", crate::report::sanitize_for_terminal(&reason));
+        reason
+    })
 }
 
 #[cfg(test)]
