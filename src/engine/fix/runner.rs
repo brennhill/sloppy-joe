@@ -207,22 +207,23 @@ fn run_process(command: &ToolCommand) -> anyhow::Result<ToolOutput> {
 }
 
 /// Kill the tool's whole process group (it was started as its own group leader), so helpers it
-/// spawned do not outlive the timeout. No unsafe code: `kill` is run as a program.
+/// spawned do not outlive the timeout. No unsafe code: the shell's `kill` builtin is run as a
+/// program. The `kill` binaries differ between systems (procps on Ubuntu mishandled `-KILL
+/// -<pid>` and killed the caller), so the builtin with an explicit `--` is used instead, and
+/// the group id must be a real process (never 0 or 1, which would reach far beyond the tool).
 fn kill_group(pid: u32) {
     #[cfg(unix)]
     {
-        for kill in ["/bin/kill", "/usr/bin/kill"] {
-            if Path::new(kill).exists() {
-                let _ = std::process::Command::new(kill)
-                    .args(["-KILL", &format!("-{pid}")])
-                    .env_clear()
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                return;
-            }
+        if pid <= 1 {
+            return;
         }
+        let _ = std::process::Command::new("/bin/sh")
+            .args(["-c", "kill -s KILL -- \"-$1\"", "sh", &pid.to_string()])
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
     let _ = pid;
 }
