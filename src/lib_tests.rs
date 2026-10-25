@@ -522,3 +522,6 @@ mod part20_internal_prefix_source;
 
 #[path = "lib_tests/part20_python_marker_coverage.rs"]
 mod part20_python_marker_coverage;
+
+#[path = "lib_tests/part21_uv_conflict_markers.rs"]
+mod part21_uv_conflict_markers;

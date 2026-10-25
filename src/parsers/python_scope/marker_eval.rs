@@ -117,6 +117,10 @@ fn compare(
     active_extra: Option<&str>,
 ) -> Option<bool> {
     let names = [variable_name(left), variable_name(right)];
+    if profile.any_environment && names.contains(&Some("extra")) && is_uv_conflict_item(left, right)
+    {
+        return None;
+    }
     let lhs = resolve_marker_value(left, profile, active_extra)?;
     let rhs = resolve_marker_value(right, profile, active_extra)?;
     if names.contains(&Some("extra")) {
@@ -137,6 +141,33 @@ fn compare(
         (Some(text), _) => Some(text),
         (None, version) => version,
     }
+}
+
+/// Whether an `extra` comparison tests one of uv's encoded `[tool.uv] conflicts` items:
+/// `extra-<N>-<package>-<extra>`, `group-<N>-<package>-<group>` or `project-<N>-<package>`,
+/// where `<N>` is the length of the package name. uv writes these on lock edges to say which
+/// project extra or group activates the edge; they do not name the requesting package's own
+/// extras, so the evaluator cannot decide them from a request. Across every environment such
+/// a comparison is undecided, which keeps the edge in coverage instead of dropping it.
+fn is_uv_conflict_item(left: &MarkerValue, right: &MarkerValue) -> bool {
+    [left, right].into_iter().any(|value| match value {
+        MarkerValue::Literal(literal) => is_uv_conflict_encoding(&normalize_scope_name(literal)),
+        MarkerValue::Variable(_) => false,
+    })
+}
+
+fn is_uv_conflict_encoding(value: &str) -> bool {
+    let Some(rest) = ["extra-", "group-", "project-"]
+        .iter()
+        .find_map(|prefix| value.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    // Lenient on purpose: anything shaped like `<kind>-<digits>-<rest>` is undecided, which can
+    // only keep an edge, never drop one.
+    rest.split_once('-').is_some_and(|(len, tail)| {
+        !len.is_empty() && len.bytes().all(|b| b.is_ascii_digit()) && !tail.is_empty()
+    })
 }
 
 /// A version variable compares by PEP 440, prereleases included (as `packaging` does). A
