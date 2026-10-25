@@ -239,7 +239,8 @@ pub const DOTNET_RESTORE_LOCK: Remedy = Remedy {
     ),
 };
 
-/// Every remedy, for documentation tests.
+/// Every remedy, for the tests that hold each one to the message contract.
+#[cfg(test)]
 pub const ALL: &[&Remedy] = &[
     &NPM_LOCKFILE,
     &NPM_LOCKFILE_UPGRADE,

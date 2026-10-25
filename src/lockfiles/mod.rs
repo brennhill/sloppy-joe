@@ -19,6 +19,8 @@ mod importer;
 pub(crate) use importer::*;
 mod read;
 pub(crate) use read::*;
+mod entries;
+pub(crate) use entries::{LockedPackage, pnpm_legacy_packages};
 pub(crate) mod bun;
 mod cargo;
 mod composer;

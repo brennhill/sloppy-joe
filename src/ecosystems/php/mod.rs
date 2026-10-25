@@ -1,5 +1,7 @@
 use super::*;
 
+mod lock_fixer;
+
 mod ambient_inputs;
 mod lock_schema;
 mod provenance;
@@ -44,6 +46,15 @@ impl EcosystemSupport for Php {
 
     fn similarity_on_transitives(&self) -> bool {
         false
+    }
+
+    fn lockfile_fixer(
+        &self,
+        ctx: &fixer::FixCtx<'_>,
+        spec: &ProjectInputSpec,
+        problems: &[fixer::Problem],
+    ) -> Result<fixer::FixPlan> {
+        lock_fixer::lockfile_fixer(ctx, spec, problems)
     }
 
     fn kinds(&self) -> &'static [ProjectInputKind] {

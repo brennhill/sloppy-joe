@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) mod fixer;
+
 pub(super) fn broken_manifest(spec: &ProjectInputSpec, err: anyhow::Error) -> anyhow::Error {
     crate::remedy::rewrap(err, |err| {
         format!("Broken manifest '{}': {}", spec.manifest_path.display(), err)

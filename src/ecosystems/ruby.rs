@@ -34,6 +34,17 @@ impl EcosystemSupport for Ruby {
         false
     }
 
+    fn lockfile_fixer(
+        &self,
+        _ctx: &fixer::FixCtx<'_>,
+        _spec: &ProjectInputSpec,
+        problems: &[fixer::Problem],
+    ) -> Result<fixer::FixPlan> {
+        // Bundler evaluates the Gemfile as Ruby: every lockfile fix is guided.
+        let problems = fixer::attach_issue_remedies(problems, &crate::remedy::BUNDLE_LOCK);
+        fixer::plan(&problems, |_| Ok(Ok(None)))
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Ruby]
     }

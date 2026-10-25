@@ -13,6 +13,17 @@ impl EcosystemSupport for Jvm {
         false
     }
 
+    fn lockfile_fixer(
+        &self,
+        _ctx: &fixer::FixCtx<'_>,
+        _spec: &ProjectInputSpec,
+        problems: &[fixer::Problem],
+    ) -> Result<fixer::FixPlan> {
+        // Gradle executes the build scripts to write locks: every lockfile fix is guided.
+        let problems = fixer::attach_issue_remedies(problems, &crate::remedy::GRADLE_WRITE_LOCKS);
+        fixer::plan(&problems, |_| Ok(Ok(None)))
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Gradle, ProjectInputKind::Maven]
     }

@@ -325,6 +325,35 @@ impl ParsedYarnLock {
             .any(|entry| entry.selectors.len() == 1 && entry.selectors[0] == "__metadata")
     }
 
+    /// Registry packages with their recorded integrity and source (see `lockfiles::entries`).
+    pub(crate) fn locked_packages(&self) -> Result<Vec<super::entries::LockedPackage>> {
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            let Some((name, version)) = registry_package(entry, &self.path)? else {
+                continue;
+            };
+            let integrity = [&entry.integrity, &entry.checksum]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(",");
+            let source = [&entry.resolved, &entry.resolution]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(",");
+            out.push(super::entries::LockedPackage {
+                name,
+                version,
+                integrity: (!integrity.is_empty()).then_some(integrity),
+                source: (!source.is_empty()).then_some(source),
+            });
+        }
+        Ok(out)
+    }
+
     /// The command that regenerates this lockfile.
     pub(crate) fn remedy(&self) -> &'static crate::remedy::Remedy {
         if self.is_berry() {

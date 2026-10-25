@@ -2,6 +2,7 @@
 //! so existing paths keep working.
 mod baseline;
 mod discovery;
+pub(crate) mod fix;
 mod fingerprint;
 mod internal_source;
 mod parse_inputs;

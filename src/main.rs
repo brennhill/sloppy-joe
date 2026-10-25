@@ -37,6 +37,7 @@ Examples:
   sloppy-joe init > /secure/sloppy-joe.json    Generate config template at a safe path
   sloppy-joe register                           Register cwd with existing config
   sloppy-joe list                               Show registered repos
+  sloppy-joe fix-lockfile                       Plan lockfile fixes (add --write to apply)
 
 Exit codes:
   0  No blocking errors found (warnings may still be reported)
@@ -244,6 +245,14 @@ enum Commands {
     },
     /// List all registered repos and their config paths
     List,
+    /// Explain and safely fix the lockfile problems `check` blocks on
+    ///
+    /// Plans every lockfile problem as fixable, guided (manual command shown) or human (no safe
+    /// fix). A fixable one is run in a private scratch copy with scripts disabled; the result must
+    /// keep every locked version, integrity and source and pass `check --full`, and its version
+    /// diff is printed. Nothing is written without --write. Exit status 0 means nothing needed
+    /// fixing or every fix was verified; 1 means a problem remains or a fix was refused.
+    FixLockfile(sloppy_joe::FixLockfileArgs),
 }
 
 fn resolve_scan_mode(full: bool, ci: bool) -> Result<ScanMode, String> {
@@ -765,6 +774,7 @@ async fn main() {
         Commands::Register { dir, config } => run_register(dir, config),
         Commands::Unregister { dir } => run_unregister(dir),
         Commands::List => run_list(),
+        Commands::FixLockfile(args) => process::exit(sloppy_joe::run_fix_lockfile(args).await),
     }
 }
 

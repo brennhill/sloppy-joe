@@ -36,6 +36,17 @@ impl EcosystemSupport for Dotnet {
         false
     }
 
+    fn lockfile_fixer(
+        &self,
+        _ctx: &fixer::FixCtx<'_>,
+        _spec: &ProjectInputSpec,
+        problems: &[fixer::Problem],
+    ) -> Result<fixer::FixPlan> {
+        // Restore evaluates MSBuild targets from the repository: every lockfile fix is guided.
+        let problems = fixer::attach_issue_remedies(problems, &crate::remedy::DOTNET_RESTORE_LOCK);
+        fixer::plan(&problems, |_| Ok(Ok(None)))
+    }
+
     fn kinds(&self) -> &'static [ProjectInputKind] {
         &[ProjectInputKind::Dotnet]
     }

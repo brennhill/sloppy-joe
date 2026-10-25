@@ -23,6 +23,7 @@ mod ruby;
 pub(crate) mod tree;
 
 pub(crate) use common::first_existing_lockfile;
+pub(crate) use common::fixer;
 use common::*;
 
 /// Plugin internals that unit tests exercise directly. Production code goes through the trait.
@@ -201,6 +202,16 @@ pub(crate) trait EcosystemSupport: Sync {
         osv_client: &dyn checks::malicious::OsvClient,
         opts: &ScanOptions<'_>,
     ) -> Result<Vec<Issue>>;
+
+    /// How `fix-lockfile` handles this project's problems: the ones it fixes (with the command,
+    /// files and environment), the ones it only explains, and the ones it refuses. No default:
+    /// every plugin states its rows of the catalog in docs/specs/fix-lockfile.md.
+    fn lockfile_fixer(
+        &self,
+        ctx: &fixer::FixCtx<'_>,
+        spec: &ProjectInputSpec,
+        problems: &[fixer::Problem],
+    ) -> Result<fixer::FixPlan>;
 }
 
 static PLUGINS: [&dyn EcosystemSupport; 8] = [
@@ -360,4 +371,25 @@ pub(crate) async fn implementation_issues(
     for_kind(project.spec.kind)
         .implementation_issues(project, client, osv_client, opts)
         .await
+}
+
+/// The fix plan for one project; see [`EcosystemSupport::lockfile_fixer`].
+pub(crate) fn lockfile_fixer(
+    ctx: &fixer::FixCtx<'_>,
+    spec: &ProjectInputSpec,
+    problems: &[fixer::Problem],
+) -> Result<fixer::FixPlan> {
+    for_kind(spec.kind).lockfile_fixer(ctx, spec, problems)
+}
+
+/// The scanner's own policy for a project's manifest and the repository files its tool reads,
+/// checked before `fix-lockfile` runs that tool. Preflight stops at the first error, so a project
+/// whose lockfile is broken may not have had these checked yet.
+pub(crate) fn fix_policy(ctx: &PreflightCtx<'_>, spec: &ProjectInputSpec) -> Result<()> {
+    let plugin = for_kind(spec.kind);
+    plugin
+        .parse(&ctx.scan, spec)
+        .map_err(|err| common::broken_manifest(spec, err))?;
+    ambient::check(plugin.ambient_inputs(), spec, true)?;
+    Ok(())
 }

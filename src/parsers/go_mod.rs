@@ -106,7 +106,7 @@ fn parse_directive(content: &str, keyword: &str) -> Vec<Vec<String>> {
     entries
 }
 
-fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
+pub(crate) fn parse_requirements(content: &str) -> Vec<(String, Option<String>)> {
     parse_directive(content, "require")
         .into_iter()
         .map(|mut tokens| {
@@ -160,6 +160,15 @@ fn validate_tool_directives(
 /// fetch the module unverified. Local replacements are exempt; extra go.sum
 /// entries (older versions kept by `go mod tidy`) are normal and ignored.
 pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
+    let hashes = go_sum_hashes(go_sum)?;
+    check_required_sums(go_mod, go_sum, &hashes)
+}
+
+/// Every `(module, version)` go.sum records (`version` ends in `/go.mod` for go.mod hashes) with
+/// its hash. Malformed lines and conflicting hashes are errors.
+pub(crate) fn go_sum_hashes(
+    go_sum: &str,
+) -> Result<std::collections::HashMap<(String, String), String>> {
     let mut hashes: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
     for line in crate::untrusted::rows(go_sum).filter(|line| !line.trim().is_empty()) {
@@ -177,7 +186,14 @@ pub(crate) fn check_go_sum_entries(go_mod: &str, go_sum: &str) -> Result<()> {
             anyhow::bail!("go.sum has conflicting hashes for {module} {version}");
         }
     }
+    Ok(hashes)
+}
 
+fn check_required_sums(
+    go_mod: &str,
+    go_sum: &str,
+    hashes: &std::collections::HashMap<(String, String), String>,
+) -> Result<()> {
     let local = parse_local_replace_targets(go_mod);
     let indirect = indirect_requirements(go_mod);
     let mut missing: Vec<String> = Vec::new();
@@ -327,7 +343,7 @@ pub(crate) fn requires_go_sum(content: &str) -> bool {
         .any(|dep| !local_replacements.contains(dep.as_str()))
 }
 
-fn parse_local_replace_targets(content: &str) -> HashSet<String> {
+pub(crate) fn parse_local_replace_targets(content: &str) -> HashSet<String> {
     parse_local_replace_entries(content)
         .map(|(module, _)| module)
         .collect()
