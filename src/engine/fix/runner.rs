@@ -41,7 +41,7 @@ impl ToolOutput {
             .filter(|line| !line.trim().is_empty())
             .collect();
         let start = lines.len().saturating_sub(12);
-        crate::report::sanitize_for_terminal(&lines[start..].join("\n"))
+        lines[start..].join("\n")
     }
 }
 

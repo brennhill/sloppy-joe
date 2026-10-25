@@ -74,7 +74,7 @@ impl FakeRunner {
             .lock()
             .unwrap()
             .iter()
-            .filter(|call| call.args != ["--version"])
+            .filter(|call| call.args != ["--version"] && call.args != ["version"])
             .cloned()
             .collect()
     }
@@ -97,7 +97,7 @@ impl ProcessRunner for FakeRunner {
             .tools
             .get(name.as_str())
             .ok_or_else(|| anyhow::anyhow!("no fake {name}"))?;
-        if command.args == ["--version"] {
+        if command.args == ["--version"] || command.args == ["version"] {
             return Ok(match tool.version {
                 Some(version) => ToolOutput {
                     status: Some(0),
@@ -424,6 +424,14 @@ fn json_output_has_the_plan_diff_and_result() {
 }
 
 #[test]
+fn terminal_output_escapes_control_and_reordering_characters() {
+    let shown = super::report::terminal_safe("it's \u{1b}[31mred\u{202e}x\nnext");
+    assert!(shown.contains("it's"), "{shown}");
+    assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'), "{shown}");
+    assert!(shown.contains("\n      next"), "{shown}");
+}
+
+#[test]
 fn guided_ecosystems_never_run_a_tool() {
     let dir = project(&[("Gemfile", "source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n")]);
     let runner = FakeRunner::default().with("bundle", Some("2.5.0"), writes(&[]));
@@ -435,4 +443,42 @@ fn guided_ecosystems_never_run_a_tool() {
     assert!(project.problems[0].reason.as_deref().unwrap().contains("executes repository code"));
     assert!(runner.calls.lock().unwrap().is_empty());
     assert!(!run.report.success(), "a guided problem is not success");
+}
+
+/// The real `cargo` on this machine, in the real scrubbed environment, offline: a crate with no
+/// dependencies needs no registry. Ignored by default because it depends on the host toolchain;
+/// run it with `cargo test real_cargo_smoke -- --ignored`.
+#[test]
+#[ignore = "runs the host's cargo; needs no network"]
+fn real_cargo_smoke_generates_a_lockfile_offline() {
+    let dir = project(&[(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )]);
+    let scratch_parent = unique_dir("scratch");
+    let runner = runner::RealRunner::new(
+        std::env::var_os("PATH"),
+        &[dir.clone(), scratch_parent.clone()],
+    );
+    if runner::ProcessRunner::locate(&runner, "cargo").is_none() {
+        eprintln!("cargo is not installed; skipping");
+        return;
+    }
+    let request = FixRequest {
+        dir: dir.clone(),
+        project_type: None,
+        config: config::SloppyJoeConfig::default(),
+        write: true,
+        scratch_parent: scratch_parent.clone(),
+        timeout: Duration::from_secs(120),
+    };
+    let report = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(fix_lockfiles(&request, &runner, &FakeRescan::default()))
+        .unwrap();
+    let project = only(&report);
+    assert_eq!(project.result, Outcome::Written, "{project:#?}");
+    let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
+    assert!(lock.contains("name = \"app\""), "{lock}");
+    assert!(std::fs::read_dir(&scratch_parent).unwrap().next().is_none());
 }

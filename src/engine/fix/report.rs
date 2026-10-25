@@ -2,7 +2,6 @@
 
 use super::verify::{VersionDiff, preview};
 use crate::ecosystems::fixer::{FixClass, Problem, Verdict};
-use crate::report::sanitize_for_terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -132,8 +131,23 @@ impl FixReport {
     }
 }
 
+/// Tool output and repository names reach the terminal: control characters and the invisible
+/// or reordering format characters are escaped, line breaks become indented lines.
+pub(super) fn terminal_safe(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let invisible = matches!(ch, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
+        match ch {
+            '\n' => out.push_str("\n      "),
+            ch if ch.is_control() || invisible => out.extend(ch.escape_default()),
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
 fn line(out: &mut String, text: impl AsRef<str>) {
-    out.push_str(&sanitize_for_terminal(text.as_ref()));
+    out.push_str(&terminal_safe(text.as_ref()));
     out.push('\n');
 }
 

@@ -56,7 +56,7 @@ impl Remedy {
         };
         match self.automation {
             Automation::Tool => format!(
-                "run `{}`{needs} and commit the result, or run `sloppy-joe fix-lockfile` to have it run in a scratch copy, verified and shown as a version diff before anything is written.",
+                "run `{}`{needs} and commit the result, or run `sloppy-joe fix-lockfile`, which runs it in a scratch copy when that is safe and shows the verified version diff before anything is written.",
                 self.command
             ),
             Automation::Manual(why) => format!(

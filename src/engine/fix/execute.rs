@@ -166,7 +166,8 @@ impl ToolRun<'_> {
                 tool.program, tool.label
             )
         })?;
-        let output = self.run(&program, &["--version".to_string()], &self.scratch.home(), env, 64 * 1024)?;
+        let version_args: Vec<String> = tool.version_args.iter().map(|arg| arg.to_string()).collect();
+        let output = self.run(&program, &version_args, &self.scratch.home(), env, 64 * 1024)?;
         let version = parse_version(&format!("{}\n{}", output.stdout, output.stderr))
             .filter(|_| output.succeeded())
             .ok_or_else(|| {

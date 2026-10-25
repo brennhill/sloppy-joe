@@ -120,7 +120,7 @@ pub(super) fn preview(items: &[String]) -> String {
     let mut text = items
         .iter()
         .take(SHOWN)
-        .map(|item| crate::report::sanitize_for_terminal(item))
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
     if items.len() > SHOWN {

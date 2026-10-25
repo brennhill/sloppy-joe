@@ -97,6 +97,8 @@ pub(crate) struct ToolRequirement {
     pub(crate) min_version: (u64, u64, u64),
     /// Human form of the minimum, e.g. `pnpm 9.0`.
     pub(crate) label: &'static str,
+    /// Arguments that print the version (`--version`; Go has `version`).
+    pub(crate) version_args: &'static [&'static str],
 }
 
 /// An environment value for the tool. Paths are created inside the scratch directory, never in
@@ -208,6 +210,7 @@ impl Recipe {
             program,
             min_version,
             label,
+            version_args: &["--version"],
         });
         self.args = args.iter().map(|arg| arg.to_string()).collect();
         self

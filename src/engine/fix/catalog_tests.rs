@@ -82,6 +82,10 @@ fn missing_go_sum_entries_are_downloaded_with_the_checksum_database_on() {
     assert_eq!(project.result, Outcome::Written, "{project:#?}");
     let command = &runner.runs()[0];
     assert_eq!(command.args, ["mod", "download", "all"]);
+    assert!(
+        runner.calls.lock().unwrap().iter().any(|call| call.args == ["version"]),
+        "Go prints its version with `go version`, not `--version`"
+    );
     let env: std::collections::HashMap<_, _> = command.env.iter().cloned().collect();
     assert_eq!(env["GOTOOLCHAIN"], "local");
     assert_eq!(env["GOSUMDB"], "sum.golang.org");

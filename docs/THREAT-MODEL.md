@@ -70,6 +70,25 @@ fails when a path named here no longer exists, so this page cannot drift silentl
 | A cache file is edited or planted to clear packages | Owner, permission and HMAC checks; untrusted entries are refetched | `src/cache/integrity.rs` |
 | A public package carries an `internal` prefix | Prefix matches must be absent from the public registry, else block | `src/engine/internal_source.rs` |
 
+### The lockfile fixer (`sloppy-joe fix-lockfile`)
+
+The fixer is the one place sloppy-joe runs another program, and the lockfile it touches is the
+security artifact. It trusts the package manager binary on the absolute, non-repository part of
+`PATH` and nothing the repository supplies; the scratch copy limits what the tool can see, not
+what it can do as the user, so the precondition list and the disabled-execution flags are the
+defense (an OS sandbox is future work). Spec: `docs/specs/fix-lockfile.md`.
+
+| Attack | Control | Where |
+| --- | --- | --- |
+| Regenerating the lockfile hides an integrity, source or provenance finding | Those findings are `human`: no tool runs; a candidate that changes any locked version, integrity or source of a reachable package is refused | `src/ecosystems/common/fixer.rs`, `src/engine/fix/verify.rs` |
+| The regenerated lockfile pulls in something malicious or blocked | The candidate is rescanned with `check --full` semantics (fresh cache, no cached result trusted) and is written only if nothing blocks | `src/engine/fix/verify.rs`, `src/engine/fix/execute.rs` |
+| The repository makes the tool run its code (pnpmfile, Yarn plugins or `yarnPath`, `.npmrc` script settings, Cargo wrappers, Composer VCS repositories, Poetry plugins, a Go `toolchain` line, git/exec/path dependencies) | The scanner's own policy and a per-tool precondition list refuse before the tool runs; scripts are disabled by flag and by environment | `src/ecosystems/js/lock_fixer.rs`, `src/ecosystems/cargo/lock_fixer.rs`, `src/ecosystems/go/lock_fixer.rs`, `src/ecosystems/php/lock_fixer.rs`, `src/ecosystems/python/lock_fixer.rs` |
+| Resolution builds a source distribution, which runs it | uv runs with `--no-build`; Poetry, which has no such switch, only runs when every package is already locked with a wheel | `src/ecosystems/python/lock_fixer.rs` |
+| A repository binary shadows the tool (`node_modules/.bin`, `.`) or tokens leak into it | Only absolute `PATH` entries outside the project and scratch directory are searched; the environment is built from nothing, with `HOME`, caches and config pointed into a fresh 0700 scratch directory; argv only, no shell, no stdin, a timeout and an output cap | `src/engine/fix/runner.rs`, `src/engine/fix/scratch.rs` |
+| The tool rewrites a manifest, or the working tree changes while it runs | Inputs other than the lockfile must be byte-identical after the run; files are compared again before writing | `src/engine/fix/execute.rs`, `src/engine/fix/apply.rs` |
+| A partial or symlinked write corrupts the tree | Atomic replace through a fresh temporary file, symlinks refused, the previous file kept as `<name>.sloppy-joe.bak` | `src/engine/fix/write.rs` |
+| A manifest pin disagrees with the lockfile and the fixer picks a side | A pin the lockfile locks at another version stops the fix as a decision | `src/ecosystems/common/fixer.rs` |
+
 ### The scanner itself
 
 | Attack | Control | Where |
@@ -79,6 +98,8 @@ fails when a path named here no longer exists, so this page cannot drift silentl
 ## Non-goals
 
 - Environment variables, user-level package-manager config and files outside the repository.
+- A compromised package-manager binary on the trusted `PATH`, and isolating `fix-lockfile`'s tool
+  run from the rest of the user's account (no OS sandbox).
 - Code inside an installed package: install-script risk is reported, not analyzed.
 - A malicious operator config, or a compromised registry that lies consistently.
 - Proving a lockfile is what a clean `install` would produce: the scanner checks that nothing in
