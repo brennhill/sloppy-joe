@@ -17,13 +17,20 @@ pub(crate) fn validate_pipfile_lockfile(
 }
 
 pub(crate) fn python_legacy_warning(spec: &ProjectInputSpec) -> Issue {
+    // Only a Pipfile.lock records what a legacy manifest resolves to; otherwise the scan sees the
+    // declared packages and nothing pip pulls in for them.
+    let coverage = if selected_lockfile_path(spec).is_some() {
+        "sloppy-joe will scan it and the packages its lockfile records"
+    } else {
+        "sloppy-joe checks only the packages it declares: without a lockfile, the dependencies pip resolves for them at install time are not scanned"
+    };
     Issue::new(
         spec.manifest_path.display().to_string(),
         checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST,
         Severity::Warning,
     )
     .message(format!(
-        "Python manifest '{}' uses the legacy {} workflow. sloppy-joe will scan it, but Poetry with poetry.lock and uv with uv.lock provide the strongest trusted Python lock guarantees.",
+        "Python manifest '{}' uses the legacy {} workflow. {coverage}. Poetry with poetry.lock and uv with uv.lock provide the strongest trusted Python lock guarantees.",
         spec.manifest_path.display(),
         spec.kind.manifest_label()
     ))

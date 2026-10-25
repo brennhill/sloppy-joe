@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Python: the `resolution/python-legacy-manifest` warning for `requirements*.txt`, `setup.py`, `setup.cfg`, a non-Poetry `pyproject.toml` or a Pipfile without `Pipfile.lock` now says that only the declared packages are checked and that the dependencies pip resolves for them at install time are not scanned.
 - Python: `PYTHON_VERSION`, `SLOPPY_JOE_PYTHON_VERSION`, their `*_FULL_VERSION` variants and `--python-version` are trimmed and split into `python_version` (`X.Y`) and `python_full_version`, so `PYTHON_VERSION=3.12.1` (as Docker images set it) is Python 3.12 and a configured version no longer pairs with the host interpreter's full version. An unreadable setting leaves the version unknown (markers on it count as true) instead of falling back to the host.
 - Python: requirements comments follow pip's `(^|\s+)#` rule with Python whitespace (U+001F and NBSP before `#` start a comment, and a `#` inside quotes still does), so `pkg==1.0<U+001F>#; sys_platform == "win32"` is read as the unconditional `pkg==1.0` pip installs. `setup.cfg` continuation lines follow configparser: any line indented deeper than its option in Python whitespace (NBSP included) continues the value, so an NBSP-indented `install_requires` entry is no longer read as a separate, ignored option.
 - Python: `requirements*.txt` (including `requirements/*.txt`), `Pipfile`, `setup.py` and `setup.cfg` beside a Poetry or uv `pyproject.toml` are scanned as their own projects instead of being reported as ignored (a warning outside `--ci` let their packages install unchecked).

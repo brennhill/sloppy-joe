@@ -186,3 +186,44 @@ fn tox_dependency_declarations_cannot_hide() {
     );
     assert!(unscanned_tool_files(&spec, true).unwrap().is_empty());
 }
+
+#[test]
+fn the_legacy_warning_says_resolved_packages_are_not_scanned_without_a_lockfile() {
+    for (manifest, content, kind) in [
+        (
+            "requirements.txt",
+            "six==1.17.0\n",
+            ProjectInputKind::PyRequirements,
+        ),
+        (
+            "setup.cfg",
+            "[options]\ninstall_requires = six\n",
+            ProjectInputKind::PySetupCfg,
+        ),
+        (
+            "Pipfile",
+            "[packages]\nsix = \"*\"\n",
+            ProjectInputKind::PyPipfile,
+        ),
+        (
+            "pyproject.toml",
+            PYPROJECT,
+            ProjectInputKind::PyProjectLegacy,
+        ),
+    ] {
+        let spec = project(&[(manifest, content)], manifest, kind);
+        let message = python_legacy_warning(&spec).message;
+        assert!(message.contains("not scanned"), "{manifest}: {message}");
+    }
+    // A Pipfile.lock is read, so its transitive entries are scanned.
+    let spec = project(
+        &[
+            ("Pipfile", "[packages]\nsix = \"*\"\n"),
+            ("Pipfile.lock", "{}"),
+        ],
+        "Pipfile",
+        ProjectInputKind::PyPipfile,
+    );
+    let message = python_legacy_warning(&spec).message;
+    assert!(!message.contains("not scanned"), "{message}");
+}
