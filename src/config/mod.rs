@@ -332,6 +332,15 @@ pub(crate) const GRADLE_PLUGIN_PORTAL_URL: &str = "https://plugins.gradle.org/m2
 pub(crate) const MAVEN_CENTRAL_URL: &str = "https://repo1.maven.org/maven2/";
 
 /// A repository Gradle consults for plugin marker artifacts.
+/// How a package name matched the `internal` list (see `SloppyJoeConfig::internal_match`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InternalMatch {
+    /// The exact package name is listed.
+    Exact,
+    /// Only a prefix pattern (the contained `acme-*`) matched.
+    Prefix(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginRepository {
     GradlePluginPortal,
@@ -402,6 +411,24 @@ impl SloppyJoeConfig {
     /// Check if a package is internal (OSV-only package checks).
     pub fn is_internal(&self, ecosystem: &str, package: &str) -> bool {
         Self::matches_patterns(&self.internal, ecosystem, package)
+    }
+
+    /// How a package matches `internal`. An exact entry is a deliberate per-name decision; a
+    /// prefix (`acme-*`) only names a family and proves nothing about where a member comes from.
+    /// Exact entries win over prefixes.
+    pub fn internal_match(&self, ecosystem: &str, package: &str) -> Option<InternalMatch> {
+        let patterns = self.internal.get(ecosystem)?;
+        if patterns.iter().any(|pattern| pattern == package) {
+            return Some(InternalMatch::Exact);
+        }
+        patterns
+            .iter()
+            .find(|pattern| {
+                pattern
+                    .strip_suffix('*')
+                    .is_some_and(|prefix| package.starts_with(prefix))
+            })
+            .map(|pattern| InternalMatch::Prefix(pattern.clone()))
     }
 
     /// Check if a package is in the allowed list (skip existence + similarity,

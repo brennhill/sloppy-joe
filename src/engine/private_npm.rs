@@ -88,7 +88,12 @@ pub(crate) async fn scan_parsed_project(
         false
     });
     let private_count = private_issues.len();
-    let (checkable, non_internal, internal) = classify_deps(&public_deps, &config, ecosystem);
+    let ProvenTiers {
+        checkable,
+        non_internal,
+        internal,
+        issues: proof_issues,
+    } = classify_direct_deps(&public_deps, &config, ecosystem, registry, opts).await;
 
     let ctx = checks::CheckContext {
         checkable_deps: &checkable,
@@ -126,6 +131,7 @@ pub(crate) async fn scan_parsed_project(
     for check in &pipeline {
         check.run(&ctx, &mut acc).await?;
     }
+    acc.issues.extend(proof_issues);
     mark_source(&mut acc.issues, "direct");
 
     if !internal.is_empty() {
@@ -213,7 +219,12 @@ pub(crate) async fn scan_with_services_inner_for_kind(
         .then(|| active_python_lockfile_profile(opts, &PythonRootExtras::new()));
 
     // Classify deps into three tiers
-    let (checkable, non_internal, internal) = classify_deps(&deps, &config, ecosystem);
+    let ProvenTiers {
+        checkable,
+        non_internal,
+        internal,
+        issues: proof_issues,
+    } = classify_direct_deps(&deps, &config, ecosystem, registry, opts).await;
 
     let lockfile_kind = project_kind.map_or_else(
         || lockfiles::LockfileKind::for_ecosystem(Some(ecosystem)),
@@ -246,6 +257,7 @@ pub(crate) async fn scan_with_services_inner_for_kind(
     for check in &pipeline {
         check.run(&ctx, &mut acc).await?;
     }
+    acc.issues.extend(proof_issues);
     mark_source(&mut acc.issues, "direct");
 
     // Run OSV on internal packages (they skip all other checks but still need vuln scanning)
@@ -313,9 +325,21 @@ pub(crate) async fn scan_transitive_dependencies(
         })
         .cloned()
         .collect();
-    let (checkable, non_internal, internal) =
-        classify_deps(&transitive_deps, ctx.config, ctx.ecosystem);
+    let ProvenTiers {
+        checkable,
+        non_internal,
+        internal,
+        issues: proof_issues,
+    } = classify_deps_with_source_proof(
+        &transitive_deps,
+        ctx.config,
+        ctx.ecosystem,
+        ctx.registry,
+        "transitive",
+    )
+    .await;
     let mut trans_acc = checks::ScanAccumulator::new();
+    trans_acc.issues.extend(proof_issues);
     trans_acc.similarity_flagged = acc.similarity_flagged.clone();
     if !non_internal.is_empty() {
         let resolution = lockfile_data.resolve_transitive(&non_internal)?;

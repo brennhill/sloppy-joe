@@ -67,6 +67,8 @@ fails when a path named here no longer exists, so this page cannot drift silentl
 | A guessed import or command name used as a package | Known-mismatch table, stricter when young | `src/checks/steering.rs` |
 | A known-malicious package | OSV check | `docs/specs/vulnerability-coverage.md` |
 | A registry or cache fails and the scan passes | Errors block; caches go through one module | `src/cache.rs`, `docs/specs/lockfile-handling.md` |
+| A cache file is edited or planted to clear packages | Owner, permission and HMAC checks; untrusted entries are refetched | `src/cache/integrity.rs` |
+| A public package carries an `internal` prefix | Prefix matches must be absent from the public registry, else block | `src/engine/internal_source.rs` |
 
 ### The scanner itself
 

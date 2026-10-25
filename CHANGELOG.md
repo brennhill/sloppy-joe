@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Similarity: typosquats that drop one character from a known name (`expres`, `typescipt`, `date-fn`, `body-parse`) raise `similarity/missing-char`. The dependency is compared locally against the popular lists and the exact names in the config, so no insertion fan-out of registry queries is added; names under four characters and popular packages themselves are not matched.
+- Config: a package that matches an `internal` prefix (`acme-*`) only keeps internal (OSV-only) treatment when the public registry confirms no package with that name is published; otherwise, or when the lookup fails, `resolution/internal-source-unproven` blocks and the package is scanned like any other. Exact `internal` names are unchanged.
+- Cache: cache files are trusted only when they and their directory belong to the current user, are not group- or world-writable, and match an HMAC-SHA256 integrity record (`<file>.mac`, keyed by a per-user key in the config directory). An edited, planted or copied-in cache file is discarded with a warning and refetched.
 - Guardrails: a second, `syn`-based check of layer direction (`tests/architecture/syn_graph.rs`) runs beside the text scanner; `syn` and `proc-macro2` are dev-dependencies only.
 - Ruby: a `Gemfile.lock` line indented with a tab or another non-space character now blocks. Bundler reads only space-indented entries, so such a line was silently dropped from the scan (a tab-indented transitive gem was never checked). Found by the new metamorphic test, which mutates each fixture lockfile (CRLF, BOM, NUL, lone CR, U+2028, U+0085, VT, FF, tab indentation) and requires the scanner to read the same packages or refuse the file.
 - Gradle: a `gradle.lockfile` line that is not `group:artifact:version=configurations`, `empty=configurations` or a comment now blocks, naming the line, instead of being skipped (a skipped line could hide a pinned dependency from the scan).

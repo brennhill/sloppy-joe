@@ -302,17 +302,7 @@ pub(crate) fn full_scan_fingerprint_components_for_projects(
 pub(crate) fn read_full_scan_fingerprint_cache(
     cache_base: &std::path::Path,
 ) -> std::result::Result<Option<FullScanFingerprintCache>, String> {
-    let path = full_scan_fingerprint_cache_path(cache_base);
-    if !path.exists() {
-        return Ok(None);
-    }
-    cache::ensure_no_symlink(&path)
-        .map_err(|err| format!("cannot safely read {}: {}", path.display(), err))?;
-    let content = std::fs::read_to_string(&path)
-        .map_err(|err| format!("cannot read {}: {}", path.display(), err))?;
-    let parsed = serde_json::from_str::<FullScanFingerprintCache>(&content)
-        .map_err(|err| format!("cannot parse {}: {}", path.display(), err))?;
-    Ok(Some(parsed))
+    cache::read_trusted_json(&full_scan_fingerprint_cache_path(cache_base))
 }
 
 pub(crate) fn persist_successful_full_scan_fingerprint(

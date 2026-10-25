@@ -4,6 +4,9 @@
 //! They are composed into a vector and iterated by `generate_mutations`.
 mod scopes;
 pub(crate) use scopes::*;
+mod missing_char;
+pub(crate) use missing_char::missing_char_targets;
+use missing_char::MissingCharGen;
 
 use crate::Ecosystem;
 use std::collections::HashSet;
@@ -25,6 +28,7 @@ pub fn default_generators() -> Vec<Box<dyn MutationGenerator>> {
         Box::new(WordReorderGen),
         Box::new(AdjacentSwapGen),
         Box::new(DeleteOneCharGen),
+        Box::new(MissingCharGen),
         Box::new(HomoglyphGen),
         Box::new(ConfusedFormsGen),
         Box::new(KeyboardProximityGen),

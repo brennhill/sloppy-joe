@@ -3,6 +3,7 @@
 mod baseline;
 mod discovery;
 mod fingerprint;
+mod internal_source;
 mod parse_inputs;
 mod preflight;
 mod private_npm;
@@ -11,6 +12,7 @@ mod scan;
 pub(crate) use baseline::*;
 pub(crate) use discovery::*;
 pub(crate) use fingerprint::*;
+pub(crate) use internal_source::*;
 pub(crate) use parse_inputs::*;
 pub(crate) use preflight::*;
 pub(crate) use private_npm::*;

@@ -284,6 +284,9 @@ pub async fn check_malicious_with_cache(
 }
 
 #[cfg(test)]
+mod cache_integrity_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -107,6 +107,8 @@ Lists your organization's own packages by ecosystem. Supports glob patterns.
 
 **Pattern syntax:** Use `*` at the end for prefix matching. `@yourorg/*` matches `@yourorg/utils`, `@yourorg/core`, etc. Exact strings match exactly.
 
+**Prefix matches need source proof.** A prefix names a family of packages, not where a member comes from, so in full and CI scans every package that matches only a prefix is looked up on the public registry the scan uses. If no package with that name is published there, it can only come from your internal source and keeps internal treatment. If one is published (a dependency-confusion or squatted name), or the lookup fails, the scan blocks with `resolution/internal-source-unproven` and the package gets the full external checks. Once you have confirmed a published name is really yours, list it exactly: exact entries are deliberate per-package decisions and are not looked up.
+
 ### `allowed`
 
 Lists vetted external packages that should skip existence and similarity checks but still be subject to version age gating and vulnerability checks.
