@@ -339,6 +339,57 @@ fn a_stale_cargo_lockfile_is_updated_and_the_old_one_kept_as_backup() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlinked_temporary_directory_inside_the_project_is_refused() {
+    let dir = project(&[("Cargo.toml", CARGO_TOML)]);
+    std::fs::create_dir_all(dir.join("tmp")).unwrap();
+    let link = unique_dir("tmplink").join("tmp");
+    std::os::unix::fs::symlink(dir.join("tmp"), &link).unwrap();
+    let request = FixRequest {
+        dir: dir.clone(),
+        project_type: None,
+        config: config::SloppyJoeConfig::default(),
+        write: true,
+        scratch_parent: link,
+        timeout: Duration::from_secs(5),
+    };
+    let runner = cargo_runner(writes(&[("Cargo.lock", CARGO_LOCK)]));
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(fix_lockfiles(&request, &runner, &FakeRescan::default()))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("inside the project"),
+        "{error:#}"
+    );
+    assert!(runner.calls.lock().unwrap().is_empty());
+    assert!(!dir.join("Cargo.lock").exists());
+}
+
+#[test]
+fn an_unresolvable_temporary_directory_is_refused() {
+    let dir = project(&[("Cargo.toml", CARGO_TOML)]);
+    let request = FixRequest {
+        dir: dir.clone(),
+        project_type: None,
+        config: config::SloppyJoeConfig::default(),
+        write: true,
+        scratch_parent: unique_dir("gone").join("missing"),
+        timeout: Duration::from_secs(5),
+    };
+    let runner = cargo_runner(writes(&[("Cargo.lock", CARGO_LOCK)]));
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(fix_lockfiles(&request, &runner, &FakeRescan::default()))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("temporary directory"),
+        "{error:#}"
+    );
+    assert!(runner.calls.lock().unwrap().is_empty());
+}
+
 #[test]
 fn a_candidate_that_changes_a_locked_version_is_never_written() {
     let bumped: &'static str =

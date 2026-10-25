@@ -39,19 +39,34 @@ struct FixRequest {
     pub(super) timeout: Duration,
 }
 
+/// Refuse a temporary directory inside the project, comparing resolved paths so a symlinked
+/// `TMPDIR` cannot slip past. A path that cannot be resolved is refused too.
+fn ensure_scratch_outside_project(request: &FixRequest) -> Result<()> {
+    let resolve = |what: &str, path: &std::path::Path| {
+        anyhow::Context::with_context(std::fs::canonicalize(path), || {
+            format!("could not resolve the {what} {}", path.display())
+        })
+    };
+    let scratch = resolve("temporary directory", &request.scratch_parent)?;
+    let dir = resolve("project directory", &request.dir)?;
+    if scratch.starts_with(&dir) {
+        anyhow::bail!(
+            "the temporary directory {} (resolved to {}) is inside the project {}; point TMPDIR outside it so the tool cannot run in the working tree",
+            request.scratch_parent.display(),
+            scratch.display(),
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
 /// Plan and, where safe, fix every project under `request.dir`.
 async fn fix_lockfiles(
     request: &FixRequest,
     runner: &dyn ProcessRunner,
     rescan: &dyn CandidateScanner,
 ) -> Result<FixReport> {
-    if request.scratch_parent.starts_with(&request.dir) {
-        anyhow::bail!(
-            "the temporary directory {} is inside the project {}; point TMPDIR outside it so the tool cannot run in the working tree",
-            request.scratch_parent.display(),
-            request.dir.display()
-        );
-    }
+    ensure_scratch_outside_project(request)?;
     let discovered = discover(
         &request.dir,
         request.project_type.as_deref(),
