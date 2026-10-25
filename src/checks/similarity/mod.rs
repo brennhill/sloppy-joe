@@ -53,6 +53,7 @@ fn generator_severity(name: &str) -> u8 {
         "char-swap" => 4,
         "collapse-repeated" => 3,
         "extra-char" => 2,
+        "missing-char" => 2,
         "version-suffix" => 1,
         "word-reorder" => 1,
         "separator-swap" => 0,
@@ -233,6 +234,9 @@ mod hardening_tests;
 
 #[cfg(test)]
 mod download_disparity_tests;
+
+#[cfg(test)]
+mod missing_char_tests;
 
 #[cfg(test)]
 mod tests;

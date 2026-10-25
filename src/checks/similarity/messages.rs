@@ -47,6 +47,12 @@ pub(crate) fn format_match_message(dep_name: &str, candidate: &str, generator: &
              Examine both packages and add the intended one to your allowed list.",
             dep_name, candidate
         ),
+        "missing-char" => format!(
+            "'{}' matches '{}' with one character missing. \
+             A dropped character is a common typo and a known typosquatting pattern. \
+             Examine both packages and add the intended one to your allowed list.",
+            dep_name, candidate
+        ),
         "confused-forms" => format!(
             "'{}' is a confused form of '{}'. These are commonly interchanged but \
              resolve to different packages. \

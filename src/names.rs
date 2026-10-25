@@ -44,6 +44,7 @@ pub const SIMILARITY_VERSION_SUFFIX: &str = "similarity/version-suffix";
 pub const SIMILARITY_WORD_REORDER: &str = "similarity/word-reorder";
 pub const SIMILARITY_CHAR_SWAP: &str = "similarity/char-swap";
 pub const SIMILARITY_EXTRA_CHAR: &str = "similarity/extra-char";
+pub const SIMILARITY_MISSING_CHAR: &str = "similarity/missing-char";
 pub const SIMILARITY_HOMOGLYPH: &str = "similarity/homoglyph";
 pub const SIMILARITY_CONFUSED_FORMS: &str = "similarity/confused-forms";
 pub const SIMILARITY_BITFLIP: &str = "similarity/bitflip";
@@ -60,6 +61,7 @@ pub fn similarity_check_name(generator_name: &str) -> &'static str {
         "word-reorder" => SIMILARITY_WORD_REORDER,
         "char-swap" => SIMILARITY_CHAR_SWAP,
         "extra-char" => SIMILARITY_EXTRA_CHAR,
+        "missing-char" => SIMILARITY_MISSING_CHAR,
         "homoglyph" => SIMILARITY_HOMOGLYPH,
         "confused-forms" => SIMILARITY_CONFUSED_FORMS,
         "bitflip" => SIMILARITY_BITFLIP,
@@ -153,6 +155,7 @@ mod tests {
             SIMILARITY_WORD_REORDER,
             SIMILARITY_CHAR_SWAP,
             SIMILARITY_EXTRA_CHAR,
+            SIMILARITY_MISSING_CHAR,
             SIMILARITY_HOMOGLYPH,
             SIMILARITY_CONFUSED_FORMS,
             SIMILARITY_BITFLIP,
@@ -228,6 +231,10 @@ mod tests {
             SIMILARITY_WORD_REORDER
         );
         assert_eq!(similarity_check_name("extra-char"), SIMILARITY_EXTRA_CHAR);
+        assert_eq!(
+            similarity_check_name("missing-char"),
+            SIMILARITY_MISSING_CHAR
+        );
         assert_eq!(
             similarity_check_name("confused-forms"),
             SIMILARITY_CONFUSED_FORMS

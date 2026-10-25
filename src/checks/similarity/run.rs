@@ -77,16 +77,20 @@ fn download_counts(
         .unwrap_or_default()
 }
 
-/// Record `candidate` as a segment-overlap mutation unless a stronger generator already found it.
-fn add_segment_overlap(mutations: &mut HashMap<String, &'static str>, candidate: String) {
+/// Record `candidate` as a `generator` mutation unless a stronger generator already found it.
+fn add_tagged(
+    mutations: &mut HashMap<String, &'static str>,
+    candidate: String,
+    generator: &'static str,
+) {
     mutations
         .entry(candidate)
         .and_modify(|existing| {
-            if generator_severity("segment-overlap") > generator_severity(existing) {
-                *existing = "segment-overlap";
+            if generator_severity(generator) > generator_severity(existing) {
+                *existing = generator;
             }
         })
-        .or_insert("segment-overlap");
+        .or_insert(generator);
 }
 
 /// Evidence about the lookalike's popularity and age, appended to a similarity finding.
@@ -245,7 +249,14 @@ impl<'a> Run<'a> {
                 self.ecosystem,
                 &configured_roots,
             ) {
-                add_segment_overlap(&mut mutations, candidate);
+                add_tagged(&mut mutations, candidate, "segment-overlap");
+            }
+            for candidate in generators::missing_char_targets(
+                dep.package_name(),
+                self.ecosystem,
+                &configured_roots,
+            ) {
+                add_tagged(&mut mutations, candidate, "missing-char");
             }
             if self.ecosystem == Ecosystem::Cargo {
                 let identity = dep.package_name().replace('-', "_");

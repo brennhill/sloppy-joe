@@ -40,6 +40,11 @@ primary coverage bottleneck for typosquatting detection.
   Generates n x 26 candidates per position.
 - **Omitted-character insertion for registry queries**: Replaced by delete-one-character
   generator which produces n candidates instead of n x 26.
+  Dropped-character squats (`expres` for `express`) are still caught without that fan-out:
+  the dependency is compared locally against the built-in popular lists and the exact names
+  in the config (`similarity/missing-char`), so at most one registry query is added per known
+  name that is exactly one non-separator deletion away. Dependencies shorter than four
+  characters and dependencies that are themselves popular are not matched.
 
 ---
 

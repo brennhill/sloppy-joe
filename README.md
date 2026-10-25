@@ -164,7 +164,7 @@ ERROR ai-json-helper [existence]
 
 **The attack:** An attacker registers `expresz` on npm — one character from `express`. AI generates it, or a developer fat-fingers it. The package exists, passes the existence check, and installs malware.
 
-**How sloppy-joe flags it:** Generates name mutations and checks whether candidate names exist in the registry or the same manifest. Scope/namespace checks use edit distance against known scopes. Segment-overlap rules also use selected popular package roots. These are review signals, not proof of malware; there is no general package-name edit-distance fallback.
+**How sloppy-joe flags it:** Generates name mutations and checks whether candidate names exist in the registry or the same manifest. Scope/namespace checks use edit distance against known scopes. Segment-overlap rules also use selected popular package roots, and dropped-character squats (`expres` for `express`, `similarity/missing-char`) are matched locally against those popular roots and the exact names in your config. These are review signals, not proof of malware; there is no general package-name edit-distance fallback.
 ```
 ERROR expresz [similarity/keyboard-proximity]
       'expresz' is 1 character away from 'express'. This could be a typosquat.
