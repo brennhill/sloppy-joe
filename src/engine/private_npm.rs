@@ -56,6 +56,7 @@ pub(crate) async fn scan_parsed_project(
         .unwrap_or_default();
     let mut lockfile_data = ecosystems::lockfile_data(&config, opts, project, &project.deps)?;
     if project.deps.is_empty()
+        && lockfile_data.gated_direct_deps.is_empty()
         && lockfile_data.transitive_deps.is_empty()
         && lockfile_data.resolution.issues.is_empty()
     {
@@ -64,7 +65,9 @@ pub(crate) async fn scan_parsed_project(
     let mut private_issues = Vec::new();
     let mut public_deps = Vec::new();
     let mut private_direct = std::collections::HashSet::new();
-    for dep in &project.deps {
+    // Direct dependencies of other environments get the same direct checks; the plugin has
+    // already resolved their versions and kept them out of the transitive list.
+    for dep in project.deps.iter().chain(&lockfile_data.gated_direct_deps) {
         if registries.private_registry(dep.package_name()).is_some() {
             private_direct.insert((
                 dep.package_name().to_string(),

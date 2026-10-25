@@ -194,6 +194,37 @@ fn extra_names_compare_normalized() {
     assert!(evaluate_marker_for_profile_extras(r#"extra == "Foo_Bar""#, &profile).unwrap());
 }
 
+/// uv encodes `[tool.uv] conflicts` activation as `extra == 'extra-<N>-<package>-<extra>'`
+/// (and `group-<N>-...`, `project-<N>-...`) on lock edges. The value names the project's
+/// extra or group, never the requested package's own extras, so across every environment the
+/// comparison is undecided and the edge is kept.
+#[test]
+fn uv_conflict_markers_are_undecided_across_every_environment() {
+    let coverage = PythonProfile::for_target("linux", "3.12").for_every_environment();
+    let none = BTreeSet::new();
+    let other = BTreeSet::from(["socks".to_string()]);
+    for marker in [
+        "extra == 'extra-4-proj-b'",
+        "extra != 'extra-4-proj-a'",
+        "extra == 'group-4-proj-dev'",
+        "extra == 'project-4-proj'",
+        "extra == 'extra-4-proj-b' and extra != 'extra-4-proj-a'",
+        "sys_platform == 'win32' and extra == 'extra-11-My_Project-gpu'",
+    ] {
+        assert!(
+            evaluate_marker_for_extras(marker, &coverage, &none).unwrap(),
+            "{marker}"
+        );
+        assert!(
+            evaluate_marker_for_extras(marker, &coverage, &other).unwrap(),
+            "{marker}"
+        );
+    }
+    // A real extra comparison still follows the request's extras.
+    assert!(!evaluate_marker_for_extras("extra == 'socks'", &coverage, &none).unwrap());
+    assert!(!evaluate_marker_for_extras("extra == 'extra-x'", &coverage, &none).unwrap());
+}
+
 #[test]
 fn compatible_release_and_dotted_aliases_are_supported() {
     let profile = PythonProfile::for_target("linux", "3.12");

@@ -231,6 +231,11 @@ pub struct LockfileData {
     pub resolution: ResolutionResult,
     /// Dependencies found in the lockfile but not in the direct dependency list.
     pub transitive_deps: Vec<Dependency>,
+    /// Direct dependencies the scan target does not install but another environment does
+    /// (a Python dependency whose marker is false for the target), at their locked versions
+    /// where the lockfile resolves them. They get every direct-dependency check and are not
+    /// repeated in `transitive_deps`; they never choose the target's versions.
+    pub(crate) gated_direct_deps: Vec<Dependency>,
     /// Retained parsed lockfile for re-resolution of transitive deps without re-reading disk.
     parsed: ParsedLockfile,
     npm_integrity: Option<std::sync::Arc<integrity::NpmLockfileIntegrity>>,
@@ -284,6 +289,7 @@ impl LockfileData {
         Ok(Self {
             resolution,
             transitive_deps: transitive,
+            gated_direct_deps: Vec::new(),
             parsed,
             npm_integrity,
             python_hashes,
@@ -318,6 +324,7 @@ impl LockfileData {
         Self {
             resolution,
             transitive_deps: Vec::new(),
+            gated_direct_deps: Vec::new(),
             parsed: ParsedLockfile::None,
             npm_integrity: None,
             python_hashes: None,

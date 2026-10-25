@@ -207,6 +207,101 @@ pub(crate) fn validate_manifest_consistency(
     Ok(())
 }
 
+/// Every manifest dependency in coverage scope (any environment, the same group and extra
+/// selection) must be recorded by uv.lock, as `uv lock --check` requires. A dependency whose
+/// marker is false for the scan target is still installed elsewhere; if the lock does not
+/// record it, nothing vouches for what that environment installs. `profile` is the coverage
+/// profile, so markers are undecided and several forked entries may hold at once: the manifest
+/// specifier must equal one recorded entry and one locked version must satisfy it.
+pub(crate) fn validate_coverage_roots_are_locked(
+    parsed: &toml::Value,
+    roots: &[Dependency],
+    source_path: &Path,
+    profile: &PythonProfile,
+) -> Result<()> {
+    let root_requires = extract_root_requires_entries(parsed)?.unwrap_or_default();
+    let packages = package_entries(parsed);
+    for dep in roots {
+        let normalized = normalize_name(&dep.name);
+        let recorded = recorded_specifiers(&root_requires, &normalized, profile)?;
+        let name = crate::report::sanitize_for_terminal(&dep.name);
+        let problem = |remedy, detail: String| {
+            crate::remedy::problem(
+                remedy,
+                format!(
+                    "Broken lockfile '{}': '{name}' {detail}",
+                    source_path.display()
+                ),
+            )
+        };
+        if recorded.is_empty() {
+            return Err(problem(
+                &crate::remedy::UV_LOCK,
+                "is missing from the root requires-dist / requires-dev metadata".to_string(),
+            ));
+        }
+        if !recorded.contains(&dep.version.as_deref()) {
+            return Err(problem(
+                &crate::remedy::UV_LOCK,
+                "is out of sync with pyproject.toml".to_string(),
+            ));
+        }
+        let locked = locked_versions(&packages, &normalized);
+        if locked.is_empty() {
+            return Err(problem(
+                &crate::remedy::UV_LOCK,
+                "is missing a resolved package entry".to_string(),
+            ));
+        }
+        let mut satisfied = false;
+        for version in &locked {
+            satisfied |= version_matches_uv_specifier(version, dep.version.as_deref())?;
+        }
+        if !satisfied {
+            return Err(problem(
+                &crate::remedy::LOCK_PIN_MISMATCH,
+                format!(
+                    "has no locked version satisfying '{}'",
+                    crate::report::sanitize_for_terminal(dep.version.as_deref().unwrap_or(""))
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The specifiers uv.lock records for `normalized_name` in the profile's scope.
+fn recorded_specifiers<'a>(
+    entries: &'a [UvRootRequiresEntry],
+    normalized_name: &str,
+    profile: &PythonProfile,
+) -> Result<Vec<Option<&'a str>>> {
+    let mut recorded = Vec::new();
+    for entry in entries {
+        if entry.normalized_name == normalized_name
+            && entry.scope.in_profile(profile)
+            && root_marker_matches_profile(entry.marker.as_deref(), profile)?
+        {
+            recorded.push(entry.specifier.as_deref());
+        }
+    }
+    Ok(recorded)
+}
+
+/// Every version uv.lock resolves for `normalized_name` (the project root excluded).
+fn locked_versions<'a>(packages: &[&'a toml::value::Table], normalized_name: &str) -> Vec<&'a str> {
+    packages
+        .iter()
+        .filter(|pkg| !is_local_root_package(pkg))
+        .filter(|pkg| {
+            pkg.get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| normalize_name(name) == normalized_name)
+        })
+        .filter_map(|pkg| pkg.get("version").and_then(|value| value.as_str()))
+        .collect()
+}
+
 /// The reverse of [`validate_manifest_consistency`]: every package the uv.lock root installs or
 /// records (main dependencies, extras, dependency groups) must be declared in the same section
 /// of pyproject.toml. A lock-only entry means the lockfile is stale or was modified, and the
