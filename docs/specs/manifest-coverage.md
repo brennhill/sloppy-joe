@@ -45,9 +45,11 @@ dependencies, it can't check them.
   **Then** all listed dependencies are checked.
 - **Given** a `pyproject.toml` with `[project.optional-dependencies]`, **When** the
   scan runs, **Then** optional dependency groups are also checked.
-- **Given** both `pyproject.toml` and `requirements.txt` in the same directory,
-  **When** auto-detection runs, **Then** `pyproject.toml` takes precedence (it is the
-  authoritative source; requirements.txt may be a generated subset).
+- **Given** both `pyproject.toml` and `requirements*.txt` (or `setup.py`, `setup.cfg`,
+  `Pipfile`) in the same directory, **When** the scan runs, **Then** each manifest is
+  scanned as its own project: pip installs from a requirements file whatever the
+  pyproject declares, so a Poetry or uv project (or a hash-locked requirements file) never
+  hides its siblings.
 
 ### Python pyproject.toml (Poetry)
 

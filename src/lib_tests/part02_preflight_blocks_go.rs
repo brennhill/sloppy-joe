@@ -275,7 +275,7 @@ async fn repo_root_scans_warn_for_legacy_python_manifests_instead_of_skipping_th
 }
 
 #[test]
-fn detected_project_inputs_prefer_poetry_projects_over_same_directory_legacy_manifests() {
+fn detected_project_inputs_scan_legacy_manifests_beside_a_poetry_project() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("pyproject.toml"),
@@ -292,8 +292,18 @@ fn detected_project_inputs_prefer_poetry_projects_over_same_directory_legacy_man
     let specs = detected_project_inputs(&dir, Some("pypi"))
         .expect("same-directory Poetry and requirements manifests must be discoverable");
 
-    assert_eq!(specs.len(), 1);
-    assert_eq!(specs[0].kind, ProjectInputKind::PyProjectPoetry);
+    // pip installs from requirements.txt whatever Poetry locks, so both are scanned.
+    assert_eq!(specs.len(), 2, "{specs:#?}");
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.kind == ProjectInputKind::PyProjectPoetry)
+    );
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.kind == ProjectInputKind::PyRequirements)
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -57,48 +57,6 @@ pub(crate) fn validate_hash_locked_requirements_provenance(
     Ok(provenance.primary_index.is_some())
 }
 
-/// Legacy manifests beside a Poetry or uv project are not scanned. That is a warning, and an
-/// error when `strict` (the `--ci` scan), because their dependencies would be installed unseen.
-pub(crate) fn trusted_python_preference_warnings(
-    spec: &ProjectInputSpec,
-    strict: bool,
-) -> Result<Vec<Issue>> {
-    let mut warnings = Vec::new();
-    let (tool_name, fix) = match spec.kind {
-        ProjectInputKind::PyProjectPoetry => (
-            "Poetry",
-            "Remove or stop relying on the legacy Python manifest, and keep pyproject.toml + poetry.lock as the single trusted dependency source for this project.",
-        ),
-        ProjectInputKind::PyProjectUv => (
-            "uv",
-            "Remove or stop relying on the legacy Python manifest, and keep pyproject.toml + uv.lock as the single trusted dependency source for this project.",
-        ),
-        _ => return Ok(warnings),
-    };
-    for candidate in legacy_python_manifest_paths(spec.project_dir())? {
-        warnings.push(
-            Issue::new(
-                candidate.display().to_string(),
-                checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST,
-                if strict {
-                    Severity::Error
-                } else {
-                    Severity::Warning
-                },
-            )
-            .message(format!(
-                "Ignoring legacy Python manifest '{}' because '{}' is a {} project. sloppy-joe prefers the trusted {} workflow as the source of truth for this directory.",
-                candidate.display(),
-                spec.manifest_path.display(),
-                tool_name,
-                tool_name
-            ))
-            .fix(fix),
-        );
-    }
-    Ok(warnings)
-}
-
 pub(crate) fn active_python_profile(
     opts: &ScanOptions<'_>,
 ) -> parsers::python_scope::PythonProfile {
@@ -277,57 +235,4 @@ pub(crate) fn python_manifest_declares_no_dependencies(spec: &ProjectInputSpec) 
         }
         _ => false,
     })
-}
-
-pub(crate) fn legacy_python_manifest_paths(
-    project_dir: &std::path::Path,
-) -> Result<Vec<std::path::PathBuf>> {
-    let mut manifests = Vec::new();
-
-    for path in legacy_requirements_files(project_dir)? {
-        manifests.push(path);
-    }
-    for manifest in ["Pipfile", "setup.cfg", "setup.py"] {
-        let path = project_dir.join(manifest);
-        if parsers::path_detected(&path)? {
-            manifests.push(path);
-        }
-    }
-    let pyproject = project_dir.join("pyproject.toml");
-    if parsers::path_detected(&pyproject)?
-        && matches!(
-            parsers::pyproject_toml::classify_manifest(&pyproject)?,
-            parsers::pyproject_toml::PyprojectKind::Legacy
-        )
-    {
-        manifests.push(pyproject);
-    }
-
-    manifests.sort();
-    Ok(manifests)
-}
-
-pub(crate) fn legacy_requirements_files(
-    project_dir: &std::path::Path,
-) -> Result<Vec<std::path::PathBuf>> {
-    let mut candidates = std::fs::read_dir(project_dir)
-        .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", project_dir.display(), err))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| parsers::requirements::is_requirements_manifest_path(path))
-        .collect::<Vec<_>>();
-    let requirements_dir = project_dir.join("requirements");
-    if std::fs::symlink_metadata(&requirements_dir).is_ok_and(|meta| meta.is_dir()) {
-        candidates.extend(
-            std::fs::read_dir(&requirements_dir)
-                .map_err(|err| {
-                    anyhow::anyhow!("Failed to inspect {}: {}", requirements_dir.display(), err)
-                })?
-                .filter_map(|entry| entry.ok())
-                .map(|entry| entry.path())
-                .filter(|path| parsers::requirements::is_requirements_manifest_path(path)),
-        );
-    }
-    candidates.sort();
-    Ok(candidates)
 }

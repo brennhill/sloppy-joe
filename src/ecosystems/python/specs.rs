@@ -1,43 +1,5 @@
 use super::*;
 
-pub(super) fn prefer_trusted_python_project_inputs(specs: &mut Vec<ProjectInputSpec>) {
-    let trusted_pyproject_dirs: std::collections::HashSet<std::path::PathBuf> = specs
-        .iter()
-        .filter(|spec| {
-            matches!(
-                spec.kind,
-                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-            )
-        })
-        .map(|spec| spec.project_dir().to_path_buf())
-        .collect();
-
-    // A hash-locked requirements file is one install input among the others in its directory:
-    // pip installs `requirements-dev.txt`, `setup.py` and `setup.cfg` just as well, so each is
-    // scanned as its own project instead of being hidden behind the trusted file.
-    specs.retain(|spec| {
-        if !spec.kind.is_python() {
-            return true;
-        }
-        // `requirements/*.txt` belongs to the project in the parent directory.
-        let owner_dir = if parsers::requirements::is_in_requirements_directory(&spec.manifest_path)
-        {
-            spec.project_dir().parent().unwrap_or(spec.project_dir())
-        } else {
-            spec.project_dir()
-        };
-        if trusted_pyproject_dirs.contains(spec.project_dir())
-            || trusted_pyproject_dirs.contains(owner_dir)
-        {
-            return matches!(
-                spec.kind,
-                ProjectInputKind::PyProjectPoetry | ProjectInputKind::PyProjectUv
-            );
-        }
-        true
-    });
-}
-
 pub(super) fn reject_ambiguous_python_project_inputs(specs: &[ProjectInputSpec]) -> Result<()> {
     let mut trusted_requirements_dirs = std::collections::HashSet::new();
     let mut legacy_pyproject_dirs = std::collections::HashSet::new();

@@ -128,7 +128,8 @@ impl EcosystemSupport for Python {
         promote_trusted_pip_tools_specs(scan_root, specs)?;
         prune_included_requirement_specs(scan_root, specs)?;
         reject_ambiguous_python_project_inputs(specs)?;
-        prefer_trusted_python_project_inputs(specs);
+        // Every Python manifest is its own install input: a requirements file, setup.py or
+        // Pipfile beside a Poetry/uv project or a hash-locked requirements file is scanned too.
         Ok(())
     }
 

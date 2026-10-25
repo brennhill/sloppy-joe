@@ -243,13 +243,14 @@ fn monorepo_walk_discovers_suffix_named_requirements_files() {
 }
 
 #[test]
-fn requirements_directory_beside_poetry_project_is_treated_like_sibling_requirements() {
+fn requirements_beside_a_poetry_project_are_scanned_not_ignored() {
     let dir = unique_dir();
     write_poetry_project_with_build_system(&dir);
+    std::fs::write(dir.join("requirements.txt"), "evil-sibling==1.0\n").unwrap();
     std::fs::create_dir_all(dir.join("requirements")).unwrap();
     std::fs::write(
         dir.join("requirements").join("export.txt"),
-        "requests==2.31.0\n",
+        "evil-export==1.0\n",
     )
     .unwrap();
 
@@ -258,17 +259,38 @@ fn requirements_directory_beside_poetry_project_is_treated_like_sibling_requirem
     assert!(
         specs
             .iter()
-            .all(|spec| spec.kind == ProjectInputKind::PyProjectPoetry),
+            .any(|spec| spec.kind == ProjectInputKind::PyProjectPoetry),
         "{specs:#?}"
     );
-    let warnings = preflight_project_inputs(&dir, &specs, &config).unwrap();
-    assert!(
-        warnings.iter().any(|issue| {
-            issue.check == checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST
-                && issue.package.ends_with("export.txt")
-        }),
-        "ignored requirements files must be reported: {warnings:#?}"
-    );
+    preflight_project_inputs(&dir, &specs, &config).unwrap();
+    let names = scanned_dependency_names(&dir);
+    for expected in ["requests", "evil-sibling", "evil-export"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn requirements_beside_a_uv_project_are_scanned_not_ignored() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nrequires-python = \">=3.10\"\ndependencies = []\n\n[tool.uv]\npackage = false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        "version = 1\nrevision = 3\nrequires-python = \">=3.10\"\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\n\n[package.metadata]\nrequires-dist = []\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("requirements-dev.txt"), "evil-dev==1.0\n").unwrap();
+
+    let names = scanned_dependency_names(&dir);
+    assert!(names.iter().any(|name| name == "evil-dev"), "{names:?}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

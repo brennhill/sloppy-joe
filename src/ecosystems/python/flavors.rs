@@ -83,12 +83,7 @@ impl PythonFlavor for Poetry {
             ctx.scan.config,
             ctx.scan.opts,
         )?;
-        let mut warnings = validated.warnings;
-        warnings.extend(trusted_python_preference_warnings(
-            spec,
-            ctx.scan.opts.scan_mode == ScanMode::Ci,
-        )?);
-        Ok(warnings)
+        Ok(validated.warnings)
     }
 
     fn lockfile_data(
@@ -133,17 +128,13 @@ impl PythonFlavor for Uv {
             spec,
             &common::named_lockfile(spec).expect("uv names uv.lock"),
         )?;
-        let (_, mut warnings) = read_validated_uv_lockfile(
+        let (_, warnings) = read_validated_uv_lockfile(
             spec,
             &parsed.deps,
             &parsed.python_root_extras,
             ctx.scan.config,
             ctx.scan.opts,
         )?;
-        warnings.extend(trusted_python_preference_warnings(
-            spec,
-            ctx.scan.opts.scan_mode == ScanMode::Ci,
-        )?);
         Ok(warnings)
     }
 

@@ -119,27 +119,6 @@ fn unscanned_install_files_warn_and_block_in_ci() {
 }
 
 #[test]
-fn legacy_manifests_beside_a_trusted_project_block_in_ci() {
-    let spec = project(
-        &[
-            (
-                "pyproject.toml",
-                "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n",
-            ),
-            ("requirements.txt", "evil-pkg==1.0\n"),
-            ("setup.cfg", "[options]\nsetup_requires = evil-build\n"),
-        ],
-        "pyproject.toml",
-        ProjectInputKind::PyProjectPoetry,
-    );
-    let warn = trusted_python_preference_warnings(&spec, false).unwrap();
-    assert_eq!(warn.len(), 2);
-    assert!(warn.iter().all(|issue| issue.severity == Severity::Warning));
-    let ci = trusted_python_preference_warnings(&spec, true).unwrap();
-    assert!(ci.iter().all(|issue| issue.severity == Severity::Error));
-}
-
-#[test]
 fn other_tox_configuration_files_are_flagged_like_tox_ini() {
     for (file, content) in [
         ("tox.toml", "[env.py]\ndeps = [\"evil\"]\n"),
