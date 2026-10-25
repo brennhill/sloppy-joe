@@ -3,7 +3,7 @@
 use super::Refusal;
 use super::execute::Layout;
 use super::report::ProjectFix;
-use super::write::{remove_with_backup, replace_with_backup};
+use super::write::apply_changes;
 use crate::ecosystems::fixer::Recipe;
 use std::path::PathBuf;
 
@@ -51,6 +51,8 @@ impl Originals {
     }
 }
 
+/// Write every output and move every deletion aside as one change: all target and backup paths
+/// are checked first, and a failure leaves the working tree as it was (see `write`).
 pub(super) fn write_candidate(
     layout: &Layout,
     recipe: &Recipe,
@@ -63,19 +65,21 @@ pub(super) fn write_candidate(
         let produced = layout.in_verify(output)?;
         let bytes = std::fs::read(&produced)
             .map_err(|err| format!("could not read the candidate {}: {err}", produced.display()))?;
-        candidates.push((output, bytes));
+        candidates.push((output.clone(), bytes));
     }
-    for (output, bytes) in candidates {
-        let backup = replace_with_backup(output, &bytes).map_err(|err| format!("{err:#}"))?;
-        project.written.push(output.display().to_string());
-        project
-            .backups
-            .extend(backup.map(|path| path.display().to_string()));
-    }
-    for deletion in &recipe.deletions {
-        let backup = remove_with_backup(deletion).map_err(|err| format!("{err:#}"))?;
-        project.removed.push(deletion.display().to_string());
-        project.backups.push(backup.display().to_string());
-    }
+    let backups =
+        apply_changes(&candidates, &recipe.deletions).map_err(|err| format!("{err:#}"))?;
+    project
+        .written
+        .extend(recipe.outputs.iter().map(|path| path.display().to_string()));
+    project.removed.extend(
+        recipe
+            .deletions
+            .iter()
+            .map(|path| path.display().to_string()),
+    );
+    project
+        .backups
+        .extend(backups.iter().map(|path| path.display().to_string()));
     Ok(())
 }

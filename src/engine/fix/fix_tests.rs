@@ -339,6 +339,33 @@ fn a_stale_cargo_lockfile_is_updated_and_the_old_one_kept_as_backup() {
     );
 }
 
+#[test]
+fn an_existing_backup_is_never_overwritten() {
+    let dir = project(&[
+        ("Cargo.toml", CARGO_TOML_TWO),
+        ("Cargo.lock", CARGO_LOCK),
+        ("Cargo.lock.sloppy-joe.bak", "earlier backup"),
+    ]);
+    let runner = cargo_runner(writes(&[("Cargo.lock", CARGO_LOCK_TWO)]));
+    let run = fix(&dir, true, &runner, &FakeRescan::default());
+    let project = only(&run.report);
+    assert_eq!(project.result, Outcome::Failed, "{project:#?}");
+    let reason = project.reason.clone().unwrap_or_default();
+    assert!(
+        reason.contains("Cargo.lock.sloppy-joe.bak") && reason.contains("already exists"),
+        "{reason}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.lock.sloppy-joe.bak")).unwrap(),
+        "earlier backup"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(),
+        CARGO_LOCK
+    );
+    assert!(project.written.is_empty() && project.backups.is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn a_symlinked_temporary_directory_inside_the_project_is_refused() {

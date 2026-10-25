@@ -375,14 +375,10 @@ fn bun_lock() -> String {
     )
 }
 
-#[test]
-fn a_binary_bun_lockfile_is_converted_when_the_printed_lockfile_matches() {
-    let dir = project(&[
-        ("package.json", BUN_PACKAGE_JSON),
-        ("bun.lockb", "\u{1}binary"),
-    ]);
+/// A bun that prints the binary lockfile as a Yarn v1 lockfile and writes `bun.lock`.
+fn bun_converter() -> FakeRunner {
     let lock = leak(bun_lock());
-    let runner = FakeRunner::default().with(
+    FakeRunner::default().with(
         "bun",
         Some("1.2.21"),
         Box::new(move |command: &ToolCommand| {
@@ -399,7 +395,30 @@ fn a_binary_bun_lockfile_is_converted_when_the_printed_lockfile_matches() {
                 ..Default::default()
             }
         }),
-    );
+    )
+}
+
+/// Every entry directly under `dir` with its bytes (a symlink's are its target's, or empty).
+fn listing(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| {
+            let content = std::fs::read(entry.path()).unwrap_or_default();
+            (entry.file_name().to_string_lossy().into_owned(), content)
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+#[test]
+fn a_binary_bun_lockfile_is_converted_when_the_printed_lockfile_matches() {
+    let dir = project(&[
+        ("package.json", BUN_PACKAGE_JSON),
+        ("bun.lockb", "\u{1}binary"),
+    ]);
+    let runner = bun_converter();
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = first(&run.report);
     assert_eq!(project.problems[0].name, "bun-binary-lockfile");
@@ -417,4 +436,56 @@ fn a_binary_bun_lockfile_is_converted_when_the_printed_lockfile_matches() {
     );
     assert!(!dir.join("bun.lockb").exists());
     assert!(dir.join("bun.lockb.sloppy-joe.bak").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_bun_lockb_backup_symlink_leaves_the_tree_untouched() {
+    let dir = project(&[
+        ("package.json", BUN_PACKAGE_JSON),
+        ("bun.lockb", "\u{1}binary"),
+    ]);
+    let outside = unique_dir("outside").join("target");
+    std::fs::write(&outside, "keep").unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("bun.lockb.sloppy-joe.bak")).unwrap();
+    let before = listing(&dir);
+    let run = fix(&dir, true, &bun_converter(), &FakeRescan::default());
+    let project = first(&run.report);
+    assert_eq!(project.result, Outcome::Failed, "{project:#?}");
+    let reason = project.reason.clone().unwrap_or_default();
+    assert!(reason.contains("bun.lockb.sloppy-joe.bak"), "{reason}");
+    assert!(!dir.join("bun.lock").exists(), "bun.lock is not written");
+    assert_eq!(std::fs::read(dir.join("bun.lockb")).unwrap(), b"\x01binary");
+    assert!(
+        std::fs::symlink_metadata(dir.join("bun.lockb.sloppy-joe.bak"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+    assert_eq!(listing(&dir), before, "nothing was added or removed");
+    assert!(project.written.is_empty() && project.removed.is_empty());
+}
+
+#[test]
+fn an_existing_bun_lockb_backup_is_never_overwritten() {
+    let dir = project(&[
+        ("package.json", BUN_PACKAGE_JSON),
+        ("bun.lockb", "\u{1}binary"),
+        ("bun.lockb.sloppy-joe.bak", "earlier backup"),
+    ]);
+    let before = listing(&dir);
+    let run = fix(&dir, true, &bun_converter(), &FakeRescan::default());
+    let project = first(&run.report);
+    assert_eq!(project.result, Outcome::Failed, "{project:#?}");
+    let reason = project.reason.clone().unwrap_or_default();
+    assert!(
+        reason.contains("bun.lockb.sloppy-joe.bak") && reason.contains("already exists"),
+        "{reason}"
+    );
+    assert_eq!(
+        listing(&dir),
+        before,
+        "the earlier backup is kept as it was"
+    );
 }

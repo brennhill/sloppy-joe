@@ -115,6 +115,16 @@ writes one) was run against the installed tool with the real `check --full` resc
 - **Diff**: the version diff (added, removed, unchanged counts, and each added or removed
   package) is printed before any write; `--write` replaces files atomically and keeps the
   previous lockfile as `<name>.sloppy-joe.bak`.
+- **All-or-nothing write**: before anything in the project changes, every file to replace or
+  remove must be a regular file (or, for a new output, absent) and none of its backup paths may
+  exist in any form. An existing `<name>.sloppy-joe.bak` (file, directory or symlink) is never
+  overwritten and no other name is picked: the write fails, names that path, and asks for it to
+  be moved or removed. Backups and fully written temporary files are then created with
+  exclusive create; only after all of them exist are deletions removed (`bun.lockb` before
+  `bun.lock` appears) and outputs renamed into place. A failure at any step undoes the steps
+  before it, so the working tree is left as it was.
+- The temporary directory is resolved (symlinks followed) before it is compared with the
+  project directory; one that resolves inside the project, or cannot be resolved, is refused.
 
 ### Message step (ships first)
 
