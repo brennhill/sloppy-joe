@@ -54,7 +54,11 @@ pub(crate) fn zip(entries: &[(&str, &[u8], bool)]) -> Vec<u8> {
 fn executable_pth_at_the_wheel_root_is_a_hook() {
     let wheel = zip(&[
         ("pkg/__init__.py", b"", false),
-        ("pkg-1.0-setup.pth", b"import subprocess; subprocess.Popen(['x'])\n", true),
+        (
+            "pkg-1.0-setup.pth",
+            b"import subprocess; subprocess.Popen(['x'])\n",
+            true,
+        ),
     ]);
     let facts = inspect_wheel(&wheel).unwrap();
     assert_eq!(facts.startup_hooks.len(), 1);
@@ -99,14 +103,25 @@ fn pth_inside_a_package_directory_is_ignored() {
 fn data_purelib_and_platlib_files_land_in_site_packages() {
     let wheel = zip(&[
         ("pkg-1.0.data/purelib/evil.pth", b"import os\n", false),
-        ("pkg-1.0.data/platlib/sitecustomize.py", b"print(1)\n", false),
+        (
+            "pkg-1.0.data/platlib/sitecustomize.py",
+            b"print(1)\n",
+            false,
+        ),
         ("pkg-1.0.data/scripts/evil.pth", b"import os\n", false),
     ]);
     let facts = inspect_wheel(&wheel).unwrap();
-    let paths: Vec<_> = facts.startup_hooks.iter().map(|h| h.path.as_str()).collect();
+    let paths: Vec<_> = facts
+        .startup_hooks
+        .iter()
+        .map(|h| h.path.as_str())
+        .collect();
     assert_eq!(
         paths,
-        ["pkg-1.0.data/purelib/evil.pth", "pkg-1.0.data/platlib/sitecustomize.py"]
+        [
+            "pkg-1.0.data/purelib/evil.pth",
+            "pkg-1.0.data/platlib/sitecustomize.py"
+        ]
     );
 }
 
@@ -119,7 +134,12 @@ fn sitecustomize_and_usercustomize_are_hooks_without_reading_them() {
     ]);
     let facts = inspect_wheel(&wheel).unwrap();
     assert_eq!(facts.startup_hooks.len(), 2);
-    assert!(facts.startup_hooks.iter().all(|h| h.kind == HookKind::CustomizeModule));
+    assert!(
+        facts
+            .startup_hooks
+            .iter()
+            .all(|h| h.kind == HookKind::CustomizeModule)
+    );
 }
 
 #[test]
@@ -139,7 +159,10 @@ fn oversize_pth_is_reported_unreadable_not_skipped() {
 
 #[test]
 fn long_lines_are_truncated_and_line_count_capped() {
-    let content = format!("import {}\nimport b\nimport c\nimport d\nimport e\n", "x".repeat(500));
+    let content = format!(
+        "import {}\nimport b\nimport c\nimport d\nimport e\n",
+        "x".repeat(500)
+    );
     let wheel = zip(&[("l.pth", content.as_bytes(), false)]);
     let hook = &inspect_wheel(&wheel).unwrap().startup_hooks[0];
     assert_eq!(hook.code.len(), MAX_SHOWN_LINES);
@@ -157,7 +180,11 @@ fn garbage_and_truncated_archives_are_errors() {
 fn central_directory_pointing_past_the_data_is_an_error() {
     let mut wheel = zip(&[("a.pth", b"import os\n", false)]);
     // Corrupt the central entry's local header offset (last 4 bytes before the name).
-    let at = wheel.windows(4).position(|w| w == [0x50, 0x4b, 0x01, 0x02]).unwrap() + 42;
+    let at = wheel
+        .windows(4)
+        .position(|w| w == [0x50, 0x4b, 0x01, 0x02])
+        .unwrap()
+        + 42;
     wheel[at..at + 4].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
     let facts = inspect_wheel(&wheel).unwrap();
     // The entry is a hook whose content could not be read: reported, never skipped.
@@ -177,10 +204,20 @@ fn zip64_markers_are_refused() {
 #[test]
 fn unknown_compression_method_on_a_pth_is_reported_unreadable() {
     let mut wheel = zip(&[("a.pth", b"import os\n", false)]);
-    let at = wheel.windows(4).position(|w| w == [0x50, 0x4b, 0x01, 0x02]).unwrap() + 10;
+    let at = wheel
+        .windows(4)
+        .position(|w| w == [0x50, 0x4b, 0x01, 0x02])
+        .unwrap()
+        + 10;
     wheel[at..at + 2].copy_from_slice(&99u16.to_le_bytes());
     let facts = inspect_wheel(&wheel).unwrap();
-    assert!(facts.startup_hooks[0].unreadable.as_deref().unwrap().contains("compression"));
+    assert!(
+        facts.startup_hooks[0]
+            .unreadable
+            .as_deref()
+            .unwrap()
+            .contains("compression")
+    );
 }
 
 #[test]

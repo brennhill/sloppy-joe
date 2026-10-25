@@ -25,7 +25,11 @@ pub(crate) fn check_release_cadence(lookup: &MetadataLookup, meta: &PackageMetad
     check_release_cadence_at(lookup, meta, now_epoch() as i64)
 }
 
-fn check_release_cadence_at(lookup: &MetadataLookup, meta: &PackageMetadata, now: i64) -> Vec<Issue> {
+fn check_release_cadence_at(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+    now: i64,
+) -> Vec<Issue> {
     let Some(cadence) = meta.release_cadence.as_ref() else {
         return Vec::new();
     };
@@ -57,7 +61,12 @@ fn check_release_cadence_at(lookup: &MetadataLookup, meta: &PackageMetadata, now
     issues
 }
 
-fn dormant_issue(lookup: &MetadataLookup, meta: &PackageMetadata, version: &str, days: i64) -> Issue {
+fn dormant_issue(
+    lookup: &MetadataLookup,
+    meta: &PackageMetadata,
+    version: &str,
+    days: i64,
+) -> Issue {
     let publisher_changed = matches!(
         (&meta.current_publisher, &meta.previous_publisher),
         (Some(current), Some(previous)) if current != previous
@@ -69,7 +78,11 @@ fn dormant_issue(lookup: &MetadataLookup, meta: &PackageMetadata, version: &str,
     } else {
         None
     };
-    let severity = if reason.is_some() { Severity::Error } else { Severity::Warning };
+    let severity = if reason.is_some() {
+        Severity::Error
+    } else {
+        Severity::Warning
+    };
     let also = reason.map(|r| format!(" and {r}")).unwrap_or_default();
     Issue::new(&lookup.package, super::names::METADATA_DORMANT_RELEASE, severity)
         .message(format!(

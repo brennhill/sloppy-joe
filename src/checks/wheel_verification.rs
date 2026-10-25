@@ -50,8 +50,18 @@ const RECENT_HOURS: u64 = 30 * 24;
 const CACHE_TTL_SECS: u64 = 30 * 24 * 3600;
 /// Hook code containing any of these runs processes or reaches the network.
 const SUSPICIOUS_TOKENS: [&str; 12] = [
-    "subprocess", "os.system", "popen", "exec(", "eval(", "base64", "urllib", "socket", "http",
-    "ctypes", "marshal", "zlib",
+    "subprocess",
+    "os.system",
+    "popen",
+    "exec(",
+    "eval(",
+    "base64",
+    "urllib",
+    "socket",
+    "http",
+    "ctypes",
+    "marshal",
+    "zlib",
 ];
 
 pub(crate) struct WheelVerificationOptions<'a> {
@@ -221,7 +231,10 @@ fn plan_downloads(
     jobs.sort_by(|a, b| (a.0, &a.1, &a.2.filename).cmp(&(b.0, &b.1, &b.2.filename)));
     let overflow = jobs.len().saturating_sub(MAX_WHEEL_FETCHES);
     jobs.truncate(MAX_WHEEL_FETCHES);
-    (jobs.into_iter().map(|(_, _, file)| file).collect(), overflow)
+    (
+        jobs.into_iter().map(|(_, _, file)| file).collect(),
+        overflow,
+    )
 }
 
 fn classify(result: anyhow::Result<Option<WheelFacts>>) -> FileOutcome {
@@ -253,7 +266,11 @@ pub(crate) async fn inspect_python_wheels(
     let (jobs, overflow) = plan_downloads(&units, &disk_cache, &mut outcomes);
     let owners: HashMap<String, String> = units
         .iter()
-        .flat_map(|unit| unit.wheels.iter().map(|f| (f.url.clone(), unit.package.clone())))
+        .flat_map(|unit| {
+            unit.wheels
+                .iter()
+                .map(|f| (f.url.clone(), unit.package.clone()))
+        })
         .collect();
     let fetched: Vec<_> = stream::iter(jobs)
         .map(|file| {
@@ -346,9 +363,10 @@ fn unit_report(unit: &Unit, outcomes: &HashMap<String, FileOutcome>) -> UnitRepo
     let mut seen_hooks = BTreeSet::new();
     for file in &unit.wheels {
         let Some(sha) = file.sha256.as_deref() else {
-            report
-                .problems
-                .insert(format!("PyPI publishes no sha256 digest for {}", file.filename));
+            report.problems.insert(format!(
+                "PyPI publishes no sha256 digest for {}",
+                file.filename
+            ));
             continue;
         };
         match outcomes.get(sha) {
@@ -360,10 +378,14 @@ fn unit_report(unit: &Unit, outcomes: &HashMap<String, FileOutcome>) -> UnitRepo
                 }
             }
             Some(FileOutcome::Integrity(detail)) => {
-                report.integrity.insert(format!("{}: {detail}", file.filename));
+                report
+                    .integrity
+                    .insert(format!("{}: {detail}", file.filename));
             }
             Some(FileOutcome::Failed(reason)) => {
-                report.problems.insert(format!("{}: {reason}", file.filename));
+                report
+                    .problems
+                    .insert(format!("{}: {reason}", file.filename));
             }
             None => report.not_downloaded = true,
         }
@@ -397,10 +419,18 @@ fn label(unit: &Unit) -> String {
 
 fn hook_issue(unit: &Unit, hooks: &[StartupHook]) -> Issue {
     let blocking = unit.priority <= 1 || hooks.iter().any(hook_is_suspicious);
-    let severity = if blocking { Severity::Error } else { Severity::Warning };
+    let severity = if blocking {
+        Severity::Error
+    } else {
+        Severity::Warning
+    };
     let listed: Vec<String> = hooks.iter().take(3).map(describe_hook).collect();
     let more = hooks.len().saturating_sub(3);
-    let suffix = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+    let suffix = if more > 0 {
+        format!(" (+{more} more)")
+    } else {
+        String::new()
+    };
     Issue::new(&unit.package, names::METADATA_PYTHON_STARTUP_HOOK, severity)
         .message(format!(
             "A wheel of '{}' installs code that Python runs at every interpreter start, before any application code: {}{suffix}. Compromised releases (LiteLLM 1.82.8, the Hades campaign) used startup hooks to run without being imported.",

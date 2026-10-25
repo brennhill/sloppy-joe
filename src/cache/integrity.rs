@@ -39,7 +39,10 @@ pub(super) fn verify(path: &Path, content: &[u8]) -> Result<(), String> {
     check_owner(&mac_file)?;
     let recorded = std::fs::read_to_string(&mac_file)
         .map_err(|e| format!("integrity record {} unreadable: {e}", mac_file.display()))?;
-    if !constant_time_eq(recorded.trim().as_bytes(), mac_hex(&key, path, content).as_bytes()) {
+    if !constant_time_eq(
+        recorded.trim().as_bytes(),
+        mac_hex(&key, path, content).as_bytes(),
+    ) {
         return Err("contents do not match their integrity record".to_string());
     }
     Ok(())

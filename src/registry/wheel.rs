@@ -53,12 +53,16 @@ pub struct WheelFacts {
 }
 
 fn u16_at(data: &[u8], at: usize) -> Result<usize> {
-    let bytes = data.get(at..at + 2).ok_or_else(|| anyhow!("truncated zip"))?;
+    let bytes = data
+        .get(at..at + 2)
+        .ok_or_else(|| anyhow!("truncated zip"))?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]) as usize)
 }
 
 fn u32_at(data: &[u8], at: usize) -> Result<u32> {
-    let bytes = data.get(at..at + 4).ok_or_else(|| anyhow!("truncated zip"))?;
+    let bytes = data
+        .get(at..at + 4)
+        .ok_or_else(|| anyhow!("truncated zip"))?;
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 

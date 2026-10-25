@@ -9,7 +9,8 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_dir() -> PathBuf {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("sj-cache-integrity-{}-{}", std::process::id(), id));
+    let dir =
+        std::env::temp_dir().join(format!("sj-cache-integrity-{}-{}", std::process::id(), id));
     std::fs::create_dir_all(&dir).unwrap();
     #[cfg(unix)]
     {
@@ -42,7 +43,10 @@ fn cache_written_by_sloppy_joe_is_trusted() {
     let path = dir.join("osv-cache.json");
     let entry = fresh(&["GHSA-1"]);
     atomic_write_json(&path, &entry);
-    assert!(mac_path(&path).exists(), "every write records its integrity");
+    assert!(
+        mac_path(&path).exists(),
+        "every write records its integrity"
+    );
     assert_eq!(read(&path), Some(entry));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -68,7 +72,11 @@ fn cache_without_integrity_record_is_discarded() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    assert_eq!(read(&path), None, "a planted cache file must never be trusted");
+    assert_eq!(
+        read(&path),
+        None,
+        "a planted cache file must never be trusted"
+    );
     assert!(read_trusted_json::<Entry>(&path).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -99,7 +107,10 @@ fn rewriting_the_cache_refreshes_its_record() {
 #[test]
 fn missing_cache_is_not_an_error() {
     let dir = unique_dir();
-    assert_eq!(read_trusted_json::<Entry>(&dir.join("absent.json")), Ok(None));
+    assert_eq!(
+        read_trusted_json::<Entry>(&dir.join("absent.json")),
+        Ok(None)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

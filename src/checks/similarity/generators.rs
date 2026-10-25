@@ -5,8 +5,8 @@
 mod scopes;
 pub(crate) use scopes::*;
 mod missing_char;
-pub(crate) use missing_char::missing_char_targets;
 use missing_char::MissingCharGen;
+pub(crate) use missing_char::missing_char_targets;
 
 use crate::Ecosystem;
 use std::collections::HashSet;

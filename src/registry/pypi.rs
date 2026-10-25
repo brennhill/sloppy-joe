@@ -127,7 +127,10 @@ pub(crate) fn metadata_from_body(
 
     let selected = match version {
         Some(ver) => super::strip_version_prefix(ver),
-        None => body["info"]["version"].as_str().unwrap_or_default().to_string(),
+        None => body["info"]["version"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     };
     let pypi_release = super::pypi_release::release_from_body(body, &selected);
     if version.is_some() && pypi_release.is_none() {
@@ -194,8 +197,16 @@ mod tests {
         let release = meta.pypi_release.unwrap();
         assert_eq!(release.version, "1.0");
         assert_eq!(release.files[0].sha256.as_deref(), Some("aa"));
-        assert_eq!(meta.latest_version_date.as_deref(), Some("2023-01-01T00:00:00"));
-        assert!(meta.release_cadence.unwrap().previous_release_epoch.is_none());
+        assert_eq!(
+            meta.latest_version_date.as_deref(),
+            Some("2023-01-01T00:00:00")
+        );
+        assert!(
+            meta.release_cadence
+                .unwrap()
+                .previous_release_epoch
+                .is_none()
+        );
     }
 
     #[test]
@@ -223,7 +234,12 @@ mod tests {
     fn current_version_is_used_without_a_request() {
         let meta = metadata_from_body(&body(), None);
         assert_eq!(meta.pypi_release.unwrap().version, "2.0");
-        assert!(meta.release_cadence.unwrap().previous_release_epoch.is_some());
+        assert!(
+            meta.release_cadence
+                .unwrap()
+                .previous_release_epoch
+                .is_some()
+        );
     }
 
     #[test]

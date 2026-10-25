@@ -132,10 +132,7 @@ fn ensure_pnpm_lockfile_version(document: &serde_yaml::Value) -> Result<()> {
         Some(other) => anyhow::bail!(
             "pnpm-lock.yaml lockfileVersion {} is not supported: only '{}' (pnpm 9 and later) is modeled. Fix: regenerate the lockfile with pnpm 9 or later and commit it.",
             crate::report::sanitize_for_terminal(
-                &serde_yaml::to_string(other)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string()
+                serde_yaml::to_string(other).unwrap_or_default().trim()
             ),
             PNPM_LOCKFILE_VERSION
         ),
