@@ -254,7 +254,12 @@ fn a_unicode_path_extra_field_name_is_matched_too() {
     assert_eq!(hooks.len(), 1);
     assert_eq!(hooks[0].path, "evil.pth");
     if let Some(names) = python_zip_names(&wheel) {
-        assert_eq!(names, ["evil.pth"], "Python reads the Unicode Path name");
+        // Older Pythons (3.10 on the CI runner) ignore the extra field and keep the plain name;
+        // 3.12+ installs under the Unicode Path name, which the scanner matches either way.
+        assert!(
+            names == ["evil.pth"] || names == ["readme.txt"],
+            "unexpected names from Python: {names:?}"
+        );
     }
 }
 
