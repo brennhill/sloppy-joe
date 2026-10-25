@@ -141,9 +141,14 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
   hook files are reported, not skipped.
 - Wheel results are cached by sha256 through `cache.rs`; failures are never cached. The cache
   records the inspector format and is discarded when detection widens.
-- The baseline manifest is read with `git cat-file` (no pager, textconv or hooks) after the ref
-  is checked to be a plain ref and to resolve to a commit, then parsed by the project's own
-  manifest parser from a private temporary directory. Only the manifest file is restored.
+- The baseline manifest is read with git plumbing (no pager, textconv or hooks) after the ref
+  is checked to be a plain ref and resolved to one commit id: `git ls-tree -z --full-tree
+  --name-only <id>^{commit} -- <path>` with literal pathspecs decides whether the manifest
+  exists there (no output: absent; exactly the path: present; anything else, or a failed run,
+  blocks), and `git cat-file blob <id>:<path>` reads it. No decision depends on git's message
+  text, which differs between versions (git 2.34 says "Not a valid object name" for a missing
+  path). The manifest is then parsed by the project's own manifest parser from a private
+  temporary directory. Only the manifest file is restored.
 - No new dependencies and no config keys; one CLI flag, `--base-ref`.
 
 ## Scope Boundaries
