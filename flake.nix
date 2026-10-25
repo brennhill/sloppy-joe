@@ -11,7 +11,7 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        version = "2.1.0";
+        version = "2.0.1";
 
         targets = {
           x86_64-linux = {
