@@ -30,7 +30,9 @@ pub(crate) fn parse_pnpm_lock_guarded(content: &str) -> Result<serde_yaml::Value
         .map(serde_yaml::Value::deserialize)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     if documents.len() <= 1 {
-        return Ok(serde_yaml::from_str(content)?);
+        let project: serde_yaml::Value = serde_yaml::from_str(content)?;
+        ensure_pnpm_lockfile_version(&project)?;
+        return Ok(project);
     }
     if documents.len() > MAX_PNPM_LOCK_DOCUMENTS {
         anyhow::bail!(
@@ -39,6 +41,9 @@ pub(crate) fn parse_pnpm_lock_guarded(content: &str) -> Result<serde_yaml::Value
             MAX_PNPM_LOCK_DOCUMENTS
         );
     }
+    documents
+        .iter()
+        .try_for_each(ensure_pnpm_lockfile_version)?;
 
     let mut project = documents.pop().expect("more than one document");
     let has_importers = project
@@ -114,6 +119,30 @@ pub(crate) fn parse_pnpm_lock_guarded(content: &str) -> Result<serde_yaml::Value
         );
     }
     Ok(project)
+}
+
+/// The one pnpm lockfile format the key and graph parsers model (pnpm 9 and later). Older
+/// formats key packages differently (`/name/1.0.0`, `/name@1.0.0`), and pnpm ignores or
+/// rewrites a lockfile whose version it does not know, so anything else would be read wrong.
+pub(crate) const PNPM_LOCKFILE_VERSION: &str = "9.0";
+
+fn ensure_pnpm_lockfile_version(document: &serde_yaml::Value) -> Result<()> {
+    match document.get("lockfileVersion") {
+        Some(serde_yaml::Value::String(version)) if version == PNPM_LOCKFILE_VERSION => Ok(()),
+        Some(other) => anyhow::bail!(
+            "pnpm-lock.yaml lockfileVersion {} is not supported: only '{}' (pnpm 9 and later) is modeled. Fix: regenerate the lockfile with pnpm 9 or later and commit it.",
+            crate::report::sanitize_for_terminal(
+                &serde_yaml::to_string(other)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            ),
+            PNPM_LOCKFILE_VERSION
+        ),
+        None => anyhow::bail!(
+            "pnpm-lock.yaml has no lockfileVersion, so its format is unknown. Fix: regenerate the lockfile with pnpm 9 or later and commit it."
+        ),
+    }
 }
 
 pub(crate) fn parse_yaml_guarded(content: &str) -> Result<serde_yaml::Value> {
