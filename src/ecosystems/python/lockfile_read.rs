@@ -42,26 +42,32 @@ pub(crate) fn read_validated_poetry_lockfile(
         )
     })?;
     let declared_sources = parsers::pyproject_toml::parse_poetry_sources(&spec.manifest_path)?;
-    let profile = active_python_profile(opts);
+    // Source policy and lock proofs cover every environment: a package gated on another
+    // platform is installed there.
+    let (coverage_deps, coverage_profile) =
+        python_lockfile_profile_for(spec, opts, root_extras)?.coverage(deps);
     let source_intents =
         parsers::pyproject_toml::parse_poetry_source_intents_scoped(&spec.manifest_path)?
             .into_iter()
-            .map(|intent| Ok(intent.is_in_scope(&profile)?.then_some(intent.intent)))
+            .map(|intent| {
+                Ok(intent
+                    .is_in_scope(&coverage_profile.environment)?
+                    .then_some(intent.intent))
+            })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-    let lock_profile = active_python_lockfile_profile(opts, root_extras);
     let reachable_packages = crate::lockfiles::python::reachable_package_identities(
         &lockfile,
-        deps,
-        Some(&lock_profile),
+        &coverage_deps,
+        Some(&coverage_profile),
     )?;
     let validation = crate::lockfiles::python::validate_trusted_poetry_lockfile(
         &lockfile,
         &content,
         &pyproject,
-        deps,
+        &coverage_deps,
         &path,
         &reachable_packages,
         // The CI scan gates a release: a lock without artifact hashes is an error, as it is for uv.lock.
@@ -78,9 +84,9 @@ pub(crate) fn read_validated_poetry_lockfile(
     let authorized_sources =
         crate::lockfiles::python::authorized_source_urls_for_reachable_packages(
             &lockfile,
-            deps,
+            &coverage_deps,
             &source_intents,
-            Some(&lock_profile),
+            Some(&coverage_profile),
             &path,
         )?;
     let (used_source_urls, used_source_names) = crate::lockfiles::python::validate_source_policy(
@@ -138,22 +144,32 @@ pub(crate) fn read_validated_uv_lockfile(
         &spec.manifest_path,
         &config.config_key_allow,
     )?;
-    let profile = active_python_profile(opts);
+    // Source policy covers every environment: a package gated on another platform is
+    // installed there.
+    let (coverage_deps, coverage_profile) =
+        python_lockfile_profile_for(spec, opts, root_extras)?.coverage(deps);
     let source_intents =
         parsers::pyproject_toml::parse_uv_source_intents_scoped(&spec.manifest_path)?
             .into_iter()
-            .map(|intent| Ok(intent.is_in_scope(&profile)?.then_some(intent.intent)))
+            .map(|intent| {
+                Ok(intent
+                    .is_in_scope(&coverage_profile.environment)?
+                    .then_some(intent.intent))
+            })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-    let reachable_packages =
-        crate::lockfiles::uv::reachable_package_identities(&lockfile, deps, Some(&lock_profile))?;
+    let reachable_packages = crate::lockfiles::uv::reachable_package_identities(
+        &lockfile,
+        &coverage_deps,
+        Some(&coverage_profile),
+    )?;
     let authorized_sources = crate::lockfiles::uv::authorized_source_urls_for_reachable_packages(
         &lockfile,
-        deps,
+        &coverage_deps,
         &source_intents,
-        Some(&lock_profile),
+        Some(&coverage_profile),
         &path,
     )?;
     let (used_source_urls, used_source_names) = crate::lockfiles::uv::validate_source_policy(

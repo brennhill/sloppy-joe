@@ -55,6 +55,7 @@ fails when a path named here no longer exists, so this page cannot drift silentl
 | A lock entry carries a field the tool honours but the scanner ignores (`mirrors`, extra tuple element) | Closed key schema per lock format; escape hatch is an operator `config_key_allow` | `docs/specs/verification-and-schemas.md`, `src/ecosystems/js/npm_lock_schema.rs`, `src/ecosystems/php/lock_schema.rs`, `src/ecosystems/cargo/lock_schema.rs`, `src/ecosystems/python/lock_schema.rs` |
 | A lock points a package at an attacker's archive | Provenance checks on every entry's source | `src/lockfiles/composer.rs`, `src/lockfiles/pnpm.rs`, `src/lockfiles/yarn/validate.rs` |
 | A skipped line hides a pinned dependency | Unrecognized lines block instead of being skipped | `src/lockfiles/gradle.rs` |
+| A Python dependency gated by a marker that is false on the scanning host (`sys_platform == "win32"`) | Markers only pick the target's versions; source policy and package checks walk every environment, and an undecidable marker counts as true | `src/lockfiles/mod.rs`, `src/ecosystems/python/parse.rs`, `src/parsers/python_scope/marker.rs` |
 
 ### Packages and registries
 

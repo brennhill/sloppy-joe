@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Python: environment markers no longer hide packages. A dependency whose marker is false on the scanning host (or for `--python-platform`/`--python-arch`/`--python-version`) still gets source policy (untrusted or undeclared indexes, unauthorized sources, lock hash proofs) and existence, metadata and vulnerability checks; for Poetry and uv the target only decides which locked version it resolves, and locked packages other environments install are checked like transitive dependencies. Lockfile-less `requirements*.txt` and non-Poetry `pyproject.toml` scan every dependency whatever its marker.
+- Python: a fully hash-locked `requirements.txt` no longer hides `requirements-dev.txt`, `setup.py` or `setup.cfg` beside it; each is scanned as its own project.
 - Guardrails: a second, `syn`-based check of layer direction (`tests/architecture/syn_graph.rs`) runs beside the text scanner; `syn` and `proc-macro2` are dev-dependencies only.
 - Ruby: a `Gemfile.lock` line indented with a tab or another non-space character now blocks. Bundler reads only space-indented entries, so such a line was silently dropped from the scan (a tab-indented transitive gem was never checked). Found by the new metamorphic test, which mutates each fixture lockfile (CRLF, BOM, NUL, lone CR, U+2028, U+0085, VT, FF, tab indentation) and requires the scanner to read the same packages or refuse the file.
 - Gradle: a `gradle.lockfile` line that is not `group:artifact:version=configurations`, `empty=configurations` or a comment now blocks, naming the line, instead of being skipped (a skipped line could hide a pinned dependency from the scan).

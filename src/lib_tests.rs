@@ -516,3 +516,6 @@ mod part18_npm_workspace_members;
 
 #[path = "lib_tests/part19_python_ci_strictness.rs"]
 mod part19_python_ci_strictness;
+
+#[path = "lib_tests/part20_python_marker_coverage.rs"]
+mod part20_python_marker_coverage;

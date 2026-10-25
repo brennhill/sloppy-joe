@@ -108,49 +108,72 @@ pub(crate) fn evaluate_marker_with_extra(
             crate::report::sanitize_for_terminal(marker)
         );
     }
-    expr.evaluate(profile, active_extra)
+    // Undecided counts as true: the dependency stays in scope.
+    Ok(expr.evaluate(profile, active_extra)? != Some(false))
+}
+
+fn names_environment(value: &MarkerValue) -> bool {
+    matches!(value, MarkerValue::Variable(name) if name != "extra")
 }
 
 impl MarkerExpr {
+    /// `None` when the marker cannot be decided: the profile stands for every environment and
+    /// the marker depends on one.
     pub(crate) fn evaluate(
         &self,
         profile: &PythonProfile,
         active_extra: Option<&str>,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         match self {
+            Self::Compare { left, right, .. }
+                if profile.any_environment
+                    && (names_environment(left) || names_environment(right)) =>
+            {
+                Ok(None)
+            }
             Self::Compare { left, op, right } => {
                 let left = resolve_marker_value(left, profile, active_extra)?;
                 let right = resolve_marker_value(right, profile, active_extra)?;
-                Ok(match op {
-                    MarkerOperator::Eq => {
-                        compare_marker_values(&left, &right) == Some(std::cmp::Ordering::Equal)
-                    }
-                    MarkerOperator::NotEq => {
-                        compare_marker_values(&left, &right) != Some(std::cmp::Ordering::Equal)
-                    }
-                    MarkerOperator::Lt => {
-                        compare_marker_values(&left, &right) == Some(std::cmp::Ordering::Less)
-                    }
-                    MarkerOperator::LtEq => compare_marker_values(&left, &right)
-                        .is_some_and(|ordering| ordering != std::cmp::Ordering::Greater),
-                    MarkerOperator::Gt => {
-                        compare_marker_values(&left, &right) == Some(std::cmp::Ordering::Greater)
-                    }
-                    MarkerOperator::GtEq => compare_marker_values(&left, &right)
-                        .is_some_and(|ordering| ordering != std::cmp::Ordering::Less),
-                    MarkerOperator::In => marker_membership(&left, &right),
-                    MarkerOperator::NotIn => !marker_membership(&left, &right),
-                })
+                Ok(Some(compare_with_operator(&left, op, &right)))
             }
-            Self::And(left, right) => {
-                Ok(left.evaluate(profile, active_extra)?
-                    && right.evaluate(profile, active_extra)?)
-            }
-            Self::Or(left, right) => {
-                Ok(left.evaluate(profile, active_extra)?
-                    || right.evaluate(profile, active_extra)?)
-            }
+            Self::And(left, right) => kleene(left, right, false, profile, active_extra),
+            Self::Or(left, right) => kleene(left, right, true, profile, active_extra),
         }
+    }
+}
+
+/// Kleene logic: `settles` decides the pair on its own (`false` for `and`, `true` for `or`);
+/// otherwise an undecided operand leaves the pair undecided.
+fn kleene(
+    left: &MarkerExpr,
+    right: &MarkerExpr,
+    settles: bool,
+    profile: &PythonProfile,
+    active_extra: Option<&str>,
+) -> Result<Option<bool>> {
+    let left = left.evaluate(profile, active_extra)?;
+    if left == Some(settles) {
+        return Ok(left);
+    }
+    let right = right.evaluate(profile, active_extra)?;
+    Ok(match (left, right) {
+        (_, Some(value)) if value == settles => Some(settles),
+        (Some(_), right) => right,
+        (None, _) => None,
+    })
+}
+
+fn compare_with_operator(left: &str, op: &MarkerOperator, right: &str) -> bool {
+    let ordering = compare_marker_values(left, right);
+    match op {
+        MarkerOperator::Eq => ordering == Some(std::cmp::Ordering::Equal),
+        MarkerOperator::NotEq => ordering != Some(std::cmp::Ordering::Equal),
+        MarkerOperator::Lt => ordering == Some(std::cmp::Ordering::Less),
+        MarkerOperator::LtEq => ordering.is_some_and(|o| o != std::cmp::Ordering::Greater),
+        MarkerOperator::Gt => ordering == Some(std::cmp::Ordering::Greater),
+        MarkerOperator::GtEq => ordering.is_some_and(|o| o != std::cmp::Ordering::Less),
+        MarkerOperator::In => marker_membership(left, right),
+        MarkerOperator::NotIn => !marker_membership(left, right),
     }
 }
 

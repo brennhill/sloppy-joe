@@ -80,6 +80,11 @@ pub(crate) struct PythonProfile {
     pub selected_extras: BTreeSet<String>,
     /// The target environment (platform, arch or Python version) was chosen explicitly.
     pub explicit_selection: bool,
+    /// Environment markers are undecided (possibly true) instead of evaluated: the profile
+    /// stands for every platform, arch and Python version the lockfile serves. Groups and extras
+    /// still follow the selection. Used for coverage: source policy and the packages the scan
+    /// checks, so a dependency gated on another environment is never hidden.
+    pub any_environment: bool,
 }
 
 impl PythonScopedDependency {
@@ -159,6 +164,12 @@ impl PythonScopedDependency {
         if !self.runtime_default && self.groups.is_empty() && self.extras.is_empty() {
             return Ok(false);
         }
+        if profile.any_environment {
+            return match &self.marker {
+                Some(marker) => evaluate_marker_for_profile_extras(marker, profile),
+                None => Ok(true),
+            };
+        }
         if let Some(constraint) = &self.python_constraint {
             let version = profile.python_version.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -215,6 +226,15 @@ impl PythonProfile {
             selected_groups: BTreeSet::new(),
             selected_extras: BTreeSet::new(),
             explicit_selection: false,
+            any_environment: false,
+        }
+    }
+
+    /// The same group and extra selection in every environment.
+    pub(crate) fn for_every_environment(&self) -> Self {
+        Self {
+            any_environment: true,
+            ..self.clone()
         }
     }
 
@@ -261,6 +281,7 @@ impl PythonProfile {
             selected_groups: BTreeSet::new(),
             selected_extras: BTreeSet::new(),
             explicit_selection: true,
+            any_environment: false,
         }
     }
 

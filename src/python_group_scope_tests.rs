@@ -285,7 +285,7 @@ lint = ["ruff==0.6.9"]
 }
 
 #[test]
-fn host_environment_markers_still_warn_without_an_explicit_platform() {
+fn a_lockfile_less_pyproject_scans_every_environment_without_a_profile_warning() {
     let dir = unique_dir();
     std::fs::write(
         dir.join("pyproject.toml"),
@@ -301,12 +301,17 @@ dependencies = ["requests==2.31.0", "pywin32==306; sys_platform == 'win32'"]
     let warnings =
         preflight_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default())
             .unwrap();
+    // Without a lockfile the markers decide nothing: every environment's packages are scanned,
+    // so there is no host evaluation to warn about.
     assert!(
-        warnings.iter().any(|issue| {
+        !warnings.iter().any(|issue| {
             issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
         }),
         "{warnings:#?}"
     );
+    let projects =
+        parse_project_inputs_with_options(&dir, &specs, &config, &ScanOptions::default()).unwrap();
+    assert!(projects[0].deps.iter().any(|dep| dep.name == "pywin32"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

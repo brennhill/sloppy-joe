@@ -89,7 +89,8 @@ impl EcosystemSupport for Python {
         if let Some(data) = flavor(project.spec.kind).lockfile_data(config, opts, project, deps)? {
             return Ok(data);
         }
-        let profile = active_python_lockfile_profile(opts, &project.python_root_extras);
+        let profile =
+            python_lockfile_profile_for(&project.spec, opts, &project.python_root_extras)?;
         let mut data = common::read_lockfile_data(project, deps, Some(&profile))?;
         if project.deps.is_empty() && python_manifest_declares_no_dependencies(&project.spec)? {
             data.scan_all_locked_packages()?;

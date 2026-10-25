@@ -135,6 +135,7 @@ pub(crate) fn active_python_lockfile_profile(
     lockfiles::PythonLockfileProfile {
         environment: active_python_profile(opts),
         root_extras: root_extras.clone(),
+        coverage_roots: Vec::new(),
     }
 }
 
@@ -145,11 +146,11 @@ pub(crate) fn implicit_runtime_profile_warning(spec: &ProjectInputSpec) -> Issue
         Severity::Warning,
     )
     .message(format!(
-        "Python dependencies in '{}' use environment markers, but no target environment was provided. sloppy-joe evaluated those markers for the current host; every dependency group and extra was still included.",
+        "Python dependencies in '{}' use environment markers, but no target environment was provided. sloppy-joe resolved locked versions for the current host; packages for every other environment, group and extra were still checked.",
         spec.manifest_path.display()
     ))
     .fix(
-        "For CI or build gating, pass the target environment with `--python-platform`, `--python-arch`, or `--python-version` so sloppy-joe evaluates markers for the environment your install uses.",
+        "For CI or build gating, pass the target environment with `--python-platform`, `--python-arch`, or `--python-version` so sloppy-joe resolves versions for the environment your install uses.",
     )
 }
 
