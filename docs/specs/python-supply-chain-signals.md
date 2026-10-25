@@ -31,16 +31,36 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 
 ## Acceptance Criteria
 
-- `metadata/python-startup-hook`: a wheel of the resolved PyPI version installs a `*.pth` with
-  a line starting `import ` or `import<TAB>`, or `sitecustomize`/`usercustomize`, at the top of
-  `site-packages` (wheel root or `<dist>.data/purelib|platlib/`). Error when the version or
-  package is under 30 days old, the name is similarity-flagged, the hook is a customize module,
-  unreadable, or its code spawns processes or reaches the network; otherwise a warning
-  (`--paranoid` inspecting an established version).
+- `metadata/python-startup-hook`: a wheel of the resolved PyPI version installs, at the top of
+  `site-packages`, a `*.pth` with a line starting `import ` or `import<TAB>` (an import hook) or
+  any other non-comment line (a path hook: `sitecustomize` is searched in the directories it
+  adds, which another wheel can fill), a `*.start` file with an entry point (Python 3.15), or
+  `sitecustomize`/`usercustomize` in any importable form (`.py`, `.pyc`, extension module,
+  package directory, `__pycache__`). Error when the version or package is under 30 days old,
+  the name is similarity-flagged, the hook is a customize module, unreadable, or its code spawns
+  processes or reaches the network; otherwise a warning (`--paranoid` inspecting an established
+  version).
+- Member names are resolved as installers resolve them: `.`, `..` and empty segments are
+  dropped, `\` is both a literal character (POSIX) and a separator (Windows), Windows trailing
+  dots and spaces are trimmed, and a member lands at the top of `site-packages` from the wheel
+  root, `<dist>.data/purelib|platlib/`, or any `<dist>.data/<key>/.../site-packages/` (or
+  `dist-packages/`). A name that is absolute, climbs above its directory, contains `:`, or has
+  a segment Windows reduces to nothing makes the wheel unverified, never skipped.
+- `.pth`/`.start` lines are read every way a supported Python reads them: a leading UTF-8 BOM
+  is dropped, lines split on every `str.splitlines` break (lone `\r`, `\x0b`, `\x0c`,
+  `\x1c`-`\x1e`, NEL, U+2028, U+2029), the file is decoded as UTF-8 and as Latin-1 (the locale
+  fallback), and a line counts before or after Python 3.15's `str.strip`. A test checks each
+  case against the local `python3`'s `site.addsitedir` when one is installed.
 - A hook marks the version as running install-time code, so `metadata/install-script-risk`
   and the dormancy escalation see it.
 - `metadata/wheel-unverified` (blocking): a selected wheel could not be fetched, hashed or read,
   has no published sha256, or exceeded a limit (32 wheels per version, 60 downloads per scan).
+  A wheel is also unreadable when installers could read its zip structure differently: any
+  zip64 locator, record, marker or extra field; a central directory that does not end where the
+  end-of-central-directory record starts or whose size disagrees with its entries; data after
+  that record or a second one; multi-disk counts; a local header naming a different file or data
+  running into the central directory; a NUL in a name; an encrypted entry. An Info-ZIP Unicode
+  Path name (used by Python 3.12+ `zipfile`) is matched alongside the recorded name.
 - `metadata/wheel-integrity-mismatch` (blocking): downloaded bytes differ from PyPI's sha256.
 - `metadata/lockfile-integrity-mismatch` / `-unverified` for `poetry.lock`, `uv.lock` and
   `Pipfile.lock`: every recorded sha256 of a public-PyPI entry must be one PyPI publishes for
@@ -69,7 +89,8 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 - Wheels are downloaded into memory only, from `files.pythonhosted.org` over HTTPS with no
   redirects, hashed before parsing, never extracted. Zip64, unknown compression and oversize
   hook files are reported, not skipped.
-- Wheel results are cached by sha256 through `cache.rs`; failures are never cached.
+- Wheel results are cached by sha256 through `cache.rs`; failures are never cached. The cache
+  records the inspector format and is discarded when detection widens.
 - The baseline manifest is read with `git cat-file` (no pager, textconv or hooks) after the ref
   is checked to be a plain ref and to resolve to a commit, then parsed by the project's own
   manifest parser from a private temporary directory. Only the manifest file is restored.
@@ -77,7 +98,8 @@ those guesses. See `docs/research/2026-10-23-supply-chain-coverage.md`.
 
 ## Scope Boundaries
 
-- Not covered: sdist `setup.py`, hook code beyond the listed tokens, `.pth` path entries,
+- Not covered: sdist `setup.py`, hook code beyond the listed tokens, `<dist>.data/data/`
+  files that overwrite the standard library of a non-virtual-environment install,
   Yarn Berry/other non-PyPI lock hashes, requirements.txt `--hash`, MCP name similarity,
   attestation status. Baseline comparison covers direct manifest dependencies only, and a
   manifest that needs sibling files (`-r other.txt`) cannot be compared.
