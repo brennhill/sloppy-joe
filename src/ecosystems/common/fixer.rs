@@ -171,6 +171,9 @@ pub(crate) struct Recipe {
     pub(crate) old_snapshot: OldSnapshot,
     /// Output text that means the tool failed even when it exits 0.
     pub(crate) failure_markers: &'static [&'static str],
+    /// Whether a manifest pin the old lockfile records at another version stops the fix (the
+    /// lockfile is a resolution). Off for go.sum, which is a checksum list, not a resolution.
+    pub(crate) pins_must_match: bool,
 }
 
 impl Recipe {
@@ -189,6 +192,7 @@ impl Recipe {
             snapshot: lockfile_data_snapshot,
             old_snapshot: OldSnapshot::SameAsCandidate,
             failure_markers: &[],
+            pins_must_match: true,
         }
     }
 
@@ -232,6 +236,9 @@ pub(crate) fn literal_env(
 
 /// A plugin's answer: one verdict per problem, and the recipe when every problem is fixable.
 pub(crate) struct FixPlan {
+    /// The problems the verdicts belong to: the engine's, plus any the plugin found while
+    /// checking its preconditions.
+    pub(crate) problems: Vec<Problem>,
     pub(crate) verdicts: Vec<Verdict>,
     pub(crate) recipe: Option<Recipe>,
 }
@@ -367,6 +374,7 @@ pub(crate) fn plan(
         built = Some(recipe);
     }
     Ok(FixPlan {
+        problems: problems.to_vec(),
         verdicts: verdicts.into_iter().map(|v| v.expect("every problem has a verdict")).collect(),
         recipe: built,
     })
@@ -405,7 +413,35 @@ pub(crate) fn lockfile_data_snapshot(spec: &ProjectInputSpec) -> Result<Snapshot
 
 fn direct_dependencies(deps: &[Dependency]) -> Vec<(String, Option<String>)> {
     deps.iter()
-        .map(|dep| (dep.package_name().to_string(), dep.exact_version()))
+        .map(|dep| {
+            let name = if dep.ecosystem == Ecosystem::PyPI {
+                lockfiles::python_hashes::normalize_name(dep.package_name())
+            } else {
+                dep.package_name().to_string()
+            };
+            (name, dep.exact_version())
+        })
+        .collect()
+}
+
+/// Direct dependencies the manifest pins to a version the lockfile does not lock, although it
+/// locks the package: which side is right is a decision, never a regeneration.
+pub(crate) fn pin_mismatches(snapshot: &Snapshot) -> Vec<String> {
+    snapshot
+        .direct
+        .iter()
+        .filter_map(|(name, version)| {
+            let version = version.as_ref()?;
+            let locked: Vec<&str> = snapshot
+                .packages
+                .iter()
+                .filter(|package| package.name == *name)
+                .map(|package| package.version.as_str())
+                .collect();
+            (!locked.is_empty() && !locked.contains(&version.as_str())).then(|| {
+                format!("the manifest pins {name}@{version}, the lockfile locks {}", locked.join(", "))
+            })
+        })
         .collect()
 }
 

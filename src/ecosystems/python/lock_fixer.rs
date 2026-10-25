@@ -154,12 +154,27 @@ fn uv_preconditions(
     {
         return Err("the project's metadata is dynamic, so uv would have to build it".to_string());
     }
-    for (path, what) in [
-        (&["tool", "uv", "sources"][..], "tool.uv.sources (git, path or URL sources)"),
-        (&["tool", "uv", "workspace"][..], "a uv workspace, whose members are not copied"),
-    ] {
-        if table_path(pyproject, path).is_some() {
-            return Err(format!("pyproject.toml declares {what}"));
+    if table_path(pyproject, &["tool", "uv", "workspace"]).is_some() {
+        return Err("pyproject.toml declares a uv workspace, whose members are not copied".to_string());
+    }
+    // An index source only picks a registry; git, path, URL and workspace sources make uv clone,
+    // read or build code outside the registry.
+    let sources = table_path(pyproject, &["tool", "uv", "sources"]).and_then(|v| v.as_table());
+    for (name, source) in sources.into_iter().flatten() {
+        let entries: Vec<&toml::Value> = match source {
+            toml::Value::Array(list) => list.iter().collect(),
+            other => vec![other],
+        };
+        let index_only = entries.iter().all(|entry| {
+            entry
+                .as_table()
+                .is_some_and(|table| table.keys().all(|key| key == "index" || key == "marker"))
+        });
+        if !index_only {
+            return Err(format!(
+                "tool.uv.sources gives '{}' a git, path, URL or workspace source",
+                crate::report::sanitize_for_terminal(name)
+            ));
         }
     }
     let Some(lock) = old_lock else {

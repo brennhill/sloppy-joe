@@ -38,6 +38,7 @@ fn recipe(
     );
     recipe.outputs = vec![go_sum.clone()];
     recipe.snapshot = go_sum_snapshot;
+    recipe.pins_must_match = false;
     recipe.env = go_env();
     Ok(Ok(Some(
         recipe.inputs_if_present([spec.manifest_path.clone(), go_sum]),

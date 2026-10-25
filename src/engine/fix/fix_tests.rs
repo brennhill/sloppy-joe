@@ -148,7 +148,12 @@ pub(super) struct Run {
     pub(super) scratch_parent: PathBuf,
 }
 
-pub(super) fn fix(dir: &std::path::Path, write: bool, runner: &FakeRunner, rescan: &FakeRescan) -> Run {
+pub(super) fn try_fix(
+    dir: &std::path::Path,
+    write: bool,
+    runner: &FakeRunner,
+    rescan: &FakeRescan,
+) -> (Result<FixReport>, PathBuf) {
     let scratch_parent = unique_dir("scratch");
     let request = FixRequest {
         dir: dir.to_path_buf(),
@@ -160,12 +165,16 @@ pub(super) fn fix(dir: &std::path::Path, write: bool, runner: &FakeRunner, resca
     };
     let report = tokio::runtime::Runtime::new()
         .unwrap()
-        .block_on(fix_lockfiles(&request, runner, rescan))
-        .unwrap();
+        .block_on(fix_lockfiles(&request, runner, rescan));
     let left: Vec<_> = std::fs::read_dir(&scratch_parent).unwrap().flatten().collect();
     assert!(left.is_empty(), "the scratch directory is removed on every path: {left:?}");
+    (report, scratch_parent)
+}
+
+pub(super) fn fix(dir: &std::path::Path, write: bool, runner: &FakeRunner, rescan: &FakeRescan) -> Run {
+    let (report, scratch_parent) = try_fix(dir, write, runner, rescan);
     Run {
-        report,
+        report: report.unwrap(),
         scratch_parent,
     }
 }

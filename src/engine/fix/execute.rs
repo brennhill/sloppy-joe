@@ -291,6 +291,17 @@ impl Execution<'_> {
         } else {
             Some(self.old_snapshot(layout, tool, program.as_deref(), &env).map_err(refuse)?)
         };
+        if let Some((snapshot, _)) = &old
+            && self.recipe.pins_must_match
+        {
+            let mismatches = crate::ecosystems::fixer::pin_mismatches(snapshot);
+            if !mismatches.is_empty() {
+                return Err(refuse(format!(
+                    "{}: which side is right is a decision, not a format fix",
+                    preview(&mismatches)
+                )));
+            }
+        }
         if let Some(program) = &program {
             let cwd = layout.in_work(&self.recipe.workdir).map_err(fail)?;
             let output = tool.run(program, &self.recipe.args, &cwd, &env, OUTPUT_CAP).map_err(fail)?;

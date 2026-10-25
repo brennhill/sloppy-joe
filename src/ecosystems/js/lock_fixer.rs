@@ -66,8 +66,38 @@ pub(super) fn lockfile_fixer(
     spec: &ProjectInputSpec,
     problems: &[Problem],
 ) -> Result<FixPlan> {
-    let problems = fixer::attach_issue_remedies(problems, js_lockfile_remedy(spec));
+    let mut problems = fixer::attach_issue_remedies(problems, js_lockfile_remedy(spec));
+    problems.extend(rewrite_problems(ctx, spec, &problems));
     fixer::plan(&problems, |remedy| recipe(ctx, spec, remedy))
+}
+
+/// Preflight stops at the first error, so a missing lockfile hides the dependency rewrites the
+/// scan would block next. Every manifest of the workspace is checked here, so a rewrite is a
+/// human problem before any tool runs.
+fn rewrite_problems(ctx: &FixCtx<'_>, spec: &ProjectInputSpec, known: &[Problem]) -> Vec<Problem> {
+    let Some(binding) = &spec.js_binding else {
+        return Vec::new();
+    };
+    let root = binding.root_manifest_path.parent().unwrap_or_else(|| spec.project_dir());
+    let Ok(manifests) = workspace_manifests(ctx, root) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for path in manifests {
+        let shown = ProjectInputSpec {
+            manifest_path: path.clone(),
+            ..spec.clone()
+        };
+        let checked = read_npm_manifest_value(&path)
+            .and_then(|manifest| validate_js_manifest_security_policy(&shown, &manifest));
+        if let Err(error) = checked {
+            let problem = Problem::from_error(&error);
+            if !known.iter().any(|existing| existing.message == problem.message) {
+                found.push(problem);
+            }
+        }
+    }
+    found
 }
 
 fn recipe(

@@ -76,7 +76,8 @@ async fn fix_lockfiles(
                 continue;
             }
         };
-        project.problems = problems
+        project.problems = plan
+            .problems
             .iter()
             .zip(&plan.verdicts)
             .map(|(problem, verdict)| PlannedProblem::new(problem, verdict))
@@ -125,3 +126,11 @@ async fn fix_lockfiles(
 #[cfg(test)]
 #[path = "fix_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "catalog_js_tests.rs"]
+mod catalog_js_tests;
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
