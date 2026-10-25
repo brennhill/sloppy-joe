@@ -480,3 +480,34 @@ fn pnpm_entries_with_invalid_package_names_block() {
     assert!(pnpm::parse_all_from_value(&lock).is_err());
     assert!(pnpm::parse_all_from_value_for_importer(&lock, ".").is_err());
 }
+
+/// pnpm installs a `file:` directory package's dependencies; they are reached through it.
+const PNPM_FILE_DEP_LOCK: &str = "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      a:\n        specifier: file:vendor/a\n        version: file:vendor/a\npackages:\n  a@file:vendor/a:\n    resolution: {directory: vendor/a, type: directory}\n  b@file:vendor/b:\n    resolution: {directory: vendor/b, type: directory}\n  lodash@4.17.20:\n    resolution: {integrity: sha512-a}\n  is-number@7.0.0:\n    resolution: {integrity: sha512-a}\n  ghost@1.0.0:\n    resolution: {integrity: sha512-a}\nsnapshots:\n  a@file:vendor/a:\n    dependencies:\n      lodash: 4.17.20\n      b: file:vendor/b\n  b@file:vendor/b:\n    dependencies:\n      is-number: 7.0.0\n  lodash@4.17.20: {}\n  is-number@7.0.0: {}\n  ghost@1.0.0: {}\n";
+
+#[test]
+fn pnpm_file_dependency_subtree_is_scanned_not_called_stale() {
+    let lock: serde_yaml::Value = serde_yaml::from_str(PNPM_FILE_DEP_LOCK).unwrap();
+    let (deps, issues) =
+        pnpm::parse_for_importer_with_orphans(&lock, ".", Path::new("pnpm-lock.yaml")).unwrap();
+    let names = deps.iter().map(|dep| dep.name.as_str()).collect::<Vec<_>>();
+    assert!(names.contains(&"lodash"), "{names:?}");
+    assert!(
+        names.contains(&"is-number"),
+        "a file: package reached through another: {names:?}"
+    );
+    assert!(
+        !names.contains(&"a") && !names.contains(&"b"),
+        "the directories are repository source, not registry packages: {names:?}"
+    );
+    assert!(!names.contains(&"ghost"), "{names:?}");
+    let orphan = issues
+        .iter()
+        .find(|issue| issue.check == ORPHAN_CHECK)
+        .expect("the unreached entry is still flagged");
+    assert!(orphan.message.contains("ghost@1.0.0"), "{}", orphan.message);
+    assert!(
+        !orphan.message.contains("lodash") && !orphan.message.contains("vendor/a"),
+        "{}",
+        orphan.message
+    );
+}

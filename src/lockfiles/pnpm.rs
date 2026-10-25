@@ -431,16 +431,19 @@ fn normalized_pnpm_reference(reference: &str, fallback_name: &str) -> Option<Str
     Some(base.to_string())
 }
 
+/// The locked package a dependency edge points at. A `file:` directory or tarball is a locked
+/// package (`name@file:path`) whose own dependencies pnpm installs, so the walk follows it;
+/// `link:` and `workspace:` point at importers, which are walked as importers.
 fn normalized_pnpm_dependency(name: &str, reference: &str) -> Option<(String, String)> {
     let reference = reference.trim();
-    if reference.is_empty()
-        || reference.starts_with("link:")
-        || reference.starts_with("file:")
-        || reference.starts_with("workspace:")
+    if reference.is_empty() || reference.starts_with("link:") || reference.starts_with("workspace:")
     {
         return None;
     }
     let base = reference.split('(').next().unwrap_or(reference).trim();
+    if base.starts_with("file:") {
+        return Some((name.to_string(), base.to_string()));
+    }
     if let Some(alias_spec) = base.strip_prefix("npm:")
         && let Some((actual_name, version)) = split_npm_package_and_spec(alias_spec)
     {
