@@ -131,10 +131,18 @@ jobs:
           args: --no-cache
 
       # No version input: exercises the `latest` resolution against the newest published release.
-      - name: Check own dependencies with the default (latest) version
+      # A dependency-free project keeps this step off the registries (the scan above covers them).
+      - name: Stage dependency-free project
+        run: |
+          mkdir -p /tmp/sloppy-joe-latest-check
+          printf '[package]\nname = "mini"\nversion = "0.1.0"\nedition = "2021"\n' > /tmp/sloppy-joe-latest-check/Cargo.toml
+          printf 'version = 4\n\n[[package]]\nname = "mini"\nversion = "0.1.0"\n' > /tmp/sloppy-joe-latest-check/Cargo.lock
+          echo '{}' > /tmp/sloppy-joe-latest-check.json
+
+      - name: Check a dependency-free project with the default (latest) version
         uses: ./
         with:
-          config: /tmp/sloppy-joe-self-check.json
-          dir: /tmp/sloppy-joe-self-check
+          config: /tmp/sloppy-joe-latest-check.json
+          dir: /tmp/sloppy-joe-latest-check
           type: cargo
           args: --no-cache
