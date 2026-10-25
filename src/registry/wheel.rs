@@ -11,10 +11,14 @@
 //! cannot model (zip64, unknown compression, bad offsets, too many entries) is
 //! an error, not a pass.
 
+mod layout;
+mod pth;
+
 use super::npm_tarball::{IntegrityMismatch, download_tarball, hex};
 use super::pypi_release::PypiFile;
 use anyhow::{Result, anyhow, bail};
 use flate2::read::DeflateDecoder;
+use layout::Role;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 
@@ -26,7 +30,6 @@ const MAX_ENTRIES: usize = 100_000;
 const MAX_HOOK_BYTES: u64 = 256 * 1024;
 /// Executable lines kept per hook for the report.
 const MAX_SHOWN_LINES: usize = 3;
-const MAX_SHOWN_LINE_CHARS: usize = 160;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HookKind {
@@ -34,6 +37,13 @@ pub enum HookKind {
     PthImport,
     /// `sitecustomize` / `usercustomize`, imported by `site` at startup.
     CustomizeModule,
+    /// A `*.pth` file with only directory lines: `site` appends them to
+    /// `sys.path` before importing `sitecustomize`, so a customize module in
+    /// one of them (from this wheel or another) runs at startup.
+    PthPath,
+    /// A `*.start` file (Python 3.15, PEP 829) whose `pkg.mod:callable`
+    /// entry points `site` calls at startup.
+    StartEntryPoint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,84 +156,73 @@ fn entry_bytes(data: &[u8], entry: &Entry) -> Result<Vec<u8>> {
     }
 }
 
-/// Where in `site-packages` a wheel member lands at the top level, if it does:
-/// the member name itself for root files, and the file name for
-/// `<dist>.data/purelib|platlib/<file>`.
-fn site_packages_root_file(name: &str) -> Option<&str> {
-    if !name.contains('/') {
-        return Some(name);
+/// The strongest startup role `name` takes, if any. Directory entries
+/// (`.../`) install nothing.
+fn strongest_role(name: &str) -> Result<Option<Role>> {
+    if name.ends_with('/') {
+        return Ok(None);
     }
-    let parts: Vec<&str> = name.split('/').collect();
-    match parts.as_slice() {
-        [data, "purelib" | "platlib", file] if data.ends_with(".data") && !file.is_empty() => {
-            Some(file)
+    Ok(layout::roles(name)?.into_iter().max())
+}
+
+fn hook(path: &str, kind: HookKind, mut code: Vec<String>) -> Option<StartupHook> {
+    if code.is_empty() && kind != HookKind::CustomizeModule {
+        return None;
+    }
+    code.truncate(MAX_SHOWN_LINES);
+    Some(StartupHook {
+        path: path.to_string(),
+        kind,
+        code,
+        unreadable: None,
+    })
+}
+
+/// The hook a member installs: customize modules are hooks unread; `.pth`
+/// and `.start` files are hooks when a line acts at startup, or when they
+/// cannot be read (reported, never skipped).
+fn member_hook(data: &[u8], entry: &Entry, path: &str, role: Role) -> Option<StartupHook> {
+    let content = match role {
+        Role::Customize => return hook(path, HookKind::CustomizeModule, Vec::new()),
+        Role::Pth | Role::Start => entry_bytes(data, entry),
+    };
+    let unreadable_kind = match role {
+        Role::Start => HookKind::StartEntryPoint,
+        _ => HookKind::PthImport,
+    };
+    let content = match content {
+        Ok(content) => content,
+        Err(err) => {
+            return Some(StartupHook {
+                path: path.to_string(),
+                kind: unreadable_kind,
+                code: Vec::new(),
+                unreadable: Some(format!("{err:#}")),
+            });
         }
-        _ => None,
+    };
+    if role == Role::Start {
+        return hook(
+            path,
+            HookKind::StartEntryPoint,
+            pth::start_entries(&content),
+        );
     }
-}
-
-fn hook_kind(file: &str) -> Option<HookKind> {
-    let lower = file.to_ascii_lowercase();
-    if lower.ends_with(".pth") {
-        return Some(HookKind::PthImport);
+    let lines = pth::pth_lines(&content);
+    if lines.imports.is_empty() {
+        hook(path, HookKind::PthPath, lines.paths)
+    } else {
+        hook(path, HookKind::PthImport, lines.imports)
     }
-    matches!(
-        lower.as_str(),
-        "sitecustomize.py" | "usercustomize.py" | "sitecustomize.pyc" | "usercustomize.pyc"
-    )
-    .then_some(HookKind::CustomizeModule)
-}
-
-/// Lines `site.py` executes: `import` followed by a space or tab.
-fn executable_lines(content: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(content)
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| line.starts_with("import ") || line.starts_with("import\t"))
-        .map(|line| line.chars().take(MAX_SHOWN_LINE_CHARS).collect())
-        .collect()
 }
 
 pub fn inspect_wheel(data: &[u8]) -> Result<WheelFacts> {
     let mut hooks = Vec::new();
     for entry in central_entries(data)? {
-        if entry.name.ends_with('/') {
-            continue;
-        }
-        let Some(file) = site_packages_root_file(&entry.name) else {
+        let Some(role) = strongest_role(&entry.name)? else {
             continue;
         };
-        let Some(kind) = hook_kind(file) else {
-            continue;
-        };
-        let hook = match (kind, entry_bytes(data, &entry)) {
-            (HookKind::CustomizeModule, _) => StartupHook {
-                path: entry.name.clone(),
-                kind,
-                code: Vec::new(),
-                unreadable: None,
-            },
-            (HookKind::PthImport, Ok(content)) => {
-                let mut code = executable_lines(&content);
-                if code.is_empty() {
-                    continue;
-                }
-                code.truncate(MAX_SHOWN_LINES);
-                StartupHook {
-                    path: entry.name.clone(),
-                    kind,
-                    code,
-                    unreadable: None,
-                }
-            }
-            (HookKind::PthImport, Err(err)) => StartupHook {
-                path: entry.name.clone(),
-                kind,
-                code: Vec::new(),
-                unreadable: Some(format!("{err:#}")),
-            },
-        };
-        hooks.push(hook);
+        hooks.extend(member_hook(data, &entry, &entry.name, role));
     }
     Ok(WheelFacts {
         startup_hooks: hooks,
@@ -305,3 +304,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "wheel_fetch_tests.rs"]
 mod fetch_tests;
+
+#[cfg(test)]
+#[path = "wheel_layout_tests.rs"]
+mod layout_tests;

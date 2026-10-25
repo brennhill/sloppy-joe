@@ -1,7 +1,8 @@
 //! Inspect the PyPI wheels of selected versions for Python startup hooks.
 //!
-//! A wheel can install `*.pth` lines starting with `import`, or a
-//! `sitecustomize`/`usercustomize` module, at the top of `site-packages`.
+//! A wheel can install `*.pth` lines starting with `import`, `*.pth` directory
+//! lines (searched for `sitecustomize`), `*.start` entry points (Python 3.15),
+//! or a `sitecustomize`/`usercustomize` module, at the top of `site-packages`.
 //! Python runs those at every interpreter start, before any application
 //! code, so a compromised release does not need an install script or an
 //! import of the package. Metadata cannot show this; the wheel must be read
@@ -88,8 +89,16 @@ fn cache_path(cache_dir: Option<&Path>) -> PathBuf {
         .join("python-wheel-hooks.json")
 }
 
+/// Version of what `registry::wheel::inspect_wheel` detects. A cache written by
+/// an older inspector is discarded: a wheel it read as clean may hold a hook
+/// the current one finds. Bump whenever detection widens.
+const WHEEL_CACHE_FORMAT: u32 = 2;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WheelCache {
+    /// Absent (0) in caches written before the format was recorded.
+    #[serde(default)]
+    format: u32,
     timestamp: u64,
     entries: BTreeMap<String, WheelCacheEntry>,
 }
@@ -190,8 +199,10 @@ fn load_cache(path: &Path, no_cache: bool, now: u64) -> WheelCache {
         WheelCache::default()
     } else {
         cache::read_json_cache(path, CACHE_TTL_SECS, |c: &WheelCache| c.timestamp)
+            .filter(|c: &WheelCache| c.format == WHEEL_CACHE_FORMAT)
             .unwrap_or_default()
     };
+    loaded.format = WHEEL_CACHE_FORMAT;
     loaded.entries.retain(|_, entry| {
         now.checked_sub(entry.checked_at)
             .is_some_and(|age| age < CACHE_TTL_SECS)
@@ -407,9 +418,15 @@ fn describe_hook(hook: &StartupHook) -> String {
     if let Some(reason) = &hook.unreadable {
         return format!("{path} (unreadable: {})", sanitize_for_terminal(reason));
     }
-    match hook.code.first() {
-        Some(line) => format!("{path}: {}", sanitize_for_terminal(line)),
-        None => format!("{path} (runs at every interpreter start)"),
+    let Some(line) = hook.code.first().map(|l| sanitize_for_terminal(l)) else {
+        return format!("{path} (runs at every interpreter start)");
+    };
+    match hook.kind {
+        HookKind::PthPath => format!(
+            "{path} adds '{line}' to sys.path, where a sitecustomize/usercustomize module runs at startup"
+        ),
+        HookKind::StartEntryPoint => format!("{path} calls {line} at startup"),
+        HookKind::PthImport | HookKind::CustomizeModule => format!("{path}: {line}"),
     }
 }
 

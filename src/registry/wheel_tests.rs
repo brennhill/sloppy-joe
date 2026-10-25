@@ -77,9 +77,12 @@ fn stored_and_deflated_entries_are_both_read() {
 }
 
 #[test]
-fn path_only_pth_is_not_a_hook() {
+fn path_only_pth_is_a_path_hook_not_an_import_hook() {
     let wheel = zip(&[("vendor.pth", b"# comment\n/opt/lib\nimportant_dir\n", false)]);
-    assert!(inspect_wheel(&wheel).unwrap().startup_hooks.is_empty());
+    let hooks = inspect_wheel(&wheel).unwrap().startup_hooks;
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0].kind, HookKind::PthPath);
+    assert_eq!(hooks[0].code, ["/opt/lib", "important_dir"]);
 }
 
 #[test]
@@ -89,8 +92,19 @@ fn import_followed_by_tab_counts_and_importlib_prefix_does_not() {
         ("nope.pth", b"importlib_stuff\n", false),
     ]);
     let facts = inspect_wheel(&wheel).unwrap();
-    assert_eq!(facts.startup_hooks.len(), 1);
-    assert_eq!(facts.startup_hooks[0].path, "tab.pth");
+    let kinds: Vec<_> = facts
+        .startup_hooks
+        .iter()
+        .map(|h| (h.path.as_str(), h.kind))
+        .collect();
+    // `importlib_stuff` is not executed; site appends it to sys.path instead.
+    assert_eq!(
+        kinds,
+        [
+            ("tab.pth", HookKind::PthImport),
+            ("nope.pth", HookKind::PthPath)
+        ]
+    );
 }
 
 #[test]
@@ -166,7 +180,7 @@ fn long_lines_are_truncated_and_line_count_capped() {
     let wheel = zip(&[("l.pth", content.as_bytes(), false)]);
     let hook = &inspect_wheel(&wheel).unwrap().startup_hooks[0];
     assert_eq!(hook.code.len(), MAX_SHOWN_LINES);
-    assert_eq!(hook.code[0].chars().count(), MAX_SHOWN_LINE_CHARS);
+    assert_eq!(hook.code[0].chars().count(), pth::MAX_SHOWN_LINE_CHARS);
 }
 
 #[test]

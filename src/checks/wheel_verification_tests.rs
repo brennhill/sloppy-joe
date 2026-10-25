@@ -457,3 +457,48 @@ async fn non_pypi_and_unresolved_lookups_are_ignored() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn results_cached_by_an_older_inspector_are_discarded() {
+    // A wheel the old inspector read as clean (e.g. `./x.pth`, missed before the
+    // path fix) must be inspected again, not trusted for the rest of its TTL.
+    let dir = temp_cache();
+    let stale = WheelCache {
+        format: WHEEL_CACHE_FORMAT - 1,
+        timestamp: cache::now_epoch(),
+        entries: BTreeMap::from([(
+            "aa".to_string(),
+            WheelCacheEntry {
+                checked_at: cache::now_epoch(),
+                facts: clean(),
+            },
+        )]),
+    };
+    cache::atomic_write_json(&cache_path(Some(&dir)), &stale);
+    let registry = FakeRegistry::new(vec![(
+        "aa",
+        Outcome::Facts(with_hook("./x.pth", "import os")),
+    )]);
+    let mut lookups = [lookup("p", &["aa"], YOUNG, OLD)];
+    let issues = run(&registry, &mut lookups, &[], false, Some(&dir)).await;
+    assert_eq!(registry.calls(), ["aa"]);
+    assert_eq!(issues[0].check, "metadata/python-startup-hook");
+}
+
+#[test]
+fn path_and_start_hooks_are_described_by_what_they_do() {
+    let path_hook = StartupHook {
+        path: "x.pth".into(),
+        kind: HookKind::PthPath,
+        code: vec!["shared_dir".into()],
+        unreadable: None,
+    };
+    assert!(describe_hook(&path_hook).contains("adds 'shared_dir' to sys.path"));
+    let start = StartupHook {
+        path: "x.start".into(),
+        kind: HookKind::StartEntryPoint,
+        code: vec!["pkg.boot:run".into()],
+        unreadable: None,
+    };
+    assert!(describe_hook(&start).contains("calls pkg.boot:run"));
+}
