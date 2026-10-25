@@ -511,3 +511,76 @@ fn pnpm_file_dependency_subtree_is_scanned_not_called_stale() {
         orphan.message
     );
 }
+
+const BERRY_INLINE_MANIFEST: &str =
+    r#"{"name":"app","packageManager":"yarn@4.5.0","dependencies":{"left-pad":"1.3.0"}}"#;
+
+fn berry_inline_lock(dependencies: &str) -> String {
+    format!(
+        "__metadata:\n  version: 8\n  cacheKey: 10c0\n\n\"app@workspace:.\":\n  version: 0.0.0-use.local\n  resolution: \"app@workspace:.\"\n  dependencies:\n    left-pad: \"npm:1.3.0\"\n  languageName: unknown\n  linkType: soft\n\n\"is-number@npm:7.0.0\":\n  version: 7.0.0\n  resolution: \"is-number@npm:7.0.0\"\n  checksum: 10c0/a\n  languageName: node\n  linkType: hard\n\n\"@s/x@npm:1.0.0\":\n  version: 1.0.0\n  resolution: \"@s/x@npm:1.0.0\"\n  checksum: 10c0/a\n  languageName: node\n  linkType: hard\n\n\"left-pad@npm:1.3.0\":\n  version: 1.3.0\n  resolution: \"left-pad@npm:1.3.0\"\n  dependencies: {dependencies}\n  checksum: 10c0/a\n  languageName: node\n  linkType: hard\n"
+    )
+}
+
+#[test]
+fn berry_inline_dependency_maps_are_walked_like_block_maps() {
+    for inline in [
+        r#"{ is-number: "npm:7.0.0", "@s/x": "npm:1.0.0" }"#,
+        r#"{"is-number":"npm:7.0.0","@s/x":'npm:1.0.0',}"#,
+        r#"{ is-number: npm:7.0.0, '@s/x': npm:1.0.0 }"#,
+    ] {
+        let lock = yarn_project(BERRY_INLINE_MANIFEST, &berry_inline_lock(inline))
+            .unwrap_or_else(|err| panic!("{inline}: {err}"));
+        let names = scanned(&lock);
+        assert!(
+            names.contains(&"is-number".to_string()),
+            "{inline}: {names:?}"
+        );
+        assert!(names.contains(&"@s/x".to_string()), "{inline}: {names:?}");
+        assert!(
+            orphan_issue(&lock).is_none(),
+            "{inline}: {:?}",
+            lock.resolution.issues
+        );
+    }
+    let lock = yarn_project(BERRY_INLINE_MANIFEST, &berry_inline_lock("{}")).unwrap();
+    assert!(
+        orphan_issue(&lock).is_some_and(|issue| issue.message.contains("is-number@7.0.0")),
+        "an empty inline map reaches nothing: {:?}",
+        lock.resolution.issues
+    );
+}
+
+#[test]
+fn yarn_yaml_constructs_the_line_parser_does_not_model_block() {
+    for value in [
+        "[is-number]",
+        "&deps",
+        "*deps",
+        "!!map",
+        "|",
+        ">",
+        "# hidden",
+        "%x",
+        "@x",
+        "- a",
+        "{ is-number: { nested: x } }",
+        "{ is-number: \"npm:7.0.0\"",
+        "{ is-number: npm:7.0.0 } # c",
+        "{is-number:npm:7.0.0}",
+        "{ is-number: }",
+        "{ is-number: \"npm:\\u0037.0.0\" }",
+        "{ is-number: npm:7.0.0,, x: y }",
+    ] {
+        let lock = berry_inline_lock(value);
+        assert!(
+            yarn_project(BERRY_INLINE_MANIFEST, &lock).is_err(),
+            "dependencies: {value} must block"
+        );
+    }
+    let nested = berry_inline_lock("\n    is-number: *anchor");
+    assert!(yarn_project(BERRY_INLINE_MANIFEST, &nested).is_err());
+    let nested = berry_inline_lock("\n    is-number: { a: b }");
+    assert!(yarn_project(BERRY_INLINE_MANIFEST, &nested).is_err());
+    let control = berry_inline_lock("\n    is-number: \"npm:7.0.0\"\n    \"@s/x\": npm:1.0.0");
+    assert!(yarn_project(BERRY_INLINE_MANIFEST, &control).is_ok());
+}
