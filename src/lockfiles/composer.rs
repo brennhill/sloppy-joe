@@ -23,12 +23,13 @@ pub(super) fn resolve_from_value_with_mode(
     deps: &[Dependency],
     mode: ResolutionMode,
 ) -> Result<ResolutionResult> {
-    let packages = extract_packages(parsed);
+    let packages = extract_versions(parsed);
     let mut result = ResolutionResult::default();
 
     for dep in deps {
         match packages.get(&dep.name) {
-            Some(version) => {
+            Some(versions) => {
+                let version = locked_version_for(dep, versions, mode);
                 if let Some(exact_manifest) = dep.exact_version()
                     && exact_manifest != *version
                 {
@@ -63,7 +64,7 @@ pub(super) fn resolve_from_value_with_mode(
 }
 
 pub(super) fn parse_all_from_value(parsed: &serde_json::Value) -> Result<Vec<Dependency>> {
-    Ok(extract_packages(parsed)
+    Ok(extract_entries(parsed)
         .into_iter()
         .map(|(name, version)| Dependency {
             name,
@@ -179,8 +180,36 @@ pub(super) fn resolve(project_dir: &Path, deps: &[Dependency]) -> Result<Resolut
     resolve_from_value(&parsed, deps)
 }
 
-fn extract_packages(parsed: &serde_json::Value) -> std::collections::HashMap<String, String> {
-    let mut packages = std::collections::HashMap::new();
+/// Every locked version of each package, the `packages` (production) entry first.
+fn extract_versions(parsed: &serde_json::Value) -> std::collections::HashMap<String, Vec<String>> {
+    let mut packages: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (name, version) in extract_entries(parsed) {
+        packages.entry(name).or_default().push(version);
+    }
+    packages
+}
+
+/// The locked version `dep` is checked at. A package listed in both `packages` and
+/// `packages-dev` is a production dependency, so a direct dependency resolves to its
+/// `packages` version. A full scan lists every locked entry as its own dependency, so each
+/// resolves to the entry it came from.
+fn locked_version_for<'a>(
+    dep: &Dependency,
+    versions: &'a [String],
+    mode: ResolutionMode,
+) -> &'a String {
+    let own_entry = (mode == ResolutionMode::Transitive)
+        .then(|| dep.exact_version())
+        .flatten()
+        .and_then(|exact| versions.iter().find(|version| **version == exact));
+    own_entry.unwrap_or(&versions[0])
+}
+
+/// Every locked `(name, version)`, `packages` before `packages-dev`. Composer never lists one
+/// package in both sections; when a lock does, both versions are kept so both are checked.
+fn extract_entries(parsed: &serde_json::Value) -> Vec<(String, String)> {
+    let mut packages: Vec<(String, String)> = Vec::new();
 
     for section in ["packages", "packages-dev"] {
         let Some(entries) = parsed.get(section).and_then(|value| value.as_array()) else {
@@ -197,7 +226,10 @@ fn extract_packages(parsed: &serde_json::Value) -> std::collections::HashMap<Str
             let Some(version) = entry.get("version").and_then(|value| value.as_str()) else {
                 continue;
             };
-            packages.insert(name.to_string(), version.to_string());
+            let entry = (name.to_string(), version.to_string());
+            if !packages.contains(&entry) {
+                packages.push(entry);
+            }
         }
     }
 
@@ -291,5 +323,87 @@ mod provenance_tests {
                 "{dist} {source}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+
+    /// `guzzlehttp/psr7` locked at 1.8.3 in `packages` and 2.6.2 in `packages-dev`.
+    fn both_sections() -> serde_json::Value {
+        serde_json::json!({
+            "packages": [{"name": "guzzlehttp/psr7", "version": "1.8.3"}],
+            "packages-dev": [
+                {"name": "guzzlehttp/psr7", "version": "2.6.2"},
+                {"name": "phpunit/phpunit", "version": "10.0.0"}
+            ]
+        })
+    }
+
+    fn php(name: &str, version: Option<&str>) -> Dependency {
+        Dependency {
+            name: name.to_string(),
+            version: version.map(str::to_string),
+            ecosystem: crate::Ecosystem::Php,
+            actual_name: None,
+        }
+    }
+
+    #[test]
+    fn a_package_in_both_sections_resolves_to_its_production_version() {
+        for mode in [ResolutionMode::Direct, ResolutionMode::Transitive] {
+            let dep = php("guzzlehttp/psr7", Some("1.8.3"));
+            let result =
+                resolve_from_value_with_mode(&both_sections(), &[dep.clone()], mode).unwrap();
+            assert_eq!(result.exact_version(&dep), Some("1.8.3"));
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+        }
+    }
+
+    #[test]
+    fn a_direct_pin_to_the_dev_version_does_not_hide_the_production_one() {
+        let dep = php("guzzlehttp/psr7", Some("2.6.2"));
+        let result =
+            resolve_from_value_with_mode(&both_sections(), &[dep.clone()], ResolutionMode::Direct)
+                .unwrap();
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.check == crate::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC),
+            "{:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn a_full_scan_checks_each_locked_entry_at_its_own_version() {
+        let deps = parse_all_from_value(&both_sections()).unwrap();
+        let result =
+            resolve_from_value_with_mode(&both_sections(), &deps, ResolutionMode::Transitive)
+                .unwrap();
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        for dep in &deps {
+            assert_eq!(result.exact_version(dep), dep.version.as_deref(), "{dep:?}");
+        }
+    }
+
+    #[test]
+    fn every_locked_version_of_a_package_in_both_sections_is_listed() {
+        let mut all: Vec<(String, Option<String>)> = parse_all_from_value(&both_sections())
+            .unwrap()
+            .into_iter()
+            .map(|dep| (dep.name, dep.version))
+            .collect();
+        all.sort();
+        assert_eq!(
+            all,
+            [
+                ("guzzlehttp/psr7".to_string(), Some("1.8.3".to_string())),
+                ("guzzlehttp/psr7".to_string(), Some("2.6.2".to_string())),
+                ("phpunit/phpunit".to_string(), Some("10.0.0".to_string())),
+            ]
+        );
     }
 }

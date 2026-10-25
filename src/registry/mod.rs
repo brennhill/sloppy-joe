@@ -75,6 +75,10 @@ pub struct PackageMetadata {
     pub pypi_release: Option<pypi_release::PypiRelease>,
     /// Release timing around the selected version (PyPI).
     pub release_cadence: Option<cadence::ReleaseCadence>,
+    /// Every spelling of the package id the registry publishes, sorted, when
+    /// it differs from how a manifest may write it (NuGet ids keep their
+    /// publisher's casing; OSV matches them exactly). Empty elsewhere.
+    pub registry_ids: Vec<String>,
 }
 
 #[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.

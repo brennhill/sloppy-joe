@@ -1,5 +1,7 @@
 use super::*;
 
+mod solution;
+
 pub(super) struct Dotnet;
 
 #[async_trait::async_trait]
@@ -81,6 +83,7 @@ impl EcosystemSupport for Dotnet {
             parsers::csproj::reject_packages_config(path)?;
             return Ok(None);
         }
+        solution::check_unparsed_msbuild_input(path)?;
         Ok(parsers::csproj::is_project_file(path).then_some(ProjectInputKind::Dotnet))
     }
 

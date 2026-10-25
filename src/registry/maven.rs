@@ -68,40 +68,117 @@ async fn central_metadata(
 ) -> Result<Option<super::PackageMetadata>> {
     let name = format!("{group}:{artifact}");
     let artifact_url = central_artifact_url(base, group, artifact)?;
+    let Some(listing) = central_listing(client, &artifact_url, &name).await? else {
+        return Ok(None);
+    };
     let version = match version {
         Some(version) => version.to_string(),
         None => {
-            let resp =
-                super::retry_get(client, &format!("{artifact_url}/maven-metadata.xml")).await?;
-            if super::check_metadata_status(resp.status(), "Maven Central", &name)?.is_none() {
-                return Ok(None);
-            }
-            let body = resp.text().await?;
-            let Some(version) = xml_tag(&body, "release").or_else(|| xml_tag(&body, "latest"))
+            let Some(version) =
+                xml_tag(&listing, "release").or_else(|| xml_tag(&listing, "latest"))
             else {
                 return Ok(None);
             };
             version
         }
     };
-    if !central_segment_ok(&version) {
+    let Some(latest_version_date) =
+        pom_date(client, &artifact_url, artifact, &version, &name).await?
+    else {
+        return Ok(None);
+    };
+    let created = created_from_listing(client, &artifact_url, artifact, &listing, &name).await?;
+    Ok(Some(super::PackageMetadata {
+        created: Some(created),
+        latest_version_date,
+        ..Default::default()
+    }))
+}
+
+/// `maven-metadata.xml` of an artifact; `None` when Central does not have it.
+async fn central_listing(
+    client: &reqwest::Client,
+    artifact_url: &str,
+    name: &str,
+) -> Result<Option<String>> {
+    let resp = super::retry_get(client, &format!("{artifact_url}/maven-metadata.xml")).await?;
+    if super::check_metadata_status(resp.status(), "Maven Central", name)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(resp.text().await?))
+}
+
+/// The `Last-Modified` date of a version's POM. Outer `None`: the POM is not on Central.
+async fn pom_date(
+    client: &reqwest::Client,
+    artifact_url: &str,
+    artifact: &str,
+    version: &str,
+    name: &str,
+) -> Result<Option<Option<String>>> {
+    if !central_segment_ok(version) {
         anyhow::bail!("invalid Maven version for a Central lookup: '{version}'");
     }
     let pom_url = format!("{artifact_url}/{version}/{artifact}-{version}.pom");
     let resp = client.head(&pom_url).send().await?;
-    if super::check_metadata_status(resp.status(), "Maven Central", &name)?.is_none() {
+    if super::check_metadata_status(resp.status(), "Maven Central", name)?.is_none() {
         return Ok(None);
     }
-    let latest_version_date = resp
-        .headers()
-        .get(reqwest::header::LAST_MODIFIED)
-        .and_then(|value| value.to_str().ok())
-        .and_then(http_date_to_epoch_millis)
-        .and_then(crate::cache::epoch_millis_to_iso8601);
-    Ok(Some(super::PackageMetadata {
-        latest_version_date,
-        ..Default::default()
-    }))
+    Ok(Some(
+        resp.headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|value| value.to_str().ok())
+            .and_then(http_date_to_epoch_millis)
+            .and_then(crate::cache::epoch_millis_to_iso8601),
+    ))
+}
+
+/// The first version `maven-metadata.xml` lists under `<versions>` (Central lists them in
+/// the order they were deployed).
+fn first_listed_version(listing: &str) -> Option<String> {
+    let start = listing.find("<versions>")?;
+    xml_tag(&listing[start..], "version")
+}
+
+/// When the artifact was first published: the POM date of its first listed version. An
+/// artifact whose first publish date cannot be read is an error, never "old enough".
+async fn created_from_listing(
+    client: &reqwest::Client,
+    artifact_url: &str,
+    artifact: &str,
+    listing: &str,
+    name: &str,
+) -> Result<String> {
+    let first = first_listed_version(listing).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Maven Central lists no versions for '{name}'; its first publish date is unknown"
+        )
+    })?;
+    pom_date(client, artifact_url, artifact, &first, name)
+        .await?
+        .flatten()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Maven Central has no publish date for the first version '{first}' of '{name}'"
+            )
+        })
+}
+
+/// First publish date of an artifact on Central (see [`created_from_listing`]).
+async fn central_created(
+    client: &reqwest::Client,
+    base: &str,
+    group: &str,
+    artifact: &str,
+) -> Result<String> {
+    let name = format!("{group}:{artifact}");
+    let artifact_url = central_artifact_url(base, group, artifact)?;
+    let listing = central_listing(client, &artifact_url, &name)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("Maven Central has no maven-metadata.xml for '{name}'; its first publish date is unknown")
+        })?;
+    created_from_listing(client, &artifact_url, artifact, &listing, &name).await
 }
 
 fn xml_tag(body: &str, tag: &str) -> Option<String> {
@@ -224,8 +301,10 @@ impl super::RegistryMetadata for MavenRegistry {
         let latest_version_date = doc["timestamp"]
             .as_i64()
             .and_then(crate::cache::epoch_millis_to_iso8601);
+        let created = central_created(&self.client, CENTRAL_BASE, group, artifact).await?;
 
         Ok(Some(super::PackageMetadata {
+            created: Some(created),
             latest_version_date,
             ..Default::default()
         }))
@@ -326,17 +405,95 @@ mod tests {
         origin
     }
 
+    fn ok_body(body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    const DEMO_LISTING: &str = "<metadata><versioning><release>1.2.3</release><versions><version>1.0.0</version><version>1.2.3</version></versions></versioning></metadata>";
+    const POM_2021: &str = "HTTP/1.1 200 OK\r\nLast-Modified: Sat, 13 Feb 2021 16:31:54 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const POM_2019: &str = "HTTP/1.1 200 OK\r\nLast-Modified: Tue, 01 Jan 2019 00:00:00 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn central_metadata_reports_the_first_publish_date() {
+        let origin = serve_central(vec![
+            (
+                "/org/example/demo/maven-metadata.xml",
+                ok_body(DEMO_LISTING),
+            ),
+            ("/org/example/demo/1.2.3/demo-1.2.3.pom", POM_2021),
+            ("/org/example/demo/1.0.0/demo-1.0.0.pom", POM_2019),
+        ])
+        .await;
+        let client = crate::registry::http_client();
+        let metadata = central_metadata(&client, &origin, "org.example", "demo", Some("1.2.3"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.created.as_deref(), Some("2019-01-01T00:00:00Z"));
+        assert_eq!(
+            central_created(&client, &origin, "org.example", "demo")
+                .await
+                .unwrap(),
+            "2019-01-01T00:00:00Z"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_first_publish_date_fails_closed() {
+        let origin = serve_central(vec![
+            (
+                "/org/example/nolist/maven-metadata.xml",
+                ok_body("<metadata><versioning><release>1.2.3</release></versioning></metadata>"),
+            ),
+            ("/org/example/nolist/1.2.3/nolist-1.2.3.pom", POM_2021),
+            (
+                "/org/example/nodate/maven-metadata.xml",
+                ok_body("<metadata><versioning><versions><version>1.0.0</version></versions></versioning></metadata>"),
+            ),
+            (
+                "/org/example/nodate/1.0.0/nodate-1.0.0.pom",
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ),
+        ])
+        .await;
+        let client = crate::registry::http_client();
+        for (artifact, version) in [("nolist", "1.2.3"), ("nodate", "1.0.0")] {
+            let metadata =
+                central_metadata(&client, &origin, "org.example", artifact, Some(version)).await;
+            assert!(metadata.is_err(), "{artifact}: {metadata:?}");
+            assert!(
+                central_created(&client, &origin, "org.example", artifact)
+                    .await
+                    .is_err(),
+                "{artifact}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_listed_version_reads_the_versions_list() {
+        assert_eq!(first_listed_version(DEMO_LISTING).as_deref(), Some("1.0.0"));
+        assert_eq!(
+            first_listed_version("<metadata><version>9</version></metadata>"),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn central_fallback_answers_existence_and_publication_date() {
         let origin = serve_central(vec![
             (
                 "/org/example/demo/maven-metadata.xml",
-                "HTTP/1.1 200 OK\r\nContent-Length: 70\r\nConnection: close\r\n\r\n<metadata><versioning><release>1.2.3</release></versioning></metadata>",
+                ok_body(DEMO_LISTING),
             ),
-            (
-                "/org/example/demo/1.2.3/demo-1.2.3.pom",
-                "HTTP/1.1 200 OK\r\nLast-Modified: Sat, 13 Feb 2021 16:31:54 GMT\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            ),
+            ("/org/example/demo/1.2.3/demo-1.2.3.pom", POM_2021),
+            ("/org/example/demo/1.0.0/demo-1.0.0.pom", POM_2019),
         ])
         .await;
         let client = crate::registry::http_client();

@@ -343,6 +343,8 @@ pub(crate) async fn implementation_advisory_issues(
         osv_client,
         &artifacts,
         &resolution,
+        // Maven coordinates are matched as written; no registry spellings.
+        &[],
         cache_path,
     )
     .await?;

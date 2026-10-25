@@ -396,9 +396,10 @@ pub(crate) fn load_repo_visible_cargo_config_rewrites(
     let canonical_manifest_dir = std::fs::canonicalize(manifest_dir)
         .map_err(|err| anyhow::anyhow!("Failed to inspect {}: {}", manifest_dir.display(), err))?;
     let trusted_root = cargo_trusted_scope_root(scan_root, manifest_path, config)?;
+    let repo_root = cargo_config_repo_root(&trusted_root)?;
     let mut rewrites = CargoConfigRewrites::default();
 
-    let mut ancestors = ancestor_dirs_inclusive(&canonical_manifest_dir, &trusted_root)?;
+    let mut ancestors = ancestor_dirs_inclusive(&canonical_manifest_dir, &repo_root)?;
     ancestors.reverse();
     for ancestor in ancestors {
         for config_name in ["config.toml", "config"] {
@@ -413,6 +414,32 @@ pub(crate) fn load_repo_visible_cargo_config_rewrites(
     }
 
     Ok(rewrites)
+}
+
+/// Cargo reads `.cargo/config.toml` in every directory from where it runs up to the filesystem
+/// root. Those inside the repository (up to its git root, even above the scan root) are
+/// repo-visible; the scan root itself stands in for the repository when there is no checkout.
+fn cargo_config_repo_root(trusted_root: &std::path::Path) -> Result<std::path::PathBuf> {
+    let git_root = crate::cache::find_git_root(trusted_root).map_err(anyhow::Error::msg)?;
+    Ok(git_root
+        .filter(|git_root| trusted_root.starts_with(git_root))
+        .unwrap_or_else(|| trusted_root.to_path_buf()))
+}
+
+/// Directories above the repository whose `.cargo` config Cargo also reads, outermost
+/// first. `CARGO_HOME` is loaded separately, so its directory is left out.
+fn cargo_config_dirs_above_repo(
+    repo_root: &std::path::Path,
+    cargo_home: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = repo_root
+        .ancestors()
+        .skip(1)
+        .filter(|dir| cargo_home != Some(dir.join(".cargo").as_path()))
+        .map(std::path::Path::to_path_buf)
+        .collect();
+    dirs.reverse();
+    dirs
 }
 
 pub(crate) fn host_local_cargo_home() -> Option<std::path::PathBuf> {
@@ -481,16 +508,21 @@ pub(crate) fn load_effective_cargo_config_rewrites_inner(
 ) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
     let mut rewrites = load_repo_visible_cargo_config_rewrites(scan_root, manifest_path, config)?;
     let mut warnings = Vec::new();
-    if let Some(cargo_home) = cargo_home_override
+    let cargo_home = cargo_home_override
         .map(std::path::Path::to_path_buf)
-        .or_else(host_local_cargo_home)
-    {
+        .or_else(host_local_cargo_home);
+    let repo_root =
+        cargo_config_repo_root(&cargo_trusted_scope_root(scan_root, manifest_path, config)?)?;
+    let host_dirs = cargo_config_dirs_above_repo(&repo_root, cargo_home.as_deref())
+        .into_iter()
+        .map(|dir| dir.join(".cargo"));
+    for cargo_dir in host_dirs.chain(cargo_home) {
         let (host_rewrites, host_warnings) =
-            load_host_local_cargo_config_rewrites_from_home(&cargo_home, config)?;
+            load_host_local_cargo_config_rewrites_from_home(&cargo_dir, config)?;
         ensure_additive_cargo_config_rewrites(
             &rewrites,
             &host_rewrites,
-            &cargo_home.join("config.toml"),
+            &cargo_dir.join("config.toml"),
         )?;
         merge_cargo_config_rewrites(&mut rewrites, host_rewrites);
         warnings.extend(host_warnings);
@@ -529,3 +561,7 @@ pub(crate) fn cargo_host_local_config_rewrites_for_test(
 ) -> Result<(CargoConfigRewrites, Vec<Issue>)> {
     load_host_local_cargo_config_rewrites_from_home(&home_dir.join(".cargo"), config)
 }
+
+#[cfg(test)]
+#[path = "config_file_tests.rs"]
+mod tests;
