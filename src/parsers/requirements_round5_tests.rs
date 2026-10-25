@@ -101,3 +101,51 @@ fn a_latin1_next_line_byte_cannot_hide_a_requirement() {
     assert!(parse(&dir).is_err());
     cleanup(&dir);
 }
+
+fn scoped(content: &str) -> Vec<PythonScopedDependency> {
+    let dir = setup_test_dir("req-scoped", "requirements.txt", content);
+    let deps = parse_scoped_file(&dir.join("requirements.txt"), &dir).unwrap();
+    cleanup(&dir);
+    deps
+}
+
+#[test]
+fn a_comment_starts_after_any_python_whitespace_like_pip() {
+    // pip strips `(^|\s+)#.*$` with Python's `\s`, which also matches U+001F and NBSP. The
+    // marker after the `#` is part of the comment, so pip installs the package everywhere.
+    for separator in ['\u{1f}', '\u{a0}', '\t', ' '] {
+        let deps = scoped(&format!(
+            "evil-pkg==1.0{separator}#; sys_platform == \"win32\"\n"
+        ));
+        assert_eq!(deps.len(), 1, "{separator:?}");
+        assert_eq!(deps[0].dependency.name, "evil-pkg", "{separator:?}");
+        assert_eq!(
+            deps[0].dependency.version.as_deref(),
+            Some("==1.0"),
+            "{separator:?}"
+        );
+        assert!(
+            deps[0].marker.is_none(),
+            "{separator:?}: {:?}",
+            deps[0].marker
+        );
+    }
+}
+
+#[test]
+fn a_hash_inside_quotes_still_starts_a_comment_like_pip() {
+    // pip's comment pattern ignores quotes, so it reads the marker only up to ` #`.
+    let deps = scoped("evil-pkg==1.0 ; python_version >= '3' or 'a #' == 'b'\n");
+    assert_eq!(
+        deps[0].marker.as_deref(),
+        Some("python_version >= '3' or 'a")
+    );
+}
+
+#[test]
+fn a_comment_line_indented_with_python_whitespace_does_not_continue() {
+    // `\u{1f}# note \` is a comment line for pip (its trailing backslash is not a continuation).
+    let deps = scoped("\u{1f}# note \\\nevil-pkg==1.0\n");
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].dependency.name, "evil-pkg");
+}

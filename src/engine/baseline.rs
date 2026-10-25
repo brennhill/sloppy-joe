@@ -56,7 +56,9 @@ fn manifest_at_ref(root: &Path, base_ref: &str, relative: &str) -> Result<Option
     let commit = format!("{base_ref}^{{commit}}");
     let verified = git(root, &["rev-parse", "--verify", "--quiet", &commit])?;
     if !verified.status.success() {
-        bail!("git cannot resolve --base-ref {base_ref:?} to a commit (a shallow clone may lack it)");
+        bail!(
+            "git cannot resolve --base-ref {base_ref:?} to a commit (a shallow clone may lack it)"
+        );
     }
     let object = format!("{base_ref}:{relative}");
     let blob = git(root, &["cat-file", "blob", &object])?;
@@ -70,7 +72,10 @@ fn manifest_at_ref(root: &Path, base_ref: &str, relative: &str) -> Result<Option
     if stderr.contains("does not exist") || stderr.contains("exists on disk, but not in") {
         return Ok(None);
     }
-    bail!("git could not read {relative} at {base_ref}: {}", stderr.trim())
+    bail!(
+        "git could not read {relative} at {base_ref}: {}",
+        stderr.trim()
+    )
 }
 
 struct TempDir(PathBuf);
@@ -81,7 +86,8 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("sloppy-joe-base-{}-{nanos}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("sloppy-joe-base-{}-{nanos}", std::process::id()));
         std::fs::create_dir(&path)?;
         #[cfg(unix)]
         {
@@ -98,9 +104,17 @@ impl Drop for TempDir {
     }
 }
 
-fn baseline_keys(spec: &ProjectInputSpec, base_ref: &str) -> Result<Option<HashSet<String>>, BaselineError> {
-    let manifest = spec.manifest_path.canonicalize().map_err(|e| BaselineError::Unusable(e.into()))?;
-    let parent = manifest.parent().ok_or_else(|| BaselineError::Unusable(anyhow!("manifest has no directory")))?;
+fn baseline_keys(
+    spec: &ProjectInputSpec,
+    base_ref: &str,
+) -> Result<Option<HashSet<String>>, BaselineError> {
+    let manifest = spec
+        .manifest_path
+        .canonicalize()
+        .map_err(|e| BaselineError::Unusable(e.into()))?;
+    let parent = manifest
+        .parent()
+        .ok_or_else(|| BaselineError::Unusable(anyhow!("manifest has no directory")))?;
     let root = crate::cache::find_git_root(parent)
         .map_err(|e| BaselineError::Unusable(anyhow!(e)))?
         .ok_or_else(|| BaselineError::Unusable(anyhow!("--base-ref needs a git repository")))?;
@@ -109,11 +123,15 @@ fn baseline_keys(spec: &ProjectInputSpec, base_ref: &str) -> Result<Option<HashS
         .map_err(|e| BaselineError::Unusable(e.into()))?
         .to_string_lossy()
         .replace('\\', "/");
-    let Some(bytes) = manifest_at_ref(&root, base_ref, &relative).map_err(BaselineError::Unusable)? else {
+    let Some(bytes) =
+        manifest_at_ref(&root, base_ref, &relative).map_err(BaselineError::Unusable)?
+    else {
         return Ok(None);
     };
     let dir = TempDir::create().map_err(BaselineError::Unusable)?;
-    let file_name = manifest.file_name().ok_or_else(|| BaselineError::Unusable(anyhow!("manifest has no file name")))?;
+    let file_name = manifest
+        .file_name()
+        .ok_or_else(|| BaselineError::Unusable(anyhow!("manifest has no file name")))?;
     let restored = dir.0.join(file_name);
     std::fs::write(&restored, bytes).map_err(|e| BaselineError::Unusable(e.into()))?;
     let mut baseline_spec = spec.clone();

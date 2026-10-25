@@ -111,7 +111,7 @@ fn parse_scoped_file_inner(
     let mut deps = Vec::new();
 
     for entry in logical_requirement_lines(&content)? {
-        let line = strip_inline_comment(&entry).trim();
+        let line = trim_python_whitespace(strip_inline_comment(&entry));
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -168,7 +168,7 @@ fn classify_trust_inner(
     let mut trusted = true;
 
     for entry in logical_requirement_lines(&content)? {
-        let line = strip_inline_comment(&entry).trim();
+        let line = trim_python_whitespace(strip_inline_comment(&entry));
         if line.is_empty() {
             continue;
         }
@@ -225,7 +225,7 @@ fn collect_source_provenance_inner(
     let mut provenance = RequirementsSourceProvenance::default();
 
     for entry in logical_requirement_lines(&content)? {
-        let line = strip_inline_comment(&entry).trim();
+        let line = trim_python_whitespace(strip_inline_comment(&entry));
         if line.is_empty() {
             continue;
         }
@@ -310,14 +310,17 @@ fn logical_requirement_lines(content: &str) -> Result<Vec<String>> {
     let mut finish = |parts: &mut Vec<String>| {
         let joined = parts.concat();
         parts.clear();
-        let joined = joined.trim();
+        let joined = trim_python_whitespace(&joined);
         if !joined.is_empty() && !joined.starts_with('#') {
             entries.push(joined.to_string());
         }
     };
 
     for raw_line in strip_utf8_bom(content).lines() {
-        let is_comment = raw_line.trim_start().starts_with('#');
+        // pip's `(^|\s+)#` with Python whitespace: such a line is a comment even if it ends in `\`.
+        let is_comment = raw_line
+            .trim_start_matches(is_python_whitespace)
+            .starts_with('#');
         if raw_line.ends_with('\\') && !is_comment {
             parts.push(raw_line.trim_matches('\\').to_string());
             continue;

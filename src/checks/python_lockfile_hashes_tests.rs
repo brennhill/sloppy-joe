@@ -144,7 +144,15 @@ fn only_non_sha256_hashes_are_unverified() {
 #[test]
 fn release_without_published_digests_is_unverified_not_passed() {
     let mut l = lookup("requests", &["aa"]);
-    for file in &mut l.metadata.as_mut().unwrap().pypi_release.as_mut().unwrap().files {
+    for file in &mut l
+        .metadata
+        .as_mut()
+        .unwrap()
+        .pypi_release
+        .as_mut()
+        .unwrap()
+        .files
+    {
         file.sha256 = None;
     }
     let issues = run(
@@ -157,7 +165,11 @@ fn release_without_published_digests_is_unverified_not_passed() {
 
 #[test]
 fn lockfile_resolved_version_without_an_entry_is_unverified() {
-    let issues = run(vec![lookup("requests", &["aa"])], vec![dep("requests")], vec![]);
+    let issues = run(
+        vec![lookup("requests", &["aa"])],
+        vec![dep("requests")],
+        vec![],
+    );
     assert_eq!(issues[0].check, "metadata/lockfile-integrity-unverified");
     assert!(issues[0].message.contains("no entry"));
 }
@@ -185,7 +197,9 @@ fn no_python_lockfile_means_no_findings() {
     let deps = vec![dep("requests")];
     let mut resolution = resolution(&deps, ResolutionSource::Lockfile, vec![]);
     resolution.python_hashes = None;
-    assert!(check_python_lockfile_hashes(&[lookup("requests", &["aa"])], &deps, &resolution).is_empty());
+    assert!(
+        check_python_lockfile_hashes(&[lookup("requests", &["aa"])], &deps, &resolution).is_empty()
+    );
 }
 
 #[test]

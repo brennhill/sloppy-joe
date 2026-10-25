@@ -54,7 +54,9 @@ async fn planted_clean_osv_cache_does_not_hide_advisories() {
     std::fs::write(&path, clean_cache()).unwrap();
     let issues = issues_with_cache(&path).await;
     assert!(
-        issues.iter().any(|i| i.message.contains("GHSA-real-advisory")),
+        issues
+            .iter()
+            .any(|i| i.message.contains("GHSA-real-advisory")),
         "a cache file sloppy-joe did not write must be refetched: {issues:?}"
     );
     crate::parsers::test_utils::cleanup(&dir);
@@ -79,7 +81,9 @@ async fn edited_osv_cache_does_not_hide_advisories() {
     std::fs::write(&path, clean_cache()).unwrap();
     let issues = issues_with_cache(&path).await;
     assert!(
-        issues.iter().any(|i| i.message.contains("GHSA-real-advisory")),
+        issues
+            .iter()
+            .any(|i| i.message.contains("GHSA-real-advisory")),
         "an edited cache must be refetched: {issues:?}"
     );
     crate::parsers::test_utils::cleanup(&dir);

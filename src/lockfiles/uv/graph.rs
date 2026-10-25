@@ -157,6 +157,10 @@ pub(crate) fn resolve_root_request_version(
     if let Some(version) = dep.exact_version() {
         return Ok(Some(version.to_string()));
     }
+    if profile.any_environment {
+        // Coverage walks every locked version of the root.
+        return Ok(None);
+    }
 
     if let Some(selection) = select_root_dependency(root_dependencies, normalized_name, profile)?
         && let Some(version) = selection.version

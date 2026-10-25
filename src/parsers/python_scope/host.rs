@@ -59,7 +59,9 @@ pub(crate) fn detect_python_version_from_command(command: &str) -> Option<Detect
     let output = std::process::Command::new(command)
         .args([
             "-c",
-            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}'); print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')",
+            // `platform.python_version()` is what PEP 508 calls python_full_version: it keeps
+            // a prerelease suffix (`3.13.0rc1`) that `major.minor.micro` would drop.
+            "import platform, sys; print(f'{sys.version_info.major}.{sys.version_info.minor}'); print(platform.python_version())",
         ])
         .output()
         .ok()?;
@@ -86,6 +88,68 @@ pub(crate) fn parse_detected_python_version_output(output: &[u8]) -> Option<Dete
     })
 }
 
+/// A configured Python version (`--python-version`, `SLOPPY_JOE_PYTHON_VERSION`,
+/// `PYTHON_VERSION` and the `*_FULL_VERSION` variants), trimmed and split into the
+/// `python_version` (`X.Y`) and `python_full_version` markers: `3.12.1`, as Docker images set
+/// `PYTHON_VERSION`, is python_version `3.12`. `None` when it is not a release version.
+pub(crate) fn parse_configured_python_version(raw: &str) -> Option<DetectedPythonVersion> {
+    let value = raw.trim();
+    let version: pep440_rs::Version = value.parse().ok()?;
+    let release = version.release();
+    if release.len() < 2 || version.epoch() != 0 || !version.local().is_empty() {
+        return None;
+    }
+    let python_version = format!("{}.{}", release[0], release[1]);
+    let python_full_version = if release.len() == 2 && !version.any_prerelease() {
+        format!("{python_version}.0")
+    } else {
+        value.to_string()
+    };
+    Some(DetectedPythonVersion {
+        python_version,
+        python_full_version,
+    })
+}
+
+/// The Python version markers evaluate against. A configured version wins, and an unreadable one
+/// leaves the version unknown (markers on it undecided) rather than falling back to the host's
+/// interpreter; a full version that contradicts the configured `X.Y` is unknown too. Without
+/// configuration, the detected host interpreter.
+pub(crate) fn python_versions_from(
+    lookup: impl Fn(&str) -> Option<String>,
+    detect: impl FnOnce() -> Option<DetectedPythonVersion>,
+) -> (Option<String>, Option<String>) {
+    let setting = |names: [&str; 2]| {
+        names.iter().find_map(|name| {
+            lookup(name)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+    };
+    let version = setting(["SLOPPY_JOE_PYTHON_VERSION", "PYTHON_VERSION"]);
+    let full = setting(["SLOPPY_JOE_PYTHON_FULL_VERSION", "PYTHON_FULL_VERSION"]);
+    let configured = match (version, full) {
+        (Some(version), full) => {
+            let Some(parsed) = parse_configured_python_version(&version) else {
+                return (None, None);
+            };
+            let full = match full {
+                None => Some(parsed.python_full_version),
+                Some(full) => parse_configured_python_version(&full)
+                    .filter(|full| full.python_version == parsed.python_version)
+                    .map(|full| full.python_full_version),
+            };
+            return (Some(parsed.python_version), full);
+        }
+        (None, Some(full)) => parse_configured_python_version(&full),
+        (None, None) => detect(),
+    };
+    match configured {
+        Some(found) => (Some(found.python_version), Some(found.python_full_version)),
+        None => (None, None),
+    }
+}
+
 pub(crate) fn normalize_python_full_version(version: &str) -> String {
     if version.matches('.').count() >= 2 {
         version.to_string()
@@ -102,43 +166,31 @@ pub(crate) fn current_sys_platform() -> &'static str {
     }
 }
 
+/// `platform_release` / `platform_version` for the profile: the `SLOPPY_JOE_<NAME>` or `<NAME>`
+/// setting, else `uname` when the profile is the host. `None` (undecided) otherwise.
 pub(crate) fn resolve_host_platform_metadata(
-    marker_name: &str,
     profile: &PythonProfile,
     uname_flag: &str,
     env_name: &str,
-) -> Result<String> {
-    if let Ok(value) = std::env::var(format!("SLOPPY_JOE_{env_name}"))
-        && !value.trim().is_empty()
-    {
-        return Ok(value);
-    }
-    if let Ok(value) = std::env::var(env_name)
-        && !value.trim().is_empty()
-    {
-        return Ok(value);
+) -> Option<String> {
+    for name in [format!("SLOPPY_JOE_{env_name}"), env_name.to_string()] {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            return Some(value.trim().to_string());
+        }
     }
     if profile.target_platform != current_sys_platform()
         || profile.target_arch != std::env::consts::ARCH
     {
-        bail!(
-            "Python environment marker '{}' requires explicit target metadata; set SLOPPY_JOE_{} for trusted evaluation",
-            marker_name,
-            env_name
-        );
+        return None;
     }
     let detected = detected_host_platform_metadata();
-    let value = match uname_flag {
+    match uname_flag {
         "-r" => detected.platform_release,
         "-v" => detected.platform_version,
         _ => None,
-    };
-    value.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Python environment marker '{}' requires host platform metadata for trusted evaluation",
-            marker_name
-        )
-    })
+    }
 }
 
 pub(crate) fn poetry_platform_constraint_matches(

@@ -8,6 +8,7 @@ pub(crate) struct Coordinate {
 }
 
 /// Where parent and imported POMs come from.
+#[allow(clippy::double_must_use)] // async_trait generates this attribute on already-must-use futures.
 #[async_trait]
 pub(crate) trait PomSource: Send + Sync {
     async fn fetch(&self, coordinate: &Coordinate) -> Result<String>;

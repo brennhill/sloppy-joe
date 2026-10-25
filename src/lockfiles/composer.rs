@@ -355,7 +355,8 @@ mod section_tests {
         for mode in [ResolutionMode::Direct, ResolutionMode::Transitive] {
             let dep = php("guzzlehttp/psr7", Some("1.8.3"));
             let result =
-                resolve_from_value_with_mode(&both_sections(), &[dep.clone()], mode).unwrap();
+                resolve_from_value_with_mode(&both_sections(), std::slice::from_ref(&dep), mode)
+                    .unwrap();
             assert_eq!(result.exact_version(&dep), Some("1.8.3"));
             assert!(result.issues.is_empty(), "{:?}", result.issues);
         }
@@ -364,9 +365,12 @@ mod section_tests {
     #[test]
     fn a_direct_pin_to_the_dev_version_does_not_hide_the_production_one() {
         let dep = php("guzzlehttp/psr7", Some("2.6.2"));
-        let result =
-            resolve_from_value_with_mode(&both_sections(), &[dep.clone()], ResolutionMode::Direct)
-                .unwrap();
+        let result = resolve_from_value_with_mode(
+            &both_sections(),
+            std::slice::from_ref(&dep),
+            ResolutionMode::Direct,
+        )
+        .unwrap();
         assert!(
             result
                 .issues

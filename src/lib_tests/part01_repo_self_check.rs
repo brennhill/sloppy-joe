@@ -556,7 +556,7 @@ async fn scan_with_config_warns_for_other_legacy_python_manifests_by_default() {
 }
 
 #[tokio::test]
-async fn scan_with_config_respects_explicit_python_platform_during_python_preflight() {
+async fn an_explicit_python_platform_does_not_exempt_other_platforms_from_source_policy() {
     let dir = unique_dir();
     let host_platform =
         crate::parsers::python_scope::PythonProfile::runtime_for_current_host().target_platform;
@@ -602,7 +602,7 @@ content-hash = "__CONTENT_HASH__"
 "#,
     );
 
-    let report = scan_with_config(
+    let err = scan_with_config(
         &dir,
         Some("pypi"),
         config::SloppyJoeConfig::default(),
@@ -613,15 +613,13 @@ content-hash = "__CONTENT_HASH__"
         },
     )
     .await
-    .expect("explicit Python platform selection should flow through all preflight validation");
+    .expect_err("a dependency excluded by the selected platform still faces source policy");
 
-    assert_eq!(report.packages_checked, 0);
-    assert!(!report.has_errors());
-    assert!(
-        !report.issues.iter().any(|issue| {
-            issue.check == checks::names::RESOLUTION_PYTHON_IMPLICIT_RUNTIME_PROFILE
-        })
-    );
+    // The marker is false for the selected platform but true on the host: the package is
+    // installed somewhere, so its untrusted index blocks instead of being skipped.
+    let message = err.to_string();
+    assert!(message.contains("platform-helper"), "{message}");
+    assert!(message.contains("private.example"), "{message}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

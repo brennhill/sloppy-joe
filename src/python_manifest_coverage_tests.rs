@@ -243,13 +243,14 @@ fn monorepo_walk_discovers_suffix_named_requirements_files() {
 }
 
 #[test]
-fn requirements_directory_beside_poetry_project_is_treated_like_sibling_requirements() {
+fn requirements_beside_a_poetry_project_are_scanned_not_ignored() {
     let dir = unique_dir();
     write_poetry_project_with_build_system(&dir);
+    std::fs::write(dir.join("requirements.txt"), "evil-sibling==1.0\n").unwrap();
     std::fs::create_dir_all(dir.join("requirements")).unwrap();
     std::fs::write(
         dir.join("requirements").join("export.txt"),
-        "requests==2.31.0\n",
+        "evil-export==1.0\n",
     )
     .unwrap();
 
@@ -258,17 +259,85 @@ fn requirements_directory_beside_poetry_project_is_treated_like_sibling_requirem
     assert!(
         specs
             .iter()
-            .all(|spec| spec.kind == ProjectInputKind::PyProjectPoetry),
+            .any(|spec| spec.kind == ProjectInputKind::PyProjectPoetry),
         "{specs:#?}"
     );
-    let warnings = preflight_project_inputs(&dir, &specs, &config).unwrap();
+    preflight_project_inputs(&dir, &specs, &config).unwrap();
+    let names = scanned_dependency_names(&dir);
+    for expected in ["requests", "evil-sibling", "evil-export"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn requirements_beside_a_uv_project_are_scanned_not_ignored() {
+    let dir = unique_dir();
+    std::fs::write(
+        dir.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nrequires-python = \">=3.10\"\ndependencies = []\n\n[tool.uv]\npackage = false\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("uv.lock"),
+        "version = 1\nrevision = 3\nrequires-python = \">=3.10\"\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\n\n[package.metadata]\nrequires-dist = []\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("requirements-dev.txt"), "evil-dev==1.0\n").unwrap();
+
+    let names = scanned_dependency_names(&dir);
+    assert!(names.iter().any(|name| name == "evil-dev"), "{names:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const SIX_HASH_LOCKED: &str = "six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81\n";
+
+fn scanned_dependency_names(dir: &std::path::Path) -> Vec<String> {
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(dir, Some("pypi"), &config).unwrap();
+    parse_project_inputs(dir, &specs, &config)
+        .unwrap()
+        .iter()
+        .flat_map(|project| project.deps.iter().map(|dep| dep.name.clone()))
+        .collect()
+}
+
+#[test]
+fn a_hash_locked_requirements_file_does_not_hide_sibling_manifests() {
+    let dir = unique_dir();
+    std::fs::write(dir.join("requirements.txt"), SIX_HASH_LOCKED).unwrap();
+    std::fs::write(dir.join("requirements-dev.txt"), "evil-dev==1.0\n").unwrap();
+    std::fs::write(
+        dir.join("setup.cfg"),
+        "[metadata]\nname = demo\n\n[options]\ninstall_requires =\n    evil-cfg==1.0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("setup.py"),
+        "from setuptools import setup\nsetup(name=\"demo\", install_requires=[\"evil-py==1.0\"])\n",
+    )
+    .unwrap();
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
     assert!(
-        warnings.iter().any(|issue| {
-            issue.check == checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST
-                && issue.package.ends_with("export.txt")
-        }),
-        "ignored requirements files must be reported: {warnings:#?}"
+        specs
+            .iter()
+            .any(|spec| spec.kind == ProjectInputKind::PyRequirementsTrusted),
+        "{specs:#?}"
     );
+    let names = scanned_dependency_names(&dir);
+    for expected in ["six", "evil-dev", "evil-cfg", "evil-py"] {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "{expected} missing from {names:?}"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

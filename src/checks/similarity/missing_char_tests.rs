@@ -110,7 +110,9 @@ async fn dropped_character_typosquats_of_popular_packages_are_detected() {
         let registry = FakeRegistry::with(&[real, squat]);
         let issue = missing_char_issue(&registry, squat, ecosystem, &config)
             .await
-            .unwrap_or_else(|| panic!("'{squat}' must be flagged as missing a character of '{real}'"));
+            .unwrap_or_else(|| {
+                panic!("'{squat}' must be flagged as missing a character of '{real}'")
+            });
         assert_eq!(issue.suggestion.as_deref(), Some(real));
         assert_eq!(issue.severity, Severity::Error);
         assert!(issue.message.contains(real), "{}", issue.message);
@@ -189,7 +191,13 @@ async fn missing_character_detection_adds_at_most_one_probe_per_matching_target(
         .flat_map(|g| g.generate("expres", Ecosystem::Npm))
         .collect();
     let registry = FakeRegistry::with(&["express"]);
-    let _ = run_uncached(&registry, &[dep("expres", Ecosystem::Npm)], Ecosystem::Npm, &config).await;
+    let _ = run_uncached(
+        &registry,
+        &[dep("expres", Ecosystem::Npm)],
+        Ecosystem::Npm,
+        &config,
+    )
+    .await;
     // Every non-missing-char candidate plus the one popular target ("express"),
     // never an n x alphabet insertion fan-out.
     assert!(

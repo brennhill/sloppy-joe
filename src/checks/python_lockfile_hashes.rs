@@ -34,8 +34,12 @@ pub(crate) fn check_python_lockfile_hashes(
         .filter(|dep| dep.ecosystem == Ecosystem::PyPI)
         .filter_map(|dep| {
             let resolved = resolution.resolved_version(dep)?;
-            (resolved.source == ResolutionSource::Lockfile)
-                .then(|| (normalize_name(dep.package_name()), resolved.version.as_str()))
+            (resolved.source == ResolutionSource::Lockfile).then(|| {
+                (
+                    normalize_name(dep.package_name()),
+                    resolved.version.as_str(),
+                )
+            })
         })
         .collect();
 
@@ -130,7 +134,11 @@ fn mismatch(package: &str, label: &str, lockfile: &str, location: &str, unknown:
         .map(|hash| format!("sha256:{}", sanitize_for_terminal(hash)))
         .collect();
     let more = unknown.len().saturating_sub(3);
-    let suffix = if more > 0 { format!(" and {more} more") } else { String::new() };
+    let suffix = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
     Issue::new(package, names::METADATA_LOCKFILE_INTEGRITY_MISMATCH, Severity::Error)
         .message(format!(
             "The {lockfile} entry '{}' for '{label}' records {}{suffix}, which PyPI does not publish for that version. The lockfile points at an artifact the registry never served, and pip installs whatever matches the lockfile hash.",

@@ -495,6 +495,7 @@ impl ProjectInputKind {
             .unwrap_or_else(|| panic!("no descriptor row for {self:?}"))
     }
 
+    #[cfg(test)]
     pub(crate) fn is_python(self) -> bool {
         self.descriptor().ecosystem == Ecosystem::PyPI
     }

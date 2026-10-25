@@ -100,7 +100,8 @@ impl EcosystemSupport for Python {
         if let Some(data) = flavor(project.spec.kind).lockfile_data(config, opts, project, deps)? {
             return Ok(data);
         }
-        let profile = active_python_lockfile_profile(opts, &project.python_root_extras);
+        let profile =
+            python_lockfile_profile_for(&project.spec, opts, &project.python_root_extras)?;
         let mut data = common::read_lockfile_data(project, deps, Some(&profile))?;
         if project.deps.is_empty() && python_manifest_declares_no_dependencies(&project.spec)? {
             data.scan_all_locked_packages()?;
@@ -138,7 +139,8 @@ impl EcosystemSupport for Python {
         promote_trusted_pip_tools_specs(scan_root, specs)?;
         prune_included_requirement_specs(scan_root, specs)?;
         reject_ambiguous_python_project_inputs(specs)?;
-        prefer_trusted_python_project_inputs(specs);
+        // Every Python manifest is its own install input: a requirements file, setup.py or
+        // Pipfile beside a Poetry/uv project or a hash-locked requirements file is scanned too.
         Ok(())
     }
 

@@ -519,3 +519,6 @@ mod part19_python_ci_strictness;
 
 #[path = "lib_tests/part20_internal_prefix_source.rs"]
 mod part20_internal_prefix_source;
+
+#[path = "lib_tests/part20_python_marker_coverage.rs"]
+mod part20_python_marker_coverage;

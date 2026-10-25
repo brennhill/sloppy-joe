@@ -113,11 +113,15 @@ pub(crate) fn check_wrong_distribution_names(
         if !seen.insert(normalize_name(package)) {
             continue;
         }
-        let lookup = lookups
-            .iter()
-            .find(|l| l.ecosystem == Ecosystem::PyPI && normalize_name(&l.package) == normalize_name(package));
+        let lookup = lookups.iter().find(|l| {
+            l.ecosystem == Ecosystem::PyPI && normalize_name(&l.package) == normalize_name(package)
+        });
         let thin = history_is_thin(lookup);
-        let severity = if thin { Severity::Error } else { Severity::Warning };
+        let severity = if thin {
+            Severity::Error
+        } else {
+            Severity::Warning
+        };
         let why = if thin {
             "The package is new or its history could not be read, which is how a registered guess looks."
         } else {
@@ -168,7 +172,11 @@ pub(crate) fn check_new_dependencies(
             .and_then(|meta| meta.created.as_deref());
         let age_days = created.and_then(age_in_hours).map(|h| h / 24);
         let young = age_days.is_none_or(|days| days * 24 < NEW_DEPENDENCY_YOUNG_HOURS);
-        let severity = if young { Severity::Error } else { Severity::Warning };
+        let severity = if young {
+            Severity::Error
+        } else {
+            Severity::Warning
+        };
         let detail = match age_days {
             Some(days) => format!("It was first published {days} days ago."),
             None => "Its first-publication date could not be read.".to_string(),
@@ -249,10 +257,8 @@ mod tests {
     fn unknown_history_blocks_rather_than_passes() {
         let missing_lookup = check_wrong_distribution_names(&[dep("cv2", Ecosystem::PyPI)], &[]);
         assert_eq!(missing_lookup[0].severity, Severity::Error);
-        let no_date = check_wrong_distribution_names(
-            &[dep("cv2", Ecosystem::PyPI)],
-            &[lookup("cv2", None)],
-        );
+        let no_date =
+            check_wrong_distribution_names(&[dep("cv2", Ecosystem::PyPI)], &[lookup("cv2", None)]);
         assert_eq!(no_date[0].severity, Severity::Error);
     }
 
@@ -266,7 +272,13 @@ mod tests {
 
     #[test]
     fn the_right_distribution_names_pass() {
-        for name in ["scikit-learn", "opencv-python", "pillow", "huggingface-hub", "requests"] {
+        for name in [
+            "scikit-learn",
+            "opencv-python",
+            "pillow",
+            "huggingface-hub",
+            "requests",
+        ] {
             assert!(check_wrong_distribution_names(&[dep(name, Ecosystem::PyPI)], &[]).is_empty());
         }
     }

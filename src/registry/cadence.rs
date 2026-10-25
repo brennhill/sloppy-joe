@@ -46,7 +46,8 @@ mod tests {
 
     #[test]
     fn ignores_later_versions_and_counts_the_prior_day() {
-        let cadence = cadence_from_epochs(1_000_000, [1_000_000 - 100, 1_000_000 - 90_000, 2_000_000]);
+        let cadence =
+            cadence_from_epochs(1_000_000, [1_000_000 - 100, 1_000_000 - 90_000, 2_000_000]);
         assert_eq!(cadence.releases_prior_24h, 1);
         assert_eq!(cadence.previous_release_epoch, Some(1_000_000 - 100));
     }

@@ -115,3 +115,37 @@ fn metadata_and_packaging_options_are_ignored() {
     assert_eq!(parse(&dir).unwrap().len(), 1);
     cleanup(&dir);
 }
+
+#[test]
+fn a_continuation_indented_with_any_python_whitespace_is_read() {
+    // configparser measures indentation with Python's `\s`: an NBSP-indented line continues
+    // install_requires, so setuptools installs it.
+    for indent in ["\u{a0}", "\u{1f}", "\u{3000}", "\t"] {
+        let dir = setup_test_dir(
+            "cfg-nbsp",
+            "setup.cfg",
+            &format!(
+                "[metadata]\nname = demo\n\n[options]\ninstall_requires =\n    six==1.17.0\n{indent}evil-indent==1.0\n"
+            ),
+        );
+        let names: Vec<String> = parse(&dir).unwrap().into_iter().map(|d| d.name).collect();
+        assert!(
+            names.contains(&"evil-indent".to_string()),
+            "{indent:?}: {names:?}"
+        );
+        cleanup(&dir);
+    }
+}
+
+#[test]
+fn an_indented_option_continues_on_deeper_lines_only() {
+    // configparser continues a value only on lines indented deeper than its option line.
+    let dir = setup_test_dir(
+        "cfg-indent-level",
+        "setup.cfg",
+        "[options]\n  install_requires =\n      six==1.17.0\n      evil-deeper==1.0\n",
+    );
+    let names: Vec<String> = parse(&dir).unwrap().into_iter().map(|d| d.name).collect();
+    assert_eq!(names, ["six", "evil-deeper"]);
+    cleanup(&dir);
+}

@@ -90,7 +90,11 @@ async fn internal_prefix_match_published_on_the_public_registry_blocks() {
     assert_eq!(issues.len(), 1, "{:?}", report.issues);
     assert_eq!(issues[0].severity, Severity::Error);
     assert_eq!(issues[0].source.as_deref(), Some("direct"));
-    assert!(issues[0].message.contains("acme-*"), "{}", issues[0].message);
+    assert!(
+        issues[0].message.contains("acme-*"),
+        "{}",
+        issues[0].message
+    );
     assert!(report.has_errors());
     // Unproven, it is scanned like any other package rather than OSV-only.
     assert_eq!(report.packages_checked, 1);
@@ -103,7 +107,10 @@ async fn internal_prefix_match_absent_from_the_public_registry_stays_internal() 
     let registry = FakeRegistry { existing: vec![] };
     let report = scan(&dir, internal_config(&["acme-*"]), &registry).await;
     assert!(
-        report.issues.iter().all(|issue| issue.package != "acme-utils"),
+        report
+            .issues
+            .iter()
+            .all(|issue| issue.package != "acme-utils"),
         "{:?}",
         report.issues
     );
@@ -115,7 +122,11 @@ async fn internal_prefix_match_absent_from_the_public_registry_stays_internal() 
 async fn exact_internal_name_is_a_deliberate_decision_and_needs_no_lookup() {
     let dir = npm_project(r#"{"dependencies": {"acme-utils": "1.0.0"}}"#, None);
     let report = scan(&dir, internal_config(&["acme-utils"]), &FailingRegistry).await;
-    assert!(unproven(&report, "acme-utils").is_empty(), "{:?}", report.issues);
+    assert!(
+        unproven(&report, "acme-utils").is_empty(),
+        "{:?}",
+        report.issues
+    );
     assert_eq!(report.packages_checked, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

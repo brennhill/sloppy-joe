@@ -86,6 +86,7 @@ requires-dist = [
     let lock_profile = PythonLockfileProfile {
         environment: crate::parsers::python_scope::PythonProfile::for_target("linux", "3.12"),
         root_extras: Default::default(),
+        coverage_roots: Vec::new(),
     };
     let result = resolve_from_value_with_mode_and_profile(
         &parsed,
@@ -248,6 +249,7 @@ requires-dist = [
     let lock_profile = PythonLockfileProfile {
         environment: crate::parsers::python_scope::PythonProfile::for_target("linux", "3.12"),
         root_extras: Default::default(),
+        coverage_roots: Vec::new(),
     };
     let reachable = reachable_package_identities(&parsed, &deps, Some(&lock_profile))
         .expect("marker-scoped root entries should select the in-scope root version");

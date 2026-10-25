@@ -214,10 +214,13 @@ pub(super) fn parse_all_from_value_for_roots(
 ) -> Result<Vec<Dependency>> {
     let nodes = uv_package_nodes(parsed)?;
     let root_dependencies = extract_root_dependency_entries(parsed)?.unwrap_or_default();
+    // Every package the lock installs in some environment is scanned, not only the target's.
+    let (coverage_roots, coverage_profile) =
+        PythonLockfileProfile::coverage_for(lock_profile, direct_deps);
     let reachable = reachable_package_identities_from_nodes(
         &nodes,
-        direct_deps,
-        lock_profile,
+        &coverage_roots,
+        Some(&coverage_profile),
         &root_dependencies,
     )?;
     let profile = effective_python_profile(lock_profile);

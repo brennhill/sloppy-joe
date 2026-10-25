@@ -148,8 +148,15 @@ async fn dependency_added_since_the_base_ref_is_flagged_and_marked_for_deeper_ch
         disable_osv_disk_cache: true,
         ..Default::default()
     };
-    let ctx = CheckContext { opts: &quiet, ..ctx };
+    let ctx = CheckContext {
+        opts: &quiet,
+        ..ctx
+    };
     let mut acc = ScanAccumulator::new();
     SimilarityCheck.run(&ctx, &mut acc).await.unwrap();
-    assert!(acc.issues.iter().all(|i| i.check != "steering/new-dependency"));
+    assert!(
+        acc.issues
+            .iter()
+            .all(|i| i.check != "steering/new-dependency")
+    );
 }

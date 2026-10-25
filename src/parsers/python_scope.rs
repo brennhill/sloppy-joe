@@ -1,5 +1,7 @@
 mod marker;
 pub(crate) use marker::*;
+mod marker_eval;
+pub(crate) use marker_eval::*;
 mod host;
 use crate::Dependency;
 use anyhow::{Result, bail};
@@ -80,6 +82,11 @@ pub(crate) struct PythonProfile {
     pub selected_extras: BTreeSet<String>,
     /// The target environment (platform, arch or Python version) was chosen explicitly.
     pub explicit_selection: bool,
+    /// Environment markers are undecided (possibly true) instead of evaluated: the profile
+    /// stands for every platform, arch and Python version the lockfile serves. Groups and extras
+    /// still follow the selection. Used for coverage: source policy and the packages the scan
+    /// checks, so a dependency gated on another environment is never hidden.
+    pub any_environment: bool,
 }
 
 impl PythonScopedDependency {
@@ -140,13 +147,27 @@ impl PythonScopedDependency {
     }
 
     pub(crate) fn is_in_scope(&self, profile: &PythonProfile) -> Result<bool> {
+        if !self.is_selected(profile) {
+            return Ok(false);
+        }
+        if !profile.any_environment && self.shorthand_excludes(profile)? {
+            return Ok(false);
+        }
+        match &self.marker {
+            Some(marker) => evaluate_marker_for_profile_extras(marker, profile),
+            None => Ok(true),
+        }
+    }
+
+    /// Whether the group and extra selection includes this dependency.
+    fn is_selected(&self, profile: &PythonProfile) -> bool {
         if !self.groups.is_empty()
             && !self
                 .groups
                 .iter()
                 .any(|group| profile.includes_group(group))
         {
-            return Ok(false);
+            return false;
         }
         if !self.extras.is_empty()
             && !self
@@ -154,30 +175,26 @@ impl PythonScopedDependency {
                 .iter()
                 .any(|extra| profile.includes_extra(extra))
         {
-            return Ok(false);
+            return false;
         }
-        if !self.runtime_default && self.groups.is_empty() && self.extras.is_empty() {
-            return Ok(false);
-        }
-        if let Some(constraint) = &self.python_constraint {
-            let version = profile.python_version.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Poetry python shorthand requires an explicit Python version for trusted evaluation"
-                )
-            })?;
-            if !super::python_version::version_matches_uv_specifier(version, Some(constraint))? {
-                return Ok(false);
-            }
+        self.runtime_default || !self.groups.is_empty() || !self.extras.is_empty()
+    }
+
+    /// Whether a Poetry `python`/`platform` shorthand is decided false for the profile. An unknown
+    /// Python version leaves the shorthand undecided, so the dependency stays.
+    fn shorthand_excludes(&self, profile: &PythonProfile) -> Result<bool> {
+        if let Some(constraint) = &self.python_constraint
+            && let Some(version) = profile.python_version.as_deref()
+            && !super::python_version::version_matches_uv_specifier(version, Some(constraint))?
+        {
+            return Ok(true);
         }
         if let Some(constraint) = &self.platform_constraint
             && !poetry_platform_constraint_matches(&profile.target_platform, constraint)?
         {
-            return Ok(false);
+            return Ok(true);
         }
-        if let Some(marker) = &self.marker {
-            return evaluate_marker_for_profile_extras(marker, profile);
-        }
-        Ok(true)
+        Ok(false)
     }
 }
 
@@ -188,33 +205,29 @@ pub(crate) fn normalize_scope_name(name: &str) -> String {
 
 impl PythonProfile {
     pub(crate) fn runtime_for_current_host() -> Self {
-        let detected = detected_host_python_version();
-        let python_version = std::env::var("SLOPPY_JOE_PYTHON_VERSION")
-            .ok()
-            .or_else(|| std::env::var("PYTHON_VERSION").ok())
-            .or_else(|| {
-                detected
-                    .as_ref()
-                    .map(|version| version.python_version.clone())
-            });
+        let (python_version, python_full_version) = python_versions_from(
+            |name| std::env::var(name).ok(),
+            detected_host_python_version,
+        );
         Self {
             target_platform: current_sys_platform().to_string(),
             target_arch: std::env::consts::ARCH.to_string(),
-            python_version: python_version.clone(),
-            python_full_version: std::env::var("SLOPPY_JOE_PYTHON_FULL_VERSION")
-                .ok()
-                .or_else(|| std::env::var("PYTHON_FULL_VERSION").ok())
-                .or_else(|| {
-                    detected
-                        .as_ref()
-                        .map(|version| version.python_full_version.clone())
-                })
-                .or_else(|| python_version.as_deref().map(normalize_python_full_version)),
+            python_version,
+            python_full_version,
             all_groups: true,
             all_extras: true,
             selected_groups: BTreeSet::new(),
             selected_extras: BTreeSet::new(),
             explicit_selection: false,
+            any_environment: false,
+        }
+    }
+
+    /// The same group and extra selection in every environment.
+    pub(crate) fn for_every_environment(&self) -> Self {
+        Self {
+            any_environment: true,
+            ..self.clone()
         }
     }
 
@@ -261,6 +274,7 @@ impl PythonProfile {
             selected_groups: BTreeSet::new(),
             selected_extras: BTreeSet::new(),
             explicit_selection: true,
+            any_environment: false,
         }
     }
 

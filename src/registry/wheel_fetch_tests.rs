@@ -94,7 +94,10 @@ async fn url_on_another_host_is_refused() {
     let registry = PypiRegistry::for_test(&origin);
     let mut wheel_file = file(&origin, Some("00".repeat(32)));
     wheel_file.url = "http://127.0.0.1:1/p-1.0-py3-none-any.whl".into();
-    let error = registry.inspect_pypi_wheel("p", &wheel_file).await.unwrap_err();
+    let error = registry
+        .inspect_pypi_wheel("p", &wheel_file)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("not on the PyPI file host"));
 }
 

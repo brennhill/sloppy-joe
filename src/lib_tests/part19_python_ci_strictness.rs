@@ -50,7 +50,7 @@ content-hash = "981cb674b020e2aa2e4686d20cf177bc0fe8b0f6003e339f61debabe80576858
 }
 
 #[test]
-fn the_ci_scan_blocks_a_legacy_manifest_beside_a_poetry_project() {
+fn the_ci_scan_checks_a_legacy_manifest_beside_a_poetry_project() {
     let dir = unique_dir();
     std::fs::write(dir.join("pyproject.toml"), CI_POETRY_PYPROJECT).unwrap();
     std::fs::write(
@@ -78,15 +78,24 @@ content-hash = "981cb674b020e2aa2e4686d20cf177bc0fe8b0f6003e339f61debabe80576858
         config::PoetryLockPolicy::WarnMissingProofs,
     );
     let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
-    let warnings = preflight_project_inputs(&dir, &specs, &config).unwrap();
-    assert!(warnings.iter().any(|issue| {
-        issue.check == checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST
-            && issue.severity == Severity::Warning
-    }));
+    // The requirements file is scanned as its own project, so evil-pkg is checked rather than
+    // reported as ignored.
+    assert!(
+        specs
+            .iter()
+            .any(|spec| spec.kind == ProjectInputKind::PyRequirements),
+        "{specs:#?}"
+    );
+    let projects = parse_project_inputs(&dir, &specs, &config).unwrap();
+    assert!(
+        projects
+            .iter()
+            .any(|project| project.deps.iter().any(|dep| dep.name == "evil-pkg"))
+    );
     let ci = preflight_project_inputs_with_options(&dir, &specs, &config, &ci_options()).unwrap();
     assert!(ci.iter().any(|issue| {
         issue.check == checks::names::RESOLUTION_PYTHON_LEGACY_MANIFEST
-            && issue.severity == Severity::Error
+            && issue.package.ends_with("requirements.txt")
     }));
     let _ = std::fs::remove_dir_all(&dir);
 }

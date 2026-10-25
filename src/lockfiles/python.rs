@@ -137,7 +137,11 @@ pub(super) fn parse_all_from_value_for_roots(
     lock_profile: Option<&PythonLockfileProfile>,
 ) -> Result<Vec<Dependency>> {
     let nodes = poetry_package_nodes(parsed)?;
-    let reachable = reachable_package_identities_from_nodes(&nodes, direct_deps, lock_profile)?;
+    // Every package the lock installs in some environment is scanned, not only the target's.
+    let (coverage_roots, coverage_profile) =
+        PythonLockfileProfile::coverage_for(lock_profile, direct_deps);
+    let reachable =
+        reachable_package_identities_from_nodes(&nodes, &coverage_roots, Some(&coverage_profile))?;
     let root_packages = resolved_root_identities(direct_deps, lock_profile, &nodes)?;
     let packages = package_entries(parsed);
 

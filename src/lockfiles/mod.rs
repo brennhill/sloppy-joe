@@ -66,6 +66,48 @@ use std::path::{Path, PathBuf};
 pub(crate) struct PythonLockfileProfile {
     pub(crate) environment: PythonProfile,
     pub(crate) root_extras: PythonRootExtras,
+    /// Manifest dependencies in scope for some environment, including those whose markers are
+    /// false for `environment`. The coverage graph is walked from them as well.
+    pub(crate) coverage_roots: Vec<Dependency>,
+}
+
+impl PythonLockfileProfile {
+    /// The roots and profile of the coverage graph: every environment, the same group and extra
+    /// selection, walked from `direct_deps` and `coverage_roots`. Markers choose versions for
+    /// the target; they never hide a locked package from source policy or from the scan.
+    pub(crate) fn coverage(&self, direct_deps: &[Dependency]) -> (Vec<Dependency>, Self) {
+        let mut roots = direct_deps.to_vec();
+        for dep in &self.coverage_roots {
+            if !roots
+                .iter()
+                .any(|root| root.name == dep.name && root.version == dep.version)
+            {
+                roots.push(dep.clone());
+            }
+        }
+        let profile = Self {
+            environment: self.environment.for_every_environment(),
+            root_extras: self.root_extras.clone(),
+            coverage_roots: Vec::new(),
+        };
+        (roots, profile)
+    }
+
+    /// The coverage graph for an optional profile (`None` stands for the current host).
+    pub(crate) fn coverage_for(
+        profile: Option<&Self>,
+        direct_deps: &[Dependency],
+    ) -> (Vec<Dependency>, Self) {
+        match profile {
+            Some(profile) => profile.coverage(direct_deps),
+            None => Self {
+                environment: PythonProfile::runtime_for_current_host(),
+                root_extras: PythonRootExtras::new(),
+                coverage_roots: Vec::new(),
+            }
+            .coverage(direct_deps),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]

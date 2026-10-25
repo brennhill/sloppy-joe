@@ -25,7 +25,10 @@ struct FakeRegistry {
 impl FakeRegistry {
     fn new(outcomes: Vec<(&str, Outcome)>) -> Self {
         Self {
-            outcomes: outcomes.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            outcomes: outcomes
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
             calls: Mutex::new(Vec::new()),
         }
     }
@@ -110,7 +113,12 @@ fn hours_ago(hours: u64) -> String {
     )
 }
 
-fn lookup(package: &str, shas: &[&str], version_age_hours: u64, created_age_hours: u64) -> MetadataLookup {
+fn lookup(
+    package: &str,
+    shas: &[&str],
+    version_age_hours: u64,
+    created_age_hours: u64,
+) -> MetadataLookup {
     MetadataLookup {
         package: package.into(),
         ecosystem: Ecosystem::PyPI,
@@ -169,13 +177,20 @@ async fn run(
 async fn established_unflagged_versions_are_not_downloaded() {
     let registry = FakeRegistry::new(vec![]);
     let mut lookups = [lookup("p", &["aa"], OLD, OLD)];
-    assert!(run(&registry, &mut lookups, &[], false, None).await.is_empty());
+    assert!(
+        run(&registry, &mut lookups, &[], false, None)
+            .await
+            .is_empty()
+    );
     assert!(registry.calls().is_empty());
 }
 
 #[tokio::test]
 async fn young_version_with_a_hook_blocks_and_marks_install_time_code() {
-    let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(with_hook("p-setup.pth", "import os")))]);
+    let registry = FakeRegistry::new(vec![(
+        "aa",
+        Outcome::Facts(with_hook("p-setup.pth", "import os")),
+    )]);
     let mut lookups = [lookup("p", &["aa"], YOUNG, OLD)];
     let issues = run(&registry, &mut lookups, &[], false, None).await;
     assert_eq!(issues.len(), 1);
@@ -187,9 +202,19 @@ async fn young_version_with_a_hook_blocks_and_marks_install_time_code() {
 
 #[tokio::test]
 async fn new_package_and_similarity_flag_each_select_the_version() {
-    let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(clean())), ("bb", Outcome::Facts(clean()))]);
-    let mut lookups = [lookup("new", &["aa"], OLD, YOUNG), lookup("flagged", &["bb"], OLD, OLD)];
-    assert!(run(&registry, &mut lookups, &["flagged"], false, None).await.is_empty());
+    let registry = FakeRegistry::new(vec![
+        ("aa", Outcome::Facts(clean())),
+        ("bb", Outcome::Facts(clean())),
+    ]);
+    let mut lookups = [
+        lookup("new", &["aa"], OLD, YOUNG),
+        lookup("flagged", &["bb"], OLD, OLD),
+    ];
+    assert!(
+        run(&registry, &mut lookups, &["flagged"], false, None)
+            .await
+            .is_empty()
+    );
     assert_eq!(registry.calls().len(), 2);
 }
 
@@ -204,7 +229,10 @@ async fn undated_version_is_treated_as_young() {
 
 #[tokio::test]
 async fn paranoid_inspects_established_versions_and_plain_hooks_only_warn() {
-    let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(with_hook("ns.pth", "import sys, types")))]);
+    let registry = FakeRegistry::new(vec![(
+        "aa",
+        Outcome::Facts(with_hook("ns.pth", "import sys, types")),
+    )]);
     let mut lookups = [lookup("p", &["aa"], OLD, OLD)];
     let issues = run(&registry, &mut lookups, &[], true, None).await;
     assert_eq!(issues[0].check, "metadata/python-startup-hook");
@@ -213,7 +241,13 @@ async fn paranoid_inspects_established_versions_and_plain_hooks_only_warn() {
 
 #[tokio::test]
 async fn paranoid_hook_that_spawns_processes_blocks() {
-    let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(with_hook("x.pth", "import subprocess; subprocess.Popen(['x'])")))]);
+    let registry = FakeRegistry::new(vec![(
+        "aa",
+        Outcome::Facts(with_hook(
+            "x.pth",
+            "import subprocess; subprocess.Popen(['x'])",
+        )),
+    )]);
     let mut lookups = [lookup("p", &["aa"], OLD, OLD)];
     let issues = run(&registry, &mut lookups, &[], true, None).await;
     assert_eq!(issues[0].severity, Severity::Error);
@@ -222,10 +256,25 @@ async fn paranoid_hook_that_spawns_processes_blocks() {
 #[tokio::test]
 async fn sitecustomize_and_unreadable_hooks_block_even_when_paranoid_only() {
     for bad in [
-        StartupHook { path: "sitecustomize.py".into(), kind: HookKind::CustomizeModule, code: vec![], unreadable: None },
-        StartupHook { path: "big.pth".into(), kind: HookKind::PthImport, code: vec![], unreadable: Some("too big".into()) },
+        StartupHook {
+            path: "sitecustomize.py".into(),
+            kind: HookKind::CustomizeModule,
+            code: vec![],
+            unreadable: None,
+        },
+        StartupHook {
+            path: "big.pth".into(),
+            kind: HookKind::PthImport,
+            code: vec![],
+            unreadable: Some("too big".into()),
+        },
     ] {
-        let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(WheelFacts { startup_hooks: vec![bad] }))]);
+        let registry = FakeRegistry::new(vec![(
+            "aa",
+            Outcome::Facts(WheelFacts {
+                startup_hooks: vec![bad],
+            }),
+        )]);
         let mut lookups = [lookup("p", &["aa"], OLD, OLD)];
         let issues = run(&registry, &mut lookups, &[], true, None).await;
         assert_eq!(issues[0].severity, Severity::Error);
@@ -247,7 +296,10 @@ async fn a_hook_in_one_platform_wheel_is_found() {
 #[tokio::test]
 async fn identical_hooks_across_wheels_are_listed_once() {
     let same = with_hook("p.pth", "import os");
-    let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(same.clone())), ("bb", Outcome::Facts(same))]);
+    let registry = FakeRegistry::new(vec![
+        ("aa", Outcome::Facts(same.clone())),
+        ("bb", Outcome::Facts(same)),
+    ]);
     let mut lookups = [lookup("p", &["aa", "bb"], YOUNG, OLD)];
     let issues = run(&registry, &mut lookups, &[], false, None).await;
     assert!(!issues[0].message.contains("more"));
@@ -282,7 +334,15 @@ async fn digest_mismatch_blocks_with_its_own_check() {
 async fn wheel_without_a_published_digest_is_never_downloaded() {
     let registry = FakeRegistry::new(vec![]);
     let mut lookups = [lookup("p", &["aa"], YOUNG, OLD)];
-    lookups[0].metadata.as_mut().unwrap().pypi_release.as_mut().unwrap().files[0].sha256 = None;
+    lookups[0]
+        .metadata
+        .as_mut()
+        .unwrap()
+        .pypi_release
+        .as_mut()
+        .unwrap()
+        .files[0]
+        .sha256 = None;
     let issues = run(&registry, &mut lookups, &[], false, None).await;
     assert_eq!(issues[0].check, "metadata/wheel-unverified");
     assert!(registry.calls().is_empty());
@@ -292,13 +352,27 @@ async fn wheel_without_a_published_digest_is_never_downloaded() {
 async fn sdist_only_release_has_nothing_to_inspect() {
     let registry = FakeRegistry::new(vec![]);
     let mut lookups = [lookup("p", &["aa"], YOUNG, OLD)];
-    lookups[0].metadata.as_mut().unwrap().pypi_release.as_mut().unwrap().files[0].kind = PypiFileKind::Sdist;
-    assert!(run(&registry, &mut lookups, &[], false, None).await.is_empty());
+    lookups[0]
+        .metadata
+        .as_mut()
+        .unwrap()
+        .pypi_release
+        .as_mut()
+        .unwrap()
+        .files[0]
+        .kind = PypiFileKind::Sdist;
+    assert!(
+        run(&registry, &mut lookups, &[], false, None)
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
 async fn per_version_wheel_cap_blocks_the_excess_instead_of_passing_it() {
-    let shas: Vec<String> = (0..MAX_WHEELS_PER_VERSION + 3).map(|i| format!("h{i:03}")).collect();
+    let shas: Vec<String> = (0..MAX_WHEELS_PER_VERSION + 3)
+        .map(|i| format!("h{i:03}"))
+        .collect();
     let refs: Vec<&str> = shas.iter().map(String::as_str).collect();
     let outcomes = refs.iter().map(|s| (*s, Outcome::Facts(clean()))).collect();
     let registry = FakeRegistry::new(outcomes);
@@ -314,7 +388,9 @@ async fn per_version_wheel_cap_blocks_the_excess_instead_of_passing_it() {
 async fn per_scan_cap_downloads_urgent_packages_first_and_blocks_the_rest() {
     let mut lookups = Vec::new();
     let mut outcomes = Vec::new();
-    let shas: Vec<String> = (0..MAX_WHEEL_FETCHES + 2).map(|i| format!("s{i:03}")).collect();
+    let shas: Vec<String> = (0..MAX_WHEEL_FETCHES + 2)
+        .map(|i| format!("s{i:03}"))
+        .collect();
     for sha in &shas {
         lookups.push(lookup(&format!("pkg{sha}"), &[sha], YOUNG, OLD));
         outcomes.push((sha.as_str(), Outcome::Facts(clean())));
@@ -323,13 +399,20 @@ async fn per_scan_cap_downloads_urgent_packages_first_and_blocks_the_rest() {
     let issues = run(&registry, &mut lookups, &[], false, None).await;
     assert_eq!(registry.calls().len(), MAX_WHEEL_FETCHES);
     assert_eq!(issues.len(), 2);
-    assert!(issues.iter().all(|i| i.check == "metadata/wheel-unverified"));
+    assert!(
+        issues
+            .iter()
+            .all(|i| i.check == "metadata/wheel-unverified")
+    );
 }
 
 #[tokio::test]
 async fn verified_wheels_are_cached_and_not_downloaded_twice() {
     let dir = temp_cache();
-    let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(with_hook("p.pth", "import os")))]);
+    let registry = FakeRegistry::new(vec![(
+        "aa",
+        Outcome::Facts(with_hook("p.pth", "import os")),
+    )]);
     let mut first = [lookup("p", &["aa"], YOUNG, OLD)];
     run(&registry, &mut first, &[], false, Some(&dir)).await;
     let mut second = [lookup("p", &["aa"], YOUNG, OLD)];
@@ -352,7 +435,10 @@ async fn failures_are_not_cached() {
 #[tokio::test]
 async fn same_version_under_two_spellings_is_inspected_once() {
     let registry = FakeRegistry::new(vec![("aa", Outcome::Facts(clean()))]);
-    let mut lookups = [lookup("Foo_Bar", &["aa"], YOUNG, OLD), lookup("foo-bar", &["aa"], YOUNG, OLD)];
+    let mut lookups = [
+        lookup("Foo_Bar", &["aa"], YOUNG, OLD),
+        lookup("foo-bar", &["aa"], YOUNG, OLD),
+    ];
     run(&registry, &mut lookups, &[], false, None).await;
     assert_eq!(registry.calls().len(), 1);
 }
@@ -365,5 +451,9 @@ async fn non_pypi_and_unresolved_lookups_are_ignored() {
     let mut unresolved = lookup("q", &["bb"], YOUNG, OLD);
     unresolved.unresolved_version = true;
     let mut lookups = [npm, unresolved];
-    assert!(run(&registry, &mut lookups, &[], false, None).await.is_empty());
+    assert!(
+        run(&registry, &mut lookups, &[], false, None)
+            .await
+            .is_empty()
+    );
 }

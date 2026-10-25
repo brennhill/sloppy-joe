@@ -17,7 +17,7 @@ pub(crate) fn parse_file(path: &Path) -> Result<Vec<Dependency>> {
     let mut index = 0usize;
 
     while index < lines.len() {
-        let trimmed = lines[index].trim();
+        let trimmed = trim_python_whitespace(lines[index]);
 
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
             index += 1;
@@ -66,7 +66,7 @@ fn read_option(
     path: &Path,
     deps: &mut Vec<Dependency>,
 ) -> Result<usize> {
-    let trimmed = lines[index].trim();
+    let trimmed = trim_python_whitespace(lines[index]);
     match section {
         "options" if key_name(trimmed).is_some_and(is_dependency_list_key) => {
             let (entries, next_index) = read_cfg_value_block(lines, index);
@@ -109,24 +109,24 @@ fn read_cfg_value_block(lines: &[&str], start: usize) -> (Vec<String>, usize) {
     let Some((_, first_value)) = lines[start].split_once(['=', ':']) else {
         return (entries, start + 1);
     };
-    let first_value = first_value.trim();
+    let first_value = trim_python_whitespace(first_value);
     if !first_value.is_empty() {
         entries.push(first_value.to_string());
     }
 
+    // configparser continues a value on any line indented deeper than the option line, with
+    // indentation measured in Python whitespace (NBSP and U+001F count), before it looks for a
+    // section header. Comment and blank lines inside the value are skipped.
+    let option_indent = python_indent(lines[start]);
     let mut index = start + 1;
     while index < lines.len() {
         let raw = lines[index];
-        let trimmed = raw.trim();
+        let trimmed = trim_python_whitespace(raw);
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
             index += 1;
             continue;
         }
-        if trimmed.starts_with('[') && trimmed.contains(']') {
-            break;
-        }
-        let is_continuation = raw.starts_with(' ') || raw.starts_with('\t');
-        if !is_continuation {
+        if python_indent(raw) <= option_indent {
             break;
         }
         entries.push(trimmed.to_string());
@@ -134,6 +134,16 @@ fn read_cfg_value_block(lines: &[&str], start: usize) -> (Vec<String>, usize) {
     }
 
     (entries, index)
+}
+
+fn python_indent(line: &str) -> usize {
+    line.chars()
+        .take_while(|&ch| super::requirements::is_python_whitespace(ch))
+        .count()
+}
+
+fn trim_python_whitespace(line: &str) -> &str {
+    super::requirements::trim_python_whitespace(line)
 }
 
 fn collect_dependency_lines(
