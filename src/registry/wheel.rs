@@ -308,3 +308,7 @@ mod fetch_tests;
 #[cfg(test)]
 #[path = "wheel_layout_tests.rs"]
 mod layout_tests;
+
+#[cfg(test)]
+#[path = "wheel_pth_tests.rs"]
+mod pth_tests;
