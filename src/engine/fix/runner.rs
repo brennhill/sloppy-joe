@@ -89,7 +89,10 @@ pub(super) fn trusted_dirs(
             continue;
         }
         let resolved = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-        if roots.iter().any(|root| resolved.starts_with(root) || dir.starts_with(root)) {
+        if roots
+            .iter()
+            .any(|root| resolved.starts_with(root) || dir.starts_with(root))
+        {
             continue;
         }
         if !dirs.contains(&dir) {
@@ -173,9 +176,9 @@ fn run_process(command: &ToolCommand) -> anyhow::Result<ToolOutput> {
         use std::os::unix::process::CommandExt;
         builder.process_group(0);
     }
-    let mut child = builder.spawn().map_err(|err| {
-        anyhow::anyhow!("could not start {}: {err}", command.program.display())
-    })?;
+    let mut child = builder
+        .spawn()
+        .map_err(|err| anyhow::anyhow!("could not start {}: {err}", command.program.display()))?;
     let stdout = spawn_reader(child.stdout.take().expect("piped"), command.output_cap);
     let stderr = spawn_reader(child.stderr.take().expect("piped"), command.output_cap);
     let started = Instant::now();

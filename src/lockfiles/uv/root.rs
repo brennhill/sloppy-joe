@@ -94,16 +94,26 @@ pub(crate) fn validate_manifest_consistency(
             dep.version.as_deref(),
         )? {
             UvRootSpecifierMatch::Matched => {}
-            UvRootSpecifierMatch::Missing => return Err(crate::remedy::problem(&crate::remedy::UV_LOCK, format!(
-                "Broken lockfile '{}': '{}' is missing from the root requires-dist / requires-dev metadata",
-                source_path.display(),
-                crate::report::sanitize_for_terminal(&dep.name)
-            ))),
-            UvRootSpecifierMatch::Mismatch(_) => return Err(crate::remedy::problem(&crate::remedy::UV_LOCK, format!(
-                "Broken lockfile '{}': '{}' is out of sync with pyproject.toml",
-                source_path.display(),
-                crate::report::sanitize_for_terminal(&dep.name)
-            ))),
+            UvRootSpecifierMatch::Missing => {
+                return Err(crate::remedy::problem(
+                    &crate::remedy::UV_LOCK,
+                    format!(
+                        "Broken lockfile '{}': '{}' is missing from the root requires-dist / requires-dev metadata",
+                        source_path.display(),
+                        crate::report::sanitize_for_terminal(&dep.name)
+                    ),
+                ));
+            }
+            UvRootSpecifierMatch::Mismatch(_) => {
+                return Err(crate::remedy::problem(
+                    &crate::remedy::UV_LOCK,
+                    format!(
+                        "Broken lockfile '{}': '{}' is out of sync with pyproject.toml",
+                        source_path.display(),
+                        crate::report::sanitize_for_terminal(&dep.name)
+                    ),
+                ));
+            }
         }
         let specifier = dep.version.clone();
 
@@ -113,13 +123,16 @@ pub(crate) fn validate_manifest_consistency(
             .and_then(|selection| selection.version.as_deref())
             && !version_matches_uv_specifier(root_version, specifier.as_deref())?
         {
-            return Err(crate::remedy::problem(&crate::remedy::LOCK_PIN_MISMATCH, format!(
-                "Broken lockfile '{}': '{}' is out of sync with requires-dist because root-selected version '{}' contradicts '{}'",
-                source_path.display(),
-                dep.name,
-                root_version,
-                specifier.as_deref().unwrap_or("")
-            )));
+            return Err(crate::remedy::problem(
+                &crate::remedy::LOCK_PIN_MISMATCH,
+                format!(
+                    "Broken lockfile '{}': '{}' is out of sync with requires-dist because root-selected version '{}' contradicts '{}'",
+                    source_path.display(),
+                    dep.name,
+                    root_version,
+                    specifier.as_deref().unwrap_or("")
+                ),
+            ));
         }
 
         let candidates: Vec<&toml::value::Table> = packages
@@ -134,11 +147,14 @@ pub(crate) fn validate_manifest_consistency(
             .collect();
 
         if candidates.is_empty() {
-            return Err(crate::remedy::problem(&crate::remedy::UV_LOCK, format!(
-                "Broken lockfile '{}': '{}' is missing a resolved package entry",
-                source_path.display(),
-                dep.name
-            )));
+            return Err(crate::remedy::problem(
+                &crate::remedy::UV_LOCK,
+                format!(
+                    "Broken lockfile '{}': '{}' is missing a resolved package entry",
+                    source_path.display(),
+                    dep.name
+                ),
+            ));
         }
 
         let expected_version = selected_root
@@ -150,12 +166,15 @@ pub(crate) fn validate_manifest_consistency(
                     .and_then(|value| value.as_str())
                     .is_some_and(|version| version == expected_version)
             }) {
-                return Err(crate::remedy::problem(&crate::remedy::LOCK_PIN_MISMATCH, format!(
-                    "Broken lockfile '{}': '{}' is missing the root-selected resolved package entry '{}'",
-                    source_path.display(),
-                    dep.name,
-                    expected_version
-                )));
+                return Err(crate::remedy::problem(
+                    &crate::remedy::LOCK_PIN_MISMATCH,
+                    format!(
+                        "Broken lockfile '{}': '{}' is missing the root-selected resolved package entry '{}'",
+                        source_path.display(),
+                        dep.name,
+                        expected_version
+                    ),
+                ));
             }
         } else if let [candidate] = candidates.as_slice() {
             let version = candidate
@@ -165,13 +184,16 @@ pub(crate) fn validate_manifest_consistency(
                     anyhow::anyhow!("Broken uv.lock: resolved package is missing version")
                 })?;
             if !version_matches_uv_specifier(version, specifier.as_deref())? {
-                return Err(crate::remedy::problem(&crate::remedy::LOCK_PIN_MISMATCH, format!(
-                    "Broken lockfile '{}': '{}' resolved version '{}' is out of sync with '{}'",
-                    source_path.display(),
-                    dep.name,
-                    version,
-                    specifier.as_deref().unwrap_or("")
-                )));
+                return Err(crate::remedy::problem(
+                    &crate::remedy::LOCK_PIN_MISMATCH,
+                    format!(
+                        "Broken lockfile '{}': '{}' resolved version '{}' is out of sync with '{}'",
+                        source_path.display(),
+                        dep.name,
+                        version,
+                        specifier.as_deref().unwrap_or("")
+                    ),
+                ));
             }
         } else if candidates.len() > 1 {
             bail!(
@@ -225,12 +247,15 @@ pub(crate) fn validate_root_declarations_are_declared(
             *name == entry.normalized_name && in_section(groups, extras, &entry.scope)
         });
         if !is_declared {
-            return Err(crate::remedy::problem(&crate::remedy::UV_LOCK, format!(
-                "Broken lockfile '{}': '{}' is locked in the root package's {} but is not declared in the matching pyproject.toml section",
-                source_path.display(),
-                crate::report::sanitize_for_terminal(&entry.normalized_name),
-                crate::report::sanitize_for_terminal(&entry.scope.resolved_section())
-            )));
+            return Err(crate::remedy::problem(
+                &crate::remedy::UV_LOCK,
+                format!(
+                    "Broken lockfile '{}': '{}' is locked in the root package's {} but is not declared in the matching pyproject.toml section",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(&entry.normalized_name),
+                    crate::report::sanitize_for_terminal(&entry.scope.resolved_section())
+                ),
+            ));
         }
     }
 
@@ -245,13 +270,16 @@ pub(crate) fn validate_root_declarations_are_declared(
                 }
         });
         if !is_declared {
-            return Err(crate::remedy::problem(&crate::remedy::UV_LOCK, format!(
-                "Broken lockfile '{}': '{}{}' is recorded in the root {} but is not declared that way in pyproject.toml",
-                source_path.display(),
-                crate::report::sanitize_for_terminal(&entry.normalized_name),
-                crate::report::sanitize_for_terminal(entry.specifier.as_deref().unwrap_or("")),
-                crate::report::sanitize_for_terminal(&entry.scope.metadata_section())
-            )));
+            return Err(crate::remedy::problem(
+                &crate::remedy::UV_LOCK,
+                format!(
+                    "Broken lockfile '{}': '{}{}' is recorded in the root {} but is not declared that way in pyproject.toml",
+                    source_path.display(),
+                    crate::report::sanitize_for_terminal(&entry.normalized_name),
+                    crate::report::sanitize_for_terminal(entry.specifier.as_deref().unwrap_or("")),
+                    crate::report::sanitize_for_terminal(&entry.scope.metadata_section())
+                ),
+            ));
         }
     }
     Ok(())

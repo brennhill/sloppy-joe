@@ -7,8 +7,8 @@ pub(crate) use ecosystems::first_existing_lockfile;
 pub(crate) use ecosystems::selected_lockfile_path;
 #[cfg(test)]
 pub(crate) use ecosystems::test_access::*;
-pub(crate) use engine::*;
 pub use engine::fix::{FixLockfileArgs, run_fix_lockfile};
+pub(crate) use engine::*;
 pub mod cache;
 pub mod checks;
 pub mod ecosystem;

@@ -63,7 +63,12 @@ pub(super) fn writes(files: &[(&'static str, &'static str)]) -> Action {
 }
 
 impl FakeRunner {
-    pub(super) fn with(mut self, program: &'static str, version: Option<&'static str>, action: Action) -> Self {
+    pub(super) fn with(
+        mut self,
+        program: &'static str,
+        version: Option<&'static str>,
+        action: Action,
+    ) -> Self {
         self.tools.insert(program, FakeTool { version, action });
         self
     }
@@ -92,7 +97,12 @@ impl ProcessRunner for FakeRunner {
 
     fn run(&self, command: &ToolCommand) -> anyhow::Result<ToolOutput> {
         self.calls.lock().unwrap().push(command.clone());
-        let name = command.program.file_name().unwrap().to_string_lossy().to_string();
+        let name = command
+            .program
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let tool = self
             .tools
             .get(name.as_str())
@@ -136,10 +146,17 @@ impl CandidateScanner for FakeRescan {
         let issues = self
             .blocking
             .map(|check| {
-                vec![Issue::new("left-pad", check, Severity::Error).message("known malicious version")]
+                vec![
+                    Issue::new("left-pad", check, Severity::Error)
+                        .message("known malicious version"),
+                ]
             })
             .unwrap_or_default();
-        Ok(ScanReport::from_issues_with_review_candidates(1, issues, Vec::new()))
+        Ok(ScanReport::from_issues_with_review_candidates(
+            1,
+            issues,
+            Vec::new(),
+        ))
     }
 }
 
@@ -166,12 +183,23 @@ pub(super) fn try_fix(
     let report = tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(fix_lockfiles(&request, runner, rescan));
-    let left: Vec<_> = std::fs::read_dir(&scratch_parent).unwrap().flatten().collect();
-    assert!(left.is_empty(), "the scratch directory is removed on every path: {left:?}");
+    let left: Vec<_> = std::fs::read_dir(&scratch_parent)
+        .unwrap()
+        .flatten()
+        .collect();
+    assert!(
+        left.is_empty(),
+        "the scratch directory is removed on every path: {left:?}"
+    );
     (report, scratch_parent)
 }
 
-pub(super) fn fix(dir: &std::path::Path, write: bool, runner: &FakeRunner, rescan: &FakeRescan) -> Run {
+pub(super) fn fix(
+    dir: &std::path::Path,
+    write: bool,
+    runner: &FakeRunner,
+    rescan: &FakeRescan,
+) -> Run {
     let (report, scratch_parent) = try_fix(dir, write, runner, rescan);
     Run {
         report: report.unwrap(),
@@ -203,13 +231,19 @@ fn a_missing_cargo_lockfile_is_generated_verified_and_not_written_without_write(
     assert_eq!(project.problems[0].name, "cargo-generate-lockfile");
     let diff = project.diff.as_ref().unwrap();
     assert!(diff.added.contains(&"itoa@1.0.10".to_string()), "{diff:?}");
-    assert!(!dir.join("Cargo.lock").exists(), "nothing is written without --write");
+    assert!(
+        !dir.join("Cargo.lock").exists(),
+        "nothing is written without --write"
+    );
     assert!(run.report.success());
 
     let runs = runner.runs();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].args, ["generate-lockfile"]);
-    assert!(runs[0].cwd.starts_with(&run.scratch_parent), "the tool runs in the scratch copy");
+    assert!(
+        runs[0].cwd.starts_with(&run.scratch_parent),
+        "the tool runs in the scratch copy"
+    );
     let scratch_files: Vec<_> = rescan.scanned.lock().unwrap().clone();
     assert_eq!(scratch_files.len(), 1);
     assert!(scratch_files[0].starts_with(&run.scratch_parent));
@@ -221,9 +255,19 @@ fn the_tool_gets_a_scrubbed_environment_pointed_at_the_scratch_directory() {
     let runner = cargo_runner(writes(&[("Cargo.lock", CARGO_LOCK)]));
     let run = fix(&dir, false, &runner, &FakeRescan::default());
     let command = &runner.runs()[0];
-    let env: HashMap<&str, &str> = command.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let env: HashMap<&str, &str> = command
+        .env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     assert_eq!(env["PATH"], "/fake/bin");
-    for key in ["HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CARGO_HOME"] {
+    for key in [
+        "HOME",
+        "TMPDIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "CARGO_HOME",
+    ] {
         assert!(
             std::path::Path::new(env[key]).starts_with(&run.scratch_parent),
             "{key} = {}",
@@ -237,8 +281,17 @@ fn the_tool_gets_a_scrubbed_environment_pointed_at_the_scratch_directory() {
             continue;
         }
         assert!(
-            ["PATH", "HOME", "TMPDIR", "LANG", "TERM", "NO_COLOR", "RUSTUP_HOME", "CARGO_HOME"]
-                .contains(&key.as_str())
+            [
+                "PATH",
+                "HOME",
+                "TMPDIR",
+                "LANG",
+                "TERM",
+                "NO_COLOR",
+                "RUSTUP_HOME",
+                "CARGO_HOME"
+            ]
+            .contains(&key.as_str())
                 || key.starts_with("XDG_")
                 || key.starts_with("CARGO_")
                 || key.starts_with("RUSTC"),
@@ -255,7 +308,10 @@ fn with_write_the_lockfile_is_written() {
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Written, "{project:#?}");
-    assert_eq!(std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(), CARGO_LOCK);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(),
+        CARGO_LOCK
+    );
     assert!(project.backups.is_empty(), "there was no previous lockfile");
 }
 
@@ -277,23 +333,39 @@ fn a_stale_cargo_lockfile_is_updated_and_the_old_one_kept_as_backup() {
         std::fs::read_to_string(dir.join("Cargo.lock.sloppy-joe.bak")).unwrap(),
         CARGO_LOCK
     );
-    assert_eq!(std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(), CARGO_LOCK_TWO);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(),
+        CARGO_LOCK_TWO
+    );
 }
 
 #[test]
 fn a_candidate_that_changes_a_locked_version_is_never_written() {
-    let bumped: &'static str = Box::leak(
-        CARGO_LOCK_TWO
-            .replace("1.0.10", "1.0.11")
-            .into_boxed_str(),
-    );
-    let dir = project(&[("Cargo.toml", CARGO_TOML_TWO.replace("=1.0.10", "^1.0").leak()), ("Cargo.lock", CARGO_LOCK)]);
+    let bumped: &'static str =
+        Box::leak(CARGO_LOCK_TWO.replace("1.0.10", "1.0.11").into_boxed_str());
+    let dir = project(&[
+        (
+            "Cargo.toml",
+            CARGO_TOML_TWO.replace("=1.0.10", "^1.0").leak(),
+        ),
+        ("Cargo.lock", CARGO_LOCK),
+    ]);
     let runner = cargo_runner(writes(&[("Cargo.lock", bumped)]));
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Refused, "{project:#?}");
-    assert!(project.reason.as_deref().unwrap().contains("itoa@1.0.10 changed version"), "{project:#?}");
-    assert_eq!(std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(), CARGO_LOCK);
+    assert!(
+        project
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("itoa@1.0.10 changed version"),
+        "{project:#?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(),
+        CARGO_LOCK
+    );
     assert!(!dir.join("Cargo.lock.sloppy-joe.bak").exists());
     assert!(!run.report.success());
 }
@@ -301,15 +373,27 @@ fn a_candidate_that_changes_a_locked_version_is_never_written() {
 #[test]
 fn a_candidate_that_changes_a_checksum_is_never_written() {
     let tampered: &'static str = CARGO_LOCK_TWO
-        .replace("b1a46d1a171d865aa5f83f92695765caa047a9b4cbae2cbf37dbd613a793fd4c", "0000000000000000000000000000000000000000000000000000000000000000")
+        .replace(
+            "b1a46d1a171d865aa5f83f92695765caa047a9b4cbae2cbf37dbd613a793fd4c",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
         .leak();
     let dir = project(&[("Cargo.toml", CARGO_TOML_TWO), ("Cargo.lock", CARGO_LOCK)]);
     let runner = cargo_runner(writes(&[("Cargo.lock", tampered)]));
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Refused, "{project:#?}");
-    assert!(project.reason.as_deref().unwrap().contains("itoa@1.0.10 changed"));
-    assert_eq!(std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(), CARGO_LOCK);
+    assert!(
+        project
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("itoa@1.0.10 changed")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(),
+        CARGO_LOCK
+    );
 }
 
 #[test]
@@ -330,12 +414,18 @@ fn a_candidate_the_full_rescan_blocks_is_never_written() {
 #[test]
 fn a_tool_that_rewrites_the_manifest_is_refused() {
     let dir = project(&[("Cargo.toml", CARGO_TOML)]);
-    let runner = cargo_runner(writes(&[("Cargo.lock", CARGO_LOCK), ("Cargo.toml", CARGO_TOML_TWO)]));
+    let runner = cargo_runner(writes(&[
+        ("Cargo.lock", CARGO_LOCK),
+        ("Cargo.toml", CARGO_TOML_TWO),
+    ]));
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Refused, "{project:#?}");
     assert!(project.reason.as_deref().unwrap().contains("changed"));
-    assert_eq!(std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(), CARGO_TOML);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(),
+        CARGO_TOML
+    );
     assert!(!dir.join("Cargo.lock").exists());
 }
 
@@ -346,7 +436,14 @@ fn a_candidate_that_still_fails_preflight_is_refused() {
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Refused, "{project:#?}");
-    assert!(project.reason.as_deref().unwrap().contains("still has lockfile problems"), "{project:#?}");
+    assert!(
+        project
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("still has lockfile problems"),
+        "{project:#?}"
+    );
 }
 
 #[test]
@@ -356,7 +453,10 @@ fn a_missing_tool_is_a_refusal_naming_the_minimum_version() {
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Refused);
     let reason = project.reason.as_deref().unwrap();
-    assert!(reason.contains("cargo is not installed") && reason.contains("cargo 1.50"), "{reason}");
+    assert!(
+        reason.contains("cargo is not installed") && reason.contains("cargo 1.50"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -364,12 +464,24 @@ fn an_old_or_unreadable_tool_version_is_a_refusal() {
     let dir = project(&[("Cargo.toml", CARGO_TOML)]);
     let old = FakeRunner::default().with("cargo", Some("cargo 1.49.0"), writes(&[]));
     let run = fix(&dir, false, &old, &FakeRescan::default());
-    assert!(only(&run.report).reason.as_deref().unwrap().contains("too old"));
+    assert!(
+        only(&run.report)
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("too old")
+    );
     assert!(old.runs().is_empty(), "an old tool is never run");
 
     let unreadable = FakeRunner::default().with("cargo", None, writes(&[]));
     let run = fix(&dir, false, &unreadable, &FakeRescan::default());
-    assert!(only(&run.report).reason.as_deref().unwrap().contains("could not read the version"));
+    assert!(
+        only(&run.report)
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("could not read the version")
+    );
     assert!(unreadable.runs().is_empty());
 }
 
@@ -384,14 +496,26 @@ fn a_failing_or_hanging_tool_fails_the_fix() {
     let run = fix(&dir, true, &failing, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Failed);
-    assert!(project.reason.as_deref().unwrap().contains("failed to download"));
+    assert!(
+        project
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("failed to download")
+    );
 
     let hanging = cargo_runner(Box::new(|_| ToolOutput {
         timed_out: true,
         ..Default::default()
     }));
     let run = fix(&dir, true, &hanging, &FakeRescan::default());
-    assert!(only(&run.report).reason.as_deref().unwrap().contains("did not finish"));
+    assert!(
+        only(&run.report)
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("did not finish")
+    );
     assert!(!dir.join("Cargo.lock").exists());
 }
 
@@ -417,30 +541,66 @@ fn json_output_has_the_plan_diff_and_result() {
     assert_eq!(project["result"], "verified");
     assert_eq!(project["problems"][0]["class"], "fixable");
     assert_eq!(project["command"], "cargo generate-lockfile");
-    assert!(project["diff"]["added"].as_array().unwrap().len() >= 1);
+    assert!(!project["diff"]["added"].as_array().unwrap().is_empty());
     let human = run.report.to_human();
     assert!(human.contains("versions: "), "{human}");
     assert!(human.contains("--write"), "{human}");
 }
 
 #[test]
+fn a_temporary_directory_inside_the_project_is_refused() {
+    let dir = project(&[("Cargo.toml", CARGO_TOML)]);
+    std::fs::create_dir_all(dir.join("tmp")).unwrap();
+    let request = FixRequest {
+        dir: dir.clone(),
+        project_type: None,
+        config: config::SloppyJoeConfig::default(),
+        write: true,
+        scratch_parent: dir.join("tmp"),
+        timeout: Duration::from_secs(5),
+    };
+    let runner = cargo_runner(writes(&[("Cargo.lock", CARGO_LOCK)]));
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(fix_lockfiles(&request, &runner, &FakeRescan::default()))
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("inside the project"),
+        "{error:#}"
+    );
+    assert!(runner.calls.lock().unwrap().is_empty());
+}
+
+#[test]
 fn terminal_output_escapes_control_and_reordering_characters() {
     let shown = super::report::terminal_safe("it's \u{1b}[31mred\u{202e}x\nnext");
     assert!(shown.contains("it's"), "{shown}");
-    assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'), "{shown}");
+    assert!(
+        !shown.contains('\u{1b}') && !shown.contains('\u{202e}'),
+        "{shown}"
+    );
     assert!(shown.contains("\n      next"), "{shown}");
 }
 
 #[test]
 fn guided_ecosystems_never_run_a_tool() {
-    let dir = project(&[("Gemfile", "source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n")]);
+    let dir = project(&[(
+        "Gemfile",
+        "source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n",
+    )]);
     let runner = FakeRunner::default().with("bundle", Some("2.5.0"), writes(&[]));
     let run = fix(&dir, true, &runner, &FakeRescan::default());
     let project = only(&run.report);
     assert_eq!(project.result, Outcome::Guided, "{project:#?}");
     assert_eq!(project.problems[0].class, "guided");
     assert_eq!(project.problems[0].command.as_deref(), Some("bundle lock"));
-    assert!(project.problems[0].reason.as_deref().unwrap().contains("executes repository code"));
+    assert!(
+        project.problems[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("executes repository code")
+    );
     assert!(runner.calls.lock().unwrap().is_empty());
     assert!(!run.report.success(), "a guided problem is not success");
 }

@@ -3,10 +3,19 @@ use super::*;
 #[test]
 fn versions_are_read_from_tool_output() {
     assert_eq!(parse_version("9.15.0\n"), Some((9, 15, 0)));
-    assert_eq!(parse_version("cargo 1.96.0 (30a34c682 2026-05-25)"), Some((1, 96, 0)));
-    assert_eq!(parse_version("go version go1.27.3 darwin/arm64"), Some((1, 27, 3)));
+    assert_eq!(
+        parse_version("cargo 1.96.0 (30a34c682 2026-05-25)"),
+        Some((1, 96, 0))
+    );
+    assert_eq!(
+        parse_version("go version go1.27.3 darwin/arm64"),
+        Some((1, 27, 3))
+    );
     assert_eq!(parse_version("Poetry (version 2.4.1)"), Some((2, 4, 1)));
-    assert_eq!(parse_version("uv 0.11.19 (Homebrew 2026-06-03)"), Some((0, 11, 19)));
+    assert_eq!(
+        parse_version("uv 0.11.19 (Homebrew 2026-06-03)"),
+        Some((0, 11, 19))
+    );
     assert_eq!(
         parse_version("Composer version 2.10.3 2026-08-27 13:34:23"),
         Some((2, 10, 3))
@@ -58,7 +67,9 @@ fn the_environment_is_exactly_what_was_given() {
 #[test]
 fn stdin_is_empty() {
     let runner = RealRunner::new(None, &[]);
-    let output = runner.run(&command("/bin/cat", &[], 10_000, 1 << 16)).unwrap();
+    let output = runner
+        .run(&command("/bin/cat", &[], 10_000, 1 << 16))
+        .unwrap();
     assert!(output.succeeded());
     assert!(output.stdout.is_empty());
 }
@@ -68,7 +79,9 @@ fn stdin_is_empty() {
 fn a_tool_that_runs_too_long_is_killed() {
     let runner = RealRunner::new(None, &[]);
     let started = Instant::now();
-    let output = runner.run(&command("/bin/sleep", &["30"], 200, 1024)).unwrap();
+    let output = runner
+        .run(&command("/bin/sleep", &["30"], 200, 1024))
+        .unwrap();
     assert!(output.timed_out);
     assert!(!output.succeeded());
     assert!(started.elapsed() < Duration::from_secs(10));

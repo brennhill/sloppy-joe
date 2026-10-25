@@ -45,7 +45,18 @@ async fn fix_lockfiles(
     runner: &dyn ProcessRunner,
     rescan: &dyn CandidateScanner,
 ) -> Result<FixReport> {
-    let discovered = discover(&request.dir, request.project_type.as_deref(), &request.config)?;
+    if request.scratch_parent.starts_with(&request.dir) {
+        anyhow::bail!(
+            "the temporary directory {} is inside the project {}; point TMPDIR outside it so the tool cannot run in the working tree",
+            request.scratch_parent.display(),
+            request.dir.display()
+        );
+    }
+    let discovered = discover(
+        &request.dir,
+        request.project_type.as_deref(),
+        &request.config,
+    )?;
     let ctx = FixCtx {
         scan_root: &request.dir,
         config: &request.config,
@@ -69,7 +80,12 @@ async fn fix_lockfiles(
             Err(err) => {
                 project.problems = problems
                     .iter()
-                    .map(|problem| PlannedProblem::new(problem, &ecosystems::fixer::Verdict::human("the fix could not be planned")))
+                    .map(|problem| {
+                        PlannedProblem::new(
+                            problem,
+                            &ecosystems::fixer::Verdict::human("the fix could not be planned"),
+                        )
+                    })
                     .collect();
                 project.refuse(Outcome::Failed, format!("could not plan a fix: {err:#}"));
                 report.projects.push(project);
@@ -87,14 +103,22 @@ async fn fix_lockfiles(
             report.projects.push(project);
             continue;
         };
-        let key: Vec<PathBuf> = recipe.outputs.iter().chain(&recipe.deletions).cloned().collect();
+        let key: Vec<PathBuf> = recipe
+            .outputs
+            .iter()
+            .chain(&recipe.deletions)
+            .cloned()
+            .collect();
         if let Some((_, manifest, outcome)) = handled.iter().find(|(done, _, _)| *done == key) {
             project.command = Some(recipe.display.clone());
             if outcome.is_success() {
                 project.result = Outcome::Covered;
                 project.reason = Some(format!("fixed with {manifest}"));
             } else {
-                project.refuse(*outcome, format!("the shared lockfile fix for {manifest} did not succeed"));
+                project.refuse(
+                    *outcome,
+                    format!("the shared lockfile fix for {manifest} did not succeed"),
+                );
             }
             report.projects.push(project);
             continue;

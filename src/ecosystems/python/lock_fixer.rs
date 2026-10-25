@@ -65,9 +65,10 @@ fn recipe(
     };
     recipe.outputs = vec![lockfile.clone()];
     recipe.env = python_env();
-    Ok(Ok(Some(
-        recipe.inputs_if_present([spec.manifest_path.clone(), lockfile]),
-    )))
+    Ok(Ok(Some(recipe.inputs_if_present([
+        spec.manifest_path.clone(),
+        lockfile,
+    ]))))
 }
 
 fn python_env() -> Vec<(&'static str, EnvValue)> {
@@ -87,13 +88,20 @@ fn python_env() -> Vec<(&'static str, EnvValue)> {
         ("POETRY_CONFIG_DIR", EnvValue::ScratchDir("poetry-config")),
         ("POETRY_CACHE_DIR", EnvValue::ScratchDir("poetry-cache")),
         ("POETRY_DATA_DIR", EnvValue::ScratchDir("poetry-data")),
-        ("POETRY_VIRTUALENVS_PATH", EnvValue::ScratchDir("poetry-venvs")),
+        (
+            "POETRY_VIRTUALENVS_PATH",
+            EnvValue::ScratchDir("poetry-venvs"),
+        ),
     ]);
     env
 }
 
 fn read_toml(path: &Path) -> Result<toml::Value> {
-    match crate::untrusted::read(path, crate::untrusted::Format::Toml, parsers::MAX_MANIFEST_BYTES)? {
+    match crate::untrusted::read(
+        path,
+        crate::untrusted::Format::Toml,
+        parsers::MAX_MANIFEST_BYTES,
+    )? {
         crate::untrusted::Untrusted::Toml(value) => Ok(value),
         _ => anyhow::bail!("{} is not TOML", path.display()),
     }
@@ -115,7 +123,10 @@ fn refuse_tool_config(spec: &ProjectInputSpec, names: &[&str]) -> std::result::R
 }
 
 /// Locked packages that have no wheel: resolving them means building the sdist, which runs it.
-fn packages_without_wheels(lock: &toml::Value, wheels: impl Fn(&toml::value::Table) -> bool) -> Vec<String> {
+fn packages_without_wheels(
+    lock: &toml::Value,
+    wheels: impl Fn(&toml::value::Table) -> bool,
+) -> Vec<String> {
     lock.get("package")
         .and_then(|v| v.as_array())
         .into_iter()
@@ -126,7 +137,10 @@ fn packages_without_wheels(lock: &toml::Value, wheels: impl Fn(&toml::value::Tab
             Some(format!(
                 "{}@{}",
                 package.get("name")?.as_str()?,
-                package.get("version").and_then(|v| v.as_str()).unwrap_or("?")
+                package
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
             ))
         })
         .collect()
@@ -155,7 +169,9 @@ fn uv_preconditions(
         return Err("the project's metadata is dynamic, so uv would have to build it".to_string());
     }
     if table_path(pyproject, &["tool", "uv", "workspace"]).is_some() {
-        return Err("pyproject.toml declares a uv workspace, whose members are not copied".to_string());
+        return Err(
+            "pyproject.toml declares a uv workspace, whose members are not copied".to_string(),
+        );
     }
     // An index source only picks a registry; git, path, URL and workspace sources make uv clone,
     // read or build code outside the registry.
@@ -181,11 +197,14 @@ fn uv_preconditions(
         return Ok(());
     };
     refuse_without_wheels(packages_without_wheels(lock, |package| {
-        let local_root = package.get("source").and_then(|s| s.as_table()).is_some_and(|source| {
-            ["editable", "virtual", "directory", "path"]
-                .iter()
-                .any(|key| source.contains_key(*key))
-        });
+        let local_root = package
+            .get("source")
+            .and_then(|s| s.as_table())
+            .is_some_and(|source| {
+                ["editable", "virtual", "directory", "path"]
+                    .iter()
+                    .any(|key| source.contains_key(*key))
+            });
         local_root
             || package
                 .get("wheels")
@@ -201,11 +220,15 @@ fn poetry_preconditions(
 ) -> std::result::Result<(), Refusal> {
     refuse_tool_config(spec, &["poetry.toml"])?;
     if table_path(pyproject, &["tool", "poetry", "requires-plugins"]).is_some() {
-        return Err("pyproject.toml requires Poetry plugins, which Poetry installs and runs".to_string());
+        return Err(
+            "pyproject.toml requires Poetry plugins, which Poetry installs and runs".to_string(),
+        );
     }
     const SDIST_BUILD: &str = "poetry builds a source distribution when no wheel gives it the metadata, and has no flag to forbid that";
     let Some(lock) = old_lock else {
-        return Err(format!("there is no poetry.lock, so the packages to resolve are unknown and {SDIST_BUILD}"));
+        return Err(format!(
+            "there is no poetry.lock, so the packages to resolve are unknown and {SDIST_BUILD}"
+        ));
     };
     let locked: Vec<String> = lock
         .get("package")
@@ -219,7 +242,9 @@ fn poetry_preconditions(
         .parse_manifest(spec.project_dir(), spec)
         .map_err(|e| format!("{e:#}"))?;
     if let Some(new) = deps.iter().find(|dep| {
-        !locked.contains(&crate::lockfiles::python_hashes::normalize_name(dep.package_name()))
+        !locked.contains(&crate::lockfiles::python_hashes::normalize_name(
+            dep.package_name(),
+        ))
     }) {
         return Err(format!(
             "'{}' is not locked yet, so poetry would resolve it, and {SDIST_BUILD}",

@@ -107,7 +107,9 @@ pub(super) struct FixReport {
 
 impl FixReport {
     pub(super) fn success(&self) -> bool {
-        self.projects.iter().all(|project| project.result.is_success())
+        self.projects
+            .iter()
+            .all(|project| project.result.is_success())
     }
 
     pub(super) fn to_json(&self) -> String {
@@ -154,7 +156,13 @@ fn line(out: &mut String, text: impl AsRef<str>) {
 fn render_project(out: &mut String, project: &ProjectFix, write: bool) {
     line(out, &project.manifest);
     for problem in &project.problems {
-        line(out, format!("  problem [{}] {}: {}", problem.class, problem.name, problem.message));
+        line(
+            out,
+            format!(
+                "  problem [{}] {}: {}",
+                problem.class, problem.name, problem.message
+            ),
+        );
         if let Some(command) = &problem.command {
             line(out, format!("    command: {command}"));
         }
@@ -213,6 +221,9 @@ fn render_diff(out: &mut String, diff: &VersionDiff) {
         line(out, format!("    - {package}"));
     }
     if !diff.violations.is_empty() {
-        line(out, format!("    not version-preserving: {}", preview(&diff.violations)));
+        line(
+            out,
+            format!("    not version-preserving: {}", preview(&diff.violations)),
+        );
     }
 }

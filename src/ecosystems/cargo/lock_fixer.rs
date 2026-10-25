@@ -36,8 +36,12 @@ fn recipe(
     {
         return Ok(Ok(None));
     }
-    let lockfile = authoritative_cargo_lockfile_path(ctx.scan_root, &spec.manifest_path, ctx.config)?;
-    let root = lockfile.parent().expect("a lockfile has a directory").to_path_buf();
+    let lockfile =
+        authoritative_cargo_lockfile_path(ctx.scan_root, &spec.manifest_path, ctx.config)?;
+    let root = lockfile
+        .parent()
+        .expect("a lockfile has a directory")
+        .to_path_buf();
     let configs = match accepted_configs(ctx.scan_root, &root) {
         Ok(configs) => configs,
         Err(refusal) => return Ok(Err(refusal)),
@@ -45,11 +49,18 @@ fn recipe(
     let manifests = workspace_manifests(ctx, &root, &lockfile)?;
     let existing_lock = std::fs::metadata(&lockfile).is_ok_and(|m| m.len() > 0);
     let (display, args): (&str, &[&str]) = if existing_lock {
-        (remedy::CARGO_UPDATE_WORKSPACE.command, &["update", "--workspace"])
+        (
+            remedy::CARGO_UPDATE_WORKSPACE.command,
+            &["update", "--workspace"],
+        )
     } else {
-        (remedy::CARGO_GENERATE_LOCKFILE.command, &["generate-lockfile"])
+        (
+            remedy::CARGO_GENERATE_LOCKFILE.command,
+            &["generate-lockfile"],
+        )
     };
-    let mut recipe = Recipe::new(display, root.clone()).tool("cargo", (1, 50, 0), "cargo 1.50", args);
+    let mut recipe =
+        Recipe::new(display, root.clone()).tool("cargo", (1, 50, 0), "cargo 1.50", args);
     recipe.outputs = vec![lockfile.clone()];
     recipe.placeholders = package_placeholders(&manifests)?;
     recipe.env = cargo_env();
@@ -112,7 +123,11 @@ fn package_placeholders(manifests: &[PathBuf]) -> Result<Vec<PathBuf>> {
         if !parsers::path_detected(manifest)? {
             continue;
         }
-        let value = crate::untrusted::read(manifest, crate::untrusted::Format::Toml, parsers::MAX_MANIFEST_BYTES)?;
+        let value = crate::untrusted::read(
+            manifest,
+            crate::untrusted::Format::Toml,
+            parsers::MAX_MANIFEST_BYTES,
+        )?;
         if let crate::untrusted::Untrusted::Toml(value) = value
             && value.get("package").is_some()
         {
@@ -146,8 +161,12 @@ fn accepted_configs(scan_root: &Path, root: &Path) -> std::result::Result<Vec<Pa
 }
 
 fn check_config(path: &Path) -> std::result::Result<(), Refusal> {
-    let value = crate::untrusted::read(path, crate::untrusted::Format::Toml, parsers::MAX_MANIFEST_BYTES)
-        .map_err(|e| format!("{e:#}"))?;
+    let value = crate::untrusted::read(
+        path,
+        crate::untrusted::Format::Toml,
+        parsers::MAX_MANIFEST_BYTES,
+    )
+    .map_err(|e| format!("{e:#}"))?;
     let crate::untrusted::Untrusted::Toml(toml::Value::Table(table)) = value else {
         return Err(format!("{} is not a TOML table", path.display()));
     };
@@ -164,7 +183,10 @@ fn check_config(path: &Path) -> std::result::Result<(), Refusal> {
         };
         let Some(allowed) = allowed else { continue };
         let nested = |table: &toml::value::Table| {
-            table.keys().find(|k| !allowed.contains(&k.as_str())).cloned()
+            table
+                .keys()
+                .find(|k| !allowed.contains(&k.as_str()))
+                .cloned()
         };
         let offending = match (key.as_str(), value.as_table()) {
             ("registries", Some(registries)) => registries

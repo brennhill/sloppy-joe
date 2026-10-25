@@ -228,9 +228,7 @@ impl Recipe {
 }
 
 /// Literal environment values.
-pub(crate) fn literal_env(
-    pairs: &[(&'static str, &'static str)],
-) -> Vec<(&'static str, EnvValue)> {
+pub(crate) fn literal_env(pairs: &[(&'static str, &'static str)]) -> Vec<(&'static str, EnvValue)> {
     pairs
         .iter()
         .map(|(name, value)| (*name, EnvValue::Literal(value.to_string())))
@@ -262,18 +260,34 @@ pub(crate) const HUMAN_CHECKS: &[(&str, &str)] = &[
         checks::names::RESOLUTION_LOCKFILE_OUT_OF_SYNC,
         "which side is right is a decision, not a format fix",
     ),
-    (checks::names::METADATA_LOCKFILE_INTEGRITY_MISMATCH, ATTACK_HIDING),
+    (
+        checks::names::METADATA_LOCKFILE_INTEGRITY_MISMATCH,
+        ATTACK_HIDING,
+    ),
     (checks::names::METADATA_TARBALL_INTEGRITY, ATTACK_HIDING),
     (checks::names::METADATA_WHEEL_INTEGRITY, ATTACK_HIDING),
     (checks::names::RESOLUTION_SOURCE_MISMATCH, ATTACK_HIDING),
-    (checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE, ATTACK_HIDING),
-    (checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE, ATTACK_HIDING),
-    (checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE, ATTACK_HIDING),
-    (checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED, ATTACK_HIDING),
+    (
+        checks::names::RESOLUTION_UNTRUSTED_REGISTRY_SOURCE,
+        ATTACK_HIDING,
+    ),
+    (
+        checks::names::RESOLUTION_UNTRUSTED_GIT_SOURCE,
+        ATTACK_HIDING,
+    ),
+    (
+        checks::names::RESOLUTION_BLOCKED_PROVENANCE_REWRITE,
+        ATTACK_HIDING,
+    ),
+    (
+        checks::names::RESOLUTION_PRIVATE_REGISTRY_UNVETTED,
+        ATTACK_HIDING,
+    ),
 ];
 
 /// Issue checks that are lockfile problems even as warnings (the fixer plans them).
-pub(crate) const LOCKFILE_WARNING_CHECKS: &[&str] = &[crate::lockfiles::yarn::LOCKFILE_ORPHAN_ENTRIES];
+pub(crate) const LOCKFILE_WARNING_CHECKS: &[&str] =
+    &[crate::lockfiles::yarn::LOCKFILE_ORPHAN_ENTRIES];
 
 /// Whether an issue belongs in the plan: everything blocking, the lockfile warnings the catalog
 /// fixes, and any finding a regeneration must never touch.
@@ -342,7 +356,10 @@ pub(crate) fn plan(
         .filter_map(|(problem, _)| problem.remedy)
         .collect();
     tool_remedies.dedup_by_key(|remedy| remedy.id);
-    let blocked_elsewhere = verdicts.iter().flatten().any(|v| v.class != FixClass::Fixable);
+    let blocked_elsewhere = verdicts
+        .iter()
+        .flatten()
+        .any(|v| v.class != FixClass::Fixable);
     let outcome = match (tool_remedies.as_slice(), blocked_elsewhere) {
         ([], _) => None,
         ([_, _, ..], _) => Some(Err(
@@ -378,7 +395,10 @@ pub(crate) fn plan(
     }
     Ok(FixPlan {
         problems: problems.to_vec(),
-        verdicts: verdicts.into_iter().map(|v| v.expect("every problem has a verdict")).collect(),
+        verdicts: verdicts
+            .into_iter()
+            .map(|v| v.expect("every problem has a verdict"))
+            .collect(),
         recipe: built,
     })
 }
@@ -442,7 +462,10 @@ pub(crate) fn pin_mismatches(snapshot: &Snapshot) -> Vec<String> {
                 .map(|package| package.version.as_str())
                 .collect();
             (!locked.is_empty() && !locked.contains(&version.as_str())).then(|| {
-                format!("the manifest pins {name}@{version}, the lockfile locks {}", locked.join(", "))
+                format!(
+                    "the manifest pins {name}@{version}, the lockfile locks {}",
+                    locked.join(", ")
+                )
             })
         })
         .collect()

@@ -50,8 +50,20 @@ const PNPM_WORKSPACE_DENIED: &[&str] = &[
 /// Dependency specifiers that make the install fetch and prepare code, or read files the scratch
 /// copy does not hold.
 const SPEC_PREFIXES_REFUSED: &[&str] = &[
-    "git+", "git:", "git@", "github:", "gitlab:", "bitbucket:", "gist:", "http:", "https:",
-    "exec:", "patch:", "file:", "link:", "portal:",
+    "git+",
+    "git:",
+    "git@",
+    "github:",
+    "gitlab:",
+    "bitbucket:",
+    "gist:",
+    "http:",
+    "https:",
+    "exec:",
+    "patch:",
+    "file:",
+    "link:",
+    "portal:",
 ];
 
 const DEPENDENCY_SECTIONS: &[&str] = &[
@@ -78,7 +90,10 @@ fn rewrite_problems(ctx: &FixCtx<'_>, spec: &ProjectInputSpec, known: &[Problem]
     let Some(binding) = &spec.js_binding else {
         return Vec::new();
     };
-    let root = binding.root_manifest_path.parent().unwrap_or_else(|| spec.project_dir());
+    let root = binding
+        .root_manifest_path
+        .parent()
+        .unwrap_or_else(|| spec.project_dir());
     let Ok(manifests) = workspace_manifests(ctx, root) else {
         return Vec::new();
     };
@@ -92,7 +107,10 @@ fn rewrite_problems(ctx: &FixCtx<'_>, spec: &ProjectInputSpec, known: &[Problem]
             .and_then(|manifest| validate_js_manifest_security_policy(&shown, &manifest));
         if let Err(error) = checked {
             let problem = Problem::from_error(&error);
-            if !known.iter().any(|existing| existing.message == problem.message) {
+            if !known
+                .iter()
+                .any(|existing| existing.message == problem.message)
+            {
                 found.push(problem);
             }
         }
@@ -129,12 +147,24 @@ fn recipe(
     if let Err(refusal) = refuse_code_specs(&manifests) {
         return Ok(Err(refusal));
     }
-    let configs = [".npmrc", ".yarnrc.yml", "pnpm-workspace.yaml", "bunfig.toml"]
-        .iter()
-        .map(|name| root.join(name));
-    let lockfiles = ["npm-shrinkwrap.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]
-        .iter()
-        .map(|name| root.join(name));
+    let configs = [
+        ".npmrc",
+        ".yarnrc.yml",
+        "pnpm-workspace.yaml",
+        "bunfig.toml",
+    ]
+    .iter()
+    .map(|name| root.join(name));
+    let lockfiles = [
+        "npm-shrinkwrap.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+    ]
+    .iter()
+    .map(|name| root.join(name));
     Ok(Ok(Some(
         recipe
             .inputs_if_present(manifests)
@@ -144,22 +174,49 @@ fn recipe(
 }
 
 /// The lockfile-only install for the project's manager, or `None` when `remedy` is not one.
-fn manager_recipe(binding: &JsProjectBinding, root: &Path, remedy: &'static Remedy) -> Option<Recipe> {
-    let lockfile = |name: &str| binding.lockfile_path.clone().unwrap_or_else(|| root.join(name));
+fn manager_recipe(
+    binding: &JsProjectBinding,
+    root: &Path,
+    remedy: &'static Remedy,
+) -> Option<Recipe> {
+    let lockfile = |name: &str| {
+        binding
+            .lockfile_path
+            .clone()
+            .unwrap_or_else(|| root.join(name))
+    };
     let base = |output: PathBuf| {
         let mut recipe = Recipe::new(remedy.command, root.to_path_buf());
         recipe.outputs = vec![output];
         recipe
     };
     let recipe = match (binding.manager, remedy.id) {
-        (JsPackageManager::Npm, "npm-lockfile") => base(lockfile("package-lock.json"))
-            .tool("npm", (7, 0, 0), "npm 7.0", &["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"]),
+        (JsPackageManager::Npm, "npm-lockfile") => base(lockfile("package-lock.json")).tool(
+            "npm",
+            (7, 0, 0),
+            "npm 7.0",
+            &[
+                "install",
+                "--package-lock-only",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+            ],
+        ),
         (JsPackageManager::Npm, "npm-lockfile-upgrade") => {
             let mut recipe = base(lockfile("package-lock.json")).tool(
                 "npm",
                 (8, 1, 2),
                 "npm 8.1.2",
-                &["install", "--package-lock-only", "--ignore-scripts", "--lockfile-version", "3", "--no-audit", "--no-fund"],
+                &[
+                    "install",
+                    "--package-lock-only",
+                    "--ignore-scripts",
+                    "--lockfile-version",
+                    "3",
+                    "--no-audit",
+                    "--no-fund",
+                ],
             );
             // npm keeps going when it cannot fetch an old entry's metadata; that entry is unverified.
             recipe.failure_markers = &["Could not fetch metadata"];
@@ -170,19 +227,35 @@ fn manager_recipe(binding: &JsProjectBinding, root: &Path, remedy: &'static Reme
                 "pnpm",
                 (9, 0, 0),
                 "pnpm 9.0",
-                &["install", "--lockfile-only", "--ignore-scripts", "--ignore-pnpmfile", "--no-frozen-lockfile"],
+                &[
+                    "install",
+                    "--lockfile-only",
+                    "--ignore-scripts",
+                    "--ignore-pnpmfile",
+                    "--no-frozen-lockfile",
+                ],
             );
             recipe.old_snapshot = OldSnapshot::Reader(pnpm_old_snapshot);
             recipe
         }
-        (JsPackageManager::Bun, "bun-lockfile") => base(lockfile("bun.lock"))
-            .tool("bun", (1, 1, 43), "bun 1.1.43", &["install", "--lockfile-only", "--ignore-scripts"]),
+        (JsPackageManager::Bun, "bun-lockfile") => base(lockfile("bun.lock")).tool(
+            "bun",
+            (1, 1, 43),
+            "bun 1.1.43",
+            &["install", "--lockfile-only", "--ignore-scripts"],
+        ),
         (JsPackageManager::Bun, "bun-binary-lockfile") => {
             let mut recipe = base(root.join("bun.lock")).tool(
                 "bun",
                 (1, 1, 43),
                 "bun 1.1.43",
-                &["install", "--save-text-lockfile", "--frozen-lockfile", "--lockfile-only", "--ignore-scripts"],
+                &[
+                    "install",
+                    "--save-text-lockfile",
+                    "--frozen-lockfile",
+                    "--lockfile-only",
+                    "--ignore-scripts",
+                ],
             );
             recipe.deletions = vec![root.join("bun.lockb")];
             // `bun bun.lockb` prints the binary lockfile as a Yarn v1 lockfile. Bun only does so
@@ -228,7 +301,10 @@ fn manager_env() -> Vec<(&'static str, EnvValue)> {
     ]);
     env.extend([
         ("npm_config_userconfig", EnvValue::ScratchFile("npmrc-user")),
-        ("npm_config_globalconfig", EnvValue::ScratchFile("npmrc-global")),
+        (
+            "npm_config_globalconfig",
+            EnvValue::ScratchFile("npmrc-global"),
+        ),
         ("npm_config_cache", EnvValue::ScratchDir("npm-cache")),
         ("npm_config_store_dir", EnvValue::ScratchDir("pnpm-store")),
         ("COREPACK_HOME", EnvValue::ScratchDir("corepack")),
@@ -245,29 +321,52 @@ fn shadow_recipe(
     spec: &ProjectInputSpec,
     root: &Path,
 ) -> std::result::Result<Option<Recipe>, Refusal> {
-    let shadows: Vec<PathBuf> = ["npm-shrinkwrap.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]
-        .iter()
-        .map(|name| spec.project_dir().join(name))
-        .filter(|path| parsers::path_detected(path).unwrap_or(false))
-        .collect();
+    let shadows: Vec<PathBuf> = [
+        "npm-shrinkwrap.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+    ]
+    .iter()
+    .map(|name| spec.project_dir().join(name))
+    .filter(|path| parsers::path_detected(path).unwrap_or(false))
+    .collect();
     if shadows.is_empty() {
         return Ok(None);
     }
     let mut recipe = Recipe::new(
         format!(
             "remove {}",
-            shadows.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" and ")
+            shadows
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" and ")
         ),
         root.to_path_buf(),
     );
     recipe.deletions = shadows.clone();
     let manifests = workspace_manifests(ctx, root)?;
-    let configs = [".npmrc", ".yarnrc.yml", "pnpm-workspace.yaml", "bunfig.toml"]
-        .iter()
-        .map(|name| root.join(name));
-    let lockfiles = ["npm-shrinkwrap.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]
-        .iter()
-        .map(|name| root.join(name));
+    let configs = [
+        ".npmrc",
+        ".yarnrc.yml",
+        "pnpm-workspace.yaml",
+        "bunfig.toml",
+    ]
+    .iter()
+    .map(|name| root.join(name));
+    let lockfiles = [
+        "npm-shrinkwrap.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+    ]
+    .iter()
+    .map(|name| root.join(name));
     Ok(Some(
         recipe
             .inputs_if_present(manifests)
@@ -278,7 +377,10 @@ fn shadow_recipe(
 }
 
 /// The root manifest and every workspace member manifest under `root`.
-fn workspace_manifests(ctx: &FixCtx<'_>, root: &Path) -> std::result::Result<Vec<PathBuf>, Refusal> {
+fn workspace_manifests(
+    ctx: &FixCtx<'_>,
+    root: &Path,
+) -> std::result::Result<Vec<PathBuf>, Refusal> {
     let canonical = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let mut manifests = vec![root.join("package.json")];
     let workspace = find_js_workspace_root(&canonical, &canonical).map_err(|e| format!("{e:#}"))?;
@@ -298,11 +400,17 @@ fn workspace_manifests(ctx: &FixCtx<'_>, root: &Path) -> std::result::Result<Vec
 
 /// The code-execution surfaces of the JS package managers, beyond what the scan's own policy
 /// already blocks (docs/specs/fix-lockfile.md, Preconditions).
-fn preconditions(ctx: &FixCtx<'_>, root: &Path, manager: JsPackageManager) -> std::result::Result<(), Refusal> {
+fn preconditions(
+    ctx: &FixCtx<'_>,
+    root: &Path,
+    manager: JsPackageManager,
+) -> std::result::Result<(), Refusal> {
     let _ = ctx;
     for name in [".pnpmfile.cjs", ".pnpmfile.mjs", ".pnpmfile.js", ".yarnrc"] {
         if parsers::path_detected(&root.join(name)).unwrap_or(false) {
-            return Err(format!("{name} at the workspace root can run code during install"));
+            return Err(format!(
+                "{name} at the workspace root can run code during install"
+            ));
         }
     }
     refuse_npmrc(&root.join(".npmrc"))?;
@@ -310,13 +418,18 @@ fn preconditions(ctx: &FixCtx<'_>, root: &Path, manager: JsPackageManager) -> st
     refuse_yaml_keys(&root.join("pnpm-workspace.yaml"), PNPM_WORKSPACE_DENIED)?;
     let bunfig = root.join("bunfig.toml");
     if parsers::path_detected(&bunfig).unwrap_or(false) {
-        let text = crate::untrusted::read_text(&bunfig, crate::untrusted::Format::Text, parsers::MAX_MANIFEST_BYTES)
-            .map_err(|e| format!("{e:#}"))?;
+        let text = crate::untrusted::read_text(
+            &bunfig,
+            crate::untrusted::Format::Text,
+            parsers::MAX_MANIFEST_BYTES,
+        )
+        .map_err(|e| format!("{e:#}"))?;
         if text.contains("preload") {
             return Err("bunfig.toml preloads scripts".to_string());
         }
     }
-    let manifest = read_npm_manifest_value(&root.join("package.json")).map_err(|e| format!("{e:#}"))?;
+    let manifest =
+        read_npm_manifest_value(&root.join("package.json")).map_err(|e| format!("{e:#}"))?;
     if let Some(field) = manifest.get("packageManager").and_then(|v| v.as_str())
         && (field.contains("://") || field.contains('/'))
     {
@@ -325,8 +438,12 @@ fn preconditions(ctx: &FixCtx<'_>, root: &Path, manager: JsPackageManager) -> st
             crate::report::sanitize_for_terminal(field)
         ));
     }
-    if manager == JsPackageManager::Yarn && parsers::path_detected(&root.join(".yarn/plugins")).unwrap_or(false) {
-        return Err("the repository commits Yarn plugins (.yarn/plugins), which Yarn can load".to_string());
+    if manager == JsPackageManager::Yarn
+        && parsers::path_detected(&root.join(".yarn/plugins")).unwrap_or(false)
+    {
+        return Err(
+            "the repository commits Yarn plugins (.yarn/plugins), which Yarn can load".to_string(),
+        );
     }
     Ok(())
 }
@@ -341,9 +458,16 @@ fn refuse_npmrc(path: &Path) -> std::result::Result<(), Refusal> {
         if row.starts_with('#') || row.starts_with(';') {
             continue;
         }
-        let key = row.split('=').next().unwrap_or_default().trim().to_ascii_lowercase();
+        let key = row
+            .split('=')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
         if NPMRC_DENIED.contains(&key.as_str()) {
-            return Err(format!(".npmrc sets '{key}', which can run code or redirect what the install uses"));
+            return Err(format!(
+                ".npmrc sets '{key}', which can run code or redirect what the install uses"
+            ));
         }
     }
     Ok(())
@@ -353,8 +477,12 @@ fn refuse_yaml_keys(path: &Path, denied: &[&str]) -> std::result::Result<(), Ref
     if !parsers::path_detected(path).unwrap_or(false) {
         return Ok(());
     }
-    let value = match crate::untrusted::read(path, crate::untrusted::Format::Yaml, parsers::MAX_MANIFEST_BYTES)
-        .map_err(|e| format!("{e:#}"))?
+    let value = match crate::untrusted::read(
+        path,
+        crate::untrusted::Format::Yaml,
+        parsers::MAX_MANIFEST_BYTES,
+    )
+    .map_err(|e| format!("{e:#}"))?
     {
         crate::untrusted::Untrusted::Yaml(value) => value,
         _ => return Err(format!("{} is not YAML", path.display())),
@@ -381,7 +509,9 @@ fn refuse_code_specs(manifests: &[PathBuf]) -> std::result::Result<(), Refusal> 
             for (name, spec) in entries {
                 let spec = spec.as_str().unwrap_or_default().trim();
                 let target = spec.strip_prefix("npm:").unwrap_or(spec);
-                let refused = SPEC_PREFIXES_REFUSED.iter().any(|prefix| target.starts_with(prefix))
+                let refused = SPEC_PREFIXES_REFUSED
+                    .iter()
+                    .any(|prefix| target.starts_with(prefix))
                     || looks_like_github_shorthand(target);
                 if refused {
                     return Err(format!(

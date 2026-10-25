@@ -35,11 +35,16 @@ fn assert_remedy(files: &[(&str, &str)], project_type: &str, expected: &'static 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-const PACKAGE_JSON: &str = r#"{"name":"app","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}"#;
+const PACKAGE_JSON: &str =
+    r#"{"name":"app","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}"#;
 
 #[test]
 fn missing_npm_lockfile_names_the_lockfile_only_install() {
-    assert_remedy(&[("package.json", PACKAGE_JSON)], "npm", &remedy::NPM_LOCKFILE);
+    assert_remedy(
+        &[("package.json", PACKAGE_JSON)],
+        "npm",
+        &remedy::NPM_LOCKFILE,
+    );
 }
 
 #[test]
@@ -97,7 +102,10 @@ fn missing_composer_lockfile_names_composer_update() {
 #[test]
 fn missing_gemfile_lock_names_bundle_lock() {
     assert_remedy(
-        &[("Gemfile", "source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n")],
+        &[(
+            "Gemfile",
+            "source 'https://rubygems.org'\ngem 'rake', '13.0.6'\n",
+        )],
         "ruby",
         &remedy::BUNDLE_LOCK,
     );

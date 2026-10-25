@@ -12,6 +12,9 @@ use crate::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// The old lockfile and what its projects reach (`None`: everything counts as reachable).
+type OldLock = (Snapshot, Option<HashSet<(String, String)>>);
+
 /// Output kept from a tool, per stream; enough to explain a failure.
 const OUTPUT_CAP: usize = 1024 * 1024;
 
@@ -78,13 +81,19 @@ pub(super) struct ToolRun<'a> {
 }
 
 impl ToolRun<'_> {
-    fn env(&self, recipe_env: &[(&'static str, EnvValue)]) -> std::result::Result<Vec<(String, String)>, Refusal> {
+    fn env(
+        &self,
+        recipe_env: &[(&'static str, EnvValue)],
+    ) -> std::result::Result<Vec<(String, String)>, Refusal> {
         let home = self.scratch.home();
         let path = |rel: &str| home.join(rel).display().to_string();
         let mut env = vec![
             ("PATH".to_string(), self.runner.search_path()),
             ("HOME".to_string(), home.display().to_string()),
-            ("TMPDIR".to_string(), self.scratch.tmp().display().to_string()),
+            (
+                "TMPDIR".to_string(),
+                self.scratch.tmp().display().to_string(),
+            ),
             ("XDG_CONFIG_HOME".to_string(), path(".config")),
             ("XDG_CACHE_HOME".to_string(), path(".cache")),
             ("XDG_DATA_HOME".to_string(), path(".local/share")),
@@ -166,8 +175,18 @@ impl ToolRun<'_> {
                 tool.program, tool.label
             )
         })?;
-        let version_args: Vec<String> = tool.version_args.iter().map(|arg| arg.to_string()).collect();
-        let output = self.run(&program, &version_args, &self.scratch.home(), env, 64 * 1024)?;
+        let version_args: Vec<String> = tool
+            .version_args
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        let output = self.run(
+            &program,
+            &version_args,
+            &self.scratch.home(),
+            env,
+            64 * 1024,
+        )?;
         let version = parse_version(&format!("{}\n{}", output.stdout, output.stderr))
             .filter(|_| output.succeeded())
             .ok_or_else(|| {
@@ -290,7 +309,10 @@ impl Execution<'_> {
         let old = if self.recipe.outputs.is_empty() {
             None
         } else {
-            Some(self.old_snapshot(layout, tool, program.as_deref(), &env).map_err(refuse)?)
+            Some(
+                self.old_snapshot(layout, tool, program.as_deref(), &env)
+                    .map_err(refuse)?,
+            )
         };
         if let Some((snapshot, _)) = &old
             && self.recipe.pins_must_match
@@ -305,17 +327,26 @@ impl Execution<'_> {
         }
         if let Some(program) = &program {
             let cwd = layout.in_work(&self.recipe.workdir).map_err(fail)?;
-            let output = tool.run(program, &self.recipe.args, &cwd, &env, OUTPUT_CAP).map_err(fail)?;
+            let output = tool
+                .run(program, &self.recipe.args, &cwd, &env, OUTPUT_CAP)
+                .map_err(fail)?;
             self.check_output(&output).map_err(fail)?;
         }
         ensure_inputs_untouched(layout, self.recipe).map_err(refuse)?;
         build_verify_tree(layout, self.recipe).map_err(fail)?;
         let verify_root = layout.in_verify(&self.request.dir).map_err(fail)?;
-        let candidate_tree = discover(&verify_root, self.request.project_type.as_deref(), &self.request.config)
-            .map_err(|err| refuse(format!("the candidate could not be scanned: {err:#}")))?;
-        self.ensure_no_problems_left(&candidate_tree, layout).map_err(refuse)?;
+        let candidate_tree = discover(
+            &verify_root,
+            self.request.project_type.as_deref(),
+            &self.request.config,
+        )
+        .map_err(|err| refuse(format!("the candidate could not be scanned: {err:#}")))?;
+        self.ensure_no_problems_left(&candidate_tree, layout)
+            .map_err(refuse)?;
         if let Some((old, reachable)) = old {
-            let candidate = self.candidate_snapshot(&candidate_tree, layout).map_err(refuse)?;
+            let candidate = self
+                .candidate_snapshot(&candidate_tree, layout)
+                .map_err(refuse)?;
             let diff = compare(&old, reachable.as_ref(), &candidate);
             let violations = diff.violations.clone();
             project.diff = Some(diff);
@@ -326,10 +357,13 @@ impl Execution<'_> {
                 )));
             }
         }
-        self.rescan_candidate(&verify_root, tool.scratch).await.map_err(refuse)?;
+        self.rescan_candidate(&verify_root, tool.scratch)
+            .await
+            .map_err(refuse)?;
         project.result = Outcome::Verified;
         if self.request.write {
-            super::apply::write_candidate(layout, self.recipe, &originals, project).map_err(fail)?;
+            super::apply::write_candidate(layout, self.recipe, &originals, project)
+                .map_err(fail)?;
             project.result = Outcome::Written;
         }
         Ok(())
@@ -347,12 +381,19 @@ impl Execution<'_> {
             return Err(format!(
                 "{} failed (exit status {}):\n{}",
                 self.recipe.display,
-                output.status.map_or("none".to_string(), |code| code.to_string()),
+                output
+                    .status
+                    .map_or("none".to_string(), |code| code.to_string()),
                 output.tail()
             ));
         }
         let text = format!("{}\n{}", output.stdout, output.stderr);
-        if let Some(marker) = self.recipe.failure_markers.iter().find(|m| text.contains(**m)) {
+        if let Some(marker) = self
+            .recipe
+            .failure_markers
+            .iter()
+            .find(|m| text.contains(**m))
+        {
             return Err(format!(
                 "{} reported '{marker}', so its lockfile cannot be trusted:\n{}",
                 self.recipe.display,
@@ -369,9 +410,11 @@ impl Execution<'_> {
         tool: &ToolRun<'_>,
         program: Option<&Path>,
         env: &[(String, String)],
-    ) -> std::result::Result<(Snapshot, Option<HashSet<(String, String)>>), Refusal> {
+    ) -> std::result::Result<OldLock, Refusal> {
         let unreadable = |err: anyhow::Error| {
-            format!("the current lockfile could not be read, so version preservation cannot be proven: {err:#}")
+            format!(
+                "the current lockfile could not be read, so version preservation cannot be proven: {err:#}"
+            )
         };
         match &self.recipe.old_snapshot {
             OldSnapshot::SameAsCandidate => {
@@ -404,7 +447,13 @@ impl Execution<'_> {
             OldSnapshot::ToolPrint { args, parse } => {
                 let program = program.ok_or("printing the old lockfile needs the tool")?;
                 let cwd = layout.in_work(&self.recipe.workdir)?;
-                let output = tool.run(program, args, &cwd, env, crate::fsutil::MAX_MANIFEST_BYTES as usize)?;
+                let output = tool.run(
+                    program,
+                    args,
+                    &cwd,
+                    env,
+                    crate::fsutil::MAX_MANIFEST_BYTES as usize,
+                )?;
                 if !output.succeeded() || output.truncated {
                     return Err(format!(
                         "the current lockfile could not be printed, so version preservation cannot be proven:\n{}",
@@ -423,14 +472,22 @@ impl Execution<'_> {
         layout: &Layout,
     ) -> std::result::Result<Snapshot, Refusal> {
         let manifest = layout.in_verify(&self.spec.manifest_path)?;
-        let spec = tree
-            .spec_for(&manifest)
-            .ok_or_else(|| format!("the candidate tree has no project at {}", manifest.display()))?;
-        (self.recipe.snapshot)(spec).map_err(|err| format!("the candidate lockfile could not be read: {err:#}"))
+        let spec = tree.spec_for(&manifest).ok_or_else(|| {
+            format!(
+                "the candidate tree has no project at {}",
+                manifest.display()
+            )
+        })?;
+        (self.recipe.snapshot)(spec)
+            .map_err(|err| format!("the candidate lockfile could not be read: {err:#}"))
     }
 
     /// The scanner's preflight and lockfile stages report nothing for any project of the candidate.
-    fn ensure_no_problems_left(&self, tree: &Discovered, layout: &Layout) -> std::result::Result<(), Refusal> {
+    fn ensure_no_problems_left(
+        &self,
+        tree: &Discovered,
+        layout: &Layout,
+    ) -> std::result::Result<(), Refusal> {
         let mut left = Vec::new();
         for spec in &tree.specs {
             for problem in tree.problems(spec, &self.request.config) {
@@ -446,13 +503,25 @@ impl Execution<'_> {
         if left.is_empty() {
             return Ok(());
         }
-        Err(format!("the candidate still has lockfile problems: {}", preview(&left)))
+        Err(format!(
+            "the candidate still has lockfile problems: {}",
+            preview(&left)
+        ))
     }
 
-    async fn rescan_candidate(&self, root: &Path, scratch: &Scratch) -> std::result::Result<(), Refusal> {
+    async fn rescan_candidate(
+        &self,
+        root: &Path,
+        scratch: &Scratch,
+    ) -> std::result::Result<(), Refusal> {
         let report = self
             .rescan
-            .scan(root, self.request.project_type.as_deref(), &self.request.config, &scratch.cache())
+            .scan(
+                root,
+                self.request.project_type.as_deref(),
+                &self.request.config,
+                &scratch.cache(),
+            )
             .await
             .map_err(|err| format!("the full rescan of the candidate failed: {err:#}"))?;
         let blocking: Vec<String> = report

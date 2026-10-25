@@ -67,8 +67,8 @@ pub(crate) fn read_validated_pnpm_lockfile(
                 err
             )
         })?;
-    let lockfile: serde_yaml::Value = crate::lockfiles::parse_pnpm_lock_guarded(&content)
-        .map_err(|err| {
+    let lockfile: serde_yaml::Value =
+        crate::lockfiles::parse_pnpm_lock_guarded(&content).map_err(|err| {
             crate::remedy::rewrap(err, |err| {
                 format!("Broken lockfile '{}': {}", path.display(), err)
             })

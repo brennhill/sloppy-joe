@@ -16,7 +16,12 @@ pub(crate) struct LockedPackage {
     pub(crate) source: Option<String>,
 }
 
-fn entry(name: &str, version: &str, integrity: Option<String>, source: Option<String>) -> LockedPackage {
+fn entry(
+    name: &str,
+    version: &str,
+    integrity: Option<String>,
+    source: Option<String>,
+) -> LockedPackage {
     LockedPackage {
         name: name.to_string(),
         version: version.to_string(),
@@ -72,7 +77,10 @@ impl LockfileData {
     /// `(name, version)` of every package the scanned project reaches, or `None` when the format's
     /// reachability is not modeled (every locked package then counts as reachable).
     pub(crate) fn reachable_packages(&self) -> Option<HashSet<(String, String)>> {
-        let python = matches!(self.parsed, ParsedLockfile::Python(_) | ParsedLockfile::Uv(_));
+        let python = matches!(
+            self.parsed,
+            ParsedLockfile::Python(_) | ParsedLockfile::Uv(_)
+        );
         if matches!(
             self.parsed,
             ParsedLockfile::NpmLegacy { .. } | ParsedLockfile::None
@@ -92,9 +100,11 @@ impl LockfileData {
             .iter()
             .map(|(key, resolved)| (name(&key.package), resolved.version.clone()))
             .collect();
-        reachable.extend(self.transitive_deps.iter().filter_map(|dep| {
-            Some((name(dep.package_name()), dep.version.clone()?))
-        }));
+        reachable.extend(
+            self.transitive_deps
+                .iter()
+                .filter_map(|dep| Some((name(dep.package_name()), dep.version.clone()?))),
+        );
         Some(reachable)
     }
 }
@@ -110,8 +120,13 @@ fn npm_packages(value: &serde_json::Value) -> Vec<LockedPackage> {
                 && !entry.get("link").and_then(|v| v.as_bool()).unwrap_or(false)
         })
         .filter_map(|(key, entry)| {
-            let installed = key.rsplit_once("node_modules/").map_or(key.as_str(), |(_, n)| n);
-            let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or(installed);
+            let installed = key
+                .rsplit_once("node_modules/")
+                .map_or(key.as_str(), |(_, n)| n);
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(installed);
             let version = entry.get("version").and_then(|v| v.as_str())?;
             Some(entry_from_json(name, version, entry))
         })
@@ -215,7 +230,11 @@ fn legacy_pnpm_key(key: &str) -> Option<(String, String)> {
     // 6.x and 9.x: name@version; 5.x: name/version with an optional `_peer` suffix.
     // Whichever separator comes first ends the name: a 5.x peer suffix can contain an `@`.
     let split = rest.find(['@', '/'])?;
-    let name = format!("{}{}", if scoped { "@" } else { "" }, &body[..name_end + split]);
+    let name = format!(
+        "{}{}",
+        if scoped { "@" } else { "" },
+        &body[..name_end + split]
+    );
     let version = rest[split + 1..].split('_').next().unwrap_or_default();
     (!name.is_empty() && !version.is_empty()).then(|| (name, version.to_string()))
 }
@@ -268,7 +287,12 @@ fn cargo_packages(value: &toml::Value) -> Vec<LockedPackage> {
                     .and_then(|(_, v)| v.as_str().map(str::to_string))
             });
             let checksum = toml_str(package, "checksum").or(legacy);
-            Some(entry(&name, &version, checksum, toml_str(package, "source")))
+            Some(entry(
+                &name,
+                &version,
+                checksum,
+                toml_str(package, "source"),
+            ))
         })
         .collect()
 }

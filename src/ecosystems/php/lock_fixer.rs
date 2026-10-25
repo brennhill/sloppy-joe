@@ -8,8 +8,19 @@ use crate::remedy::{self, Remedy};
 
 /// Repository types that make Composer run version-control tools or read local code.
 const REPOSITORY_TYPES_REFUSED: &[&str] = &[
-    "vcs", "git", "github", "gitlab", "git-bitbucket", "bitbucket", "hg", "svn", "fossil",
-    "perforce", "path", "artifact", "package",
+    "vcs",
+    "git",
+    "github",
+    "gitlab",
+    "git-bitbucket",
+    "bitbucket",
+    "hg",
+    "svn",
+    "fossil",
+    "perforce",
+    "path",
+    "artifact",
+    "package",
 ];
 
 pub(super) fn lockfile_fixer(
@@ -44,12 +55,27 @@ fn recipe(
     let (display, args): (&str, &[&str]) = if existing {
         (
             remedy::COMPOSER_LOCK.command,
-            &["update", "--lock", "--no-install", "--no-scripts", "--no-plugins", "--no-interaction", "--no-progress"],
+            &[
+                "update",
+                "--lock",
+                "--no-install",
+                "--no-scripts",
+                "--no-plugins",
+                "--no-interaction",
+                "--no-progress",
+            ],
         )
     } else {
         (
             remedy::COMPOSER_LOCK_MISSING.command,
-            &["update", "--no-install", "--no-scripts", "--no-plugins", "--no-interaction", "--no-progress"],
+            &[
+                "update",
+                "--no-install",
+                "--no-scripts",
+                "--no-plugins",
+                "--no-interaction",
+                "--no-progress",
+            ],
         )
     };
     let mut recipe = Recipe::new(display, spec.project_dir().to_path_buf()).tool(
@@ -60,9 +86,10 @@ fn recipe(
     );
     recipe.outputs = vec![lockfile.clone()];
     recipe.env = composer_env();
-    Ok(Ok(Some(
-        recipe.inputs_if_present([spec.manifest_path.clone(), lockfile]),
-    )))
+    Ok(Ok(Some(recipe.inputs_if_present([
+        spec.manifest_path.clone(),
+        lockfile,
+    ]))))
 }
 
 fn composer_env() -> Vec<(&'static str, EnvValue)> {
@@ -88,7 +115,10 @@ fn preconditions(manifest: &serde_json::Value) -> std::result::Result<(), Refusa
         _ => Vec::new(),
     };
     for repository in repositories {
-        let kind = repository.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+        let kind = repository
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if REPOSITORY_TYPES_REFUSED.contains(&kind) {
             return Err(format!(
                 "composer.json declares a '{}' repository, which makes Composer run version-control tools or read local code",

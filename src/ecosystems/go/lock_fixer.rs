@@ -142,7 +142,10 @@ mod tests {
                 .map(|(_, value)| value.clone())
         };
         assert_eq!(get("GOTOOLCHAIN"), Some(EnvValue::Literal("local".into())));
-        assert_eq!(get("GOSUMDB"), Some(EnvValue::Literal("sum.golang.org".into())));
+        assert_eq!(
+            get("GOSUMDB"),
+            Some(EnvValue::Literal("sum.golang.org".into()))
+        );
         assert_eq!(get("GOVCS"), Some(EnvValue::Literal("*:off".into())));
         assert!(get("GOFLAGS").is_some_and(|v| v == EnvValue::Literal("-modcacherw".into())));
     }

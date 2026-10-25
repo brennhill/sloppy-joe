@@ -28,7 +28,10 @@ fn npmrc_settings_that_run_code_are_refused() {
         let dir = dir_with(&[(".npmrc", setting)]);
         assert!(refuse_npmrc(&dir.join(".npmrc")).is_err(), "{setting}");
     }
-    let dir = dir_with(&[(".npmrc", "# comment\nregistry=https://registry.npmjs.org/\n")]);
+    let dir = dir_with(&[(
+        ".npmrc",
+        "# comment\nregistry=https://registry.npmjs.org/\n",
+    )]);
     assert!(refuse_npmrc(&dir.join(".npmrc")).is_ok());
 }
 
@@ -36,7 +39,10 @@ fn npmrc_settings_that_run_code_are_refused() {
 fn yarn_and_pnpm_settings_that_load_code_are_refused() {
     let dir = dir_with(&[(".yarnrc.yml", "yarnPath: .yarn/releases/yarn.cjs\n")]);
     assert!(refuse_yaml_keys(&dir.join(".yarnrc.yml"), &["yarnPath", "plugins"]).is_err());
-    let dir = dir_with(&[("pnpm-workspace.yaml", "packages:\n  - 'a/*'\nconfigDependencies:\n  x: 1.0.0\n")]);
+    let dir = dir_with(&[(
+        "pnpm-workspace.yaml",
+        "packages:\n  - 'a/*'\nconfigDependencies:\n  x: 1.0.0\n",
+    )]);
     assert!(refuse_yaml_keys(&dir.join("pnpm-workspace.yaml"), PNPM_WORKSPACE_DENIED).is_err());
     let dir = dir_with(&[("pnpm-workspace.yaml", "packages:\n  - 'a/*'\n")]);
     assert!(refuse_yaml_keys(&dir.join("pnpm-workspace.yaml"), PNPM_WORKSPACE_DENIED).is_ok());
@@ -57,9 +63,13 @@ fn git_url_path_and_exec_dependencies_are_refused() {
     ] {
         let manifest = format!(r#"{{"name":"app","dependencies":{{"x":"{spec}"}}}}"#);
         let dir = dir_with(&[("package.json", &manifest)]);
-        assert!(refuse_code_specs(&[dir.join("package.json")]).is_err(), "{spec}");
+        assert!(
+            refuse_code_specs(&[dir.join("package.json")]).is_err(),
+            "{spec}"
+        );
     }
-    let manifest = r#"{"name":"app","dependencies":{"a":"^1.0.0","b":"npm:real@1.0.0","@s/c":"workspace:*"}}"#;
+    let manifest =
+        r#"{"name":"app","dependencies":{"a":"^1.0.0","b":"npm:real@1.0.0","@s/c":"workspace:*"}}"#;
     let dir = dir_with(&[("package.json", manifest)]);
     assert!(refuse_code_specs(&[dir.join("package.json")]).is_ok());
 }
@@ -77,7 +87,10 @@ fn a_package_manager_download_url_is_refused() {
         specs: &[],
     };
     assert!(preconditions(&ctx, &dir, JsPackageManager::Yarn).is_err());
-    let dir = dir_with(&[("package.json", r#"{"name":"app","packageManager":"yarn@4.9.2"}"#)]);
+    let dir = dir_with(&[(
+        "package.json",
+        r#"{"name":"app","packageManager":"yarn@4.9.2"}"#,
+    )]);
     assert!(preconditions(&ctx, &dir, JsPackageManager::Yarn).is_ok());
 }
 

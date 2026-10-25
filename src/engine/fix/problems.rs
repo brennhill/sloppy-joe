@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 pub(super) struct Discovered {
     pub(super) root: PathBuf,
     pub(super) specs: Vec<ProjectInputSpec>,
-    binding_errors: HashMap<PathBuf, String>,
-    binding_remedies: HashMap<PathBuf, Problem>,
+    /// Projects that could not be bound, with the binding error as their problem.
+    binding_errors: HashMap<PathBuf, Problem>,
 }
 
 pub(super) fn discover(
@@ -21,18 +21,14 @@ pub(super) fn discover(
     config: &config::SloppyJoeConfig,
 ) -> Result<Discovered> {
     let mut specs = unbound_project_inputs_with_config(root, project_type, config)?;
-    let errors = ecosystems::bind(root, &mut specs);
-    let mut binding_errors = HashMap::new();
-    let mut binding_remedies = HashMap::new();
-    for (path, error) in errors {
-        binding_remedies.insert(path.clone(), Problem::from_error(&error));
-        binding_errors.insert(path, format!("{error:#}"));
-    }
+    let binding_errors = ecosystems::bind(root, &mut specs)
+        .into_iter()
+        .map(|(path, error)| (path, Problem::from_error(&error)))
+        .collect();
     Ok(Discovered {
         root: root.to_path_buf(),
         specs,
         binding_errors,
-        binding_remedies,
     })
 }
 
@@ -55,7 +51,9 @@ impl Discovered {
 
     /// The spec whose manifest is `manifest`, if discovered.
     pub(super) fn spec_for(&self, manifest: &Path) -> Option<&ProjectInputSpec> {
-        self.specs.iter().find(|spec| spec.manifest_path == manifest)
+        self.specs
+            .iter()
+            .find(|spec| spec.manifest_path == manifest)
     }
 
     /// Everything `check` would report as a lockfile problem for `spec`.
@@ -64,7 +62,7 @@ impl Discovered {
         spec: &ProjectInputSpec,
         config: &config::SloppyJoeConfig,
     ) -> Vec<Problem> {
-        if let Some(problem) = self.binding_remedies.get(&spec.manifest_path) {
+        if let Some(problem) = self.binding_errors.get(&spec.manifest_path) {
             return vec![problem.clone()];
         }
         let opts = scan_options();

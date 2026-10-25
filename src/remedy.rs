@@ -318,7 +318,10 @@ pub fn find(error: &anyhow::Error) -> Option<&'static Remedy> {
 }
 
 /// Rewrap `error` with a new message built from it, keeping its remedy when it has one.
-pub fn rewrap(error: anyhow::Error, message: impl FnOnce(&anyhow::Error) -> String) -> anyhow::Error {
+pub fn rewrap(
+    error: anyhow::Error,
+    message: impl FnOnce(&anyhow::Error) -> String,
+) -> anyhow::Error {
     let text = message(&error);
     match find(&error) {
         Some(remedy) => anyhow::Error::new(LockfileProblem {
@@ -361,15 +364,25 @@ mod tests {
         assert_eq!(find(&wrapped), Some(&PNPM_LOCKFILE));
         let rewrapped = rewrap(wrapped, |inner| format!("Broken manifest: {inner:#}"));
         assert_eq!(find(&rewrapped), Some(&PNPM_LOCKFILE));
-        assert!(rewrapped.to_string().starts_with("Broken manifest: while reading"));
+        assert!(
+            rewrapped
+                .to_string()
+                .starts_with("Broken manifest: while reading")
+        );
         let plain = rewrap(anyhow::anyhow!("other"), |inner| format!("x: {inner}"));
         assert_eq!(find(&plain), None);
     }
 
     #[test]
     fn missing_entry_remedies_follow_the_lockfile_name() {
-        assert_eq!(for_missing_entry("a/b/pnpm-lock.yaml"), Some(&PNPM_LOCKFILE));
-        assert_eq!(for_missing_entry("Cargo.lock"), Some(&CARGO_UPDATE_WORKSPACE));
+        assert_eq!(
+            for_missing_entry("a/b/pnpm-lock.yaml"),
+            Some(&PNPM_LOCKFILE)
+        );
+        assert_eq!(
+            for_missing_entry("Cargo.lock"),
+            Some(&CARGO_UPDATE_WORKSPACE)
+        );
         assert_eq!(for_missing_entry("yarn.lock"), None);
     }
 }

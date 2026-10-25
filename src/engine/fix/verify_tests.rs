@@ -32,7 +32,9 @@ fn a_changed_version_is_refused() {
     let new = snapshot(vec![package("a", "1.0.1", "h2")], &["a"]);
     let diff = compare(&old, None, &new);
     assert!(
-        diff.violations.iter().any(|v| v.contains("a@1.0.0 changed version")),
+        diff.violations
+            .iter()
+            .any(|v| v.contains("a@1.0.0 changed version")),
         "{:?}",
         diff.violations
     );
@@ -66,7 +68,11 @@ fn additions_need_a_direct_dependency_the_lockfile_lacked() {
         &["a"],
     );
     let diff = compare(&old, None, &new);
-    assert!(diff.violations[0].contains("adds 1 package"), "{:?}", diff.violations);
+    assert!(
+        diff.violations[0].contains("adds 1 package"),
+        "{:?}",
+        diff.violations
+    );
 
     let old = snapshot(vec![package("a", "1.0.0", "h1")], &["a", "b"]);
     let diff = compare(&old, None, &new);
@@ -86,7 +92,10 @@ fn without_an_old_lockfile_everything_is_added() {
 #[test]
 fn only_unreachable_packages_may_be_removed() {
     let old = snapshot(
-        vec![package("a", "1.0.0", "h1"), package("orphan", "3.0.0", "h3")],
+        vec![
+            package("a", "1.0.0", "h1"),
+            package("orphan", "3.0.0", "h3"),
+        ],
         &["a"],
     );
     let new = snapshot(vec![package("a", "1.0.0", "h1")], &["a"]);

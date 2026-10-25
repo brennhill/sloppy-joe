@@ -40,12 +40,19 @@ fn only_reviewed_cargo_settings_are_accepted() {
 #[test]
 fn the_cargo_environment_clears_every_wrapper() {
     let env = cargo_env();
-    for name in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER"] {
+    for name in [
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+    ] {
         assert!(
             env.iter()
                 .any(|(key, value)| *key == name && *value == EnvValue::Literal(String::new())),
             "{name}"
         );
     }
-    assert!(env.iter().any(|(key, value)| *key == "RUSTC" && *value == EnvValue::TrustedProgram("rustc")));
+    assert!(
+        env.iter()
+            .any(|(key, value)| *key == "RUSTC" && *value == EnvValue::TrustedProgram("rustc"))
+    );
 }

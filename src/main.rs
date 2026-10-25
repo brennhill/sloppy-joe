@@ -251,7 +251,8 @@ enum Commands {
     /// fix). A fixable one is run in a private scratch copy with scripts disabled; the result must
     /// keep every locked version, integrity and source and pass `check --full`, and its version
     /// diff is printed. Nothing is written without --write. Exit status 0 means nothing needed
-    /// fixing or every fix was verified; 1 means a problem remains or a fix was refused.
+    /// fixing or every fix was verified; 1 means a problem remains, a fix was refused or a tool
+    /// failed; 2 means a runtime error.
     FixLockfile(sloppy_joe::FixLockfileArgs),
 }
 

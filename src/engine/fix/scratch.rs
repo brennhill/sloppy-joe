@@ -35,7 +35,10 @@ impl Scratch {
         let scratch = Self { root };
         let metadata = std::fs::symlink_metadata(&scratch.root)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            anyhow::bail!("scratch directory {} is not a plain directory", scratch.root.display());
+            anyhow::bail!(
+                "scratch directory {} is not a plain directory",
+                scratch.root.display()
+            );
         }
         for dir in ["home", "tmp", "work", "verify", "cache"] {
             std::fs::create_dir(scratch.root.join(dir))?;
@@ -127,8 +130,12 @@ pub(super) fn copy_file(from: &Path, to: &Path) -> Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(from, to)
-        .with_context(|| format!("could not copy {} into the scratch directory", from.display()))?;
+    std::fs::copy(from, to).with_context(|| {
+        format!(
+            "could not copy {} into the scratch directory",
+            from.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -150,7 +157,12 @@ mod tests {
             let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o700);
         }
-        for dir in [scratch.home(), scratch.work(), scratch.verify(), scratch.cache()] {
+        for dir in [
+            scratch.home(),
+            scratch.work(),
+            scratch.verify(),
+            scratch.cache(),
+        ] {
             assert!(dir.is_dir());
         }
         std::fs::write(scratch.work().join("f"), "x").unwrap();
@@ -167,8 +179,7 @@ mod tests {
         let nested = scratch.home().join("mod/cache");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("f"), "x").unwrap();
-        std::fs::set_permissions(nested.join("f"), std::fs::Permissions::from_mode(0o400))
-            .unwrap();
+        std::fs::set_permissions(nested.join("f"), std::fs::Permissions::from_mode(0o400)).unwrap();
         std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o500)).unwrap();
         drop(scratch);
         assert!(!root.exists());

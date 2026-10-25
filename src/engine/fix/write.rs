@@ -68,7 +68,9 @@ pub(super) fn replace_with_backup(path: &Path, content: &[u8]) -> Result<Option<
         }
         Ok(_) => anyhow::bail!("{} is not a regular file; not replacing it", path.display()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(err).with_context(|| format!("could not inspect {}", path.display())),
+        Err(err) => {
+            return Err(err).with_context(|| format!("could not inspect {}", path.display()));
+        }
     };
     atomic_replace(path, content)?;
     Ok(backup)

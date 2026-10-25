@@ -155,10 +155,10 @@ pub(crate) struct KindDescriptor {
 
 /// One row per project kind: the facts the rest of the scan reads instead of matching on the kind.
 static DESCRIPTORS: [(ProjectInputKind, KindDescriptor); 16] = {
+    use crate::remedy;
     use InstalledTreePolicy::{Scan, ScanWhenLocked, Skip};
     use LockfilePolicy::{Required, Unsupported};
     use ProjectInputKind as K;
-    use crate::remedy;
     use lockfiles::LockfileKind as L;
     [
         (

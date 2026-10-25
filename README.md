@@ -73,7 +73,40 @@ sloppy-joe init --from-current --register
 
 # Or write a config manually to a secure path outside the repo
 sloppy-joe init > /secure/location/sloppy-joe.json
+
+# Explain every lockfile problem check blocks on, and verify the safe fixes (writes nothing)
+sloppy-joe fix-lockfile
+
+# Write the verified lockfiles (the previous file is kept as <name>.sloppy-joe.bak)
+sloppy-joe fix-lockfile --write
 ```
+
+### Fixing lockfiles
+
+`check` blocks on lockfiles it cannot model or trust: a missing or stale lockfile, a pnpm lockfile
+older than `9.0`, an npm `lockfileVersion: 1`, a `bun.lockb`, a shadow lockfile under a
+workspace member. Every such error names the exact command and the minimum tool version.
+`sloppy-joe fix-lockfile [--dir D] [--type T] [--config C] [--write] [--json]` plans each problem
+as one of:
+
+| Class | Meaning |
+|---|---|
+| `fixable` | The command is run for you, in a private scratch copy, with scripts disabled |
+| `guided` | The manual command is shown with the reason it is not automated (Bundler, Gradle and .NET restore run repository code; Pipenv and pip-compile re-resolve or build sdists; Yarn Classic has no lockfile-only mode) |
+| `human` | No safe fix: integrity, source and provenance findings, manifest pins that disagree with the lockfile, and dependency rewrites (`overrides`, `resolutions`, `patchedDependencies`) |
+
+A fixable candidate is written only if it keeps every locked version, integrity hash and source
+the project still reaches, adds packages only for direct dependencies the old lockfile lacked,
+parses with the scanner's own parser, and passes a full `check --full` rescan. The version diff is
+printed before anything is written; without `--write` nothing in the project changes. The tool
+runs as an argument vector with an environment built from nothing (`HOME`, caches and config in
+the scratch directory, only absolute `PATH` entries outside the project), a timeout and no stdin;
+a project with a code-execution surface for the tool (a pnpmfile, Yarn plugins, `.npmrc` script
+settings, Cargo wrappers, Composer VCS repositories, Poetry plugins, a Go `toolchain` line, git or
+local-path dependencies) is refused before the tool runs. Exit status is `0` when nothing needed
+fixing or every fix was verified (and written with `--write`), `1` when a problem remains, a fix
+was refused or a tool failed, and `2` on a runtime error. See
+[docs/specs/fix-lockfile.md](docs/specs/fix-lockfile.md) for the full catalog.
 
 ### Nix
 

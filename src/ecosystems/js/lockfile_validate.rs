@@ -63,7 +63,12 @@ pub(crate) fn yarn_is_berry(root_dir: &Path) -> bool {
         .ok()
         .and_then(|manifest| {
             let field = manifest.get("packageManager")?.as_str()?.to_string();
-            let major = field.strip_prefix("yarn@")?.split('.').next()?.parse::<u32>().ok()?;
+            let major = field
+                .strip_prefix("yarn@")?
+                .split('.')
+                .next()?
+                .parse::<u32>()
+                .ok()?;
             Some(major >= 2)
         })
         .unwrap_or(false)

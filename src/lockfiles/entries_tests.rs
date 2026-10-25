@@ -17,7 +17,11 @@ fn npm_v3_packages_carry_integrity_and_resolved() {
         integrity: Some("sha512-a".into()),
         source: Some("https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz".into()),
     }));
-    assert!(packages.iter().any(|p| p.name == "@s/b" && p.version == "2.0.0"));
+    assert!(
+        packages
+            .iter()
+            .any(|p| p.name == "@s/b" && p.version == "2.0.0")
+    );
 }
 
 #[test]
@@ -29,7 +33,10 @@ fn npm_v1_packages_walk_nested_dependencies_and_aliases() {
     .unwrap();
     let mut out = Vec::new();
     npm_v1_packages(lock["dependencies"].as_object().unwrap(), &mut out);
-    let ids: Vec<_> = out.iter().map(|p| format!("{}@{}", p.name, p.version)).collect();
+    let ids: Vec<_> = out
+        .iter()
+        .map(|p| format!("{}@{}", p.name, p.version))
+        .collect();
     assert!(ids.contains(&"a@1.0.0".to_string()), "{ids:?}");
     assert!(ids.contains(&"b@2.0.0".to_string()), "{ids:?}");
     assert!(ids.contains(&"real@3.0.0".to_string()), "{ids:?}");
@@ -67,7 +74,8 @@ fn legacy_pnpm_packages_read_a_6_0_lockfile() {
 
 #[test]
 fn legacy_pnpm_packages_refuse_an_unknown_key() {
-    let content = "lockfileVersion: '6.0'\npackages:\n  nonsense:\n    resolution: {integrity: sha512-a}\n";
+    let content =
+        "lockfileVersion: '6.0'\npackages:\n  nonsense:\n    resolution: {integrity: sha512-a}\n";
     assert!(pnpm_legacy_packages(content).is_err());
 }
 
