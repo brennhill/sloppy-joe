@@ -1,10 +1,27 @@
 //! Version-specifier matching for Python-style constraints (uv, Pipfile, Poetry).
 use anyhow::{Result, bail};
 
+/// Compare releases with PEP 440 normalization, including zero-padded release segments.
+pub(crate) fn python_versions_equal(left: &str, right: &str) -> bool {
+    left == right
+        || matches!(
+            (left.parse::<pep440_rs::Version>(), right.parse::<pep440_rs::Version>()),
+            (Ok(left), Ok(right)) if left == right
+        )
+}
+
 pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str>) -> Result<bool> {
     let version: pep440_rs::Version = version.parse()?;
+    Ok(parse_python_specifiers(specifier)?
+        .iter()
+        .all(|constraint| specifier_contains(constraint, &version)))
+}
+
+pub(crate) fn parse_python_specifiers(
+    specifier: Option<&str>,
+) -> Result<pep440_rs::VersionSpecifiers> {
     let Some(specifier) = specifier.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(true);
+        return Ok(pep440_rs::VersionSpecifiers::empty());
     };
     let mut clauses = Vec::new();
     for clause in specifier.split(',').map(str::trim) {
@@ -24,10 +41,7 @@ pub(crate) fn version_matches_uv_specifier(version: &str, specifier: Option<&str
             clauses.push(clause.to_string());
         }
     }
-    let constraints: pep440_rs::VersionSpecifiers = clauses.join(",").parse()?;
-    Ok(constraints
-        .iter()
-        .all(|constraint| specifier_contains(constraint, &version)))
+    Ok(clauses.join(",").parse()?)
 }
 
 /// Whether `version` satisfies `constraint` by PEP 440, prereleases included.

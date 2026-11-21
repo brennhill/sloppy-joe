@@ -24,17 +24,62 @@ pub(crate) fn strip_inline_comment(line: &str) -> &str {
     line
 }
 
-pub(crate) fn strip_trailing_hashes(line: &str) -> &str {
+fn split_trailing_hashes(line: &str) -> (&str, &str) {
+    let mut quote = None;
     for (idx, ch) in line.char_indices() {
-        if !ch.is_whitespace() {
-            continue;
-        }
-        let remainder = line[idx..].trim_start();
-        if remainder.starts_with("--hash=") {
-            return line[..idx].trim_end();
+        match quote {
+            Some(active) if ch == active => quote = None,
+            None if matches!(ch, '\'' | '"') => quote = Some(ch),
+            None if is_python_whitespace(ch) => {
+                let remainder = line[idx..].trim_start_matches(is_python_whitespace);
+                if remainder.starts_with("--hash=")
+                    || remainder
+                        .strip_prefix("--hash")
+                        .is_some_and(|value| value.starts_with(is_python_whitespace))
+                {
+                    return (
+                        line[..idx].trim_end_matches(is_python_whitespace),
+                        remainder,
+                    );
+                }
+            }
+            _ => {}
         }
     }
-    line
+    (line, "")
+}
+
+pub(crate) fn has_supported_requirement_hashes(line: &str) -> bool {
+    let (_, options) = split_trailing_hashes(line);
+    let mut tokens = options
+        .split(is_python_whitespace)
+        .filter(|token| !token.is_empty());
+    let mut saw_hash = false;
+    while let Some(option) = tokens.next() {
+        let hash = if option == "--hash" {
+            tokens.next()
+        } else {
+            option.strip_prefix("--hash=")
+        };
+        if !hash.is_some_and(is_supported_python_hash) {
+            return false;
+        }
+        saw_hash = true;
+    }
+    saw_hash
+}
+
+pub(crate) fn is_supported_python_hash(hash: &str) -> bool {
+    let Some((algorithm, digest)) = hash.split_once(':') else {
+        return false;
+    };
+    let expected_len = match algorithm {
+        "sha256" => 64,
+        "sha384" => 96,
+        "sha512" => 128,
+        _ => return false,
+    };
+    digest.len() == expected_len && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Find position of first `;` not inside quotes.
@@ -117,9 +162,9 @@ pub(crate) fn parse_scoped_requirement_spec(
 ) -> Result<Option<PythonScopedDependency>> {
     let raw = strip_inline_comment(raw);
     let (line, marker) = split_requirement_marker(raw);
-    let line = strip_trailing_hashes(line);
+    let (line, _) = split_trailing_hashes(line);
     let marker = marker
-        .map(strip_trailing_hashes)
+        .map(|marker| split_trailing_hashes(marker).0)
         .map(str::trim)
         .filter(|marker| !marker.is_empty())
         .map(str::to_string);

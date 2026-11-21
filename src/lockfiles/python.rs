@@ -434,6 +434,8 @@ fn validate_provenance(
         if !reachable_packages.contains(&identity) {
             continue;
         }
+        // Non-registry packages can legitimately lack artifact hashes in Poetry's lock.
+        poetry_package_source(pkg, source_path, name)?;
         if !poetry_package_has_artifact_identity(pkg, metadata, name, version) {
             handle_poetry_missing_proof(
                 warnings,

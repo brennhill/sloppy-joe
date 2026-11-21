@@ -244,10 +244,12 @@ fn skip_requirement_long_flag() {
 
 #[test]
 fn constraint_files_affect_trust_without_becoming_direct_dependencies() {
-    let dir = setup_dir("-c base.txt\nflask==2.0 \\\n    --hash=sha256:deadbeef\n");
+    let dir = setup_dir(
+        "-c base.txt\nflask==2.0 \\\n    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+    );
     std::fs::write(
         dir.join("base.txt"),
-        "requests==2.31.0 \\\n    --hash=sha256:feedface\n",
+        "requests==2.31.0 \\\n    --hash=sha256:2222222222222222222222222222222222222222222222222222222222222222\n",
     )
     .unwrap();
 
@@ -275,7 +277,7 @@ fn supported_index_directives_do_not_block_parsing() {
 #[test]
 fn supported_index_directives_preserve_hash_locked_trust_classification() {
     let dir = setup_dir(
-        "--index-url https://pypi.org/simple\n--extra-index-url https://packages.example.com/simple\nrequests==2.31.0 \\\n    --hash=sha256:deadbeef\n",
+        "--index-url https://pypi.org/simple\n--extra-index-url https://packages.example.com/simple\nrequests==2.31.0 \\\n    --hash sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
     );
     assert!(
         is_hash_locked_requirements_file(&dir.join("requirements.txt"), &dir)
@@ -283,6 +285,14 @@ fn supported_index_directives_preserve_hash_locked_trust_classification() {
         "supported file-bound index directives should not demote hash-locked pip-tools manifests"
     );
     cleanup(&dir);
+}
+
+#[test]
+fn truncated_hash_does_not_prove_a_requirements_lock() {
+    let dir = setup_dir("requests==2.31.0 --hash=sha256:deadbeef\n");
+    let result = is_hash_locked_requirements_file(&dir.join("requirements.txt"), &dir);
+    cleanup(&dir);
+    assert!(!result.unwrap());
 }
 
 #[test]

@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn poetry_git_transitive_reports_unsupported_provenance_before_missing_hashes() {
+    let dir = unique_dir();
+    write_poetry_project(
+        &dir,
+        r#"[tool.poetry]
+name = "demo"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+parent = "1.0.0"
+"#,
+        r#"[[package]]
+name = "parent"
+version = "1.0.0"
+files = [
+    { file = "parent-1.0.0-py3-none-any.whl", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
+]
+
+[package.dependencies]
+widget = { git = "https://example.invalid/widget", rev = "0123456789abcdef0123456789abcdef01234567" }
+
+[[package]]
+name = "widget"
+version = "2.0.0"
+files = []
+
+[package.source]
+type = "git"
+url = "https://example.invalid/widget"
+reference = "0123456789abcdef0123456789abcdef01234567"
+resolved_reference = "0123456789abcdef0123456789abcdef01234567"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.12"
+content-hash = "__CONTENT_HASH__"
+"#,
+    );
+
+    let config = config::SloppyJoeConfig::default();
+    let specs = detected_project_inputs_with_config(&dir, Some("pypi"), &config).unwrap();
+    let mut opts = python_profile_opts(&[], &[], Some("3.12"));
+    opts.scan_mode = ScanMode::Ci;
+    let result = preflight_project_inputs_with_options(&dir, &specs, &config, &opts);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let err = result.expect_err("Poetry Git sources must block");
+    assert!(
+        err.to_string()
+            .contains("package 'widget' uses unsupported Poetry source provenance 'git'"),
+        "{err:#}"
+    );
+    assert!(crate::remedy::find(&err).is_none(), "{err:#}");
+}
+
+#[test]
 fn poetry_non_exact_same_name_root_versions_fail_closed() {
     let dir = unique_dir();
     let pyproject = r#"[tool.poetry]

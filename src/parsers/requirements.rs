@@ -201,7 +201,7 @@ fn classify_trust_inner(
         }) else {
             continue;
         };
-        if dep.dependency.exact_version().is_none() || !line.contains("--hash=") {
+        if dep.dependency.exact_version().is_none() || !has_supported_requirement_hashes(line) {
             trusted = false;
         }
     }

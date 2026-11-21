@@ -324,6 +324,98 @@ fn manifest_group_dependency_missing_from_lock_blocks() {
 }
 
 #[test]
+fn dependency_free_uv_project_accepts_root_without_metadata() {
+    let dir = write_project(
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\n",
+        "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n\n\
+         [[package]]\nname = \"demo\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\n",
+    );
+    let result = preflight(&dir, &ScanOptions::default());
+    std::fs::remove_dir_all(&dir).unwrap();
+    result.expect("uv omits root metadata for projects without dependencies");
+}
+
+#[test]
+fn uv_manifest_accepts_reformatted_version_specifier() {
+    let pyproject = PYPROJECT.replace("requests==2.32.3", "requests>=2.32, <3");
+    let root = ROOT_PACKAGE.replace("==2.32.3", "<3,>=2.32");
+    let dir = write_project(&pyproject, &lock_with_root(&root));
+    let result = preflight(&dir, &ScanOptions::default());
+    std::fs::remove_dir_all(&dir).unwrap();
+    result.expect("the same PEP 440 clauses must match in either order");
+}
+
+#[test]
+fn uv_resolves_zero_padded_pin_to_locked_package_version() {
+    let pyproject = PYPROJECT.replace("requests==2.32.3", "requests==2.32.3.0");
+    let root = ROOT_PACKAGE.replace("==2.32.3", "==2.32.3.0");
+    let dir = write_project(&pyproject, &lock_with_root(&root));
+    let opts = ScanOptions::default();
+    preflight(&dir, &opts).expect("PEP 440 treats zero-padded release segments as equivalent");
+    let project = main_project(&dir, &opts);
+    let data = ecosystems::lockfile_data(
+        &config::SloppyJoeConfig::default(),
+        &opts,
+        &project,
+        &project.deps,
+    )
+    .unwrap();
+    let requests = project
+        .deps
+        .iter()
+        .find(|dep| dep.name == "requests")
+        .unwrap();
+    assert_eq!(data.resolution.exact_version(requests), Some("2.32.3"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn pinned_uv_git_extra_reports_unsupported_provenance() {
+    let pyproject = r#"[project]
+name = "demo"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[project.optional-dependencies]
+dev = ["fixture-standards==0.20.2"]
+
+[tool.uv.sources]
+fixture-standards = { git = "file:///fixture/source", rev = "0123456789abcdef0123456789abcdef01234567", subdirectory = "standards" }
+"#;
+    let lock = r#"version = 1
+revision = 3
+requires-python = ">=3.13"
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.optional-dependencies]
+dev = [{ name = "fixture-standards" }]
+
+[package.metadata]
+requires-dist = [{ name = "fixture-standards", marker = "extra == 'dev'", git = "file:///fixture/source?subdirectory=standards&rev=0123456789abcdef0123456789abcdef01234567" }]
+provides-extras = ["dev"]
+
+[[package]]
+name = "fixture-standards"
+version = "0.20.2"
+source = { git = "file:///fixture/source?subdirectory=standards&rev=0123456789abcdef0123456789abcdef01234567#0123456789abcdef0123456789abcdef01234567" }
+"#;
+    let dir = write_project(pyproject, lock);
+    let result = preflight(&dir, &ScanOptions::default());
+    std::fs::remove_dir_all(&dir).unwrap();
+    let err = result.expect_err("uv Git sources must block");
+    assert!(
+        err.to_string()
+            .contains("package 'fixture-standards' uses unsupported uv source provenance"),
+        "{err:#}"
+    );
+    assert!(crate::remedy::find(&err).is_none(), "{err:#}");
+}
+
+#[test]
 fn manifest_group_specifier_out_of_sync_with_lock_blocks() {
     let pyproject = PYPROJECT.replace("ruff==0.6.9", "ruff==0.7.0");
     let dir = write_project(&pyproject, &lock_with_root(ROOT_PACKAGE));

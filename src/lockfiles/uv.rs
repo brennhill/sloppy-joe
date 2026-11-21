@@ -117,8 +117,13 @@ pub(super) fn resolve_from_value_with_mode_and_profile(
         };
 
         if let Some(exact_manifest) = dep.exact_version() {
-            let expected = selected_root_version.as_deref().unwrap_or(&exact_manifest);
-            resolve_exact_manifest(&mut result, dep, &candidates, expected);
+            resolve_exact_manifest(
+                &mut result,
+                dep,
+                &candidates,
+                &exact_manifest,
+                selected_root_version.as_deref(),
+            );
         } else if mode == ResolutionMode::Direct && dep.version.is_some() {
             resolve_ranged_direct(
                 &mut result,
@@ -150,11 +155,12 @@ fn resolve_exact_manifest(
     dep: &Dependency,
     candidates: &[&String],
     expected: &str,
+    selected: Option<&str>,
 ) {
-    if let Some(version) = candidates
-        .iter()
-        .find(|version| version.as_str() == expected)
-    {
+    if let Some(version) = candidates.iter().find(|version| match selected {
+        Some(selected) => version.as_str() == selected,
+        None => python_versions_equal(version, expected),
+    }) {
         record_locked_version(result, dep, version);
         return;
     }
@@ -323,6 +329,7 @@ fn normalize_name(name: &str) -> String {
     result
 }
 
+use crate::parsers::python_version::python_versions_equal;
 pub(crate) use crate::parsers::python_version::version_matches_uv_specifier;
 
 #[cfg(test)]

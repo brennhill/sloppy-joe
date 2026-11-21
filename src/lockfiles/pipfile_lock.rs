@@ -9,7 +9,7 @@ use super::{
 };
 use crate::Dependency;
 use crate::parsers::pipfile::ParsedPipfile;
-use crate::parsers::requirements::normalize_distribution_name;
+use crate::parsers::requirements::{is_supported_python_hash, normalize_distribution_name};
 use anyhow::{Result, bail};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -159,7 +159,7 @@ fn checked_entries<'a>(
                 .ok_or_else(|| fail(format!("{label} has no hashes")))?;
             if !hashes
                 .iter()
-                .all(|hash| hash.as_str().is_some_and(is_supported_hash))
+                .all(|hash| hash.as_str().is_some_and(is_supported_python_hash))
             {
                 return Err(fail(format!("{label} has malformed hashes")));
             }
@@ -171,19 +171,6 @@ fn checked_entries<'a>(
         }
     }
     Ok((entries, sources))
-}
-
-fn is_supported_hash(hash: &str) -> bool {
-    let Some((algorithm, digest)) = hash.split_once(':') else {
-        return false;
-    };
-    let expected_len = match algorithm {
-        "sha256" => 64,
-        "sha384" => 96,
-        "sha512" => 128,
-        _ => return false,
-    };
-    digest.len() == expected_len && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Reconcile Pipfile.lock with the Pipfile in both directions and enforce the

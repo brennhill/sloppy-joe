@@ -129,6 +129,8 @@ pub(crate) fn read_validated_uv_lockfile(
     let lockfile: toml::Value = toml::from_str(&content)
         .map_err(|err| anyhow::anyhow!("Broken lockfile '{}': {}", path.display(), err))?;
     crate::lockfiles::uv::validate_schema(&lockfile, &path)?;
+    // uv records Git requirements as URLs in root metadata, where sync checks expect specifiers.
+    crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
     let lock_profile = active_python_lockfile_profile(opts, root_extras);
     crate::lockfiles::uv::validate_manifest_consistency(
         &lockfile,
@@ -151,7 +153,6 @@ pub(crate) fn read_validated_uv_lockfile(
     // Bidirectional: every locked root dependency, extra, and group entry must be declared.
     let declared = parsers::pyproject_toml::parse_legacy_scoped_file(&spec.manifest_path)?;
     crate::lockfiles::uv::validate_root_declarations_are_declared(&lockfile, &declared, &path)?;
-    crate::lockfiles::uv::validate_provenance(&lockfile, &path)?;
     let declared_sources = parsers::pyproject_toml::parse_uv_sources_with(
         &spec.manifest_path,
         &config.config_key_allow,

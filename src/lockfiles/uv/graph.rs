@@ -154,15 +154,15 @@ pub(crate) fn resolve_root_request_version(
     nodes: &[UvPackageNode],
     root_dependencies: &[UvRootDependencyEntry],
 ) -> Result<Option<String>> {
-    if let Some(version) = dep.exact_version() {
-        return Ok(Some(version.to_string()));
-    }
-    if profile.any_environment {
+    let manifest_pin = dep.exact_version();
+    if profile.any_environment && manifest_pin.is_none() {
         // Coverage walks every locked version of the root.
         return Ok(None);
     }
 
-    if let Some(selection) = select_root_dependency(root_dependencies, normalized_name, profile)?
+    if !profile.any_environment
+        && let Some(selection) =
+            select_root_dependency(root_dependencies, normalized_name, profile)?
         && let Some(version) = selection.version
     {
         return Ok(Some(version));
@@ -171,13 +171,18 @@ pub(crate) fn resolve_root_request_version(
     let mut matching_versions = nodes
         .iter()
         .filter(|node| node.normalized_name == normalized_name)
+        .filter(|node| {
+            manifest_pin
+                .as_deref()
+                .is_none_or(|expected| python_versions_equal(&node.version, expected))
+        })
         .map(|node| node.version.clone())
         .collect::<Vec<_>>();
     matching_versions.sort();
     matching_versions.dedup();
 
     match matching_versions.as_slice() {
-        [] => Ok(None),
+        [] => Ok(manifest_pin),
         [version] => Ok(Some(version.clone())),
         _ => bail!(
             "Dependency '{}' resolves ambiguously in uv.lock and cannot be trusted exactly",

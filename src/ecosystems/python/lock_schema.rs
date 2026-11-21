@@ -128,15 +128,18 @@ pub(crate) fn check_poetry_entries(
     check_toml_packages(&POETRY_LOCK_ENTRY, lockfile, path, allows)
 }
 
-/// `default` and `develop` map package names to entries.
+/// Each Pipenv category maps package names to entries.
 pub(crate) fn check_pipfile_entries(
     lockfile: &serde_json::Value,
     path: &Path,
     allows: &[KeyAllow],
 ) -> Result<Vec<AppliedAllow>> {
     let mut applied = Vec::new();
-    for section in ["default", "develop"] {
-        let entries = lockfile.get(section).and_then(|value| value.as_object());
+    for (section, value) in lockfile.as_object().into_iter().flatten() {
+        if section == "_meta" {
+            continue;
+        }
+        let entries = value.as_object();
         for (name, entry) in entries.into_iter().flatten().filter(|(_, e)| e.is_object()) {
             applied.extend(named(
                 name,
@@ -239,6 +242,14 @@ mod tests {
         let allows = [allow("Pipfile.lock", "find-links")];
         assert_eq!(
             check_pipfile_entries(&bad, Path::new("Pipfile.lock"), &allows)
+                .unwrap()
+                .len(),
+            1
+        );
+        let custom = serde_json::json!({"docs": bad["default"]});
+        assert!(check_pipfile_entries(&custom, Path::new("Pipfile.lock"), &[]).is_err());
+        assert_eq!(
+            check_pipfile_entries(&custom, Path::new("Pipfile.lock"), &allows)
                 .unwrap()
                 .len(),
             1

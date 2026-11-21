@@ -1,5 +1,14 @@
 use super::*;
 
+/// uv serializes parsed PEP 440 clauses, so spacing and clause order can differ.
+fn canonical_specifier(specifier: Option<&str>) -> Result<Option<String>> {
+    let parsed = crate::parsers::python_version::parse_python_specifiers(specifier)?;
+    let mut clauses: Vec<_> = parsed.iter().map(ToString::to_string).collect();
+    clauses.sort_unstable();
+    clauses.dedup();
+    Ok((!clauses.is_empty()).then(|| clauses.join(",")))
+}
+
 /// Which part of the project a uv.lock root entry belongs to. uv records project dependencies
 /// under `dependencies` / `metadata.requires-dist`, extras under `optional-dependencies`
 /// (`requires-dist` entries carry an `extra == ...` marker), and dependency groups (including
@@ -75,12 +84,14 @@ pub(crate) fn validate_manifest_consistency(
     source_path: &Path,
     lock_profile: Option<&PythonLockfileProfile>,
 ) -> Result<()> {
-    let root_requires = extract_root_requires_entries(parsed)?.ok_or_else(|| {
-        anyhow::anyhow!(
+    let root_requires = match extract_root_requires_entries(parsed)? {
+        Some(entries) => entries,
+        None if deps.is_empty() && root_package(parsed).is_some() => return Ok(()),
+        None => bail!(
             "Broken lockfile '{}': missing root package metadata.requires-dist",
             source_path.display()
-        )
-    })?;
+        ),
+    };
     let root_dependencies = extract_root_dependency_entries(parsed)?.unwrap_or_default();
     let profile = effective_python_profile(lock_profile);
     let packages = package_entries(parsed);
@@ -115,93 +126,90 @@ pub(crate) fn validate_manifest_consistency(
                 ));
             }
         }
-        let specifier = dep.version.clone();
+        let selected = select_root_dependency(&root_dependencies, &normalized, &profile)?
+            .and_then(|selection| selection.version);
+        validate_locked_root_version(
+            dep,
+            selected.as_deref(),
+            &locked_versions(&packages, &normalized),
+            source_path,
+        )?;
+    }
 
-        let selected_root = select_root_dependency(&root_dependencies, &normalized, &profile)?;
-        if let Some(root_version) = selected_root
-            .as_ref()
-            .and_then(|selection| selection.version.as_deref())
-            && !version_matches_uv_specifier(root_version, specifier.as_deref())?
-        {
+    Ok(())
+}
+
+fn validate_locked_root_version(
+    dep: &Dependency,
+    selected: Option<&str>,
+    locked: &[&str],
+    source_path: &Path,
+) -> Result<()> {
+    let specifier = dep.version.as_deref();
+    if let Some(version) = selected
+        && !version_matches_uv_specifier(version, specifier)?
+    {
+        return Err(crate::remedy::problem(
+            &crate::remedy::LOCK_PIN_MISMATCH,
+            format!(
+                "Broken lockfile '{}': '{}' is out of sync with requires-dist because root-selected version '{}' contradicts '{}'",
+                source_path.display(),
+                dep.name,
+                version,
+                specifier.unwrap_or("")
+            ),
+        ));
+    }
+
+    if locked.is_empty() {
+        return Err(crate::remedy::problem(
+            &crate::remedy::UV_LOCK,
+            format!(
+                "Broken lockfile '{}': '{}' is missing a resolved package entry",
+                source_path.display(),
+                dep.name
+            ),
+        ));
+    }
+
+    let manifest_pin = dep.exact_version();
+    if let Some(expected) = selected.or(manifest_pin.as_deref()) {
+        let matches = match selected {
+            Some(identity) => locked.contains(&identity),
+            None => locked
+                .iter()
+                .any(|version| python_versions_equal(version, expected)),
+        };
+        if !matches {
             return Err(crate::remedy::problem(
                 &crate::remedy::LOCK_PIN_MISMATCH,
                 format!(
-                    "Broken lockfile '{}': '{}' is out of sync with requires-dist because root-selected version '{}' contradicts '{}'",
+                    "Broken lockfile '{}': '{}' is missing the root-selected resolved package entry '{}'",
                     source_path.display(),
                     dep.name,
-                    root_version,
-                    specifier.as_deref().unwrap_or("")
+                    expected
                 ),
             ));
         }
-
-        let candidates: Vec<&toml::value::Table> = packages
-            .iter()
-            .copied()
-            .filter(|pkg| {
-                pkg.get("name")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|name| normalize_name(name) == normalized)
-                    && !is_local_root_package(pkg)
-            })
-            .collect();
-
-        if candidates.is_empty() {
+    } else if let [version] = locked {
+        if !version_matches_uv_specifier(version, specifier)? {
             return Err(crate::remedy::problem(
-                &crate::remedy::UV_LOCK,
+                &crate::remedy::LOCK_PIN_MISMATCH,
                 format!(
-                    "Broken lockfile '{}': '{}' is missing a resolved package entry",
+                    "Broken lockfile '{}': '{}' resolved version '{}' is out of sync with '{}'",
                     source_path.display(),
-                    dep.name
+                    dep.name,
+                    version,
+                    specifier.unwrap_or("")
                 ),
             ));
         }
-
-        let expected_version = selected_root
-            .and_then(|selection| selection.version)
-            .or_else(|| dep.exact_version());
-        if let Some(expected_version) = expected_version.as_deref() {
-            if !candidates.iter().any(|pkg| {
-                pkg.get("version")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|version| version == expected_version)
-            }) {
-                return Err(crate::remedy::problem(
-                    &crate::remedy::LOCK_PIN_MISMATCH,
-                    format!(
-                        "Broken lockfile '{}': '{}' is missing the root-selected resolved package entry '{}'",
-                        source_path.display(),
-                        dep.name,
-                        expected_version
-                    ),
-                ));
-            }
-        } else if let [candidate] = candidates.as_slice() {
-            let version = candidate
-                .get("version")
-                .and_then(|version| version.as_str())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Broken uv.lock: resolved package is missing version")
-                })?;
-            if !version_matches_uv_specifier(version, specifier.as_deref())? {
-                return Err(crate::remedy::problem(
-                    &crate::remedy::LOCK_PIN_MISMATCH,
-                    format!(
-                        "Broken lockfile '{}': '{}' resolved version '{}' is out of sync with '{}'",
-                        source_path.display(),
-                        dep.name,
-                        version,
-                        specifier.as_deref().unwrap_or("")
-                    ),
-                ));
-            }
-        } else if candidates.len() > 1 {
-            bail!(
-                "Broken lockfile '{}': '{}' resolves ambiguously and cannot be trusted exactly",
-                source_path.display(),
-                dep.name
-            );
-        }
+    } else {
+        bail!(
+            "Broken lockfile '{}': '{}' resolves ambiguously and cannot be trusted exactly",
+            source_path.display(),
+            dep.name
+        );
     }
 
     Ok(())
@@ -240,7 +248,8 @@ pub(crate) fn validate_coverage_roots_are_locked(
                 "is missing from the root requires-dist / requires-dev metadata".to_string(),
             ));
         }
-        if !recorded.contains(&dep.version.as_deref()) {
+        let wanted = canonical_specifier(dep.version.as_deref())?;
+        if !recorded.contains(&wanted.as_deref()) {
             return Err(problem(
                 &crate::remedy::UV_LOCK,
                 "is out of sync with pyproject.toml".to_string(),
@@ -316,9 +325,9 @@ pub(crate) fn validate_root_declarations_are_declared(
         .iter()
         .filter(|dep| !dep.unlocked_tool_env)
         .map(|dep| {
-            (
+            Ok((
                 normalize_name(dep.dependency.package_name()),
-                dep.dependency.version.as_deref(),
+                canonical_specifier(dep.dependency.version.as_deref())?,
                 dep.groups
                     .iter()
                     .map(|group| normalize_name(group))
@@ -327,9 +336,9 @@ pub(crate) fn validate_root_declarations_are_declared(
                     .iter()
                     .map(|extra| normalize_name(extra))
                     .collect::<BTreeSet<_>>(),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_>>()?;
     let in_section =
         |groups: &BTreeSet<String>, extras: &BTreeSet<String>, scope: &UvRootScope| match scope {
             UvRootScope::Main => groups.is_empty() && extras.is_empty(),
@@ -357,7 +366,7 @@ pub(crate) fn validate_root_declarations_are_declared(
     for entry in extract_root_requires_entries(parsed)?.unwrap_or_default() {
         let is_declared = declared.iter().any(|(name, version, groups, extras)| {
             *name == entry.normalized_name
-                && *version == entry.specifier.as_deref()
+                && *version == entry.specifier
                 && match &entry.scope {
                     // requires-dist holds the main dependencies and every extra.
                     UvRootScope::Main | UvRootScope::Extra(_) => groups.is_empty(),
@@ -431,6 +440,7 @@ pub(crate) fn match_root_specifier(
     profile: &PythonProfile,
     wanted: Option<&str>,
 ) -> Result<UvRootSpecifierMatch> {
+    let wanted = canonical_specifier(wanted)?;
     let mut by_section: std::collections::BTreeMap<UvRootScope, Option<String>> =
         std::collections::BTreeMap::new();
     for entry in entries {
@@ -459,10 +469,7 @@ pub(crate) fn match_root_specifier(
     if by_section.is_empty() {
         return Ok(UvRootSpecifierMatch::Missing);
     }
-    if by_section
-        .values()
-        .any(|specifier| specifier.as_deref() == wanted)
-    {
+    if by_section.values().any(|specifier| *specifier == wanted) {
         return Ok(UvRootSpecifierMatch::Matched);
     }
     Ok(UvRootSpecifierMatch::Mismatch(
@@ -572,10 +579,9 @@ pub(crate) fn extract_root_requires_entries(
             })?;
         entries.push(UvRootRequiresEntry {
             normalized_name: normalize_name(name),
-            specifier: table
-                .get("specifier")
-                .and_then(|value| value.as_str())
-                .map(str::to_string),
+            specifier: canonical_specifier(
+                table.get("specifier").and_then(|value| value.as_str()),
+            )?,
             marker: table
                 .get("marker")
                 .and_then(|value| value.as_str())
