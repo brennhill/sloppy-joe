@@ -284,6 +284,14 @@
         "reason": "Verified upstream release and crates.io publisher/owner records: https://github.com/colored-rs/colored/releases/tag/v2.1.0"
       },
       {
+        "package": "quinn-udp",
+        "check": "metadata/maintainer-change",
+        "version": "0.5.16",
+        "previous_publisher": "mxinden",
+        "current_publisher": "djc",
+        "reason": "Both are registered crates.io owners. djc signed the upstream release that fixes RUSTSEC-2026-0538: https://github.com/quinn-rs/quinn/releases/tag/quinn-udp-0.5.16"
+      },
+      {
         "package": "icu_locale_core",
         "check": "metadata/maintainer-change",
         "version": "2.2.0",
