@@ -2,12 +2,13 @@
 
 ## Unreleased
 
-## 2.1.2
+## 2.1.3
 
 - Python: uv and Poetry now report unsupported Git provenance before suggesting lockfile regeneration.
 - Python: uv accepts lockfiles for dependency-free projects, compares PEP 440 clauses independent of spacing and order, and resolves equivalent exact pins to the version recorded in the lock.
 - Python: Pipfile.lock applies the same entry policy to custom categories as to the default and development categories. Requirements files need complete supported digests to qualify as hash-locked.
 - Updated the locked `quinn-udp` dependency to 0.5.16 for RUSTSEC-2026-0538.
+- Release builds use the GitHub-hosted macOS 15 runner for Apple Silicon.
 
 ## 2.1.0
 

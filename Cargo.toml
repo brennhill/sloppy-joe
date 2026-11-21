@@ -1,6 +1,6 @@
 [package]
 name = "sloppy-joe"
-version = "2.1.2"
+version = "2.1.3"
 edition = "2024"
 description = "Detect hallucinated, typosquatted, and non-canonical dependencies"
 license = "Apache-2.0"

@@ -593,7 +593,7 @@ jobs:
 - uses: brennhill/sloppy-joe@v2
   with:
     dir: ./packages/api
-    version: '2.1.2'
+    version: '2.1.3'
 ```
 
 ### GitLab CI
@@ -614,7 +614,7 @@ Add it to your `.pre-commit-config.yaml`:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/brennhill/sloppy-joe
-    rev: v2.1.2
+    rev: v2.1.3
     hooks:
       - id: sloppy-joe
 ```

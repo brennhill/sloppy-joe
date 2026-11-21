@@ -25,3 +25,6 @@ targets = [
 ]
 # Where to host releases
 hosting = "github"
+
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
