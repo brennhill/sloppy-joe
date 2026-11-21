@@ -11,20 +11,20 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        version = "2.1.0";
+        version = "2.1.3";
 
         targets = {
           x86_64-linux = {
             target = "x86_64-unknown-linux-musl";
-            hash = "sha256-mPP1+POMhOwRUSqF0wamSVMWGAdvwsw99s56+B++6U8=";
+            hash = "sha256-mxMWuOz5jG5Lcw4Kqbc6YAOZxKhyxfxmKanhF2WZrOw=";
           };
           aarch64-linux = {
             target = "aarch64-unknown-linux-musl";
-            hash = "sha256-3NuDHL0mLtOnPgrdfu0YADGMUuNGNts765ZWqzQ8nLQ=";
+            hash = "sha256-4KQsIHYQyXzSqTTOX9i4akULhhIEpZrnmXD8YBmjmeE=";
           };
           aarch64-darwin = {
             target = "aarch64-apple-darwin";
-            hash = "sha256-XBK0V8ZvjYT1nSW9Wvg5pGGiFmDMZK1xJ/bnVoWLg5k=";
+            hash = "sha256-qQ0EJ/lnG7vEZY+4OWf79UGCnr/pAJnCWLCpLr6mdYc=";
           };
         };
 
